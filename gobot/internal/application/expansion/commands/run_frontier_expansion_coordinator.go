@@ -147,7 +147,7 @@ type ProbePurchaser interface {
 // stays fail-closed. It NEVER poaches a dedicated hull (RULINGS #7 — only an idle, undedicated,
 // non-transit hull is eligible). Idempotent + best-effort (RULINGS #2): dispatched=false when a hull
 // is already at / en route to a yard, no reachable probe-yard is known, or no eligible hull is free.
-// Unset (nil) → the coordinator stays fail-closed byte-identical to pre-sp-255rz.
+// Unset (nil) → the coordinator stays fail-closed byte-identical to before.
 type ProbeBuyerPositioner interface {
 	PositionProbeBuyer(ctx context.Context, playerID shared.PlayerID) (dispatched bool, err error)
 }
@@ -316,14 +316,14 @@ type RunFrontierExpansionCoordinatorHandler struct {
 
 	// probePositioner breaks the "probe unpriceable" stall (sp-255rz): when QuoteProbe fails
 	// closed it relays an eligible idle undedicated hull to a reachable probe-yard so the next
-	// tick's live price reads. Optional-injection; nil keeps the pre-sp-255rz fail-closed behavior
+	// tick's live price reads. Optional-injection; nil keeps the previous fail-closed behavior
 	// byte-identical (never buys, never poaches — RULINGS #4/#7).
 	probePositioner ProbeBuyerPositioner
 
 	// darkScanner enumerates the FULL charted-but-unscanned MARKET backlog the scan_only
 	// mode sweeps — every system with MARKETPLACE waypoints and zero player market_data, unbounded
 	// by gate hops (unlike scanner's expansion-frontier BFS). Optional-injection via
-	// SetDarkMarketScanner; nil (or scan_only=0) leaves the coordinator byte-identical to pre-sp-jide.
+	// SetDarkMarketScanner; nil (or scan_only=0) leaves the coordinator byte-identical to before.
 	darkScanner DarkMarketScanner
 
 	// objective is the optional deep-resource (heavy-yard) signal the depth slice biases on
@@ -426,7 +426,7 @@ func (h *RunFrontierExpansionCoordinatorHandler) SetEventRecorder(rec captain.Ev
 
 // SetLiveConfigReader wires the per-tick live-config snapshot source (sp-vwek), making
 // the tunable knobs (FrontierTunableDefaults) honor `spacetraders tune` on the next
-// tick. Leaving it unset keeps every knob launch-frozen (the pre-sp-vwek behavior).
+// tick. Leaving it unset keeps every knob launch-frozen (the previous behavior).
 func (h *RunFrontierExpansionCoordinatorHandler) SetLiveConfigReader(r liveconfig.Reader) {
 	h.liveConfig = r
 }
@@ -864,7 +864,7 @@ func postFullyUnmanned(post *domainScouting.ScoutPost) bool {
 // single-hull sweep-once post (the breadth head), bounded by the in-flight cap so declaration never
 // outruns what the fleet can man (pin #3). It returns the declared system ("" when the queue is empty,
 // the cap is reached, the head already has a post, or the write failed). Extracted verbatim from the
-// pre-sp-pvw3 inline DEPLOY block so the discovery-side behavior is unchanged when the split activates it.
+// previous inline DEPLOY block so the discovery-side behavior is unchanged when the split activates it.
 func (h *RunFrontierExpansionCoordinatorHandler) declareBreadthHead(
 	ctx context.Context,
 	cmd *RunFrontierExpansionCoordinatorCommand,
@@ -993,7 +993,7 @@ func (h *RunFrontierExpansionCoordinatorHandler) decideAndMaybeBuy(
 	// probes as reserved for the freshness sizer — it will not count them toward covering
 	// its OWN coverage demand, so an aggressive frontier GROWS the pool with a guarded buy rather
 	// than cannibalizing scanning below a relaxed baseline. floor 0 (default) leaves
-	// effectiveAvailable == availableCount, i.e. exact pre-sp-iopd behavior. The reconciler still
+	// effectiveAvailable == availableCount, i.e. exact previous behavior. The reconciler still
 	// relays whichever idle probes it chooses; this governs only whether the frontier BUYS — the
 	// coordinator never claims a hull (RULINGS #7).
 	effectiveAvailable := availableCount - cfg.ReservedFreshnessFloor
@@ -1135,13 +1135,13 @@ func (h *RunFrontierExpansionCoordinatorHandler) decideAndMaybeBuy(
 // eligible idle undedicated hull at a reachable probe-selling yard so NEXT tick's presence-gated live
 // price reads and the in-place buy clears. Best-effort + nil-safe: an UNSET positioner, a DRY-RUN, a
 // positioning error, or a graceful no-op (no reachable yard / no eligible hull) all just report the
-// unchanged stall this cycle — byte-identical to pre-sp-255rz when unwired. It NEVER buys, NEVER
+// unchanged stall this cycle — byte-identical to previous when unwired. It NEVER buys, NEVER
 // poaches a dedicated hull (RULINGS #7), and NEVER weakens the price guard (RULINGS #4): a positioned
 // hull only makes the price READABLE; the buy still runs every guard next tick.
 func (h *RunFrontierExpansionCoordinatorHandler) positionProbeBuyerOnStall(ctx context.Context, cmd *RunFrontierExpansionCoordinatorCommand, quoteErr error) string {
 	stall := fmt.Sprintf("no purchase: probe unpriceable (fail-closed): %v", quoteErr)
 	// Positioning moves a real hull, so it is suppressed under dry-run exactly like the buy; an unset
-	// positioner leaves the pre-sp-255rz behavior untouched.
+	// positioner leaves the previous behavior untouched.
 	if h.probePositioner == nil || cmd.DryRun {
 		return stall
 	}

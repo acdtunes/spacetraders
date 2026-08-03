@@ -198,7 +198,7 @@ func TestTravel_ResumeInTransit_WaitsBeforeJump_NoTransitError(t *testing.T) {
 }
 
 // The control that proves the wait is load-bearing: with NO subscriber wired (the
-// pre-fix state), travel() attempts the jump while the hull is still IN_TRANSIT and the
+// previous state), travel() attempts the jump while the hull is still IN_TRANSIT and the
 // API rejects it 4214 — the exact iteration error the incident's restart backoff had to
 // ride out. This is what SetEventSubscriber converts from an error into a wait.
 func TestTravel_ResumeInTransit_NoSubscriber_Jumps4214_PreFixBehavior(t *testing.T) {

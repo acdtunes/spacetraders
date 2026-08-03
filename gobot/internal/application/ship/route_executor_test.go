@@ -199,7 +199,7 @@ func newExecutorTestShip(t *testing.T, current, capacity int, location *shared.W
 // The executor must NOT keep the un-fuelable planned BURN; it must fall back to
 // the affordable optimal mode (CRUISE, cost 114).
 //
-// Before the fix this returns BURN (the upgrade-only comparison never downgrades),
+// Unguarded, this returns BURN (the upgrade-only comparison never downgrades),
 // which is exactly the 180-available/228-required signature from daemon.log.
 func TestSelectOptimalFlightMode_DowngradesPlannedBurnWhenFuelInsufficient(t *testing.T) {
 	from := mustWaypoint(t, "X1-TORWIND-A", 0, 0)

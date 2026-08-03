@@ -17,7 +17,7 @@ import (
 // player's graduation never bleeds onto another era/player.
 
 // A fresh era row reads UN-graduated (the column default) — so a new era/agent cold-starts with
-// contracts running, byte-identical to pre-sp-difa.1.
+// contracts running, byte-identical to before.1.
 func TestIsContractGraduated_FreshEraIsUngraduated(t *testing.T) {
 	db, err := database.NewTestConnection()
 	require.NoError(t, err)

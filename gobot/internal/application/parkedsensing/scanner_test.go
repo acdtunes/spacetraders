@@ -50,9 +50,8 @@ func pacingScanner(clock shared.Clock, clampR int) *Scanner {
 // nothing planned to use.
 //
 // That exclusion also keeps MarkScanned (a scan-path write) and TransitionSlot (a
-// placement-path write) off the same row, which USED to be the only thing
-// preventing a lost update between them. It no longer is: the ledger's writers
-// own disjoint columns now (sp-wgjb7), so this is defence in depth rather than
+// placement-path write) off the same row. The ledger's writers own disjoint
+// columns, so this is defence in depth rather than
 // the guard itself.
 func TestScannerSyncMembership_AdmitsOnlyParkedMarketsAndYards(t *testing.T) {
 	clock := scanClock()

@@ -61,7 +61,7 @@ func ApplyStandbyStationChange(current []string, waypoint string, add bool) (res
 // OWN container config — the store the `fleet hub` daemon RPC mutates — so a hub
 // added/removed live is visible to homing on the very next pass with no restart. A
 // nil provider or a read error leaves the coordinator on the launch snapshot
-// (never worse than the pre-fix behavior); an explicitly EMPTY live set disables
+// (never worse than the previous behavior); an explicitly EMPTY live set disables
 // homing (an operator clearing every hub must take effect live).
 type StandbyStationProvider interface {
 	// StandbyStations returns the coordinator container's current standby-station

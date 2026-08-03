@@ -25,7 +25,7 @@ import (
 // own tests. Every fixture below is deliberately FRESH (observed == now) so a dropped row is the
 // guard's doing and never the activity staleness cap's.
 
-// crossedGood builds a good in the pre-sp-en5h7 legacy shape: ask BELOW bid. mustGood maps its
+// crossedGood builds a good in the previous legacy shape: ask BELOW bid. mustGood maps its
 // `ask` argument to purchase_price and its `bid` argument to sell_price, so passing the larger
 // value as the bid reproduces a transposed row exactly as the corrected readers see it.
 func crossedGood(t *testing.T, sym string, tt market.TradeType) market.TradeGood {

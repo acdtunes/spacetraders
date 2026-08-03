@@ -214,7 +214,7 @@ func newZvHarness(t *testing.T, ship *navigation.Ship, residualUnits int) (*RunT
 // FREE HOLD and fly >=1 profitable visit. With the total-capacity bug the coordinator
 // asks to buy an 18u tranche into a hull with only 10u free, the purchase precondition
 // refuses it, and the circuit exits at iteration 0 with zero visits. This is a distinct
-// zero-visit path from the sp-2sam self-collision root cause: RED before the fix, GREEN
+// zero-visit path from the sp-2sam self-collision root cause: Guards, GREEN
 // after.
 func TestTradeRouteCoordinator_ResidualCargoHull_SizesBuyToAvailableSpace(t *testing.T) {
 	const capacity, residual = 40, 30 // 10u free
@@ -240,7 +240,7 @@ func TestTradeRouteCoordinator_ResidualCargoHull_SizesBuyToAvailableSpace(t *tes
 	}
 
 	// THE reproduction assertion: a selected, floor-clearing lane on a non-empty hull
-	// must still fly. Before the fix buyUnits=18 into 10u free → purchase refused → 0.
+	// must still fly. Unguarded, buyUnits=18 into 10u free → purchase refused → 0.
 	if coord.Visits < 1 {
 		t.Fatalf("expected >=1 profitable visit on a residual-cargo hull, got %d visits / %d units "+
 			"(runCircuit sized the buy to CargoCapacity, not AvailableCargoSpace, so the oversized "+

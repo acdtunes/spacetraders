@@ -163,7 +163,7 @@ func TestEnsureBootStandingCoordinators_IdempotentForBootstrap(t *testing.T) {
 // sp-9ujl (epic sp-difa, Auto-pilot Phase 1): the scout-post coordinator must be BOOT-STANDING. The
 // MarketFreshnessSizer (already boot-standing) only DECLARES a standing freshness post; the scout-post
 // coordinator is what MANS it — assigns a probe (SetAssignedHull), partitions the system, drives the
-// P90 rescans + idle-probe re-tasking. Its only pre-fix launch path was the manual CLI, which a cold
+// P90 rescans + idle-probe re-tasking. Its only previous launch path was the manual CLI, which a cold
 // start never runs, so a zero-intervention boot left the declared post UNMANNED with no standing owner
 // for market coverage. This tripwire fires if a future change drops it from the boot set.
 func TestBootStandingSet_IncludesScoutPostCoordinator(t *testing.T) {

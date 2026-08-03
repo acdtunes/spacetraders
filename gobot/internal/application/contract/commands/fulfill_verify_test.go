@@ -253,7 +253,7 @@ func (verifyLogger) Log(_, _ string, _ map[string]interface{}) {}
 // A contract needing two cargo-loads (80 units, 40-hold) must NOT fulfill after
 // the first partial delivery: the delivery leg loops the sourcing path for the
 // remainder and fulfill fires exactly once, only after every unit has
-// registered. This is the livelock: pre-fix, executeWorkflow fulfilled
+// registered. This is the livelock: before, executeWorkflow fulfilled
 // straight after ProcessAllDeliveries returned a 40/80 contract and crashed on
 // "deliveries not complete".
 func TestRunWorkflow_MultiLoadContract_LoopsSourcingThenFulfillsOnce(t *testing.T) {
@@ -316,7 +316,7 @@ func TestRunWorkflow_PartialAfterLadderHalt_ParksWithoutFulfilling(t *testing.T)
 // The livelock case, test-locked: a crash-respawn resumes a contract already
 // partially delivered (40/120 persisted) and must re-read that state, source
 // ONLY the remaining 80 units (two more loads), deliver them, and fulfill.
-// Pre-fix it delivered one 40-unit load (to 80/120) and crashed on fulfill.
+// Unguarded it delivers one 40-unit load (to 80/120) and crashes on fulfill.
 func TestRunWorkflow_CrashRespawn_ResumesPartialAndSourcesRemainder(t *testing.T) {
 	seed := fulfillVerifyContract(t, "contract-resume", "IRON_ORE", 120, 40) // 40 already delivered
 	adapter, handler := newFulfillVerifyHarness(t, seed, "IRON_ORE", 40, 100, 100, 0)

@@ -405,7 +405,7 @@ func TestTradeWatchdog_ParkedOnActiveCooldown_NotKilled(t *testing.T) {
 // (B7, sp-39hjn REGRESSION GUARD) Cooldown-awareness must NOT blunt genuine hang detection:
 // a PARKED hull whose cooldown has already EXPIRED (a stale past timestamp) or that has NO
 // cooldown at all, silent past the stall threshold, is STILL hung and STILL killed —
-// byte-identical to pre-sp-39hjn behavior. Only a FUTURE (active) cooldown protects a hull.
+// byte-identical to previous behavior. Only a FUTURE (active) cooldown protects a hull.
 func TestTradeWatchdog_ParkedCooldownExpiredOrNone_StillKilled(t *testing.T) {
 	cases := []struct {
 		name        string

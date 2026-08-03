@@ -143,7 +143,7 @@ func TestJumpShip_DestinationPresentOnFirstRead_SingleGateRead(t *testing.T) {
 
 // BOUNDED (no infinite bounce, no spam): when the destination is genuinely absent from
 // EVERY live read, the handler gives up cleanly after exactly maxJumpGateReadAttempts
-// reads and never fires a jump — instead of the pre-fix behaviour where a hard error fed
+// reads and never fires a jump — instead of the previous behaviour where a hard error fed
 // the container/coordinator an endless re-fly. This is the circuit that keeps a real
 // (persistent) no-connection from becoming an API/fuel storm.
 func TestJumpShip_DestinationGenuinelyAbsent_FailsCleanlyAfterBoundedReads(t *testing.T) {
@@ -161,7 +161,7 @@ func TestJumpShip_DestinationGenuinelyAbsent_FailsCleanlyAfterBoundedReads(t *te
 	if err == nil {
 		t.Fatal("a destination absent from every live read must fail cleanly, not silently succeed")
 	}
-	// Bounded: exactly maxJumpGateReadAttempts reads — NOT one (pre-fix) and NOT unbounded.
+	// Bounded: exactly maxJumpGateReadAttempts reads — NOT one (before) and NOT unbounded.
 	if client.getJumpGateCalls != maxJumpGateReadAttempts {
 		t.Fatalf("expected exactly %d bounded gate reads before giving up, got %d", maxJumpGateReadAttempts, client.getJumpGateCalls)
 	}

@@ -11,7 +11,7 @@ package commands
 // THE FIXTURE HAS TO BE ABLE TO BUY, and this is where the sibling test in
 // run_probe_orphan_dispatch_test.go stops short: it wires no yard, so its drain
 // skips every placement for want of a counter and its "nothing was bought"
-// assertion passes on the pre-fix code by its own admission. Here the in-scope
+// assertion passes on the previous code by its own admission. Here the in-scope
 // system has a probe yard, a hull of ours docked at it, and a treasury far above
 // the floor — the control below proves the identical world buys a probe with the
 // switch on. Demand past the bound, or the bound is never consulted.

@@ -252,7 +252,7 @@ func TestTour_ContinuousStopExitsResumableNotCompleted(t *testing.T) {
 }
 
 // Regression: with Iterations unset (0) the coordinator runs EXACTLY one tour — the
-// original one-shot behavior — so every pre-sp-m5kv caller and test is unchanged.
+// original one-shot behavior — so every previous caller and test is unchanged.
 func TestTour_DefaultIterationsRunsExactlyOneTour(t *testing.T) {
 	fx := &tourFixture{
 		cargo: map[string]int{}, location: "X1-S1-A", cargoCap: 100,

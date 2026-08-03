@@ -70,7 +70,7 @@ func ContractCoordinatorTunableDefaults() map[string]int {
 // un-dedication back to the poachable pool).
 //
 // The zero value (all zero, nil maps/slices) reserves + reclaims nothing: the regression-safe,
-// pre-sp-mzdk pin-everything behavior for a launch with no census (feature off / degraded).
+// previous pin-everything behavior for a launch with no census (feature off / degraded).
 type deliveryPinBudget struct {
 	Available         int
 	Floor             int

@@ -20,7 +20,7 @@ import (
 // AROUND sinks other containers occupy). The L1 substrate (the DB-backed
 // absorption.Ledger) does the concurrency-safe, restart-survivable bookkeeping; this
 // file wires the tour's lifecycle onto it. All of it is inert when the ledger is unwired
-// (the pre-sp-78ai shape and every test that does not call SetAbsorptionLedger).
+// (the previous shape and every test that does not call SetAbsorptionLedger).
 
 const (
 	// tourACapTranches MUST stay in lockstep with tour_solver.py's
@@ -49,7 +49,7 @@ const (
 // SetAbsorptionLedger wires the cross-engine absorption ledger (sp-78ai L3) so the tour
 // reserves/nets/converts against fleet-wide market depth. plannedTTLSlack pads
 // reservation TTLs (0 → default). Left unwired, the tour plans and flies exactly as
-// pre-sp-78ai. Mirrors the sibling SetAbsorptionLedger injections.
+// before. Mirrors the sibling SetAbsorptionLedger injections.
 func (h *RunTourCoordinatorHandler) SetAbsorptionLedger(ledger absorption.Ledger, plannedTTLSlack time.Duration) {
 	h.absorptionLedger = ledger
 	if plannedTTLSlack <= 0 {
@@ -267,7 +267,7 @@ func planDispositions(plan *routing.TourPlan) tourGoodDispositions {
 //
 //   - -1 ("not gated"): no ledger wired, a container-less run (the tour reserves nothing
 //     there either), or a deposit-bound good (the warehouse is a guaranteed sink). The
-//     buy proceeds on its existing bounds, byte-identical to pre-sp-pcxju.
+//     buy proceeds on its existing bounds, byte-identical to before.
 //   - 0 ("no firm sink"): a market-sold good whose sink this container no longer holds
 //     (saturated by others / dropped on a re-plan), a buy with no sell disposition at all,
 //     or an unreadable ledger. The caller buys nothing on spec (fail-closed, RULINGS #4).
@@ -427,7 +427,7 @@ type tourSinkSale struct {
 }
 
 // newLegSells allocates a per-leg sink accumulator, or nil when no ledger is wired (the
-// accumulation and conversion then no-op — the tour flies exactly as pre-sp-78ai). The
+// accumulation and conversion then no-op — the tour flies exactly as before). The
 // map is allocated whenever a ledger is present, regardless of the consult switch:
 // recording (and therefore converting) still runs in the escape-hatch mode.
 func (h *RunTourCoordinatorHandler) newLegSells() map[string]*tourSinkSale {

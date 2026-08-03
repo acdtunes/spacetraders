@@ -25,7 +25,7 @@ func (wiringMemo) LastListingScan(context.Context, int, string) (bool, time.Time
 
 // The expansion engine receives the stored-listing memo, which is what lets seed staging prefer a
 // yard we have EVIDENCE sells probes over one the shipyard-trait fallback merely guessed at. Without
-// it staging has no evidence to rank on and silently reverts to the pre-fix behaviour.
+// it staging has no evidence to rank on and silently reverts to the previous behaviour.
 func TestSensingEnginePorts_ExpandPortsCarriesTheListingMemo(t *testing.T) {
 	memo := wiringMemo{}
 	ports := SensingEnginePorts{ListingMemo: memo}

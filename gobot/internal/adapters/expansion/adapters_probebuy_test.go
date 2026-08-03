@@ -533,7 +533,7 @@ func TestBuyProbe_NavigatingBuyer_SharedByBothConsumerTargetShapes(t *testing.T)
 // probe fleet stalls at its cap. Meanwhile a current-era probe yard sits reachable from the buyer's
 // OWN system (or one hop out). The buy must FALL BACK to the nearest REACHABLE yard and succeed,
 // NEVER retry-loop the dead far target. Two reachability shapes (same-system, one-hop-out sibling) =
-// one behavior, parametrized (Mandate 5). Pre-fix the buyer relays to the unreachable X1-AM3-Z13F and
+// one behavior, parametrized (Mandate 5). Unguarded the buyer relays to the unreachable X1-AM3-Z13F and
 // BuyProbe errors; post-fix it relays to the reachable yard and buys there.
 func TestBuyProbe_FallsBackToReachableYard_WhenDemandProximalIsBeyondBuyerReach(t *testing.T) {
 	const (

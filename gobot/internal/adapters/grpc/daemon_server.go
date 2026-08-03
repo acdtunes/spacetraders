@@ -98,7 +98,7 @@ type DaemonServer struct {
 	// or gate-reachable to, the warehouse's home system before it is (re)claimed. It uses the SAME
 	// Routable notion foreignMarketReachable relies on — never a second reachability mechanism.
 	// Injected post-construction via SetGateGraph because gategraph.Service is built after
-	// NewDaemonServer runs (main.go). A nil gateGraph fails open (byte-identical to pre-sp-fihvy: no
+	// NewDaemonServer runs (main.go). A nil gateGraph fails open (byte-identical to before: no
 	// signal, no eviction), mirroring the storageRecovery/depotSinkOverride convention.
 	gateGraph depotHomeRouter
 
@@ -595,7 +595,7 @@ func (s *DaemonServer) SetYardScanner(sc *ship.ShipyardScanner) {
 // viability precondition consults (sp-fihvy stocker; generalized to every role by sp-fis8y). Wired
 // from main.go AFTER gategraph.Service is constructed (it does not exist when NewDaemonServer
 // runs), mirroring SetStorageRecovery. A nil service is tolerated — depotElementHullViable fails
-// open, byte-identical to pre-sp-fihvy.
+// open, byte-identical to before.
 func (s *DaemonServer) SetGateGraph(g depotHomeRouter) {
 	s.gateGraph = g
 }

@@ -136,7 +136,7 @@ func drainInterruptedTick(t *testing.T, handler *RunConstructionCoordinatorHandl
 
 // REGRESSION (B1): a supply cancelled mid-flight is RE-QUEUED for the next activation, not failed.
 // A cancellation is exogenous — the daemon stopped, the haul did nothing wrong — so it must not
-// spend the task's retry budget. Before the fix the unwinding worker treated `context canceled` as
+// spend the task's retry budget. Unguarded, the unwinding worker treated `context canceled` as
 // a delivery failure: the task went FAILED with a retry charged, waited out a two-minute backoff
 // sweep, and after three deploys was terminal FAILED with its material stranded aboard the hull.
 func TestConstructionDrain_CancelledSupply_RequeuesTaskWithoutSpendingRetry(t *testing.T) {
@@ -171,7 +171,7 @@ func TestConstructionDrain_CancelledSupply_RequeuesTaskWithoutSpendingRetry(t *t
 // ACCEPTANCE (B1+B2): the whole invariant end-to-end. Tick 1 buys the material, is cancelled
 // mid-delivery, and leaves the hull laden. Tick 2 — a fresh daemon — re-promotes the task, pairs it
 // with the laden hull, and DELIVERS the units already paid for. No re-source, no re-buy, no
-// stranded material. Before the fix tick 1 failed the task, so tick 2 promoted nothing and the
+// stranded material. Unguarded, tick 1 failed the task, so tick 2 promoted nothing and the
 // 73,500 credits of circuitry rode an idle hull while the material stayed 0/400.
 func TestConstructionDrain_InterruptedLadenHull_DeliversItsLoadOnTheNextTick(t *testing.T) {
 	pipeline := newDrainPipeline(t, "ADVANCED_CIRCUITRY", 20)

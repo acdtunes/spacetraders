@@ -10,7 +10,7 @@ import (
 )
 
 // A reserve >= max_spend zeroes the Python solver's spend_cap BEFORE the
-// market is ever looked at. Pre-fix, the solver's generic "no profitable allocation"
+// market is ever looked at. Unguarded, the solver's generic "no profitable allocation"
 // reason was indistinguishable from genuine market death, costing 70+ min of
 // misdiagnosis in the 2026-07-11 fleet-dark P0. The solver-side fix (tour_solver.py)
 // now returns a distinct "reserve_exceeds_budget (spend_cap=0: max_spend X - reserve

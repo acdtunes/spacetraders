@@ -98,7 +98,7 @@ func intrinsicSystemWeight(snap domainScouting.SystemFreshnessSnapshot) float64 
 // the sizer sizes and releases against, replacing the tail-dominated max (OldestAgeSeconds). It
 // falls back to OldestAgeSeconds when the census carries NO per-market breakdown — a census that
 // predates sp-r57g, or an aggregate-only fixture — so the coordinator is byte-identical to
-// pre-sp-r57g on the fallback path (percentile 100 also equals the max, the live rollback lever).
+// previous on the fallback path (percentile 100 also equals the max, the live rollback lever).
 func measuredAgeSeconds(snap domainScouting.SystemFreshnessSnapshot, cfg sizerConfig) float64 {
 	if len(snap.Markets) == 0 {
 		return snap.OldestAgeSeconds
@@ -224,14 +224,14 @@ func modelTargetFromBase(staticBase int, sla time.Duration, starved bool, measur
 // single-SLA RequiredHulls(MarketCount, cycle, sla) as the model's static base.
 //
 // It returns (_, false) — "no activity signal, size on the global SLA (byte-identical to
-// pre-sp-j4kjv)" — when ANY of:
+// before)" — when ANY of:
 //   - the system carries a per-system SLA override (an explicit operator decision governs the WHOLE
 //     system across activities, so per-activity heuristics must not second-guess it);
 //   - the per-market breakdown does not fully account for MarketCount — a cold-start charted override
 //     inflated MarketCount beyond the scanned markets, or an aggregate-only / pre-breakdown census;
 //   - no market carries a KNOWN activity (a pre-activity census, or a test fixture): an all-unknown
 //     system stays on the tuned global SLA rather than repricing every market at the RESTRICTED
-//     default, which is what keeps every pre-sp-j4kjv sizing test byte-identical.
+//     default, which is what keeps every previous sizing test byte-identical.
 //
 // Within a partitioned system a market whose activity is unknown/null joins the RESTRICTED cohort
 // (the documented unknown default), so a mix of known + null markets sizes the null ones at RESTRICTED.

@@ -63,7 +63,7 @@ type ScoutRepositionCommand struct {
 	// probe already IN the market-known-but-gate-dark system, which travelWithJumpBound's
 	// same-system branch would otherwise leave at a market, never charting the gate (the
 	// VH23/TD90 stuck-marker hole). Set false, the relay is the plain manning/reposition move
-	// (byte-for-byte the pre-sp-4yse behavior), so a normal reposition never detours to the gate.
+	// (byte-for-byte the previous behavior), so a normal reposition never detours to the gate.
 	// Persisted so the flag survives the persist->config->rebuild boundary the worker's start
 	// path runs through (StartScoutReposition rebuilds the command from config, not from memory).
 	ChartGateOnArrival bool

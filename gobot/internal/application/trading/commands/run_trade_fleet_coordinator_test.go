@@ -777,7 +777,7 @@ func TestTradeFleetBackoff_MassPark_NoMovementEscalation(t *testing.T) {
 }
 
 // The exemption is a live-by-default knob with a kill switch (RULINGS #5). Disabling it
-// restores the pre-fix behavior — the same mass-park ramps every hull to 360s, so at
+// restores the previous behavior — the same mass-park ramps every hull to 360s, so at
 // 200s elapsed all five are held in lockstep. This both documents the defect and proves
 // the underlying sp-1pli backoff still fires when the exemption is off.
 func TestTradeFleetBackoff_MassPark_ExemptDisabled_RampsInLockstep(t *testing.T) {

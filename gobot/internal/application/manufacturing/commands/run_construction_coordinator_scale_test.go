@@ -140,7 +140,7 @@ func (p *slowLaneTopUpProducer) totalDelivered() int {
 // haulers, max_workers 3. The FIRST hull's source blocks (a long ADV feed) and holds its slot for the
 // whole test. The other five lanes must STILL all be worked — successive ticks keep refilling the two
 // slots the slow hull leaves free — so five non-slow deliveries land while it is still blocked.
-// Before the fix the ceiling capped lots at max_workers=3, so only two fast lanes ran and then the pool
+// Unguarded, the ceiling capped lots at max_workers=3, so only two fast lanes ran and then the pool
 // idled behind the slow hull (concurrency held at 1); the test times out waiting for the 3rd delivery.
 //
 // The top-up is now ACROSS ticks rather than inside one: a tick starts what the running hauls leave

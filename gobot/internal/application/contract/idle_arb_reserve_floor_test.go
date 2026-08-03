@@ -27,7 +27,7 @@ func (f *fakeTreasuryReader) LiveTreasury(context.Context) (int64, error) {
 // floor yet COLLECTIVELY drain treasury below it. The gate accounts for the pass's
 // cumulative committed leg-spend and HOLDS the rest of the pass once one more leg would
 // breach common.EffectiveReserveFloor. Ample treasury is byte-identical; an unreadable
-// treasury fails CLOSED; an unwired reader leaves the gate inert (pre-sp-zq635 behavior).
+// treasury fails CLOSED; an unwired reader leaves the gate inert (previous behavior).
 //
 // The two-sink harness gives the two surplus hulls DISTINCT sinks so the lane mutex
 // never caps the count — isolating the reserve gate as the only thing that can.

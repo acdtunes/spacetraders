@@ -33,7 +33,7 @@ const (
 	// fleet's ~75 cr/s opportunity rate (hullOpportunityCreditsPerSecond) that hop is
 	// worth ~26k in foregone home-lane earning, so a destination whose planned fresh
 	// profit is below this bar is not worth relocating for — the coordinator exits
-	// honestly (margins died) exactly as it did pre-sp-zhii. A named config knob, not a
+	// honestly (margins died) exactly as it did before. A named config knob, not a
 	// magic constant (RULINGS #5): retune as the fleet's hop cost / opportunity rate
 	// shifts. Deliberately a touch under the ~26k one-way hop cost so a genuinely
 	// productive ground is never rejected for being a few thousand short.
@@ -175,7 +175,7 @@ type repositionScore struct {
 	// reason is WHY a non-feasible candidate was rejected, for the ranking log (sp-lxwn):
 	// the solver's OWN infeasibility reason (e.g. "no_profitable_tour"), a "planner-error"
 	// marker when the pre-flight CALL itself failed, or "" for a contender. Empty renders as
-	// the bare "infeasible" fallback so the pre-sp-lxwn line shape is preserved when unset.
+	// the bare "infeasible" fallback so the previous line shape is preserved when unset.
 	reason string
 }
 
@@ -204,7 +204,7 @@ func (h *RunTourCoordinatorHandler) maybeReposition(
 	logger := common.LoggerFromContext(ctx)
 
 	if cmd.RepositionDisabled {
-		return false, nil // kill-switch: exit as pre-sp-zhii
+		return false, nil // kill-switch: exit as before
 	}
 	if episode.repositioned {
 		return false, nil // already spent this episode's one reposition — no hop-scotching
@@ -240,7 +240,7 @@ func (h *RunTourCoordinatorHandler) maybeReposition(
 	// target (incrementPendingRelocation, below + convergePlacementJump), this cap sees the in-flight
 	// movers and spreads the cohort. Strictly stricter (RULINGS #4): it only REMOVES over-subscribed
 	// candidates, never relaxes the 25000 floor or any money guard; fail-open when the fleet snapshot
-	// is unreadable AND nothing is in flight (byte-identical to pre-sp-lq64). Idempotent with the reach
+	// is unreadable AND nothing is in flight (byte-identical to before). Idempotent with the reach
 	// path's own exclusion — the same harmless re-check the rate-floor path documents.
 	candidates, herdExcluded := h.excludeHerdedSystems(ctx, cmd, candidates)
 	if len(candidates) == 0 {
@@ -267,7 +267,7 @@ func (h *RunTourCoordinatorHandler) maybeReposition(
 
 	if best == nil || best.freshProfit < floor {
 		// Nothing clears the floor: the jump costs more than the best destination is worth
-		// (RULINGS #5) — exit honestly, exactly as pre-sp-zhii.
+		// (RULINGS #5) — exit honestly, exactly as before.
 		metrics.RecordTourReposition(cmd.PlayerID, "no_candidate") // sp-fbih P3: candidates ranked, none worth the jump
 		return false, nil
 	}
@@ -298,7 +298,7 @@ func (h *RunTourCoordinatorHandler) maybeReposition(
 	// floor-clearing manifest of THIS system's exports that the destination imports, so the
 	// crossing carries value. It is booked into netBought/response, rides the jump, and the
 	// post-jump re-plan liquidates it as launch cargo. No floor-clearing lane →
-	// nothing bought → an empty jump, exactly as pre-sp-ed4i. Persisted-in-progress is set
+	// nothing bought → an empty jump, exactly as before. Persisted-in-progress is set
 	// FIRST (above), so a restart mid-load resumes the jump carrying whatever was already
 	// bought (RULINGS #2). Best-effort: it never blocks the reposition rescue.
 	loadedUnits := h.loadLookbackManifest(ctx, cmd, response, netBought, currentSystem, best.system, budget.maxSpend, budget.reserve)
@@ -419,7 +419,7 @@ type neighborRejection struct {
 // an aborted reposition. An EMPTY result logs WHY per rejected neighbor (requirement #3).
 func (h *RunTourCoordinatorHandler) buildRepositionCandidates(ctx context.Context, cmd *RunTourCoordinatorCommand, currentSystem string) []repositionCandidate {
 	now := h.clock.Now()
-	// 1-hop scan first — the origin's DIRECT gated neighbors (the pre-sp-jeou behavior, unchanged).
+	// 1-hop scan first — the origin's DIRECT gated neighbors (the previous behavior, unchanged).
 	neighbors, originReason := h.legs.repositionNeighbors(ctx, currentSystem, cmd.PlayerID)
 	candidates, rejections := h.scoreRepositionNeighbors(ctx, cmd, currentSystem, neighbors, now)
 
@@ -633,7 +633,7 @@ func (h *RunTourCoordinatorHandler) activeTradeHullsBySystem(ctx context.Context
 // prices the candidate tour from) plus its capped spread (the pre-rank score). A neighbor that is
 // unbuilt, market-unreadable, uncached, all-stale, or waypoint-less is dropped with a NAMED
 // rejection reason (the empty-discovery diagnostic reads these). It is a pure extraction of the
-// pre-sp-jeou loop, so the 1-hop path's per-neighbor behavior and stale-lane counter are unchanged;
+// previous loop, so the 1-hop path's per-neighbor behavior and stale-lane counter are unchanged;
 // the fresh `seen` per call is harmless because the broadening BFS already de-dups systems.
 func (h *RunTourCoordinatorHandler) scoreRepositionNeighbors(ctx context.Context, cmd *RunTourCoordinatorCommand, currentSystem string, neighbors []repositionNeighborEdge, now time.Time) ([]repositionCandidate, []neighborRejection) {
 	seen := map[string]bool{currentSystem: true} // exclude the current (dead) ground
@@ -694,7 +694,7 @@ func (h *RunTourCoordinatorHandler) scoreRepositionNeighbors(ctx context.Context
 }
 
 // logRepositionDiscoveryEmpty explains WHY the reposition candidate scan came up empty, so a "no
-// candidates" verdict is self-diagnosing (sp-1ki5 #3 — the pre-fix empty cost a canary flight to
+// candidates" verdict is self-diagnosing (sp-1ki5 #3 — the previous empty cost a canary flight to
 // diagnose). It names either the origin-level reason (no gated neighbor reachable from the origin —
 // the X1-DP51 shape, where the live jump-gate API refused the uncharted origin gate and no durable
 // edge answered) or, when neighbors WERE resolved but each fell out, the per-neighbor rejection
@@ -760,7 +760,7 @@ func freshListings(listings []trading.GoodListing, now time.Time, maxAge time.Du
 // divide-by-zero regression pin).
 //
 // hops is charged PER-HOP (matching evaluateForeignPlacement's D_x formula) with a hops<1→1 floor:
-// the pre-fix single-hop charge under-stated a reach candidate's deadhead by (hops−1)·crossSystemHop
+// the previous single-hop charge under-stated a reach candidate's deadhead by (hops−1)·crossSystemHop
 // (~25% at 2-4 hops), over-stating a distant ground's rate and making the rate-floor improvement gate
 // over-permissive for far grounds. NOTE: this is the LIVE reach / margins-death rate too (sp-uf64 /
 // sp-zhii); a more honest deadhead cost ranks distant candidates slightly lower ⇒ marginally less
@@ -786,7 +786,7 @@ func repositionCandidateRate(freshProfit int64, plan *routing.TourPlan, hops int
 // profitMax names the absolute-fresh leader among the same floor-clearing set so the
 // ranking log can show when rate REORDERED the choice (the acceptance evidence).
 // When no candidate clears the floor, winner is the best feasible by fresh profit —
-// preserving the pre-sp-1wp8 caller contract where the floor gate and the honest
+// preserving the previous caller contract where the floor gate and the honest
 // "best X < floor" exit log read it; winner is nil only when nothing is feasible.
 func selectRepositionWinner(evaluated []repositionScore, floor int64) (winner, profitMax *repositionScore, rateMode bool) {
 	var clearing []*repositionScore
@@ -948,7 +948,7 @@ func (h *RunTourCoordinatorHandler) persistReposition(ctx context.Context, cmd *
 // metadata map — the sp-149h/sp-iqyq renderer defect): each evaluated candidate's system,
 // pre-rank score and planner verdict, plus which was chosen and the floor.
 //
-// The verdict distinguishes THREE states (sp-m9co: the pre-fix line conflated them, which
+// The verdict distinguishes THREE states (sp-m9co: the previous line conflated them, which
 // cost diagnosis time on the 2B episode — every candidate read "infeasible" yet the summary
 // said "none cleared the floor", implying they were merely thin):
 //   - infeasible: the solver declined a real tour (the ground itself cannot be toured);

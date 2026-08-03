@@ -235,7 +235,7 @@ type RunTradeFleetCoordinatorHandler struct {
 	// tourLiveness / tourStopper are the sp-m3122 liveness watchdog's two ports: read each
 	// running tour's last real-progress time, and kill a tour that has stalled past the
 	// threshold. BOTH must be wired for the watchdog to act (fail-closed): without them a
-	// reconcile pass detects nothing and kills nothing, byte-identical to pre-sp-m3122.
+	// reconcile pass detects nothing and kills nothing, byte-identical to before.
 	tourLiveness TourLivenessPort
 	tourStopper  TourStopper
 

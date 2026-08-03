@@ -928,7 +928,7 @@ func ladenHauler(t *testing.T, symbol, good string, units int) *navigation.Ship 
 
 // sp-9ptm (REPRO — the incident): a claimed hull that ALREADY HOLDS the construction material must
 // UNLOAD it to the site even when the source is unbuyable and the fail-closed buy gate (sp-a5j7)
-// parks. Before the fix the drain evaluated ProduceGood FIRST and, on a dry source, parked the task
+// parks. Unguarded, the drain evaluated ProduceGood FIRST and, on a dry source, parked the task
 // WITHOUT ever delivering — stranding the on-hand cargo (TORWIND-8/-F sat idle+laden at F48 while
 // the gate stalled at 160/1600). Now the on-hand units are delivered UNCONDITIONALLY (before any
 // buy), pipeline progress is recorded, and the task advances instead of stranding.

@@ -9,7 +9,7 @@ import (
 
 // --- sp-39hjn COMPLEMENT: a long jump-cooldown wait is not a silent log gap ---
 //
-// waitForJumpCooldown logs ONCE at the start of the wait, then — pre-fix — slept the whole
+// waitForJumpCooldown logs ONCE at the start of the wait, then — before — slept the whole
 // ETA-scaled budget in a single blocking call, emitting nothing until the cooldown ended. On
 // a far sp-tp5c3 tour a cooldown budget can exceed the sp-m3122 watchdog's 12-min (720s)
 // stall threshold, so LatestLogTimestamps (the newest container-log line, which the
@@ -40,7 +40,7 @@ func TestWaitForJumpCooldown_LongWait_EmitsPeriodicHeartbeat(t *testing.T) {
 }
 
 // (B8 guard) An ordinary short cooldown wait (within one heartbeat interval) stays a single
-// silent sleep — no heartbeat noise, byte-identical to the pre-fix single-sleep behavior.
+// silent sleep — no heartbeat noise, byte-identical to the previous single-sleep behavior.
 func TestWaitForJumpCooldown_ShortWait_NoHeartbeat(t *testing.T) {
 	logger := &tradeCaptureLogger{}
 	h := &RunTradeRouteCoordinatorHandler{clock: &travelFakeClock{}}

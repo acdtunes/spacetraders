@@ -7,7 +7,7 @@ package grpc
 // went on beating until the daemon process itself died — the row said "dead" and the heartbeat
 // said "alive", and the heartbeat was newer.
 //
-// Measured live before the fix: 16 FAILED rows with heartbeat_at AFTER stopped_at, worst overhang
+// Measured live unguarded, : 16 FAILED rows with heartbeat_at AFTER stopped_at, worst overhang
 // 2h39m40s (tour-run-TORWIND-41-e13a3217 stopped 23:49:50, still beating at 02:29:30 — right up
 // to the daemon restart that killed the process). Every one of them was a
 // `command execution failed:` row, i.e. execute's unrecoverable-error branch.

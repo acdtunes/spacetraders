@@ -163,7 +163,7 @@ func NewTestConnection() (*gorm.DB, error) {
 // invalidations tied to a schema transition.
 func AutoMigrate(db *gorm.DB) error {
 	// Detect whether the gate-graph construction column is being
-	// introduced by THIS migration. Pre-sp-8qhu gate_edges rows predate
+	// introduced by THIS migration. Older gate_edges rows predate
 	// construction tracking and default to under_construction=false (open) — but a
 	// gate that was actually still building at their sync time would be routed
 	// through until the 24h TTL expired. When the column is newly added, invalidate

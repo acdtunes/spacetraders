@@ -70,7 +70,7 @@ func jumpFixture(t *testing.T, shipSymbol string) (*stubJumpShipRepo, *stubJumpP
 
 // THE FALSIFIER. A hull carrying the exact stranded row measured on the live fleet —
 // legacy deterministic ID "ship-jump-<symbol>", no hull claimed under it — must be able to
-// jump. Before the fix this hull was wedged permanently: the insert collided on
+// jump. Unguarded, this hull was wedged permanently: the insert collided on
 // containers_pkey and every subsequent jump failed the same way, forever.
 func TestJumpShip_HullWithStrandedContainerRow_CanStillJump(t *testing.T) {
 	shipRepo, playerRepo, apiClient, clock := jumpFixture(t, "TORWIND-235")

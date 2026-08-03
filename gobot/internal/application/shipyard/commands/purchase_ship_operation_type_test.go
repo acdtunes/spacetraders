@@ -2,7 +2,7 @@ package commands
 
 // The ledger label a ship purchase is booked under.
 //
-// EVERY ship purchase used to be "fleet expansion", including the parked-sensing
+// Labelling EVERY ship purchase "fleet expansion" miscounts the parked-sensing
 // coordinator's coverage probes — which are not expansion at all, they are eyes on
 // markets the fleet has already judged worth watching. With one label over two
 // spenders, an operator who switched expansion off and then checked the ledger saw

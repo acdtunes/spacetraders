@@ -70,7 +70,7 @@ func TestFrontier_ProbeUnpriceable_PositionsBuyerHullToResumePricing(t *testing.
 
 // Nil-safety / byte-identical: with NO positioner wired the unpriceable stall behaves exactly as
 // before sp-255rz — the quote fails closed, nothing is bought, and the cycle completes without a
-// crash. This is the merge-safety guarantee: an unset positioner is pre-sp-255rz behavior.
+// crash. This is the merge-safety guarantee: an unset positioner is previous behavior.
 func TestFrontier_ProbeUnpriceable_NoPositioner_StaysFailClosedByteIdentical(t *testing.T) {
 	h, buyer := unpriceableStallSetup(t)
 	// No positioner wired.

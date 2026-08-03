@@ -158,9 +158,9 @@ func TestTour_MarginsDeath_RanksAndRepositionsToFreshGround(t *testing.T) {
 // money, so — like a scout reposition (sp-8k9m) — it must resolve over the PERSISTED stored
 // adjacency (RepositionPath), routing PAST the unreadable gate, under the configured bound.
 //
-// The fake models the real boundary the pre-fix DiscoversDurableNeighbor test HID: strict Path
+// The fake models the real boundary the before DiscoversDurableNeighbor test HID: strict Path
 // FAILS (pathErr, the unreadable-gate fail-closed), while RepositionPath returns the valid
-// stored route. Under the pre-fix strict call (RepositionToWaypoint, bound 0) the reposition
+// stored route. Under the previous strict call (RepositionToWaypoint, bound 0) the reposition
 // dies on pathErr; under the fix it flies via the bounded resolver. Asserting the bound reached
 // the resolver (repositionBound == the configured default) proves it is RepositionPath, not Path.
 func TestTour_MarginsDeath_RepositionsPastUnreadableGateOrigin_ViaStoredAdjacency(t *testing.T) {
@@ -235,7 +235,7 @@ func TestTour_MarginsDeath_RepositionsPastUnreadableGateOrigin_ViaStoredAdjacenc
 func TestTour_MarginsDeath_DiscoversDurableNeighbor_WhenLiveGateApiRefusesOrigin(t *testing.T) {
 	fx := repositionFixture()
 	// The DP51 discriminator: the LIVE jump-gate scan returns nothing from the origin (uncharted
-	// gate / no ship present -> API 4001). Pre-sp-1ki5 this alone zeroed the candidate set.
+	// gate / no ship present -> API 4001), which alone must not zero the candidate set.
 	fx.neighbors = map[string][]string{}
 
 	homeCalls, s2Calls := 0, 0
@@ -293,7 +293,7 @@ func TestTour_MarginsDeath_DiscoversDurableNeighbor_WhenLiveGateApiRefusesOrigin
 // candidates" verdict is self-diagnosing and never again costs a canary flight. Here the durable
 // graph reports one real neighbor whose gate is still UNDER CONSTRUCTION — it cannot be a
 // candidate (a jump would crash at hop time) — and the scan LOGS it as "unbuilt" instead of the
-// pre-fix silent empty.
+// previous silent empty.
 func TestReposition_EmptyDiscovery_LogsPerNeighborReason(t *testing.T) {
 	fx := repositionFixture()
 	fx.neighbors = map[string][]string{} // live scan empty (uncharted-origin shape)
@@ -316,7 +316,7 @@ func TestReposition_EmptyDiscovery_LogsPerNeighborReason(t *testing.T) {
 
 // The reposition floor (RULINGS #5) gates the jump on planned FRESH profit: a candidate the
 // planner CAN tour but only marginally (below the floor) is NOT worth the antimatter/fuel/
-// time of the hop, so the run exits honestly WITHOUT jumping — exactly as pre-sp-zhii.
+// time of the hop, so the run exits honestly WITHOUT jumping — exactly as before.
 func TestTour_MarginsDeath_BelowFloorExitsHonestlyWithoutJumping(t *testing.T) {
 	fx := repositionFixture()
 	homeCalls := 0
@@ -414,7 +414,7 @@ func TestTour_MarginsDeath_DestinationAlsoDies_NamesBothSystems(t *testing.T) {
 }
 
 // The kill-switch: with reposition disabled, a margins-died continuous tour exits exactly
-// as it did pre-sp-zhii — no ranking, no jump — even when a fresh ground is reachable.
+// as it did before — no ranking, no jump — even when a fresh ground is reachable.
 func TestTour_MarginsDeath_RepositionDisabled_ExitsWithoutJumping(t *testing.T) {
 	fx := repositionFixture()
 	homeCalls := 0

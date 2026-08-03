@@ -1412,7 +1412,7 @@ func TestService_Connections_ChartedGraphGate_FetchesOnce(t *testing.T) {
 	}
 }
 
-// The staged-rollout escape hatch: WithSkipUnchartedFetch(false) restores the pre-fix behavior
+// The staged-rollout escape hatch: WithSkipUnchartedFetch(false) restores the previous behavior
 // byte-for-byte — the uncharted gate is still probed (400s, then backs off). This proves the
 // precondition is genuinely config-gated, not hardwired.
 func TestService_Connections_UnchartedGate_PreconditionDisabled_StillProbes(t *testing.T) {

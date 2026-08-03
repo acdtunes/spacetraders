@@ -119,7 +119,7 @@ type depotCoordinatorSink interface {
 	// an UNBUFFERED-good contract: the current pool size, the configured floor to
 	// keep, and which ships are in the pool right now. *DaemonServer computes it from the ship repo
 	// + the live min_home_contract_workers knob; a spy returns a canned budget. A zero value reserves
-	// nothing (regression-safe: the pre-sp-mzdk pin-everything behavior).
+	// nothing (regression-safe: the previous pin-everything behavior).
 	homeContractWorkerReserve(ctx context.Context, reg *depot.Registry, playerID int) deliveryPinBudget
 	// dedicateContractReserve fleet-ASSIGNS a reserved (or reclaimed) home general hauler to the
 	// exclusive "contract" fleet (bead sp-7zoq) — the write that makes the reserve poach-proof. It

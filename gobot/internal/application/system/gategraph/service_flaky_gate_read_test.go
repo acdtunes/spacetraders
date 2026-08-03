@@ -105,7 +105,7 @@ func newSyncReadService(store *syncReadStore, api *seqGateAPI) *Service {
 // THE BUG. A charted gate we already hold a good edge set for reads back EMPTY on every
 // live attempt (the intermittent empty-200). The sync must NOT erase the good cache with
 // nothing: the valid connection (X1-XD86) stays visible and no empty set is persisted over
-// the good one. Pre-fix, fetchAndStore Replace()d the empty list and returned it — the
+// the good one. Unguarded, fetchAndStore Replace()s the empty list and returns it — the
 // connection vanished for ~24h.
 func TestConnections_EmptyReadForChartedGate_DoesNotOverwriteGoodCache(t *testing.T) {
 	store := &syncReadStore{

@@ -13,7 +13,7 @@ import (
 // long ago and are held ready, parked off-slot with NO `fleet hub` pins (the operator relies on the
 // auto hub-placement). The standing re-home sweep must home each to ITS OWN fixed slot by auto-resolving
 // its standby set from the placement provider's ≤6 fixed slots — exactly as the between-legs hook does
-// via ResolveStandbyForHoming. Before the fix the sweep bailed on the empty fleet-hub set, so the pool
+// via ResolveStandbyForHoming. Unguarded, the sweep bailed on the empty fleet-hub set, so the pool
 // piled where it last finished.
 
 // threeSlotPlacement is the fixed placement set the sitting-pool tests home against — the auto-resolved

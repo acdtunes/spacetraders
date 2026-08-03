@@ -21,7 +21,7 @@ type spyDepotSink struct {
 	// fleet (sp-7zoq) — the reserved fresh hulls plus any reclaimed pinned hulls, in dispatch order.
 	dedicated []string
 	// reserve is the reserve-floor census the launch consults. The zero value reserves
-	// nothing, so every pre-sp-mzdk test keeps its pin-everything behavior unchanged.
+	// nothing, so every previous test keeps its pin-everything behavior unchanged.
 	reserve deliveryPinBudget
 }
 

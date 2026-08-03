@@ -10,9 +10,7 @@ import (
 )
 
 // propFloorCapturingLogger records log lines so INFO-level assertions can be made against
-// them. Originally introduced alongside the now-deleted proportional-floor tests
-// (sp-05glh removed the counter-cyclical pct mode entirely); kept here as a generic
-// log-capturing test double still used by the prepos-ceiling suite.
+// them. A generic log-capturing test double used by the prepos-ceiling suite.
 type propFloorCapturingLogger struct {
 	mu      sync.Mutex
 	entries []struct{ level, message string }

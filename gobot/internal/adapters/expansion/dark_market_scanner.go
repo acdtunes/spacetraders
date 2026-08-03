@@ -22,7 +22,7 @@ type marketBacklogSource interface {
 // bar (sp-gucu). A manned standing post scanned within its SLA is being scanned as designed — healthy,
 // not dark — so its FreshnessTarget×grace replaces the fixed bar for that system. Satisfied live by
 // *persistence.GormScoutPostRepository. Optional: a nil source leaves the fixed bar governing every
-// system (byte-identical to pre-sp-gucu).
+// system (byte-identical to before).
 type scoutCoverageSource interface {
 	ListActive(ctx context.Context, playerID int) ([]*domainScouting.ScoutPost, error)
 }
@@ -68,7 +68,7 @@ func NewDarkMarketScanner(source marketBacklogSource, staleAfterSeconds float64)
 // that is a MANNED STANDING post is classified against its own FreshnessTarget×grace rather than the
 // fixed DefaultStaleMarketSeconds bar — so a post scanned slower than 4h but WITHIN its 4–10h SLA is no
 // longer mislabeled dark (the false "nothing is draining" alarm). Leaving it unset keeps the fixed bar
-// for every system (byte-identical to pre-sp-gucu).
+// for every system (byte-identical to before).
 func (s *DarkMarketScanner) SetScoutCoverageSource(c scoutCoverageSource) {
 	s.coverage = c
 	s.slaGrace = defaultSLAGrace

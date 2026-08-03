@@ -282,7 +282,7 @@ func runTdr(t *testing.T, h *RunTradeRouteCoordinatorHandler, ctx context.Contex
 // GREEN behaviour: the dock-at-source (and dock-at-destination) step must survive the
 // nav-cache race — resync the ship from the API to clear the stale IN_TRANSIT, then
 // retry the dock — so the circuit actually docks and completes its disciplined
-// visits. Under the pre-fix code the very first dock is issued against the stale
+// visits. Under the previous code the very first dock is issued against the stale
 // cached IN_TRANSIT ship and EnsureDocked rejects it, ending the circuit at zero
 // visits. This is the acceptance behaviour: "the circuit that docks is the circuit
 // that trades."
@@ -318,7 +318,7 @@ func TestTradeRoute_DockStep_ResyncsAndRetriesTheNavCacheRace(t *testing.T) {
 // (a) surface the underlying cause VERBATIM in the log MESSAGE — not only in a
 // dropped metadata field — and in response.AbortReason, and (b) abort the circuit
 // cleanly after a BOUNDED number of resync retries (never hang, never spin). Under
-// the pre-fix code the warning message is a bare "Dock at source failed - ending
+// the previous code the warning message is a bare "Dock at source failed - ending
 // circuit" with the cause hidden in a dropped {"error": ...} field.
 func TestTradeRoute_DockAtSource_PersistentFailure_VerbatimCauseAndBoundedAbort(t *testing.T) {
 	h, repo, mediator, logger, ctx := newTdrHarness(t, trSource) // sync never clears transit at source

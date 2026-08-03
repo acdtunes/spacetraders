@@ -115,7 +115,7 @@ func (h *RunStockerCoordinatorHandler) resolveWarehouseCaps(ctx context.Context,
 // never an API fetch-through) so the per-pass re-solve costs no API spend; a nil repo, an
 // unresolvable waypoint, or a TTL-expired cache row returns ok=false and the optimizer FAILS OPEN
 // to the coarse in/cross-system residual (RULINGS #1). A nil repo yields a nil lookup, degrading
-// the solve to the pre-sp-9274 binary proxy byte-for-byte.
+// the solve to the previous binary proxy byte-for-byte.
 func (h *RunStockerCoordinatorHandler) waypointCoords(ctx context.Context) tradingsvc.WaypointCoordsLookup {
 	if h.waypointRepo == nil {
 		return nil

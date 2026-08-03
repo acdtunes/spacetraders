@@ -198,9 +198,9 @@ func TestGateEdgeRepository_UnderConstruction_RoundTrip(t *testing.T) {
 // flagged STALE (re-probe, so a completed build is noticed same-era) and the healthy row is
 // not — proving the window is per-row, not global.
 //
-// The re-probe signal used to be carried by ok=false, and this test asserted that. It moved to
-// the per-row Stale flag when one still-building exit was found to be condemning its system's
-// whole edge set — built siblings included — and walling that system off in every BFS
+// The re-probe signal is the per-row Stale flag, not ok=false: a single still-building exit
+// carried on ok=false condemns its system's whole edge set — built siblings included —
+// walling that system off in every BFS
 // (sp-ky85o). The guarantee is unchanged and is now checked in two places: the per-row window
 // here, and the live re-fetch it drives in gategraph's
 // TestService_Connections_StillReprobesASetWithARowPastItsOwnWindow. Asserting the flag rather

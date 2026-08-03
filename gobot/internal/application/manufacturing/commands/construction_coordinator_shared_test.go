@@ -26,9 +26,8 @@ func drainSettled(t *testing.T, handler *RunConstructionCoordinatorHandler, ctx 
 	return resp, err
 }
 
-// Test helpers shared by the construction-coordinator tests. Originally defined in the goods-factory
-// coordinator's test file; relocated here when the factory ops were retired, the
-// construction-coordinator tests now being their sole users. Names are kept verbatim so the existing
+// Test helpers shared by the construction-coordinator tests, their sole users.
+// Names are kept verbatim so the existing
 // construction tests reference them unchanged.
 
 const (

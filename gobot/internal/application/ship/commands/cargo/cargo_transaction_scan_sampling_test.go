@@ -138,8 +138,8 @@ func TestPostTradeScan_NeverScannedMarket_StillScans(t *testing.T) {
 	require.Equal(t, 1, refresher.scans, "a never-scanned market must be scanned on any trade")
 }
 
-// Deploy-safety + mutation: an INERT policy preserves the pre-sp-v34b unconditional
-// post-trade scan. "No policy stamped" is every pre-sp-v34b / non-tour caller; the
+// Deploy-safety + mutation: an INERT policy preserves the previous unconditional
+// post-trade scan. "No policy stamped" is every before / non-tour caller; the
 // mutation (rate=1.0 + max_age=0) is the explicit proof the two gates are load-bearing
 // — turn them off and the full-scan behavior returns.
 func TestPostTradeScan_InertPolicy_AlwaysScans(t *testing.T) {

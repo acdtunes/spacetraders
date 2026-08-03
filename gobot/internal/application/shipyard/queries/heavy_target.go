@@ -17,8 +17,8 @@ import (
 // one implementation, because two callers each deriving "the price of the next heavy" from the
 // same tables is exactly how a reservation silently drifts.
 //
-// WHAT CHANGED AND WHY (sp-fwk8z): the price term used to be the CHEAPEST KNOWN priced heavy yard
-// across the whole map. That is the wrong number, in the unsafe direction. The purchase path buys
+// The price term is the TARGET's price, NOT the cheapest known priced heavy yard
+// across the whole map — the cheapest is the wrong number, in the unsafe direction. The purchase path buys
 // at the NEAREST reachable yard, not the cheapest one, so reserving the cheapest under-reserves
 // whenever the two differ — treasury tops out below the price we will actually be asked, probe
 // buying resumes too early, and the heavy is never bought. That is the very failure this feature

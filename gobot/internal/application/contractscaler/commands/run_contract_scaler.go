@@ -193,7 +193,7 @@ type DeliverySurplusReleaser interface {
 // be gate-reachable to the depot's home system, so a reclaim candidate for either role must be
 // gate-reachable to the warehouse's home system too — never any idle hull fleet-wide. A nil
 // DepotHullReclaimer (unset at boot) degrades BOTH roles' reuse tier back to the fleet-wide
-// IdleHullReclaimer, byte-identical to the pre-sp-fihvy ramp.
+// IdleHullReclaimer, byte-identical to the previous ramp.
 type DepotHullReclaimer interface {
 	// FindReclaimableForHome returns one reusable, home-reachable hull symbol (ok=false when none
 	// exists). A read error holds the reuse tier (fail-closed) and the caller falls through to a buy.
@@ -205,7 +205,7 @@ type DepotHullReclaimer interface {
 // fleet-wide PriceReader could return a cheaper yard in a foreign system, which would buy a stocker
 // hull the depot can never route home. Warehouse buys are unaffected; they keep the shared
 // PriceReader. A nil DepotPriceReader (unset at boot) degrades the stocker buy fallback back to the
-// shared PriceReader, byte-identical to the pre-sp-fihvy ramp.
+// shared PriceReader, byte-identical to the previous ramp.
 type DepotPriceReader interface {
 	NextHullPriceForHome(ctx context.Context, playerID int, shipType, homeSystem string) (price int64, yard string, readable bool, err error)
 }
@@ -674,7 +674,7 @@ func (h *RunContractScalerHandler) fillDepotRole(ctx context.Context, cmd *RunCo
 // alike. This is what stops a stranded hull evicted by the daemon's depotElementHullViable precondition
 // (e.g. TORWIND-19) from being re-offered to the very next grow: the home-scoped reclaimer already
 // excludes it. A nil depotReclaimer or blank homeSystem falls back to the fleet-wide h.reclaimer, so
-// either role degrades to its historical (pre-fix) behavior until fully wired.
+// either role degrades to its historical (before) behavior until fully wired.
 func (h *RunContractScalerHandler) findReclaimableForDepot(ctx context.Context, cmd *RunContractScalerCommand, role contractscaler.UnitRole, homeSystem string) (string, bool) {
 	if (role == contractscaler.Stocker || role == contractscaler.Warehouse) && h.depotReclaimer != nil && homeSystem != "" {
 		symbol, ok, err := h.depotReclaimer.FindReclaimableForHome(ctx, cmd.PlayerID, homeSystem)
@@ -808,7 +808,7 @@ func (h *RunContractScalerHandler) armedPlanFor(ctx context.Context, cmd *RunCon
 	}
 	// The standby set is the SAME ≤6 fixed placement slots the buy sequence uses (TopDeliverySlots),
 	// so the homing zips hulls onto exactly the parks the scaler bought against — one slot set, no
-	// drift. Not all central parks (the pre-fix set that let idle hulls spread demand-ranked and pile).
+	// drift. Not all central parks (the previous set that let idle hulls spread demand-ranked and pile).
 	armed := &armedPlan{
 		plan:            contractscaler.BuildPlan(roles, demand),
 		standbyStations: contractscaler.TopDeliverySlots(roles.CentralParks, demand),

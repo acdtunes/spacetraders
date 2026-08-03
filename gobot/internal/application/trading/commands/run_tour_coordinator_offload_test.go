@@ -46,7 +46,7 @@ func offloadFixture() *tourFixture {
 // rescued: X1-O2 IMPORTS the PARTS the hull is stuck holding at a rich bid/volume, while X1-O3
 // has no sink for it at all. The held-cargo offload pass ranks candidates by reachable sink
 // absorption for the CURRENTLY HELD good (margin-EXEMPT — cash recovery, not fresh profit) and
-// jumps to X1-O2, NOT X1-O3. Pre-fix this hull churned forever: the fresh-arb pre-flight
+// jumps to X1-O2, NOT X1-O3. Unguarded this hull churns forever: the fresh-arb pre-flight
 // (planAtCandidate) clears cargo before ranking, so every candidate priced as a bare infeasible
 // tour and the run parked on its own dead ground holding 80 unsellable PARTS.
 func TestTour_MarginsDeath_LadenHullOffloadsHeldCargoTowardBestSink(t *testing.T) {

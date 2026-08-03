@@ -71,7 +71,7 @@ const (
 	// ONCE here (RULINGS #5), surfaced through SizerTunableDefaults, and live-tunable via
 	// sla_seconds_{weak,restricted,growing,strong}. An unknown/null activity is sized at the
 	// RESTRICTED default; a system whose EVERY market lacks an activity signal falls back to the
-	// single global defaultSLASeconds (byte-identical to pre-sp-j4kjv).
+	// single global defaultSLASeconds (byte-identical to before).
 	defaultSLAWeakSeconds       = 21600 // 360 min — weak markets move slowly, tolerate the stalest prices
 	defaultSLARestrictedSeconds = 8100  // 135 min — also the unknown/null default
 	defaultSLAGrowingSeconds    = 2700  // 45 min
@@ -102,7 +102,7 @@ const (
 	// 90 explicitly TOLERATES the stale tail (DA78: P90≈62 vs max≈167), bounding big-system demand
 	// to the achievable P90. The closed-loop measurement + proportional CircuitRequiredHulls
 	// response machinery is REUSED from sp-tor9 verbatim; only the metric feeding it changed.
-	// 100 recovers the exact pre-sp-r57g max-age behavior (the live rollback lever).
+	// 100 recovers the exact previous max-age behavior (the live rollback lever).
 	defaultTargetPercentile = 90
 	// value_weighted is an int-mode knob (the tune registry stores ints, and 0 means "revert to
 	// default", so a plain 0/1 bool cannot express an OFF that survives a revert). 2 = ON (the
@@ -144,7 +144,7 @@ const (
 	// markets, freshness eats the probes, and depth starves. The per-system computeTarget is
 	// UNCHANGED; the floor is a separate aggregate ceiling, applied via the same resize-DOWN
 	// release seam sp-iupr uses (the freed hulls land undedicated in the shared pool the
-	// frontier claims — never sold or retired). 0 (the default) is EXACT pre-sp-iopd behavior:
+	// frontier claims — never sold or retired). 0 (the default) is EXACT previous behavior:
 	// the floor is OFF until deployed, opt-in via `tune reserved_frontier_floor <N>` (recommended
 	// production value ~ the frontier's max_depth_pathfinders, e.g. 6). The FULL global probe
 	// allocator (one owner, total demand = freshness+frontier, a single global cap replacing the
@@ -259,7 +259,7 @@ type RunMarketFreshnessSizerCoordinatorCommand struct {
 	BreachResponsePercent int            // aggressiveness of the circuit-observed breach response (sp-tor9); 100 = exact measured circuit
 	// TargetPercentile (sp-r57g) is the age percentile the sizer sizes against (default 90): a
 	// system breaches iff its MEASURED P90 market age exceeds the SLA, not iff its MAX does. 100
-	// recovers the pre-sp-r57g max-age behavior. Live-tunable (SizerTunableDefaults).
+	// recovers the previous max-age behavior. Live-tunable (SizerTunableDefaults).
 	TargetPercentile int
 	// ValueWeightedMode (sp-r57g) toggles value-weighting of the percentile: valueWeightedModeOn
 	// (2, the default) weights by per-market Σ(trade_volume × price); valueWeightedModeOff (1) is a
@@ -270,7 +270,7 @@ type RunMarketFreshnessSizerCoordinatorCommand struct {
 
 	// ReservedFrontierFloor (sp-iopd) is the count of probes the sizer treats as reserved for
 	// the frontier: it holds its aggregate demand against (supply − this) and releases the
-	// surplus. 0 → the floor is off (pre-sp-iopd behavior). Live-tunable (SizerTunableDefaults).
+	// surplus. 0 → the floor is off (previous behavior). Live-tunable (SizerTunableDefaults).
 	ReservedFrontierFloor int
 
 	// HoldUnscannedMarketPosts (sp-u8jc/sp-gucu) is the int-mode bootstrap-catch-22 flag: >0 ⇒
@@ -409,7 +409,7 @@ func (h *RunMarketFreshnessSizerCoordinatorHandler) SetEventRecorder(rec captain
 
 // SetLiveConfigReader wires the per-tick live-config snapshot source (sp-vwek), making
 // the tunable knobs (SizerTunableDefaults) honor `spacetraders tune` on the next tick.
-// Leaving it unset keeps every knob launch-frozen (the pre-sp-vwek behavior).
+// Leaving it unset keeps every knob launch-frozen (the previous behavior).
 func (h *RunMarketFreshnessSizerCoordinatorHandler) SetLiveConfigReader(r liveconfig.Reader) {
 	h.liveConfig = r
 }
@@ -568,7 +568,7 @@ func (h *RunMarketFreshnessSizerCoordinatorHandler) ReconcileOnce(ctx context.Co
 	// RESERVED FRONTIER FLOOR (sp-iopd): hold the aggregate against (supply − floor), RELEASING the
 	// surplus down to that reduced effective pool so the frontier keeps its reserved probes no
 	// matter how high freshness demand climbs (breaking the depth→freshness→starve loop). Gated on
-	// floor>0 (default 0 = exact pre-sp-iopd behavior) AND a pool bigger than the floor — you
+	// floor>0 (default 0 = exact previous behavior) AND a pool bigger than the floor — you
 	// cannot reserve more probes than the pool holds, so a pool ≤ the floor degrades to raw sizing
 	// rather than starving freshness to nothing (the full allocator does relaxed-SLA graceful
 	// degradation instead). The release lands per-post below through the SAME resize-DOWN seam

@@ -146,7 +146,7 @@ type Service struct {
 	// ("uncharted, no ship present"), so issuing it is pure rate-limit waste. The gate is
 	// entered into the backoff exactly as a real 400 would, so routing behaviour is
 	// unchanged (the BFS excludes it either way); only the wasted 400 disappears. Set false
-	// (WithSkipUnchartedFetch) to restore the pre-fix probe-then-backoff behaviour byte-for-
+	// (WithSkipUnchartedFetch) to restore the previous probe-then-backoff behaviour byte-for-
 	// byte — the staged-rollout escape hatch. The precondition applies ONLY to the graph-
 	// resolved gate on the no-present-ship path: ChartPresentGate (a hull IS on the gate, so
 	// it reads fine) always bypasses it, preserving the frontier self-heal.
@@ -502,7 +502,7 @@ func (s *Service) readConnectionsBounded(ctx context.Context, systemSymbol, gate
 // empty: connections are static within an era, so a charted gate reading empty while we
 // already hold real edges for it is the intermittent empty-200, never a real topology change.
 // A store read failure, or no prior set, degrades to ok=false so the caller persists the fresh
-// (empty) read — the pre-fix behaviour, never a new failure mode (the bounded re-read is the
+// (empty) read — the previous behaviour, never a new failure mode (the bounded re-read is the
 // primary recovery; this is the belt-and-suspenders net for the rare all-reads-empty case).
 // The returned edges are a clean copy with Adjacency's raw Stale flag cleared — a routing read
 // must never surface it.
@@ -543,7 +543,7 @@ func isPermanentGateAbsence(err error) bool {
 // (once per backoff transition, at 5m/30m/2h boundaries), so the log is a handful of
 // lines per gate per day instead of the ~2,880 the old per-tick "will re-probe next
 // fetch" line produced. A persistence failure is logged and swallowed: the gate is still
-// excluded from the build, and the worst case degrades to the pre-fix behavior (re-probe
+// excluded from the build, and the worst case degrades to the previous behavior (re-probe
 // next tick), never a routing error.
 func (s *Service) enterBackoff(ctx context.Context, systemSymbol, gateWaypoint string, cause error) {
 	logger := logging.LoggerFromContext(ctx)

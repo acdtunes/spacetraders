@@ -62,7 +62,7 @@ func liveMeasuredGoods() []domainPorts.TradeGoodData {
 // invariant rather than as three numbers: purchase_price is what WE PAY, so it
 // is the LARGER of the two at every market that charges more than it pays.
 //
-// Fails before the fix on the very first good: the scanner handed
+// Guards on the very first good: the scanner handed
 // market.NewTradeGood its two prices in the wrong order, so purchase_price held
 // 68 (the API's sellPrice) instead of 72.
 func TestScanToSensing_APIPurchasePriceLandsInPurchasePriceColumn(t *testing.T) {

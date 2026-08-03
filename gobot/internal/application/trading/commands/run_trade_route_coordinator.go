@@ -62,10 +62,9 @@ const noProgressStarvationLimit = 3
 
 // defaultWorkingCapitalReserve is the fallback hard spend floor: a
 // circuit must not execute a buy that would drop LIVE treasury below this
-// line. Originally sized to the exact level the 2026-07-09 incident called
-// "danger" — treasury bottomed at 43,041 and briefly went negative (-30,537)
-// before the captain intervened; sp-q8bon then raised the default from that
-// 50k base to the 150k non-contract floor after the same drain class recurred
+// line. Sized above the level at which treasury has bottomed out and gone
+// negative under this drain class: a 150k non-contract floor, raised from an
+// earlier 50k base after the drain recurred
 // one band higher (treasury 638k→142k, the contract engine parked against ITS
 // 50k floor: a full-economy deadlock — the 50k–150k band is now
 // contract-exclusive). Shared by every trading coordinator's default (tour /
@@ -361,7 +360,7 @@ type RunTradeRouteCoordinatorHandler struct {
 	// buyImpactCoeff/sellImpactCoeff are the analyst-fitted price-impact slopes the
 	// ranker charges a candidate lane's effective spread (the self-compression this
 	// hull's own volume would cause). Zero => inert self-impact (snapshot ranking, the
-	// pre-sp-tl68 behavior). The daemon injects the resolved cfg.TradeImpact values.
+	// previous behavior). The daemon injects the resolved cfg.TradeImpact values.
 	buyImpactCoeff  float64
 	sellImpactCoeff float64
 	// laneLedger is the SHARED, decaying, per-lane compression ledger every hull's trade

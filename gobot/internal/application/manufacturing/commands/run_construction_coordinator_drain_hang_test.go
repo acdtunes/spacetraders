@@ -74,7 +74,7 @@ func TestConstructionDrain_PhantomCargo4219_ResyncsAndDefersWithoutFailing(t *te
 }
 
 // sp-6zkg (keeps ticking): one hull's phantom-cargo 4219 must NOT stall the drain — a second, healthy
-// task in the SAME tick is still sourced, delivered, and completed. Before the fix a 4219 on a hull
+// task in the SAME tick is still sourced, delivered, and completed. Unguarded, a 4219 on a hull
 // already at the gate wedged group.Wait() and the whole tick went silent; now each task is bounded and
 // isolated, so a bad task defers while its peers drain.
 func TestConstructionDrain_PhantomCargo4219_KeepsTickingToOtherTasks(t *testing.T) {

@@ -39,7 +39,7 @@ func (g *boundedRoutabilityGraph) RoutableWithinJumps(_ context.Context, from, t
 
 // Routable mirrors the production delegation (RoutableWithinJumps at MaxJumpPath), so a caller that
 // has NOT yet been switched to the bounded method sees the strict bound-5 verdict — this is what
-// makes the RED honest: pre-fix Guard-0 calls Routable and records lastBound=5, refusing a 7-hop lane.
+// makes the RED honest: before Guard-0 calls Routable and records lastBound=5, refusing a 7-hop lane.
 func (g *boundedRoutabilityGraph) Routable(ctx context.Context, from, to string, playerID int) (bool, error) {
 	return g.RoutableWithinJumps(ctx, from, to, playerID, gategraph.MaxJumpPath)
 }

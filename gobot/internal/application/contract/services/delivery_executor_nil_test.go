@@ -7,8 +7,8 @@ import (
 	contractQueries "github.com/andrescamacho/spacetraders-go/internal/application/contract/queries"
 )
 
-// A nil (or mistyped) profitability response used to be blindly type-asserted,
-// panicking the whole daemon mid-contract when no market data existed yet.
+// A nil (or mistyped) profitability response must never be blindly type-asserted:
+// that panics the whole daemon mid-contract when no market data exists yet.
 func TestProfitabilityResultOrErrNil(t *testing.T) {
 	if _, err := profitabilityResultOrErr(nil, "IRON_ORE"); err == nil {
 		t.Fatal("expected error for nil profitability response")

@@ -93,7 +93,7 @@ func TestConstructionDrain_ReconcilesDeliveredQuantityBehindLiveSite(t *testing.
 }
 
 // B6 (the economic consequence): once reconciled, the drain must NOT source material the site
-// already holds. Site 20/20 means the bill is met; before the fix the row read 0/20 and the drain
+// already holds. Site 20/20 means the bill is met; unguarded, the row read 0/20 and the drain
 // bought another 20 units it could never deliver, because the server-side requirement was satisfied.
 func TestConstructionDrain_ReconciledBillStopsResourcingDeliveredMaterial(t *testing.T) {
 	pipeline := newDrainPipeline(t, "ADVANCED_CIRCUITRY", 20)

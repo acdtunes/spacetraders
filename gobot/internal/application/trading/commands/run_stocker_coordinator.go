@@ -189,7 +189,7 @@ type RunStockerCoordinatorHandler struct {
 	// waypointRepo resolves source/warehouse waypoint COORDINATES for the distance-aware
 	// residual buy-leg in the auto-cap knapsack. Cache-only (no API fetch-through), so the
 	// per-pass re-solve costs no API spend; a nil repo (or an uncached waypoint) FAILS OPEN to the
-	// coarse in/cross-system residual (RULINGS #1) — the pre-sp-9274 behavior.
+	// coarse in/cross-system residual (RULINGS #1) — the previous behavior.
 	waypointRepo system.WaypointRepository
 
 	// freshness derives the stocker's market-freshness cap from the LIVE scan rotation

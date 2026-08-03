@@ -40,7 +40,7 @@ func (e *ErrUnknownGood) Error() string {
 // coordinator treats it as an honest-pause + backoff (await the build) rather than an
 // unrecoverable crash. Typed so the coordinator can distinguish it from a
 // genuine ErrUnknownGood / ErrCircularDependency; its message is kept byte-identical to
-// the pre-sp-lor4 inline error so existing log greps still match.
+// the previous inline error so existing log greps still match.
 type ErrNoInSystemExporter struct {
 	Good   string
 	System string

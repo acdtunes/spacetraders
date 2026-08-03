@@ -68,7 +68,7 @@ func setRoutingDefaults(cfg *Config) {
 	// configured [routing] chart_gate_on_arrival, and its intent is to chart every jump gate
 	// a hull lands on (the one moment it is readable) so the frontier never strands hulls on
 	// empty gate_edges. An explicit `chart_gate_on_arrival: false` is preserved as the
-	// reversibility off-switch (restores the pre-sp-bcsu hot path). Charting is best-effort +
+	// reversibility off-switch (restores the previous hot path). Charting is best-effort +
 	// idempotent, so default-on adds no burst (RULINGS #5: a knob, not a code literal).
 	if cfg.Routing.ChartGateOnArrival == nil {
 		chartGateOnArrivalDefault := true

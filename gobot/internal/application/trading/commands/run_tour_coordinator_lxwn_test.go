@@ -67,7 +67,7 @@ func TestReposition_FreshListings_ExcludesStaleBestLane(t *testing.T) {
 }
 
 // repositionCandidateReason must turn the pre-flight outcome into the SPECIFIC reason the
-// ranking log needs — never the pre-fix opaque bare "infeasible" — and must DISTINGUISH a
+// ranking log needs — never the previous opaque bare "infeasible" — and must DISTINGUISH a
 // solver verdict from a pre-flight CALL failure (the two the old code silently conflated).
 func TestReposition_CandidateReason_DisambiguatesVerdictFromCallError(t *testing.T) {
 	// A feasible plan is a contender, not a rejection.
@@ -143,7 +143,7 @@ func TestTour_Reposition_RankingLog_NamesSolverReasonNotOpaqueInfeasible(t *test
 	if ranking == "" {
 		t.Fatalf("expected a 'Reposition ranking' log entry, got %+v", logger.entries)
 	}
-	// The candidate token must carry the solver's OWN reason, not the pre-fix opaque "infeasible".
+	// The candidate token must carry the solver's OWN reason, not the previous opaque "infeasible".
 	if !strings.Contains(ranking, "no_profitable_tour") {
 		t.Fatalf("the ranking line must name the solver's specific reason (no_profitable_tour), got %q", ranking)
 	}

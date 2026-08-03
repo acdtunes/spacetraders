@@ -154,7 +154,7 @@ func TestDarkMarketScanner_ReconcilesStalenessWithPerSystemSLA(t *testing.T) {
 }
 
 // sp-gucu default-safety: with NO coverage source wired the scanner is byte-identical to the fixed-bar
-// behavior — a manned standing post 5h old is STILL flagged (this is the pre-fix mislabel, retained as
+// behavior — a manned standing post 5h old is STILL flagged (this is the previous mislabel, retained as
 // the fail-safe when scout-post state is unavailable: a coverage read gap never HIDES a dark system).
 func TestDarkMarketScanner_NoCoverageSource_FixedBarUnchanged(t *testing.T) {
 	src := &fakeMarketBacklogSource{

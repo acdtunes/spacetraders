@@ -441,7 +441,7 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 
 	// The honest-completion epilogue. Deferred so EVERY exit funnels through it — a fail-open
 	// "tour unavailable", a planner outage, margins-death, an unreadable model artifact — and
-	// a future exit condition cannot bypass the laden check the way the pre-fix exits did. A
+	// a future exit condition cannot bypass the laden check the way the previous exits did. A
 	// resumable (non-nil error) exit claims nothing: the runner retries it, so only the carry
 	// is written back and no terminal verdict is reached.
 	defer func() {

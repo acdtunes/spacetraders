@@ -150,7 +150,7 @@ func TestPurchaseCargo_PerTrancheCeiling_HealthyAsk_BuysWholeOrder(t *testing.T)
 }
 
 // The ceiling is strictly opt-in: with MaxAskPerUnit==0 the loop is byte-identical
-// to before — the whole order buys even as the ask ladders (the pre-fix path every
+// to before — the whole order buys even as the ask ladders (the previous path every
 // non-arb caller still runs).
 func TestPurchaseCargo_NoCeilingArmed_UnchangedEvenIfAskLadders(t *testing.T) {
 	fix := &ceilingMarketFixture{healthyAsk: 4000, laddedAsk: 7000, limit: 15}

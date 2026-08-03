@@ -153,7 +153,7 @@ func (p *ProbePurchaser) SetOwnFleet(fleet string) *ProbePurchaser {
 
 // drivableBuyer reports whether an idle hull may be driven as a probe buyer: an UNDEDICATED hull, or
 // one dedicated to ownFleet (the caller's own fleet, when set). A hull dedicated to ANOTHER fleet is
-// never poached (RULINGS #7). ownFleet=="" degenerates to "undedicated only" — exactly the pre-sp-f082y
+// never poached (RULINGS #7). ownFleet=="" degenerates to "undedicated only" — exactly the before
 // `DedicatedFleet() != ""` skip, so every existing caller is byte-identical.
 func drivableBuyer(ship *navigation.Ship, ownFleet string) bool {
 	fleet := ship.DedicatedFleet()
@@ -542,7 +542,7 @@ func (p *ProbePurchaser) recentBuyImpact(ctx context.Context, playerID shared.Pl
 // impact (sp-4m4ve Phase 3 §2D) is the PROACTIVE counterpart: per-yard recent-buy price-impact
 // credits, folded into each candidate's effective cost BEFORE both the hop-penalty ranking and
 // the sibling-margin comparison, so consecutive buys rotate yards even between market re-scans. A
-// nil/empty impact map adds zero everywhere — byte-identical to pre-sp-4m4ve selection.
+// nil/empty impact map adds zero everywhere — byte-identical to previous selection.
 func pickBuyYard(candidates []shipyardQueries.YardCandidate, hopPenalty, siblingMargin int, impact map[string]int) shipyardQueries.YardCandidate {
 	proximal := pickProximalYard(candidates, hopPenalty, impact)
 	if siblingMargin <= 0 {
@@ -556,7 +556,7 @@ func pickBuyYard(candidates []shipyardQueries.YardCandidate, hopPenalty, sibling
 }
 
 // effectivePrice is a candidate's scanned PurchasePrice plus its per-yard recent-buy
-// price-impact credit (0 for every yard while impact is nil/empty — the pre-sp-4m4ve value).
+// price-impact credit (0 for every yard while impact is nil/empty — the previous value).
 func effectivePrice(c shipyardQueries.YardCandidate, impact map[string]int) int {
 	return c.PurchasePrice + impact[c.WaypointSymbol]
 }

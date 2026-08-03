@@ -145,7 +145,7 @@ func TestFrontier_NoVirginFrontier_DiscoveryShareRedirectsToScan(t *testing.T) {
 }
 
 // PURE DISCOVERY (share 100) never consults the dark scanner — the extreme stays byte-cheap and the
-// discovery path is byte-identical to pre-sp-pvw3. It declares the top-ranked virgin frontier system.
+// discovery path is byte-identical to before. It declares the top-ranked virgin frontier system.
 func TestFrontier_PureDiscovery_DarkScannerInert(t *testing.T) {
 	clock := &shared.MockClock{CurrentTime: time.Now()}
 	pr := &fakePostRepo{}

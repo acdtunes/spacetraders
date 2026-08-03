@@ -225,7 +225,7 @@ func TestTour_Reposition_LoadsLookbackManifestBeforeJump(t *testing.T) {
 	}
 }
 
-// No cross-system lane clears the floors → the jump flies empty exactly as pre-sp-ed4i
+// No cross-system lane clears the floors → the jump flies empty exactly as before
 // (loaded-if-profitable, never forced). No look-back buy happens before the jump.
 func TestTour_Reposition_NoProfitableManifest_JumpsEmpty(t *testing.T) {
 	fx := lookbackFixture()

@@ -57,7 +57,7 @@ func navDestsContain(dests []string, want string) bool {
 // and the held-cargo offload both decline) must not churn relaunch-forever full. As a last
 // resort it distress-liquidates its held cargo at the best AVAILABLE local bid — X1-D1-B's
 // near-worthless ORE import (100/u, well below the profit floor) in its OWN system — so it
-// re-enters planning EMPTY. Pre-fix this hull exited Completed=true still holding 80 ORE (its
+// re-enters planning EMPTY. Unguarded this hull exits Completed=true still holding 80 ORE (its
 // pre-held cargo never entered netBought, so the honest-completion stranded veto never fired),
 // the coordinator relaunched a new tour container on the STILL-FULL hull, and it churned forever.
 func TestTour_MarginsDeath_LadenHullNoReachableSink_DistressLiquidatesLocally(t *testing.T) {

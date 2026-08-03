@@ -215,7 +215,7 @@ func TestScoutMarkets_GraphLoadFails_KeepsOldPostsRunning(t *testing.T) {
 }
 
 // A requested hull is missing from the fleet: the re-man plan cannot be built, so — again —
-// nothing is torn down. (The pre-fix reset stopped the hulls it COULD find before erroring.)
+// nothing is torn down. (The previous reset stopped the hulls it COULD find before erroring.)
 func TestScoutMarkets_ShipMissing_KeepsOldPostsRunning(t *testing.T) {
 	clock := &shared.MockClock{CurrentTime: time.Now()}
 	shipA := newMannedScoutShip(t, "SAT-A", "X1-C81-A1", "old-tour-A", clock)
@@ -246,7 +246,7 @@ func TestScoutMarkets_ShipMissing_KeepsOldPostsRunning(t *testing.T) {
 }
 
 // An empty market set is a no-op reset: there is nothing to re-man toward, so the reset
-// must not stop the existing posts (the pre-fix code stopped them, then early-returned on
+// must not stop the existing posts (the previous code stopped them, then early-returned on
 // the empty markets — the exact reset-without-re-man that darkened C81/SN21).
 func TestScoutMarkets_EmptyMarkets_DoesNotStopPosts(t *testing.T) {
 	clock := &shared.MockClock{CurrentTime: time.Now()}

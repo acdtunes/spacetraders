@@ -272,7 +272,7 @@ func TestLongHaulWorker_FarMultiHopSource_ReachesViaStoredThenVerify_RunsOutLeg(
 	trHandler := NewRunTradeRouteCoordinatorHandler(mediator, &travelShipRepo{ship: flying, reloadShip: onSource}, nil, nil, &travelFakeClock{}, nil)
 	fake := &fakeGateGraph{
 		storedThenVerifyResult: []string{"X1-A", "X1-B", "X1-C", "X1-D", "X1-E", "X1-F", "X1-G", "X1-H"}, // 7 jumps via the cheap stored-then-verify resolver
-		pathErr:                errors.New("no jump-gate route from X1-A to X1-H within 5 jumps"),        // the pre-fix 5-cap failure (strict Path)
+		pathErr:                errors.New("no jump-gate route from X1-A to X1-H within 5 jumps"),        // the before 5-cap failure (strict Path)
 		pathWithinErr:          errors.New("the long-haul reposition must not use the STRICT fetch-through resolver (sp-0o9ub)"),
 		repositionPathErr:      errors.New("a heavy long-haul reposition must not use the RELAXED resolver"),
 	}

@@ -132,7 +132,7 @@ func TestArrivalScan_NeverScannedMarket_ScansGetMarket(t *testing.T) {
 
 // SUPERSEDED BY sp-ntgfj, and the change of claim is the point. This test used to
 // assert that an arrival scan with no ScanPolicy stamped (the freshness-scout
-// recovery path, and every pre-sp-v34b caller) was UNCONDITIONAL. There is no
+// recovery path, and every previous caller) was UNCONDITIONAL. There is no
 // longer any unconditional market scan in the daemon: the fleet's one market-scan
 // budget paces every reader, so a hull arriving at a market whose cached row is
 // seconds old is served from store whether or not a caller-level window is wired.

@@ -76,7 +76,7 @@ func inputSourcingConfigFromContext(ctx context.Context) inputSourcingConfig {
 // ctx (not a struct field) for the SAME singleton-executor race reason as the sibling sourcing /
 // price-ceiling / reserve configs: ProductionExecutor is a boot singleton shared across every concurrent
 // factory container, so a struct field would race between a gate run and a profit factory. The unstamped
-// default (every profit factory, estimator, and pre-sp-vh1s test) is false — byte-identical to today.
+// default (every profit factory, estimator, and previous test) is false — byte-identical to today.
 
 // inputSourceMode is how selectInputSource chose the returned source — buyGood uses it to
 // decide which downstream guards still apply (the eligible path faces the cross-market ceiling;

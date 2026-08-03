@@ -28,7 +28,7 @@ func warningContains(l *propFloorCapturingLogger, sub string) bool {
 // MICROPROCESSORS, bidding 4,141/u (82,820 for the load) at that moment. The hull had already
 // flown the whole lane and arrived at the market that wanted the goods.
 //
-// Two details make this the exact shape the pre-fix code released loaded:
+// Two details make this the exact shape the previous code released loaded:
 //   - The purchase ledger is EMPTY for this run (h.purchaseObligation is in-memory on the
 //     daemon-lifetime handler; a restart between the buy and this exit empties it). So netBought
 //     is empty, and the old netBought-scoped sweep AND the strand veto both declined.
@@ -58,7 +58,7 @@ func torwindAFixture() *tourFixture {
 
 // THE INCIDENT (era 5 TORWIND). A tour exits with no plan and the container
 // terminalizes; ContainerRunner.releaseShipAssignments then frees the hull on EVERY exit reason.
-// Pre-fix, TORWIND-A was released idle, in orbit above the very market bidding 4,141/u for the 20
+// Unguarded, TORWIND-A is released idle, in orbit above the very market bidding 4,141/u for the 20
 // MICROPROCESSORS in its hold — a delivered, sellable, full-price load marooned on a hull nothing
 // owned. One dock and one sell recovered 82,820 immediately.
 //

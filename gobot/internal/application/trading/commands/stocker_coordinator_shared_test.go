@@ -10,8 +10,7 @@ import (
 // fakeHopGraph resolves jump-hop distances from a fixed "FROM->TO" → hop-count table. A missing
 // entry is UNROUTABLE (Path errors) — the caller skips that source (fail-closed). It implements the
 // reused GateGraph interface (Path + RepositionPath + Routable + Connections + ChartPresentGate).
-// Originally defined in the worker-rebalancer coordinator's test file; relocated here when the
-// factory ops were retired, the stocker-coordinator tests now being its sole users.
+// Test double for the stocker-coordinator tests, its sole users.
 type fakeHopGraph struct {
 	hops map[string]int
 }

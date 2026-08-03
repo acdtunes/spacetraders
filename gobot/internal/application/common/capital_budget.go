@@ -6,9 +6,9 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 )
 
-// This file holds the PER-OPERATION CAPITAL BUDGET. Capital used to be a shared POOL
-// guarded only by floors, and a floor ALLOCATES NOTHING: it says "do not spend below X", never
-// "this much is yours". So the engine with the LOWEST floor structurally outranked every engine
+// This file holds the PER-OPERATION CAPITAL BUDGET. A shared POOL guarded only by
+// floors cannot allocate: a floor says "do not spend below X", never
+// "this much is yours". So the engine with the LOWEST floor structurally outranks every engine
 // above it, and the asymmetry between the two non-contract spenders decided who ate — trade caps
 // ITSELF at 25% of live treasury (tourDefaultMaxSpendTreasuryPct, RULINGS #6) while construction
 // had no proportional cap at all, so gate-fill consumed 100% of capital above its floor including
@@ -248,7 +248,7 @@ func (s *EngineCapitalWorkSensor) ConstructionHasWork(ctx context.Context, playe
 		return live, err
 	}
 	if s.demand == nil {
-		return true, nil // no bill reader wired -> conservative, exactly the pre-sp-bzvu2 answer
+		return true, nil // no bill reader wired -> conservative, exactly the previous answer
 	}
 	return s.demand.HasOutstandingConstructionDemand(ctx, playerID)
 }

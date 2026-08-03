@@ -114,7 +114,7 @@ type RunWorkflowCommand struct {
 	// NOT rebuilt on daemon restart (the contract_workflow container config carries
 	// only ship/coordinator/iterations), so a recovered container resumes as an
 	// ORDINARY source+deliver run. That is deliberate and fail-safe: the worst case
-	// is the pre-fix behaviour for one cycle, never a stranded or duplicated load.
+	// is the previous behaviour for one cycle, never a stranded or duplicated load.
 	DeliverHeldOnly bool
 }
 

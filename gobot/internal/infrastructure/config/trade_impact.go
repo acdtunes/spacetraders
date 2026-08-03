@@ -104,7 +104,7 @@ func (c TradeImpactConfig) ResolvedScanMaxAge() time.Duration {
 
 // ResolvedImpactSampleRate returns the configured impact-sample fraction clamped to
 // [0,1], or the 0.15 default when unset (non-positive). A value >1 clamps to 1 (every
-// trade instrumented — the pre-sp-v34b full-collection posture).
+// trade instrumented — the previous full-collection posture).
 func (c TradeImpactConfig) ResolvedImpactSampleRate() float64 {
 	if c.ImpactSampleRate <= 0 {
 		return defaultImpactSampleRate

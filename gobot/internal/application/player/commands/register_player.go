@@ -143,10 +143,10 @@ func (h *SyncPlayerHandler) Handle(ctx context.Context, request common.Request) 
 	// merge in the player domain: it preserves every other key in the row and reports whether
 	// anything actually changed.
 	//
-	// The write is now CONDITIONAL on that answer (sp-0eufi requirement 3). It used to be
-	// unconditional — `updated = true` was assigned outright, and a last_synced stamp refreshed on
-	// every call guaranteed the row differed — so this handler could not be run on a schedule
-	// without rewriting an unchanged row every time. Because the durable fix re-asserts identity on
+	// The write is CONDITIONAL on that answer. An unconditional write — `updated = true`
+	// assigned outright, with a last_synced stamp refreshed on every call guaranteeing the
+	// row differed — would stop this handler being run on a schedule without rewriting an
+	// unchanged row every time. Because the durable fix re-asserts identity on
 	// EVERY daemon boot, that thrash is no longer hypothetical.
 	metadata, identityChanged := domainPlayer.MergeAgentIdentity(player.Metadata, agentData)
 	player.Metadata = metadata

@@ -67,7 +67,7 @@ type tourFixture struct {
 
 	// neighbors maps a system to the systems one jump-gate hop away (the fake's answer to
 	// GetJumpGateConnectionsQuery). Drives both the tour graph's neighbor scan and the
-	// sp-zhii reposition candidate set. Absent → no neighbors (home-only), the pre-sp-zhii
+	// sp-zhii reposition candidate set. Absent → no neighbors (home-only), the before
 	// default every existing test relies on. jumps records each JumpShipCommand's
 	// destination system so a reposition test can assert the hull actually jumped.
 	neighbors map[string][]string

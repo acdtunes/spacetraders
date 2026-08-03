@@ -42,7 +42,7 @@ func TestAutoMigrate_GateConstructionColumnAdded_InvalidatesCacheOnce(t *testing
 		t.Fatalf("failed to create connection: %v", err)
 	}
 
-	// Simulate the pre-sp-8qhu schema: a gate_edges table WITHOUT the construction
+	// Simulate the previous schema: a gate_edges table WITHOUT the construction
 	// column, carrying a fresh-looking row.
 	if err := db.Exec(`CREATE TABLE gate_edges (
 		system_symbol TEXT, connected_system TEXT, gate_waypoint TEXT,

@@ -245,7 +245,7 @@ func TestFleetCoordinator_ParkedHullSelfClearsAndReentersCandidacy(t *testing.T)
 }
 
 // The escape hatch: with auto-liquidation disabled, a parked hull is left alone (no
-// worker spawned) — the pre-fix behavior, preserved for a captain who opts out.
+// worker spawned) — the previous behavior, preserved for a captain who opts out.
 func TestFleetCoordinator_AutoLiquidationDisabled_NoDispatch(t *testing.T) {
 	hull := ladenHull(t, "TORWIND-3", "PLASTICS", "X1-KA42-A1", 67)
 	repo := &liquidationE2EShipRepo{ship: hull}

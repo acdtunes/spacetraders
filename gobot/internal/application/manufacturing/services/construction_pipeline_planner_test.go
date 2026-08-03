@@ -1103,7 +1103,7 @@ func TestStartOrResume_ScarceButProducibleInput_StagedViaResolver(t *testing.T) 
 }
 
 // The RED half of the incident: the SAME scarce-but-producible scenario, but with NO
-// resolver wired, falls back to the pre-sp-3bza gate (every immediate input buyable at MODERATE+),
+// resolver wired, falls back to the previous gate (every immediate input buyable at MODERATE+),
 // which DEFERS the whole material because ELECTRONICS/MICROPROCESSORS are only SCARCE. This both
 // reproduces the original bug and proves the nil-resolver fallback is byte-identical to before.
 func TestStartOrResume_ScarceProducibleInput_DeferredWithoutResolver(t *testing.T) {
@@ -1218,7 +1218,7 @@ func TestStartOrResume_AllInputsBuyable_StagedViaResolver(t *testing.T) {
 
 // depth>=3 is "buy final only": planMaterial buys a buyable material directly and never
 // enters the fabrication path, so the resolver must NOT be consulted at all - byte-identical to the
-// pre-sp-3bza buy-final behavior.
+// previous buy-final behavior.
 func TestStartOrResume_BuyableFinalDepth3_BypassesResolver(t *testing.T) {
 	marketRepo := &plannerStubMarketRepo{
 		marketWaypoints: []string{plannerTestMarket},

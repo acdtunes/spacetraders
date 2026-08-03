@@ -7,9 +7,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Shared DaemonServer test helpers. Originally defined in the goods-factory coordinator's test
-// files; relocated here when the factory ops were retired since they are generic,
-// registry-backed helpers used by surviving tests (shipyard-backfill, boot-standing). The server
+// Shared DaemonServer test helpers: generic, registry-backed, used by the
+// shipyard-backfill and boot-standing tests. The server
 // builder wires the REAL container-spec registry so buildCommandForType exercises the true
 // resolve+build path.
 

@@ -39,18 +39,16 @@ var ErrSlotStateConflict = errors.New("sensing slot is not in the expected state
 // kind alongside it — the pair is the address, and half an address addresses an
 // ambiguous set.
 //
-// This used to be ONE blanket list naming every column, which meant every writer
-// re-asserted the whole row from whatever it had loaded and the last commit won.
+// ONE blanket list naming every column would make every writer re-assert the
+// whole row from whatever it had loaded, and the last commit would win.
 // The scan columns are where that actually bites: the scan pacer runs
 // concurrently with the reconcile and MarkScanned can commit at any instant,
 // including inside a TransitionSlot's transaction — so a blanket write reverts a
 // scan that already happened and the slot reads staler than the truth.
 //
-// The protection used to be an invariant rather than a structure: the rotation
-// only scanned PARKED MARKET/YARD slots and the only PARKED→X transition skipped
-// non-SPARE kinds, so the two write sets never met on a ROW. That held only as
-// long as nobody transitioned a parked market — which the filed slot reaper
-// does by design. Ownership is now per-COLUMN, so the reaper needs no
+// An invariant cannot carry this instead of the structure: it would hold only
+// as long as nobody transitioned a parked market — which the slot reaper does
+// by design. Ownership is per-COLUMN, so the reaper needs no
 // special-casing and no future writer can re-open the window by accident.
 
 // sensingSlotMetadataUpdateColumns are what a SCREEN re-declaration refreshes on

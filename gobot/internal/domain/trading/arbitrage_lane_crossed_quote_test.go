@@ -18,7 +18,7 @@ import "testing"
 // that reaches the ranker is refused, never traded. It can only ever REMOVE
 // lanes (RULINGS #4 — money guards fail closed and may only get stricter).
 
-// MACHINERY as it is actually stored today at a pre-fix market: the API quoted
+// MACHINERY as it is actually stored today at a previous market: the API quoted
 // purchasePrice 6334 / sellPrice 3123, and the transposed writer persisted
 // purchase_price=3123, sell_price=6334. The corrected reader therefore hands the
 // ranker Ask=3123 with Bid=6334.

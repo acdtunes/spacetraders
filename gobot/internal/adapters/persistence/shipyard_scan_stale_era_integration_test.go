@@ -44,7 +44,7 @@ func (s *stubShipyardAPI) GetShipyard(context.Context, string, string, string) (
 // (b) synced >24h ago — exactly the shape of ~97 of the 108 real SHIPYARD
 // waypoints (only 11 era-current, only 8 fresh). The scout is physically AT the
 // waypoint, so its immutable SHIPYARD trait must open the scan gate regardless
-// of era-scope or cache TTL. Before the fix the era+TTL gates reject the row,
+// of era-scope or cache TTL. Unguarded, the era+TTL gates reject the row,
 // isShipyardWaypoint reads "not a shipyard", and the scan is a silent no-op so
 // shipyard_inventory stays empty forever. After the fix the scan proceeds and
 // persists a row readable via the same era-scoped path the fleet autosizer uses.

@@ -54,7 +54,7 @@ func TestArbCoordinator_ResumeWithPersistedCost_ReportsHonestNetProfit(t *testin
 	}
 	arb := arbResponse(t, resp)
 
-	// Revenue 12u * 3500 = 42000; honest net = 42000 - 24000 = 18000. The pre-fix bug
+	// Revenue 12u * 3500 = 42000; honest net = 42000 - 24000 = 18000. The previous bug
 	// reported TotalCost=0 → NetProfit=42000 (the full revenue), over-stating by the basis.
 	if arb.TotalCost != priorCost {
 		t.Fatalf("resumed run must restore the prior attempt's cost: want TotalCost=%d, got %d", priorCost, arb.TotalCost)
@@ -146,7 +146,7 @@ func TestArbCoordinator_InProcessRetry_ResumedPnLIncludesPriorCost(t *testing.T)
 		t.Fatalf("the retry must complete, got %+v", arb)
 	}
 	// Revenue 40u * 3500 = 140000; honest net = 140000 - 80000 = 60000 (NOT the full
-	// 140000 the pre-fix TotalCost=0 resume would have claimed).
+	// 140000 the before TotalCost=0 resume would have claimed).
 	if arb.TotalCost != 80000 || arb.NetProfit != 60000 {
 		t.Fatalf("resumed retry P&L must include attempt 1's cost: want cost=80000 net=60000, got cost=%d net=%d", arb.TotalCost, arb.NetProfit)
 	}

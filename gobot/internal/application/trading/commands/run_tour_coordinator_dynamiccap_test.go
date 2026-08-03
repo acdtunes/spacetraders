@@ -126,7 +126,7 @@ func TestTour_ContinuousDynamicCapReResolvesEachIterationAndReachesIteration2(t 
 }
 
 // sp-7z7j core bug: a TRANSIENT treasury read failure at re-resolution time must NOT
-// silently end the -1 loop. Before the fix, an unreadable treasury resolved to a 0
+// silently end the -1 loop. Unguarded, an unreadable treasury resolved to a 0
 // budget, the planner refused it (spend_cap = max(0, 0 - reserve) = 0 → infeasible),
 // and — nothing earned yet on a relaunch — the coordinator reported the whole run
 // "tour unavailable" and COMPLETED the container after exactly one iteration (the 5/5

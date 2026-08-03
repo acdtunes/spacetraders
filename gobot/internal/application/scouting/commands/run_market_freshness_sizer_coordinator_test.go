@@ -581,7 +581,7 @@ func TestSizer_UnknownActivityMarketsSizedAtRestrictedDefault(t *testing.T) {
 // BYTE-IDENTICAL GUARD: a system whose markets carry NO activity signal at all (a pre-activity
 // census, or an aggregate-only fixture) is sized on the single global sla_seconds — it does NOT
 // silently reprice every market at the RESTRICTED default. 90 markets, 120s cycle, global 60m SLA:
-// ceil(90×120/3600)=3 (RESTRICTED would be 2). This is the property that keeps every pre-sp-j4kjv
+// ceil(90×120/3600)=3 (RESTRICTED would be 2). This is the property that keeps every before
 // test green.
 func TestSizer_NoActivitySignalFallsBackToGlobalSLA(t *testing.T) {
 	fr := &fakeFreshnessReader{snapshots: []domainScouting.SystemFreshnessSnapshot{
@@ -1028,7 +1028,7 @@ func TestSizer_AggregateDemandClimbsToTrueSLANeedForBreachingFleet(t *testing.T)
 // AGGREGATE footprint against (supply − floor) and RELEASES the surplus, so the frontier keeps its
 // reserved probes even when raw freshness demand exceeds the whole pool (the live starvation case).
 // Two market-rich systems each seed to the per-system cap (8) → raw aggregate 16 against a 14-probe
-// pool. floor 0 is exact pre-sp-iopd behavior (sizes to 16, buys toward it — holding the pool, the
+// pool. floor 0 is exact previous behavior (sizes to 16, buys toward it — holding the pool, the
 // starvation); floor 6 caps the aggregate at 14−6=8, leaving 6 idle for the frontier and never
 // buying into them. The floor-6 row is ALSO the mutation guard: removing the freshness-side
 // subtraction (supply−floor → supply) sizes to 16 again, re-consuming the reserved 6 → it fails.
@@ -1311,7 +1311,7 @@ func TestResolveSizerConfig_ReadsPercentileKnobsLiveWithDefaultFallback(t *testi
 
 // THE ROOT DEPTH-BLOCKER FIX. The freshness census keys "markets" on SCANNED market_data, so a
 // CHARTED dense hub (its waypoints carry the MARKETPLACE trait) that has never been scanned reads
-// as 0 markets and — pre-fix — its standing post is retired "its markets are gone", so the probe
+// as 0 markets and — before — its standing post is retired "its markets are gone", so the probe
 // never goes and the system stays dark forever. Armed, such a system is HELD for its initial scan
 // (NOT retired). A genuinely empty system (no marketplace waypoints charted) still retires. Disabled
 // (the default) is byte-identical to today: it retires. This is the retire-CLASSIFICATION matrix; the
@@ -1540,7 +1540,7 @@ func mannedBudget(pr *fakeSizerPostRepo, post *domainScouting.ScoutPost, systemS
 // so the freshsizer never sizes it below the probes bootstrap bought for the home scan. Same
 // fixture (26 markets, telemetry-starved → seed 180s cycle → SLA RequiredHulls=2) both ways: an
 // UN-floored post (MinHulls 0, every non-home post) sizes to the SLA minimum 2 — byte-identical to
-// pre-sp-2ci9y — while the floored home post is manned at 3. On pre-fix code BOTH man 2, so
+// before — while the floored home post is manned at 3. On previous code BOTH man 2, so
 // the floored case is the reproduction of the strand (the 3rd bought probe left idle).
 func TestSizer_HomePostFlooredToProbeTarget(t *testing.T) {
 	cases := []struct {

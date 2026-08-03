@@ -16,7 +16,7 @@ func (s *daemonServiceImpl) BatchContractWorkflow(ctx context.Context, req *pb.B
 	}
 
 	// iterations selects single-shot vs continuous loop (sp-ehg9). The CLI sends
-	// -1 for `--loop`; an unset/0 value (every pre-sp-ehg9 caller) maps to 1 so
+	// -1 for `--loop`; an unset/0 value (every previous caller) maps to 1 so
 	// the plain verb stays byte-identical single-shot.
 	iterations := int(req.GetIterations())
 	if iterations == 0 {

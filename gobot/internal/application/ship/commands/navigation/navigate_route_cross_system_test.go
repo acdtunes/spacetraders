@@ -125,7 +125,7 @@ func handlerFor(shipRepo domainNavigation.ShipRepository, graphProvider system.I
 // AC1 (the live bug) + AC5 (the frontier probe-buy shared resolver): a hull at X1-VB74
 // navigating to the frontier shipyard X1-KN83-AF7C — a system NOT yet cached — auto-syncs
 // X1-KN83, confirms the waypoint is real, and delegates the physical move to the shared
-// gate-crossing travel machinery. RED before the fix: today this fail-closes with the
+// gate-crossing travel machinery. Guards: today this fail-closes with the
 // exact "not found in cache for system X1-VB74" error.
 func TestNavigateRoute_CrossSystem_AutoSyncsAndDelegatesToGateCrossing(t *testing.T) {
 	const (
@@ -158,7 +158,7 @@ func TestNavigateRoute_CrossSystem_AutoSyncsAndDelegatesToGateCrossing(t *testin
 }
 
 // Mutation / load-bearing check: the SAME cross-system navigation with NO router wired
-// fail-closes with the exact pre-fix error. Removing the delegation makes AC1 fail-closed
+// fail-closes with the exact previous error. Removing the delegation makes AC1 fail-closed
 // again — the fix, not the test scaffolding, is what unblocks the move.
 func TestNavigateRoute_CrossSystem_NoRouterWired_FailsClosed(t *testing.T) {
 	const (

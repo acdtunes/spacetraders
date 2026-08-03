@@ -178,7 +178,7 @@ func TestFindIdleLightHaulers_BusyHauler_IdleCommandShip_CommandIsCandidate(t *t
 // The re-claim vector: an idle, undedicated (fleet-unassign'd) command frigate
 // must NOT re-enter the candidate pool while a regular hauler is idle, and the
 // exclusion must hold across several reconcile ticks - not just the first pass.
-// PROVES RED before the fix (the frigate is re-admitted today).
+// Guards (the frigate is re-admitted today).
 func TestCommandHull_FleetUnassigned_NotReclaimedWhileHaulersExist(t *testing.T) {
 	hauler := newCandidateShip(t, "TORWIND-3", "HAULER", 80, 700, 0) // idle regular hauler
 	// Undedicated command frigate (tag cleared by `fleet unassign`), sized to

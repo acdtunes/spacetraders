@@ -47,7 +47,7 @@ type RoutingConfig struct {
 	// system's gate stays empty, the strict pathfinder fails closed on it, and hulls routed
 	// through it strand. Charting is best-effort (never fails a leg) and idempotent (a
 	// charted system is a store hit, zero API), so it is safe on by default; this knob is
-	// the reversibility switch (set false to restore the pre-sp-bcsu hot path exactly). A
+	// the reversibility switch (set false to restore the previous hot path exactly). A
 	// *bool so an absent [routing] section defaults ON while an explicit false is preserved.
 	ChartGateOnArrival *bool `mapstructure:"chart_gate_on_arrival"`
 }

@@ -93,7 +93,7 @@ func TestSignalCompletion_CoordinatorSpawnedFailure_EmitsWorkflowFailedUnconditi
 
 // TestSignalCompletion_ParentlessFailure_EmitsWorkflowFailed rounds out the
 // matrix for the parentless side of "either failed -> event": unchanged from
-// pre-sp-6g96 behavior, but pinned explicitly here alongside its parented
+// previous behavior, but pinned explicitly here alongside its parented
 // sibling above so the full 3-case matrix lives in one file.
 func TestSignalCompletion_ParentlessFailure_EmitsWorkflowFailed(t *testing.T) {
 	rec := &fakeRecorder{}

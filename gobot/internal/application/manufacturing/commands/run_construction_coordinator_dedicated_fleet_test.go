@@ -46,7 +46,7 @@ func claimedSymbols(r *drainFakeShipRepo) map[string]bool {
 // sp-e55b (DISCOVERY — the core defect): with a single ready material-task and a hull-load-sized bill
 // (one lot), BOTH an idle DEDICATED manufacturing hull (the drain's own gate hauler, pinned
 // "manufacturing") and an idle opportunistic UNPINNED hull are available. The one lot must be worked by
-// the DEDICATED hull — never the opportunistic one. Before the fix the drain consulted ONLY
+// the DEDICATED hull — never the opportunistic one. Unguarded, the drain consulted ONLY
 // FindIdleLightHaulers, which excludes the dedicated hull, so it claimed the opportunistic hull instead.
 func TestConstructionDrain_PrefersDedicatedFleetOverOpportunistic(t *testing.T) {
 	pipeline := newDrainPipeline(t, "FAB_MATS", 40) // one hull-load bill → exactly one lot
@@ -119,7 +119,7 @@ func TestConstructionDrain_NeverPoachesForeignPinnedHull(t *testing.T) {
 // sp-e55b (FALLBACK): opportunistic idle hulls SUPPLEMENT when dedicated capacity is insufficient. With
 // two ready tasks but only ONE idle dedicated hull plus one idle unpinned hull, the drain must use BOTH
 // — the dedicated hull AND the opportunistic hull — proving opportunistic hulls are still drafted (the
-// default prefer-then-fallback mode, not exclusive). Before the fix only the opportunistic hull was
+// default prefer-then-fallback mode, not exclusive). Unguarded, only the opportunistic hull was
 // visible, so the dedicated hull was never claimed.
 func TestConstructionDrain_FallsBackToOpportunisticWhenDedicatedInsufficient(t *testing.T) {
 	// Two worker slots: the subject is DISCOVERY, so both hulls must be startable in one tick.

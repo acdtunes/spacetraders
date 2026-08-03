@@ -21,7 +21,7 @@ import (
 // TestConstructionPathExecutor_NilClock_DoesNotPanicOnGateFillPoll builds the executor EXACTLY as the
 // construction daemon does (NewProductionExecutor with a nil clock, main.go) and drives the gate-fill
 // poll path (PollForProduction) that read the clock. The context is pre-cancelled so the (timeout-less)
-// poll loop exits deterministically right after the clock read — pre-fix it nil-panicked before ever
+// poll loop exits deterministically right after the clock read — previous it nil-panicked before ever
 // reaching the loop; post-fix it reaches the loop and returns the cancellation error.
 func TestConstructionPathExecutor_NilClock_DoesNotPanicOnGateFillPoll(t *testing.T) {
 	repo := &dockRaceShipRepo{

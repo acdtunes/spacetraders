@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"runtime"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -17,15 +18,45 @@ var writeMethodNames = map[string]bool{"Delete": true, "Update": true, "Updates"
 
 var scopingPredicatePattern = regexp.MustCompile(`(?i)player_id|(^|_)id\s*=|(^|_)id\s+in\b`)
 
-func archiveClassRepositoryFilesScopedByThisGuard_ExcludesWipeAndOperationalJunkTables() []string {
+// Keyed on receiver type, not filename: a method moved to another file in this
+// package stays guarded, where a filename list would drop it silently.
+func archiveClassRepositoryTypesScopedByThisGuard_ExcludesWipeAndOperationalJunkTables() []string {
 	return []string{
-		"transaction_repository.go",
-		"contract_repository.go",
-		"market_price_history_repository.go",
-		"captain_event_repository.go",
-		"manufacturing_pipeline_repository.go",
-		"manufacturing_task_repository.go",
+		"GormTransactionRepository",
+		"GormContractRepository",
+		"GormMarketPriceHistoryRepository",
+		"GormCaptainEventRepository",
+		"GormManufacturingPipelineRepository",
+		"GormManufacturingTaskRepository",
 	}
+}
+
+func receiverTypeName(fn *ast.FuncDecl) string {
+	if fn.Recv == nil || len(fn.Recv.List) == 0 {
+		return ""
+	}
+	expr := fn.Recv.List[0].Type
+	if star, ok := expr.(*ast.StarExpr); ok {
+		expr = star.X
+	}
+	if id, ok := expr.(*ast.Ident); ok {
+		return id.Name
+	}
+	return ""
+}
+
+func packageGoFiles(t *testing.T, dir string) []string {
+	t.Helper()
+	entries, err := filepath.Glob(filepath.Join(dir, "*.go"))
+	require.NoError(t, err)
+	var out []string
+	for _, f := range entries {
+		if !strings.HasSuffix(f, "_test.go") {
+			out = append(out, f)
+		}
+	}
+	require.NotEmpty(t, out, "no production files found in %s", dir)
+	return out
 }
 
 func persistenceDir(t *testing.T) string {
@@ -90,7 +121,7 @@ type writeViolation struct {
 	text string
 }
 
-func findUnscopedWrites(t *testing.T, file string) []writeViolation {
+func findUnscopedWrites(t *testing.T, file string, guarded map[string]bool, found map[string]bool) []writeViolation {
 	t.Helper()
 
 	fset := token.NewFileSet()
@@ -128,19 +159,30 @@ func findUnscopedWrites(t *testing.T, file string) []writeViolation {
 		}
 	}
 
-	ast.Inspect(astFile, func(n ast.Node) bool {
-		switch stmt := n.(type) {
-		case *ast.AssignStmt:
-			analyzeUnit(stmt)
-		case *ast.ExprStmt:
-			analyzeUnit(stmt)
-		case *ast.IfStmt:
-			if stmt.Init != nil {
-				analyzeUnit(stmt.Init)
-			}
+	for _, decl := range astFile.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Body == nil {
+			continue
 		}
-		return true
-	})
+		recv := receiverTypeName(fn)
+		if !guarded[recv] {
+			continue
+		}
+		found[recv] = true
+		ast.Inspect(fn.Body, func(n ast.Node) bool {
+			switch stmt := n.(type) {
+			case *ast.AssignStmt:
+				analyzeUnit(stmt)
+			case *ast.ExprStmt:
+				analyzeUnit(stmt)
+			case *ast.IfStmt:
+				if stmt.Init != nil {
+					analyzeUnit(stmt.Init)
+				}
+			}
+			return true
+		})
+	}
 
 	return violations
 }
@@ -148,9 +190,21 @@ func findUnscopedWrites(t *testing.T, file string) []writeViolation {
 func TestArchiveClassRepositoryWritesCarryAPlayerOrIDScopedPredicate_HeuristicBlindToCrossStatementQueryBuildersAndHelperIndirection(t *testing.T) {
 	dir := persistenceDir(t)
 
+	guarded := map[string]bool{}
+	for _, name := range archiveClassRepositoryTypesScopedByThisGuard_ExcludesWipeAndOperationalJunkTables() {
+		guarded[name] = true
+	}
+
+	found := map[string]bool{}
 	var all []writeViolation
-	for _, name := range archiveClassRepositoryFilesScopedByThisGuard_ExcludesWipeAndOperationalJunkTables() {
-		all = append(all, findUnscopedWrites(t, filepath.Join(dir, name))...)
+	for _, file := range packageGoFiles(t, dir) {
+		all = append(all, findUnscopedWrites(t, file, guarded, found)...)
+	}
+
+	// A guarded type that no longer exists means the list is stale, not that the
+	// package is clean; without this the guard would silently cover nothing.
+	for name := range guarded {
+		require.True(t, found[name], "guarded type %s declares no methods in this package - renamed or removed?", name)
 	}
 
 	require.Empty(t, all, "unscoped write(s) found: %+v", all)

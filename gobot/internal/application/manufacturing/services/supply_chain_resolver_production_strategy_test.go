@@ -200,7 +200,7 @@ func TestProductionStrategy_PerGoodOverrideWinsOverRunStrategy(t *testing.T) {
 }
 
 // An estimator call (no WithProductionStrategy stamp) keeps the resolver's own prefer-buy default:
-// a SCARCE intermediate with a factory is BOUGHT, byte-identical to the pre-sp-yfzi resolver, so the
+// a SCARCE intermediate with a factory is BOUGHT, byte-identical to the previous resolver, so the
 // demand finder and siting scanners are unaffected.
 func TestProductionStrategy_UnstampedEstimatorStaysPreferBuy(t *testing.T) {
 	resolver := scarceIntermediateResolver(supplyScarce, true)

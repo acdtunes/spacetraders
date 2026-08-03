@@ -146,7 +146,7 @@ func TestSellCargo_PerTrancheFloor_HealthyBid_SellsWholeOrder(t *testing.T) {
 }
 
 // The floor is strictly opt-in: with MinBidPerUnit==0 the loop is byte-identical
-// to before — the whole order sells even as the bid crashes (the pre-fix path
+// to before — the whole order sells even as the bid crashes (the previous path
 // every non-arb caller still runs).
 func TestSellCargo_NoFloorArmed_UnchangedEvenIfBidCrashes(t *testing.T) {
 	fix := &floorMarketFixture{healthyBid: 20000, crashedBid: 4, limit: 15}

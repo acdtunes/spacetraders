@@ -640,7 +640,7 @@ func TestFrontier_RepositioningSlotNotDemand(t *testing.T) {
 }
 
 // OVER-BUY: an occupied (hop-0) system is coverable in-system, so the frontier must
-// never BUY a probe to "serve" it. Before the fix the anchor was auto-declared as a sweep-once
+// never BUY a probe to "serve" it. Unguarded, the anchor was auto-declared as a sweep-once
 // post whose unmanned slot counted as buy-demand, so with no idle probe on hand the coordinator
 // bought a probe the system never needed — the credits-wasting over-buy the bead flags. With the
 // occupied anchor excluded from expansion there is no such demand and no buy. (The demand guard's
@@ -673,7 +673,7 @@ func TestFrontier_OccupiedAnchorSystem_NoSpuriousBuy(t *testing.T) {
 // frontier GROWS the pool with a guarded buy rather than cannibalizing scanning's baseline. Five
 // standing posts carry one open slot each (demand 5) and the fleet has exactly five idle probes
 // (supply 5): under normal counting the idle probes cover the demand and the frontier does not buy.
-// floor 0 is exact pre-sp-iopd behavior (no buy); floor 3 discounts three idle probes so the frontier
+// floor 0 is exact previous behavior (no buy); floor 3 discounts three idle probes so the frontier
 // counts only 2 toward its demand → short → buys, keeping 3 idle available for freshness. The floor-3
 // row is the mutation guard: removing the −floor discount makes 5 cover 5 → no buy → it fails.
 func TestFrontier_ReservedFreshnessFloorReservesIdleProbesForFreshness(t *testing.T) {

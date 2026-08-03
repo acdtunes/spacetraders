@@ -78,7 +78,7 @@ func TestTour_RecoveredContinuous_Iteration1Infeasible_RepositionsInsteadOfDying
 }
 
 // Regression (preserve): a FINITE single-tour run (iterations=1) whose only plan is
-// infeasible exits tour-unavailable exactly as pre-sp-m9co — it never ranks or jumps. The
+// infeasible exits tour-unavailable exactly as before — it never ranks or jumps. The
 // Class A reposition-on-iteration-1 routing is scoped to CONTINUOUS (-1) runs only.
 func TestTour_SingleTour_Iteration1Infeasible_StillExitsUnavailable(t *testing.T) {
 	fx := repositionFixture()
@@ -161,7 +161,7 @@ func TestTour_RecoveredContinuous_Iteration1Infeasible_BothGroundsDead_ExitsHone
 // tour graph can sink. The reposition pre-flight must price the candidate as the hull WILL
 // arrive — with an available hold — measuring the FRESH ground's true potential, not carry
 // the clogging cargo that seats every hold slot in the solver (occ=[total_initial]*n) and
-// makes a healthy ground read infeasible. Before the fix, three healthy grounds all
+// makes a healthy ground read infeasible. Unguarded, three healthy grounds all
 // pre-flighted infeasible and the hull died on its home ground.
 func TestTour_Reposition_LadenHull_PreFlightMeasuresFreshGroundNotBlockedByCargo(t *testing.T) {
 	fx := repositionFixture()
@@ -235,7 +235,7 @@ func (l *repoRankCapturingLogger) Log(_, message string, _ map[string]interface{
 
 // The ranking log must DISTINGUISH a solver-infeasible candidate (the ground itself cannot be
 // toured) from a feasible-but-below-floor one (tourable, but not worth the jump) — the
-// pre-sp-m9co line conflated them ("chosen none (none cleared the floor)" even when every
+// previous line conflated them ("chosen none (none cleared the floor)" even when every
 // candidate was infeasible), which cost diagnosis time on the 2B episode.
 func TestTour_RepositionRanking_DistinguishesInfeasibleFromBelowFloor(t *testing.T) {
 	floor := int64(25000)

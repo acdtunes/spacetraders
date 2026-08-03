@@ -234,7 +234,7 @@ type travelShipRepo struct {
 	// the 0-hop gate-chart reposition loads the probe (at a market), flies it, then RELOADS to
 	// read the freshly-persisted ON-GATE position for the chart guard. Modelling those as two
 	// distinct instances lets a test prove the probe was routed market->gate AND charts the gate.
-	// Unset, every call returns `ship`, so every pre-sp-4yse test (a single reload) is unchanged.
+	// Unset, every call returns `ship`, so every previous test (a single reload) is unchanged.
 	reloadShip *navigation.Ship
 	findCalls  int
 	// findSeq, when non-empty, is consumed one entry per FindBySymbol call (front to back) BEFORE
@@ -971,7 +971,7 @@ func TestTravel_CrossSystem_NonCooldownJumpError_PropagatesWithoutRiding(t *test
 // a daemon shutdown while a tour is settling out a jump cooldown has to return
 // promptly (so execute() takes its ctx-cancel resumable path and the hull is
 // re-adopted next boot), not block the whole graceful window on a bare ~440s
-// sleep and get force-killed mid-sleep (the pre-sp-wc5h tour-death shape).
+// sleep and get force-killed mid-sleep (the previous tour-death shape).
 func TestTravel_CrossSystem_CooldownWaitCancelled_ReturnsPromptly(t *testing.T) {
 	clock := &travelBlockingClock{
 		blockEntered: make(chan struct{}),

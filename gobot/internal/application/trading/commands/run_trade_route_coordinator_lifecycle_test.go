@@ -65,7 +65,7 @@ func newLegFailureHarness(t *testing.T, capacity, failCount int) (*RunTradeRoute
 // (b) FINISH-CURRENT-LEG, the incident's transient class: the delivery leg
 // fails once after the buy, then recovers. The run must FINISH the leg — sell
 // the whole tranche at the destination — and exit EMPTY, not surrender the run
-// laden the way the incident did. RED before the fix: the coordinator returned
+// laden the way the incident did. Guards: the coordinator returned
 // on the first travel error with 18 units aboard and no recovery attempt.
 func TestTradeRouteCoordinator_TransientDeliveryFailure_FinishesLegBeforeRunEnds(t *testing.T) {
 	handler, mediator, logger, ctx := newLegFailureHarness(t, 40, 1)
@@ -116,7 +116,7 @@ func TestTradeRouteCoordinator_TransientDeliveryFailure_FinishesLegBeforeRunEnds
 // attempt, including the bounded finish-current-leg retries. The run must end
 // as a STRANDED FAILURE — CargoStranded set, the structured cargo_aboard_exit
 // record emitted, and CompletionOutcome vetoing the runner's success=true —
-// never the incident's laden success=true. RED before the fix: the laden exit
+// never the incident's laden success=true. Guards: the laden exit
 // was a WARN log on an otherwise successful run.
 func TestTradeRouteCoordinator_PersistentDeliveryFailure_IsStrandedFailure(t *testing.T) {
 	handler, mediator, logger, ctx := newLegFailureHarness(t, 40, -1)
@@ -180,7 +180,7 @@ func TestTradeRouteCoordinator_PersistentDeliveryFailure_IsStrandedFailure(t *te
 
 // (a) ONE RUN OWNS ITS --max-visits: the grant is the RUN's total budget across
 // every lane the outer loop commits to, and consuming it is a clean, EMPTY exit
-// at a leg boundary. RED before the fix: MaxVisits bounded each circuit
+// at a leg boundary. Guards: MaxVisits bounded each circuit
 // separately, so --max-visits 1 flew one visit per lane until margin death
 // (2 visits on this fixture) instead of one visit total.
 func TestTradeRouteCoordinator_MaxVisitsIsRunBudget(t *testing.T) {
@@ -251,7 +251,7 @@ func (r *lowVolMarketRepo) GetMarketData(_ context.Context, waypointSymbol strin
 // (a)+(b) combined: a budget exit that lands while PARTIAL-SELL CARRYOVER is
 // still aboard (the importer absorbs only 10 units a tick against 18-unit
 // buys) must liquidate the remainder at the destination before the run ends —
-// budget exits are EMPTY exits. RED before the fix: the visit loop returned
+// budget exits are EMPTY exits. Guards: the visit loop returned
 // with the carryover aboard and the run completed laden.
 func TestTradeRouteCoordinator_BudgetExitWithCarryover_LiquidatesAndExitsEmpty(t *testing.T) {
 	ship := newResidualHauler(t, "T21", 40, 0)

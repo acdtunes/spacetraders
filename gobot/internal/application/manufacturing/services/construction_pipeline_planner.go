@@ -17,7 +17,7 @@ import (
 // feasible to fabricate iff the resolver can build a COMPLETE tree for it within the depth ceiling
 // — every scarce intermediate that has a factory recurses, and every leaf resolves to a buyable
 // market. It is an OPTIONAL collaborator wired by SetTreeResolver: left unset (nil), planFabrication
-// falls back to the pre-sp-3bza gate (every IMMEDIATE input must be buyable at MODERATE+ now).
+// falls back to the previous gate (every IMMEDIATE input must be buyable at MODERATE+ now).
 // *SupplyChainResolver satisfies it via BuildDependencyTree.
 type FabricationTreeResolver interface {
 	BuildDependencyTree(ctx context.Context, targetGood, systemSymbol string, playerID int) (*goods.SupplyChainNode, error)
@@ -38,7 +38,7 @@ type ConstructionPipelinePlanner struct {
 	clock            shared.Clock
 	// treeResolver is the fabrication FEASIBILITY oracle — the SAME scarcity-gated
 	// SupplyChainResolver the drain runs. Optional (wired by SetTreeResolver); nil falls
-	// back to the pre-sp-3bza "every immediate input buyable at MODERATE+" gate.
+	// back to the before "every immediate input buyable at MODERATE+" gate.
 	treeResolver FabricationTreeResolver
 }
 
@@ -72,7 +72,7 @@ func NewConstructionPipelinePlanner(
 // SAME verdict the recursive drain reaches — rather than on "every immediate input buyable at
 // MODERATE+ now", which defers a whole material when a deep input is scarce but producible.
 // Optional — the daemon injects the shared SupplyChainResolver singleton; left unset the
-// planner uses the pre-sp-3bza fallback. A setter (not a constructor arg) keeps the existing planner
+// planner uses the previous fallback. A setter (not a constructor arg) keeps the existing planner
 // constructor and its in-package tests unchanged (nil → fallback → byte-identical).
 func (p *ConstructionPipelinePlanner) SetTreeResolver(resolver FabricationTreeResolver) {
 	p.treeResolver = resolver
@@ -682,7 +682,7 @@ func (p *ConstructionPipelinePlanner) planFabrication(
 // whose deep raws are only LIMITED/SCARCE but still buyable.
 //
 // When no resolver is wired (nil — a planner built without SetTreeResolver, and the in-package
-// tests that never inject one), it falls back to the pre-sp-3bza gate: every IMMEDIATE
+// tests that never inject one), it falls back to the previous gate: every IMMEDIATE
 // input must be buyable at MODERATE+ now.
 func (p *ConstructionPipelinePlanner) fabricationInputsSourceable(
 	ctx context.Context,
@@ -700,7 +700,7 @@ func (p *ConstructionPipelinePlanner) fabricationInputsSourceable(
 		return terr == nil && tree != nil
 	}
 
-	// Fallback (no resolver wired): the pre-sp-3bza gate — every immediate input buyable at
+	// Fallback (no resolver wired): the previous gate — every immediate input buyable at
 	// MODERATE+ now, or the material defers.
 	for _, input := range immediateInputs {
 		src, serr := p.marketLocator.FindExportMarketBySupplyPriority(ctx, input, plan.systemSymbol, plan.playerID)

@@ -60,7 +60,7 @@ func TestFindRunningOperationForGoodExcludesMissingCoordinatorContainer(t *testi
 
 // With no reader wired at all, the liveness gate is disabled and behavior falls
 // back to trusting the storage_operations row status alone - this is the
-// pre-sp-86yb behavior and must keep working for any caller that hasn't wired a
+// previous behavior and must keep working for any caller that hasn't wired a
 // ContainerStatusReader (e.g. constructed via NewStorageSourceFinder(repo, nil)).
 func TestFindRunningOperationForGoodTrustsRowStatusWhenNoReaderWired(t *testing.T) {
 	op := newTestGasSiphonOperation(t, "gas_coordinator-TORWIND-9-unwired", 1, "LIQUID_HYDROGEN")

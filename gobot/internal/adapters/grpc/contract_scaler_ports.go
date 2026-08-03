@@ -247,7 +247,7 @@ func homeContractHull(ctx context.Context, h contractHoming, shipSymbol string, 
 // can place it rather than fail-and-strand (sp-orooy — HomeShipHandler resolves parks in the hull's
 // CURRENT system only). The home system is read straight off a standby park symbol (the parks ARE the
 // home-system geometry). It is a NO-OP when the hull is already in the home system (byte-identical to the
-// pre-fix homing) or when its location is unreadable (defer to the intra-system home + between-legs self-
+// previous homing) or when its location is unreadable (defer to the intra-system home + between-legs self-
 // heal). Best-effort: a reposition hiccup only logs — the completed reclaim/buy is never rolled back, and
 // the contract coordinator's between-legs homing still retries. The move REUSES NavigateRouteCommand's
 // wired cross-system delegation (sp-9l4p → RepositionToWaypoint → the SAME multi-jump travel() the

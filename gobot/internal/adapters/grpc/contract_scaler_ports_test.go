@@ -714,7 +714,7 @@ func TestReclaim_CrossGatesAForeignHullHomeBeforeSpreadHoming(t *testing.T) {
 				_, ok = sender.sent[1].(*contractCmd.HomeShipCommand)
 				require.Truef(t, ok, "the spread-home must follow the reposition, got %T", sender.sent[1])
 			} else {
-				// A home hull: only the spread-home, no cross-gate reposition (byte-identical to pre-fix).
+				// A home hull: only the spread-home, no cross-gate reposition (byte-identical to before).
 				require.Len(t, sender.sent, 1, "home hull: spread-home only, no cross-gate reposition")
 				_, ok := sender.sent[0].(*contractCmd.HomeShipCommand)
 				require.Truef(t, ok, "the sole dispatch must be the HomeShipCommand, got %T", sender.sent[0])

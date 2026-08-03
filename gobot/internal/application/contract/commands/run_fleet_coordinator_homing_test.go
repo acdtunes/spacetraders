@@ -18,7 +18,7 @@ import (
 // cause (sp-86vb): the coordinator must trust the live tag over the launch snapshot.
 
 // errFindAllRepo fails FindAllByPlayer so the resolver's fallback-to-launch-list
-// branch (never worse than the pre-fix behavior) can be exercised.
+// branch (never worse than the previous behavior) can be exercised.
 type errFindAllRepo struct {
 	navigation.ShipRepository
 	err error
@@ -80,7 +80,7 @@ func TestHomingGate_LiveRemovedShip_NoLongerDedicated(t *testing.T) {
 }
 
 // TestHomingGate_MembershipReadError_FallsBackToLaunchList proves the resolver never
-// regresses below the pre-fix behavior: if the live membership read fails, it falls
+// regresses below the previous behavior: if the live membership read fails, it falls
 // back to the launch list and warns, rather than losing all dedication data.
 func TestHomingGate_MembershipReadError_FallsBackToLaunchList(t *testing.T) {
 	repo := &errFindAllRepo{err: fmt.Errorf("db unavailable")}

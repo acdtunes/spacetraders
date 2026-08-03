@@ -17,7 +17,7 @@ type IdleArbLauncher interface {
 
 // TreasuryReader reports the player's live credit balance for the dispatcher's
 // working-capital reserve gate (sp-zq635 §4a). Optional, wired via SetTreasuryReader:
-// a nil reader leaves the gate inert (the pre-sp-zq635 behavior), the same optional-port
+// a nil reader leaves the gate inert (the previous behavior), the same optional-port
 // contract the absorption ledger and re-homer use. Production wires it so the pass's
 // concurrent legs can never collectively drain treasury below the immutable reserve.
 type TreasuryReader interface {

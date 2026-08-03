@@ -738,7 +738,7 @@ func TestOrphanDispatch_SkipsAHullWithNoRecordedLocation(t *testing.T) {
 // probe, keep sensing with the existing ones." This is the same live fleet with the switch OFF: the
 // four stacked idle hulls we already own still reach their placements, and nothing is bought.
 //
-// IT PASSES ON THE PRE-FIX CODE TOO, and that is the point rather than a weakness. The dispatch has
+// IT PASSES ON THE UNFIXED CODE TOO, and that is the point rather than a weakness. The dispatch has
 // never read this knob — the defect was one layer up, in the pass that produces the placements it
 // fills — so this pins the half of the operator's sentence that was ALREADY true, and would catch
 // the plausible-looking future change that "consistently" gates the dispatch on expansion as well.

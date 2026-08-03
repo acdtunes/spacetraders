@@ -102,7 +102,7 @@ func TestTourCargoBlocklist_ExcludesGoodsFromSolverSnapshot(t *testing.T) {
 
 // RED #2 (byte-identical) — with no blocklist configured (the default), every good rides
 // into the snapshot exactly as before. Proves the feature is opt-in: an unset config is
-// byte-identical to pre-sp-o4wa behavior.
+// byte-identical to previous behavior.
 func TestTourCargoBlocklist_UnsetIsByteIdentical(t *testing.T) {
 	fx := blocklistFixture()
 	fake := &tourFakeRoutingClient{plans: []*routing.TourPlan{{Feasible: true}}}

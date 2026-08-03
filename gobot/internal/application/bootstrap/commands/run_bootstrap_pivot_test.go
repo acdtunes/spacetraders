@@ -98,7 +98,7 @@ func TestBootstrap_Pivot_LoadedFrigate_DefersNoCargoLoss(t *testing.T) {
 }
 
 // No pivot when the frigate is not on its loop (nothing to free) and no idle hull exists → no_purchaser,
-// with NO shipyard price-check (blocks cheaply, the pre-sp-7r7w efficiency).
+// with NO shipyard price-check (blocks cheaply, the previous efficiency).
 func TestBootstrap_Pivot_NoLoopNoIdle_BlocksNoPurchaserBeforePriceCheck(t *testing.T) {
 	ret := &fakeRetirer{}
 	acq := &fakeHaulerAcquirer{price: 300000, yard: "Y", readable: true}
@@ -177,7 +177,7 @@ func TestBootstrap_Pivot_LoopNeverRestartsOnPurchasingFrigate(t *testing.T) {
 //
 // The live deadlock: the pivot is warranted (0 haulers, frigate on its loop, cargo empty) but the LIGHT_SHUTTLE
 // price is UNREADABLE because the SpaceTraders shipyard listing is presence-gated and nothing is at the yard
-// (frigate on its loop, probes scouting). The pre-fix pivot price-checks BEFORE positioning, so it failed
+// (frigate on its loop, probes scouting). The previous pivot price-checks BEFORE positioning, so it failed
 // closed forever (price_unreadable). The fix FREES the frigate at the inter-contract window and POSITIONS it
 // at the shipyard so the next tick's read succeeds and the buy runs behind the working-capital floor.
 

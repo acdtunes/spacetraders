@@ -168,7 +168,7 @@ func (h *RunTourCoordinatorHandler) maybeOffloadHeldCargo(
 	best, value, ok := h.bestHeldCargoSink(ctx, cmd, candidates, held)
 	if !ok {
 		// No reachable candidate can absorb any of the held cargo — exit honestly exactly as
-		// pre-sp-2v69u; the caller falls through to the standard starvation exit.
+		// before; the caller falls through to the standard starvation exit.
 		return false, nil
 	}
 

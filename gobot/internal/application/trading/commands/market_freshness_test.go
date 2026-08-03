@@ -164,7 +164,7 @@ func TestMarketFreshness_ZeroTuneRevertsWhereTheFloorIsTheBindingTerm(t *testing
 }
 
 // Arming stays a BOOT concern. A non-positive boot floor means the daemon left the clause
-// inert (the test path, and the pre-sp-tgll8 behaviour), and no rotation and no tune may
+// inert (the test path, and the previous behaviour), and no rotation and no tune may
 // silently turn it on behind the operator's back.
 func TestMarketFreshness_InertClauseIsNeverArmedByDerivation(t *testing.T) {
 	f := NewMarketFreshness(incidentRotation(), &fakeFloorSource{

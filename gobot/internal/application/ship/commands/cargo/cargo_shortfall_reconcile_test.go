@@ -144,7 +144,7 @@ func heldUnits(ship *navigation.Ship, good string) int {
 	return 0
 }
 
-// THE REPRO (a): the cache claims 71 MACHINERY, the server holds 11. Before the fix
+// THE REPRO (a): the cache claims 71 MACHINERY, the server holds 11. Unguarded,
 // the sale aborted at zero transactions and the tour died with a full hold. Now the
 // tranche is clamped to the server's count and retried once, booking 11 units of
 // revenue. Mutation target: deleting the retry in retrySellClampedToServerCargo, or

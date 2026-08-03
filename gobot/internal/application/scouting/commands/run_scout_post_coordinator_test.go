@@ -1766,7 +1766,7 @@ func TestScoutPost_SingleHull_NeverPartitions(t *testing.T) {
 // freshness-sizer demand noise). A running 2-hull post whose budget is raised to 3 and STAYS
 // 3 holds its old tours for the debounce cycles, then — once the new budget has persisted —
 // tears them down and rebuilds 3 disjoint partitions exactly ONCE. (Updated openly for
-// sp-itr5: the pre-fix behavior re-partitioned on the FIRST tick, unconditionally, which is
+// sp-itr5: the previous behavior re-partitioned on the FIRST tick, unconditionally, which is
 // exactly the ±1-noise thrash this bead fixes; correctness — a real change still acts — is
 // preserved, just debounced.)
 func TestScoutPost_MultiHull_PersistentBudgetChangeRepartitionsOnceAfterDebounce(t *testing.T) {
@@ -1952,7 +1952,7 @@ func TestScoutPost_MultiHull_TransientBudgetSwingIgnored(t *testing.T) {
 // shape and frees the surplus probes to the pool (no stale extra slots linger) — but, like
 // every other hull-budget change, only once the reduction has PERSISTED the debounce
 // window (so a transient noise dip to 1 does not free-then-re-buy a probe every tick).
-// Updated openly for sp-itr5: the pre-fix behavior reverted on the FIRST tick.
+// Updated openly for sp-itr5: the previous behavior reverted on the FIRST tick.
 func TestScoutPost_MultiHull_RevertToSingleHullFreesSurplus(t *testing.T) {
 	clock := &shared.MockClock{CurrentTime: time.Now()}
 	post := &domainScouting.ScoutPost{
@@ -2284,8 +2284,8 @@ func TestScoutPost_MultiHull_MarketRemovalTriggersDrift(t *testing.T) {
 // for an unrelated reason. ensureSingleHullFreshness (see the section below) closes that
 // gap by reusing this exact debounce — same MarketDriftThreshold/MarketDriftMaxAgeSecs
 // config, same defaults — against a per-post snapshot baseline instead of a partition
-// union, so THIS test's growth scenario, which used to be silently invisible to the single
-// probe, now also triggers a tour respawn.
+// union, so THIS test's growth scenario — invisible to a single probe — also
+// triggers a tour respawn.
 func TestScoutPost_SingleHull_NeverPartitionsButDoesRespawnOnMarketGrowth(t *testing.T) {
 	clock := &shared.MockClock{CurrentTime: time.Now()}
 	post := &domainScouting.ScoutPost{PlayerID: 1, SystemSymbol: "X1-GZ7", Kind: domainScouting.PostKindStanding} // Hulls unset → single-hull
@@ -2964,7 +2964,7 @@ func TestGateChartSweepTargets_UnionsMarketAndMarkeredMinusCharted(t *testing.T)
 // charted, the chicken-and-egg). Because the target bears no market, the dispatch aims the
 // probe at the gate WAYPOINT the marker recorded (discoverMarkets finds nothing). The BOUNDING
 // half: a marketless gate with NO marker draws nothing — no traffic ever 400'd it, so no active
-// route crosses it. RED on the pre-fix market-only enumeration: neither system is in marketAges,
+// route crosses it. RED on the previous market-only enumeration: neither system is in marketAges,
 // so the sweep dispatches zero relays.
 func TestReconcileGateChartSweep_MarkerlessTransitGate_DispatchesToGateWaypoint(t *testing.T) {
 	clock := &shared.MockClock{CurrentTime: time.Now()}
@@ -3118,7 +3118,7 @@ func TestScoutPost_CrossSystemRelay_MansHubFromOverCoveredSurplus(t *testing.T) 
 }
 
 // MUTATION / default-OFF: the SAME scene with the relay DISABLED must be byte-identical to the
-// pre-sp-u8jc behavior — the hub parks with the exact old reason and no probe moves. Paired with
+// previous behavior — the hub parks with the exact old reason and no probe moves. Paired with
 // the headline test above, this is the mutation proof: only the arm flag differs, and flipping it
 // flips the outcome from relay→park (disabling the relay branch would fail the headline test).
 func TestScoutPost_CrossSystemRelay_Disabled_ParksByteIdentical(t *testing.T) {

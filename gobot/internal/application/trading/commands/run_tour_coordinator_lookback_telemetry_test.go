@@ -29,7 +29,7 @@ func buyTelemetryLegs(tel *tourFakeTelemetry) []trading.TourLegTelemetry {
 }
 
 // A single look-back item buy must persist ONE telemetry buy leg carrying the FULL
-// units bought and the volume-weighted realized unit price. RED before the fix
+// units bought and the volume-weighted realized unit price. Guards
 // (buyLookbackItem records nothing); GREEN after. Mirrors the ceiling-abort test's
 // direct drive of buyLookbackItem, but with a live ask under the ceiling so the buy
 // completes.

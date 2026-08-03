@@ -327,7 +327,7 @@ func TestSensingRunsWithNoStallObserverWired(t *testing.T) {
 // TestSensingTickVerdict_PlacementRefusalsAreBlockedNotIdle is the bead.
 //
 // A placement tick that issued moves and had every one of them refused was filed as IDLE. That
-// understates it exactly as badly as the PROGRESS it used to be filed as: 266 probes sat frozen
+// understates it exactly as badly as filing it as PROGRESS: 266 probes can sit frozen
 // for 28 hours while the health machinery reported healthy ticks throughout, because a refusal
 // incremented rep.Actions and anyEffect() read Actions > 0 as "a placement advanced". sp-cwnwb
 // stopped the false PROGRESS; a tick that refuses thirty moves and gets nowhere is still not idle.

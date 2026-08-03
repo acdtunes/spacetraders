@@ -138,7 +138,7 @@ func TestPurchaseLoop_NoProjectedBasis_LadderCapDisabled(t *testing.T) {
 	logger := &capturingLogger{}
 	ctx := common.WithLogger(context.Background(), logger)
 
-	// Pre-sp-1z2h ProfitabilityResult shape: no MarketPrices basis → the cap
+	// A ProfitabilityResult with no MarketPrices basis: the cap
 	// has nothing to compare against and must not fire.
 	profitResult := &contractQueries.ProfitabilityResult{
 		PurchaseCost:           80 * 100,

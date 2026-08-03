@@ -415,7 +415,7 @@ func (s *DaemonServer) depotElementHullViable(ctx context.Context, shipSymbol, w
 		return true // already home (or unresolvable) — trivially viable
 	}
 	if s.gateGraph == nil {
-		return true // reachability signal unwired → fail open, byte-identical to pre-sp-fihvy
+		return true // reachability signal unwired → fail open, byte-identical to before
 	}
 	routable, err := s.gateGraph.Routable(ctx, currentSystem, homeSystem, playerID)
 	if err != nil {

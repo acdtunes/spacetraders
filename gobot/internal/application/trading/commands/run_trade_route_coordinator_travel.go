@@ -159,7 +159,7 @@ func (h *RunTradeRouteCoordinatorHandler) sleepInterruptibly(ctx context.Context
 // from the hop it made just before the restart — the ship's cooldown clock is
 // persisted (jump_ship.go SetCooldown), so the live jump API rejects the
 // re-jump with 409 code-4000 "Ship action is still on cooldown for N
-// second(s)". The pre-sp-wc5h path surfaced that 409 as a hard iteration error,
+// second(s)". The previous path surfaced that 409 as a hard iteration error,
 // and the container runner's escalating restart budget (5s+30s+120s ≈ 155s)
 // cannot outlast a jump cooldown of 226–775s, so the tour crashed FAILED and
 // the hull stranded idle (the tour-death incident: TORWIND-2B-a2856bfc crashed
@@ -912,7 +912,7 @@ func laneCircuitValue(l trading.ArbitrageLane, shipCapacity int, model laneImpac
 	// self-compression that volume would cause plus the live shared cooldown debt, so a
 	// lane this hull would compress (high units/tv) or one the fleet has hammered scores
 	// below its snapshot spread. An inert model (no coefficients, no ledger) returns the
-	// snapshot spread, so this is byte-identical to the pre-sp-tl68 value for every caller
+	// snapshot spread, so this is byte-identical to the previous value for every caller
 	// that supplies no model.
 	return model.effectiveSpreadPerUnit(l, shipCapacity) * float64(l.VolumeCap) * weight
 }

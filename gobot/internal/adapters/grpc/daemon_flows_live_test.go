@@ -83,7 +83,7 @@ func TestLiveTradingRuns_EnumeratesEveryRunningTradingContainer(t *testing.T) {
 }
 
 // The defect, end to end: 13 RUNNING tour containers, 5 of which have published.
-// Before the fix the route served 5.
+// Unguarded, the route served 5.
 func TestFlowsRoute_ServesEveryRunningTourIncludingUnpublishedOnes(t *testing.T) {
 	const total, published = 13, 5
 

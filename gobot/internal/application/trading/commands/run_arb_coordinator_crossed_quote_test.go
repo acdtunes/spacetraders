@@ -18,7 +18,7 @@ import (
 // BestSinksAcrossSystems, not through RankSpreads), so trading.GoodListing.IsCrossed
 // never sees these rows. This guard is that path's equivalent.
 //
-// The numbers are a real pre-sp-en5h7 MACHINERY row: the API quoted purchasePrice
+// The numbers are a real before MACHINERY row: the API quoted purchasePrice
 // 6334 / sellPrice 3123, and the transposed writer stored purchase_price=3123,
 // sell_price=6334. Read with the corrected accessors that is ask 3123 / bid 6334 —
 // a market selling below what it pays. Believed, it reports a 3211/unit margin that

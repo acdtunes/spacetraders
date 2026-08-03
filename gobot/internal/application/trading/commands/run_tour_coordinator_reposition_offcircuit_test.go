@@ -21,7 +21,7 @@ import (
 
 // jeouOffCircuitFixture models the 6C/6D strand: the hull starts and dies at the FAR yard
 // X1-UF64 (off-circuit). Its ONLY 1-gate-hop neighbour X1-MID carries no cached market, so the
-// pre-fix 1-hop reposition discovery yields ZERO candidates. Two gate hops out, X1-SH23 is a
+// before 1-hop reposition discovery yields ZERO candidates. Two gate hops out, X1-SH23 is a
 // fresh circuit ground with its own arb lane (buy H@100, sell H@300). The durable gate graph
 // (wired below, mirroring production's main.go SetGateGraph) exposes UF64->MID->SH23, and its
 // RepositionPath resolves the physical 2-hop flight.
