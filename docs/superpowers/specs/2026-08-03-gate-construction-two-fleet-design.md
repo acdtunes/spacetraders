@@ -98,7 +98,30 @@ it.
 
 Two thresholds, not one. A single threshold chatters at the boundary: pause, one unit regenerates,
 resume, immediately deplete. Supply ordering is SCARCE < LIMITED < MODERATE < HIGH < ABUNDANT
-(`domain/shared/supply_level.go`). Proposed: buy floor MODERATE, resume at HIGH.
+(`domain/shared/supply_level.go`). Defaults: buy floor MODERATE, resume at HIGH.
+
+### Both thresholds are LIVE KNOBS
+
+The right gap is not knowable in advance — too narrow chatters, too wide starves the delivery
+fleet while usable stock sits. They must be adjustable in real time, without a restart.
+
+**Layer: pattern C (live provider, re-read per tick), on the `construction override` verb** —
+the same surface that already carries `--min-supply` and `--price-ceiling-mult`. Proposed:
+`construction override --buy-floor MODERATE --resume-floor HIGH`.
+
+**This layer choice is load-bearing, not incidental.** Per CLI-PRIMER §3.1, the *manufacturing*
+coordinator is **pattern B**: its `resolve*Config` clears persisted keys and re-injects from
+`config.yaml` on every build, so a live tune of a pattern-B knob is **clobbered on the next daemon
+restart**. Putting these thresholds on a manufacturing config key would produce a knob that
+appears to work, silently reverts, and gives no indication it did. That is the same class of
+defect as the inert `prefer-buy` override this design removes.
+
+Name them distinctly from the existing `--min-supply`, which is the construction pipeline's
+**admission** floor (whether a material is promoted to READY, per sp-yexq) — a different decision
+at a different stage. Two supply thresholds with confusable names would be its own opacity.
+
+These are **tunables, not feature flags**. They ship armed with the defaults above; the knob
+adjusts a value in a path that always runs. Nothing here is default-off.
 
 Price is deliberately **not** a gate here. The gate is a finite, high-ROI investment, and
 supply-anchoring already paces against our own market impact — sustained buying depletes supply,
@@ -188,26 +211,61 @@ shippable and each leaving the system working:
 1. **Era-invariant topology resolution.** Role-based lookup (terminal factory / feed target / raw
    source) as a single seam over `MarketLocator`. Foundational, no behavior change on its own,
    and it is what makes sp-b27a2's mis-routing unrepresentable. Lowest risk — do it first.
-2. **Delivery fleet.** Buy at terminal factories, supply-anchored pause with hysteresis, greedy
-   max-cargo mixed fill, deliver to gate. Depends on (1).
-3. **Factory fleet.** Recursive feeding to the terminal factories; delete the depth cap; keep
-   `visited`. Depends on (1).
+2. **Delivery role + buy policy.** Role tagging via `AssignFleet`, the 4-hull ordered purchase,
+   buy at terminal factories, supply-anchored pause with live-tunable hysteresis, greedy max-cargo
+   mixed fill, deliver to gate. Depends on (1).
+3. **Factory role + reallocation.** Recursive feeding to the terminal factories; delete the depth
+   cap; keep `visited`; pause-driven role reallocation with its thrash guard. Depends on (1)
+   and (2) — reallocation cannot be built before there is a pause to react to.
 4. **Delete the old path.** The single recursive tree, `isTargetGood` forced fabrication, and the
    gate-mode exemption machinery. Only after (2) and (3) are live and validated.
 
 Observability (per the section above) ships **inside each phase**, not as a fifth — a phase whose
 decisions are invisible cannot be validated, which is the failure this design exists to correct.
 
-## Open Question — Fleet Mechanics
+## Fleet Mechanics
 
-The design specifies what each fleet *does*, not what each fleet *is*. Unresolved: whether "factory
-fleet" and "delivery fleet" are distinct container types, one container with two worker roles, or a
-scheduling policy over a shared hull pool; and how hulls are allocated and rebalanced between them
-as the bill drains.
+**One container, two worker roles.** Not two container types. Roles are assigned in real time via
+the ship's `dedicated_fleet` tag.
 
-This matters because it determines whether the pause rule idles hulls or releases them. Existing
-constraints to respect: worker rebalancing is automatic, and a `-1` goods_factory container cannot
-self-terminate. **Resolve before phase 2.**
+`AssignFleet` (`adapters/api/ship_repository_claims.go:432`) is the **single write path** for that
+column, defended by `preserveDedicatedFleetTag` against concurrent ship saves. All role assignment
+and reassignment goes through it — never through a general save. `depot.Role`
+(`RoleWarehouse | RoleStocker | RoleDeliveryHull | RoleSourceHub`) is the existing
+roles-within-one-container precedent to follow.
+
+### Purchase order
+
+The GATE phase buys 4 hulls, tagged **in this order**:
+
+| # | Role |
+|---|---|
+| 1 | delivery |
+| 2 | factory |
+| 3 | factory |
+| 4 | delivery |
+
+The interleaving matters at every partial-purchase state, which is the state that actually occurs
+when treasury is tight. First hull is delivery so any already-accumulated stock starts moving
+immediately; stopping after two leaves one of each rather than two of the same.
+
+### Reallocation on pause
+
+When delivery pauses, its workers move to the factory role; when it unpauses, they move back.
+
+**This makes the pause a self-shortening feedback loop.** Delivery pauses because a terminal
+factory is low → those hulls go feed that factory → it produces faster → supply recovers sooner →
+delivery resumes. The pause actively works to end itself instead of idling capacity. It is also
+what makes an aggressive buy floor safe: over-buying costs a reallocation, not a stall.
+
+**Trigger — delivery is "paused" only when EVERY gate material is paused.** Because a hull fills
+greedily from any eligible material, delivery still has useful work while even one material is
+buyable; moving workers then would starve delivery of capacity it can still use.
+
+**Reallocation needs its own thrash guard.** A hull mid-haul must finish its leg before
+reassignment, and a minimum dwell in a role prevents oscillation at the supply boundary — the same
+chatter problem the buy/resume hysteresis solves, one level up. Existing `worker_rebalancer`
+constraints apply (`ferry_cooldown_secs`, `max_concurrent_ferries`).
 
 ## Testing
 
@@ -219,4 +277,12 @@ self-terminate. **Resolve before phase 2.**
 - **Mixed fill:** a hull with one material paused fills entirely with the other; a hull with both
   eligible fills to capacity across both; fill never exceeds remaining bill.
 - **Feed routing:** a good is never dispatched to a waypoint that does not import it (sp-b27a2).
-- **Money floor:** both fleets refuse to spend below the 50k floor (fail-closed).
+- **Money floor:** both roles refuse to spend below the 50k floor (fail-closed).
+- **Knob liveness:** a `construction override --buy-floor/--resume-floor` write takes effect on the
+  next tick with no restart, **and survives a daemon restart** — the pattern-B clobber this design
+  explicitly avoids must be pinned by a test, not just by a comment.
+- **Purchase order:** stopping after N of 4 hulls yields the specified role mix at every N
+  (1→1D, 2→1D/1F, 3→1D/2F, 4→2D/2F).
+- **Reallocation:** workers move to factory only when EVERY material is paused, not when any one
+  is; a hull mid-haul finishes its leg before reassignment; supply oscillating at the boundary does
+  not produce role thrash.
