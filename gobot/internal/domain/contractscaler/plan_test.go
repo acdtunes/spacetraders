@@ -89,9 +89,12 @@ func TestBuildPlan_WarehouseAndStockerAnchorAtCentralHub(t *testing.T) {
 // TopDeliverySlots is the ONE fixed placement set: central parks ranked highest-demand first,
 // symbol-stable, capped at MaxDeliveryHulls. Both the scaler buy sequence and the fixed homing
 // consume this SAME set (no drift). Demand is an input at arm ONLY.
+//
+// An era that resolved NO anchors (every durable predicate missed) is exactly this original
+// central-only ranking — the whole-set fail-open floor of the sp-9suun anchor ordering.
 func TestTopDeliverySlots_RanksDemandDescCappedAtKnee(t *testing.T) {
 	demand := map[string]float64{"P1": 1, "P2": 9, "P3": 5, "P4": 2}
-	got := TopDeliverySlots([]string{"P1", "P2", "P3", "P4"}, demand)
+	got := TopDeliverySlots(EraRoles{CentralParks: []string{"P1", "P2", "P3", "P4"}}, demand)
 
 	want := []string{"P2", "P3", "P4", "P1"}
 	if !reflect.DeepEqual(got, want) {
@@ -105,7 +108,7 @@ func TestTopDeliverySlots_RanksDemandDescCappedAtKnee(t *testing.T) {
 		parks[i] = string(rune('A' + i))
 		manyDemand[parks[i]] = float64(i)
 	}
-	if got := TopDeliverySlots(parks, manyDemand); len(got) != MaxDeliveryHulls {
+	if got := TopDeliverySlots(EraRoles{CentralParks: parks}, manyDemand); len(got) != MaxDeliveryHulls {
 		t.Fatalf("TopDeliverySlots on %d parks = %d slots, want the MaxDeliveryHulls cap %d", len(parks), len(got), MaxDeliveryHulls)
 	}
 }

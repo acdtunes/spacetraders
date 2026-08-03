@@ -92,6 +92,13 @@ func (r *contractScalerRoleResolver) homeMarkets(ctx context.Context, playerID i
 			Exports:       exports,
 			Imports:       imports,
 			IsMarketplace: waypoint.IsMarketplace(), // durable charted trait → a sink even before its imports are dock-scanned
+			// The rest of the DURABLE charted record — the generator type, the charted traits and
+			// on-site fuel — carries the era-invariant standby anchors (contractscaler/anchors.go).
+			// Without these three the anchors have nothing to key on and every slot fails open to
+			// the central set, so this is the wiring the whole placement rests on.
+			Type:    waypoint.Type,
+			Traits:  waypoint.Traits,
+			HasFuel: waypoint.HasFuel,
 		})
 		if len(imports) > 0 {
 			demand[waypoint.Symbol] = weight

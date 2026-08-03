@@ -139,8 +139,14 @@ func homeTestGraph(waypoints ...*shared.Waypoint) *system.NavigationGraph {
 	return graph
 }
 
-// A lone idle dedicated hull homes to its fixed slot — the first placement slot in symbol order
-// (B2 < C3), the symbol-zip of the single-hull roster onto the slots. Order-independent.
+// A lone idle dedicated hull homes to its fixed slot. With FEWER hulls than slots the caller's
+// slot ORDER is the PLACEMENT PRIORITY (sp-9suun: the era-invariant anchors lead, the tail is
+// dropped), so the single hull takes slot[0] — here deliberately BOTH the alphabetically-LAST
+// and the FARTHER waypoint, so this fails if either a symbol ordering or a nearest-first
+// heuristic ever creeps back into the assignment.
+//
+// (Before sp-9suun the set was unordered and this hull took the alphabetically-first slot; that
+// silently stranded the two highest-value anchors whenever the fleet was short of the set.)
 func TestHomeShipHandler_NavigatesToItsFixedSlot(t *testing.T) {
 	ship := newHomeTestShip(t, "TORWIND-4", "X1-TEST-A1", 0, 0)
 	near := homeTestWaypoint(t, "X1-TEST-B2", 10, 0)
@@ -164,8 +170,8 @@ func TestHomeShipHandler_NavigatesToItsFixedSlot(t *testing.T) {
 	if len(mediator.navigateCalls) != 1 {
 		t.Fatalf("expected exactly one navigate dispatch, got %d", len(mediator.navigateCalls))
 	}
-	if mediator.navigateCalls[0].Destination != "X1-TEST-B2" {
-		t.Fatalf("expected navigation to the nearer station X1-TEST-B2, got %s", mediator.navigateCalls[0].Destination)
+	if mediator.navigateCalls[0].Destination != "X1-TEST-C3" {
+		t.Fatalf("expected navigation to the top-PRIORITY slot X1-TEST-C3, got %s", mediator.navigateCalls[0].Destination)
 	}
 
 	homeResp, ok := resp.(*HomeShipResponse)
@@ -175,11 +181,11 @@ func TestHomeShipHandler_NavigatesToItsFixedSlot(t *testing.T) {
 	if !homeResp.Navigated {
 		t.Fatalf("expected Navigated=true, got %+v", homeResp)
 	}
-	if homeResp.TargetStation != "X1-TEST-B2" {
-		t.Fatalf("expected TargetStation X1-TEST-B2, got %s", homeResp.TargetStation)
+	if homeResp.TargetStation != "X1-TEST-C3" {
+		t.Fatalf("expected TargetStation X1-TEST-C3, got %s", homeResp.TargetStation)
 	}
-	if homeResp.Distance != 10 {
-		t.Fatalf("expected Distance 10, got %f", homeResp.Distance)
+	if homeResp.Distance != 100 {
+		t.Fatalf("expected Distance 100, got %f", homeResp.Distance)
 	}
 }
 
@@ -213,10 +219,11 @@ func TestHomeShipHandler_NoStandbyStationsConfigured_NoOp(t *testing.T) {
 	}
 }
 
-// A ship already parked at ITS assigned slot (B2 = slot[0] for the lone-hull roster) must not
-// re-navigate to itself — the "already home only if at MY slot" rule.
+// A ship already parked at ITS assigned slot (C3 = the top-PRIORITY slot for the lone-hull
+// roster, sp-9suun) must not re-navigate to itself — the "already home only if at MY slot" rule,
+// which is what makes a second homing pass move no hull.
 func TestHomeShipHandler_AlreadyAtItsSlot_NoOp(t *testing.T) {
-	ship := newHomeTestShip(t, "TORWIND-4", "X1-TEST-B2", 10, 0)
+	ship := newHomeTestShip(t, "TORWIND-4", "X1-TEST-C3", 100, 0)
 	near := homeTestWaypoint(t, "X1-TEST-B2", 10, 0)
 	far := homeTestWaypoint(t, "X1-TEST-C3", 100, 0)
 
@@ -244,11 +251,48 @@ func TestHomeShipHandler_AlreadyAtItsSlot_NoOp(t *testing.T) {
 	if homeResp.Navigated {
 		t.Fatalf("expected Navigated=false when already at standby station, got %+v", homeResp)
 	}
-	if homeResp.TargetStation != "X1-TEST-B2" {
-		t.Fatalf("expected TargetStation X1-TEST-B2 (where the ship already is), got %s", homeResp.TargetStation)
+	if homeResp.TargetStation != "X1-TEST-C3" {
+		t.Fatalf("expected TargetStation X1-TEST-C3 (where the ship already is), got %s", homeResp.TargetStation)
 	}
 	if homeResp.Distance != 0 {
 		t.Fatalf("expected Distance 0 when already at the target station, got %f", homeResp.Distance)
+	}
+}
+
+// The complement of the rule above: "already home" means AT MY SLOT, not at ANY standby
+// station. With a 2-hull roster both slots survive the priority truncation; TORWIND-4 owns B2
+// (symbol-zip of [TORWIND-4,TORWIND-9] onto [B2,C3]) and is parked on its PEER's slot C3, so it
+// must still relocate — otherwise a hull could squat a peer's slot forever and the design's
+// one-hull-per-park spread quietly collapses.
+func TestHomeShipHandler_AtAPeersSlot_StillRelocatesToItsOwn(t *testing.T) {
+	ship := newHomeTestShip(t, "TORWIND-4", "X1-TEST-C3", 100, 0)
+	near := homeTestWaypoint(t, "X1-TEST-B2", 10, 0)
+	far := homeTestWaypoint(t, "X1-TEST-C3", 100, 0)
+
+	shipRepo := &homeStubShipRepo{ship: ship}
+	graphProvider := &homeStubGraphProvider{graph: homeTestGraph(near, far)}
+	mediator := &homeFakeMediator{}
+
+	handler := NewHomeShipHandler(mediator, shipRepo, graphProvider)
+
+	resp, err := handler.Handle(context.Background(), &HomeShipCommand{
+		ShipSymbol:      "TORWIND-4",
+		PlayerID:        shared.MustNewPlayerID(1),
+		FleetShips:      []string{"TORWIND-4", "TORWIND-9"},
+		StandbyStations: []string{"X1-TEST-C3", "X1-TEST-B2"},
+	})
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if len(mediator.navigateCalls) != 1 || mediator.navigateCalls[0].Destination != "X1-TEST-B2" {
+		t.Fatalf("expected relocation to its OWN slot X1-TEST-B2, got %+v", mediator.navigateCalls)
+	}
+	homeResp, ok := resp.(*HomeShipResponse)
+	if !ok {
+		t.Fatalf("unexpected response type: %T", resp)
+	}
+	if !homeResp.Navigated || homeResp.TargetStation != "X1-TEST-B2" {
+		t.Fatalf("expected Navigated=true to X1-TEST-B2, got %+v", homeResp)
 	}
 }
 

@@ -27,12 +27,22 @@ const centralBandRadius = 300.0
 // what keeps an inner-band contract sink in the central-park set even before its
 // import goods are scanned, so idle delivery hulls spread across ALL distinct central
 // waypoints instead of piling on the handful currently scanned as importers.
+//
+// Type / Traits / HasFuel are the rest of the DURABLE charted record — the waypoint's
+// generator type (PLANET / MOON / ORBITAL_STATION / ASTEROID_BASE …), its charted trait
+// symbols, and whether it sells fuel on site. They carry the era-invariant standby
+// anchors (see anchors.go): the universe regenerates every era with new NAMES and NUMBERS
+// but the SAME generator template, so an anchor keyed on composition + trait + radius
+// resolves identically era after era while a symbol never does.
 type WaypointMarket struct {
 	Symbol        string
 	X, Y          float64
 	Exports       []string
 	Imports       []string
 	IsMarketplace bool
+	Type          string
+	Traits        []string
+	HasFuel       bool
 }
 
 // EraRoles is the resolved per-era topology: which of THIS era's waypoints fill
@@ -40,20 +50,25 @@ type WaypointMarket struct {
 // on geometry + market role, never on a letter or number. CentralParks and
 // FarSources are returned in a stable symbol order; FarSink is the single far
 // outlier consumer (served LIVE — no J depot), "" when the system has none.
+// Anchors are the four era-invariant standby placement anchors (anchors.go), each ""
+// when this era's charted template did not produce it.
 type EraRoles struct {
 	CentralParks []string
 	FarSources   []string
 	FarSink      string
+	Anchors      EraAnchors
 }
 
 // ResolveRoles classifies home-system waypoints into the fixed roles by geometry
 // band and market trade role — "a lookup, not a solve":
 //   - central parks = inner-band contract sinks (isCentralSink): the delivery targets.
 //   - far sources   = far-band exporters: where the fleet sources ores/precious/drugs.
-//   - far sink      = the FARTHEST importer: the J-outlier consumer, served live.
+//   - far sink      = the far-outlier consumer: the DURABLE pirate-base template when this
+//     era charted one, else the farthest far-band importer (the original rule).
+//   - anchors       = the four era-invariant standby placement anchors (anchors.go).
 //
-// The classification is a pure function of position + trade role, so a renamed
-// era with identical geometry resolves to identical roles (the stationarity the
+// The classification is a pure function of position + charted facts + trade role, so a
+// renamed era with identical geometry resolves to identical roles (the stationarity the
 // whole design rests on).
 func ResolveRoles(markets []WaypointMarket) EraRoles {
 	roles := EraRoles{}
@@ -76,6 +91,15 @@ func ResolveRoles(markets []WaypointMarket) EraRoles {
 			roles.FarSink, farSinkDist = m.Symbol, dist
 		}
 	}
+	roles.Anchors = resolveAnchors(markets)
+	// REUSE, not duplicate: the far sink is ONE role. The durable template (a charted
+	// PIRATE_BASE marketplace, independent of any dock scan) wins whenever this era has
+	// one; the scanned farthest-importer rule above stays as the fallback for an era that
+	// does not, so the field is never emptied by the change.
+	if roles.Anchors.FarSink != "" {
+		roles.FarSink = roles.Anchors.FarSink
+	}
+	roles.CentralParks = pruneAnchorCoLocated(roles.CentralParks, markets, roles.Anchors)
 	sort.Strings(roles.CentralParks)
 	sort.Strings(roles.FarSources)
 	return roles

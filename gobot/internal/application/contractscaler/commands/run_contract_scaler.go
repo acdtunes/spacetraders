@@ -811,12 +811,30 @@ func (h *RunContractScalerHandler) armedPlanFor(ctx context.Context, cmd *RunCon
 	// drift. Not all central parks (the previous set that let idle hulls spread demand-ranked and pile).
 	armed := &armedPlan{
 		plan:            contractscaler.BuildPlan(roles, demand),
-		standbyStations: contractscaler.TopDeliverySlots(roles.CentralParks, demand),
+		standbyStations: contractscaler.TopDeliverySlots(roles, demand),
 	}
+	logAnchorMisses(ctx, cmd.ContainerID, roles.Anchors)
 	h.mu.Lock()
 	h.plans[cmd.ContainerID] = armed
 	h.mu.Unlock()
 	return armed, nil
+}
+
+// logAnchorMisses WARNs once per arm when this era's charted template failed to produce one of
+// the era-invariant standby anchors (contractscaler/anchors.go). Those slots fail OPEN to the
+// demand-ranked central set, which is deliberate but SILENT — without this line a changed
+// generator template looks exactly like a healthy era, and the analyst never learns to re-rank
+// the slot from the contract corpus. A fully resolved era logs nothing.
+func logAnchorMisses(ctx context.Context, containerID string, anchors contractscaler.EraAnchors) {
+	misses := anchors.Misses()
+	if len(misses) == 0 {
+		return
+	}
+	common.LoggerFromContext(ctx).Log("WARN", fmt.Sprintf(
+		"Contract scaler: this era charted no %v standby anchor(s) — those placement slots fall back to the demand-ranked central set; re-rank them from the contract corpus",
+		misses), map[string]interface{}{
+		"action": "contract_standby_anchor_miss", "container_id": containerID, "missing_anchors": misses,
+	})
 }
 
 // liveCeiling reads contract_fleet_max_hulls from the container's own config each

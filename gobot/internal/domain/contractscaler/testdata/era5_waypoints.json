@@ -1,0 +1,1024 @@
+[
+    {
+        "x": -25,
+        "y": 0,
+        "type": "PLANET",
+        "symbol": "X1-KP23-A1",
+        "traits": [
+            "BARREN",
+            "SCATTERED_SETTLEMENTS",
+            "CORROSIVE_ATMOSPHERE",
+            "FOSSILS",
+            "SALT_FLATS",
+            "MARKETPLACE"
+        ],
+        "has_fuel": true
+    },
+    {
+        "x": -25,
+        "y": 0,
+        "type": "MOON",
+        "symbol": "X1-KP23-A2",
+        "traits": [
+            "BARREN",
+            "SPRAWLING_CITIES",
+            "THIN_ATMOSPHERE",
+            "VIBRANT_AURORAS",
+            "CORROSIVE_ATMOSPHERE",
+            "MARKETPLACE",
+            "SHIPYARD"
+        ],
+        "has_fuel": true
+    },
+    {
+        "x": -25,
+        "y": 0,
+        "type": "MOON",
+        "symbol": "X1-KP23-A3",
+        "traits": [
+            "VOLCANIC",
+            "MEGA_STRUCTURES",
+            "EXTREME_PRESSURE",
+            "EXTREME_TEMPERATURES",
+            "TOXIC_ATMOSPHERE",
+            "STRONG_MAGNETOSPHERE",
+            "MARKETPLACE"
+        ],
+        "has_fuel": true
+    },
+    {
+        "x": -25,
+        "y": 0,
+        "type": "ORBITAL_STATION",
+        "symbol": "X1-KP23-A4",
+        "traits": [
+            "EXPLORATION_OUTPOST",
+            "MARKETPLACE"
+        ],
+        "has_fuel": true
+    },
+    {
+        "x": 24,
+        "y": -14,
+        "type": "ENGINEERED_ASTEROID",
+        "symbol": "X1-KP23-AX5Z",
+        "traits": [
+            "COMMON_METAL_DEPOSITS",
+            "STRIPPED",
+            "MARKETPLACE"
+        ],
+        "has_fuel": true
+    },
+    {
+        "x": 21,
+        "y": -315,
+        "type": "ASTEROID",
+        "symbol": "X1-KP23-B10",
+        "traits": [
+            "COMMON_METAL_DEPOSITS"
+        ],
+        "has_fuel": false
+    },
+    {
+        "x": -181,
+        "y": -307,
+        "type": "ASTEROID",
+        "symbol": "X1-KP23-B11",
+        "traits": [
+            "MINERAL_DEPOSITS",
+            "DEEP_CRATERS"
+        ],
+        "has_fuel": false
+    },
+    {
+        "x": 190,
+        "y": -279,
+        "type": "ASTEROID",
+        "symbol": "X1-KP23-B12",
+        "traits": [
+            "MINERAL_DEPOSITS",
+            "EXPLOSIVE_GASES",
+            "DEEP_CRATERS"
+        ],
+        "has_fuel": false
+    },
+    {
+        "x": 127,
+        "y": -322,
+        "type": "ASTEROID",
+        "symbol": "X1-KP23-B13",
+        "traits": [
+            "MINERAL_DEPOSITS"
+        ],
+        "has_fuel": false
+    },
+    {
+        "x": 76,
+        "y": -353,
+        "type": "ASTEROID",
+        "symbol": "X1-KP23-B14",
+        "traits": [
+            "MINERAL_DEPOSITS"
+        ],
+        "has_fuel": false
+    },
+    {
+        "x": 241,
+        "y": -275,
+        "type": "ASTEROID",
+        "symbol": "X1-KP23-B15",
+        "traits": [
+            "MINERAL_DEPOSITS",
+            "DEBRIS_CLUSTER",
+            "DEEP_CRATERS"
+        ],
+        "has_fuel": false
+    },
+    {
+        "x": 197,
+        "y": -323,
+        "type": "ASTEROID",
+        "symbol": "X1-KP23-B16",
+        "traits": [
+            "COMMON_METAL_DEPOSITS",
+            "EXPLOSIVE_GASES",
+            "DEEP_CRATERS"
+        ],
+        "has_fuel": false
+    },
+    {
+        "x": 374,
+        "y": -42,
+        "type": "ASTEROID",
+        "symbol": "X1-KP23-B17",
+        "traits": [
+            "MINERAL_DEPOSITS",
+            "DEEP_CRATERS"
+        ],
+        "has_fuel": false
+    },
+    {
+        "x": 343,
+        "y": -8,
+        "type": "ASTEROID",
+        "symbol": "X1-KP23-B18",
+        "traits": [
+            "RARE_METAL_DEPOSITS",
+            "EXPLOSIVE_GASES"
+        ],
+        "has_fuel": false
+    },
+    {
+        "x": 254,
+        "y": -209,
+        "type": "ASTEROID",
+        "symbol": "X1-KP23-B19",
+        "traits": [
+            "MINERAL_DEPOSITS",
+            "SHALLOW_CRATERS",
+            "DEEP_CRATERS"
+        ],
+        "has_fuel": false
+    },
+    {
+        "x": 320,
+        "y": -91,
+        "type": "ASTEROID",
+        "symbol": "X1-KP23-B20",
+        "traits": [
+            "COMMON_METAL_DEPOSITS",
+            "SHALLOW_CRATERS"
+        ],
+        "has_fuel": false
+    },
+    {
+        "x": 382,
+        "y": -41,
+        "type": "ASTEROID",
+        "symbol": "X1-KP23-B21",
+        "traits": [
+            "MINERAL_DEPOSITS",
+            "DEEP_CRATERS"
+        ],
+        "has_fuel": false
+    },
+    {
+        "x": 268,
+        "y": 228,
+        "type": "ASTEROID",
+        "symbol": "X1-KP23-B22",
+        "traits": [
+            "COMMON_METAL_DEPOSITS",
+            "DEEP_CRATERS",
+            "EXPLOSIVE_GASES"
+        ],
+        "has_fuel": false
+    },
+    {
+        "x": 312,
+        "y": 30,
+        "type": "ASTEROID",
+        "symbol": "X1-KP23-B23",
+        "traits": [
+            "COMMON_METAL_DEPOSITS",
+            "EXPLOSIVE_GASES",
+            "RADIOACTIVE"
+        ],
+        "has_fuel": false
+    },
+    {
+        "x": 146,
+        "y": 359,
+        "type": "ASTEROID",
+        "symbol": "X1-KP23-B24",
+        "traits": [
+            "COMMON_METAL_DEPOSITS",
+            "UNSTABLE_COMPOSITION",
+            "EXPLOSIVE_GASES"
+        ],
+        "has_fuel": false
+    },
+    {
+        "x": 224,
+        "y": 313,
+        "type": "ASTEROID",
+        "symbol": "X1-KP23-B25",
+        "traits": [
+            "COMMON_METAL_DEPOSITS",
+            "RADIOACTIVE",
+            "DEEP_CRATERS",
+            "UNSTABLE_COMPOSITION"
+        ],
+        "has_fuel": false
+    },
+    {
+        "x": 140,
+        "y": 303,
+        "type": "ASTEROID",
+        "symbol": "X1-KP23-B26",
+        "traits": [
+            "COMMON_METAL_DEPOSITS"
+        ],
+        "has_fuel": false
+    },
+    {
+        "x": 255,
+        "y": 293,
+        "type": "ASTEROID",
+        "symbol": "X1-KP23-B27",
+        "traits": [
+            "COMMON_METAL_DEPOSITS",
+            "HOLLOWED_INTERIOR"
+        ],
+        "has_fuel": false
+    },
+    {
+        "x": 6,
+        "y": 336,
+        "type": "ASTEROID",
+        "symbol": "X1-KP23-B28",
+        "traits": [
+            "PRECIOUS_METAL_DEPOSITS",
+            "EXPLOSIVE_GASES",
+            "RADIOACTIVE"
+        ],
+        "has_fuel": false
+    },
+    {
+        "x": -46,
+        "y": 354,
+        "type": "ASTEROID",
+        "symbol": "X1-KP23-B29",
+        "traits": [
+            "MINERAL_DEPOSITS",
+            "MICRO_GRAVITY_ANOMALIES",
+            "DEEP_CRATERS"
+        ],
+        "has_fuel": false
+    },
+    {
+        "x": -348,
+        "y": 113,
+        "type": "ASTEROID",
+        "symbol": "X1-KP23-B30",
+        "traits": [
+            "MINERAL_DEPOSITS",
+            "EXPLOSIVE_GASES",
+            "SHALLOW_CRATERS"
+        ],
+        "has_fuel": false
+    },
+    {
+        "x": -335,
+        "y": 51,
+        "type": "ASTEROID",
+        "symbol": "X1-KP23-B31",
+        "traits": [
+            "COMMON_METAL_DEPOSITS",
+            "HOLLOWED_INTERIOR",
+            "RADIOACTIVE"
+        ],
+        "has_fuel": false
+    },
+    {
+        "x": -324,
+        "y": 89,
+        "type": "ASTEROID",
+        "symbol": "X1-KP23-B32",
+        "traits": [
+            "COMMON_METAL_DEPOSITS"
+        ],
+        "has_fuel": false
+    },
+    {
+        "x": -299,
+        "y": 162,
+        "type": "ASTEROID",
+        "symbol": "X1-KP23-B33",
+        "traits": [
+            "PRECIOUS_METAL_DEPOSITS"
+        ],
+        "has_fuel": false
+    },
+    {
+        "x": -320,
+        "y": 106,
+        "type": "ASTEROID",
+        "symbol": "X1-KP23-B34",
+        "traits": [
+            "MINERAL_DEPOSITS"
+        ],
+        "has_fuel": false
+    },
+    {
+        "x": -274,
+        "y": -218,
+        "type": "ASTEROID",
+        "symbol": "X1-KP23-B35",
+        "traits": [
+            "MINERAL_DEPOSITS",
+            "DEEP_CRATERS",
+            "MICRO_GRAVITY_ANOMALIES"
+        ],
+        "has_fuel": false
+    },
+    {
+        "x": -277,
+        "y": -262,
+        "type": "ASTEROID",
+        "symbol": "X1-KP23-B36",
+        "traits": [
+            "PRECIOUS_METAL_DEPOSITS",
+            "UNSTABLE_COMPOSITION",
+            "DEEP_CRATERS",
+            "RADIOACTIVE"
+        ],
+        "has_fuel": false
+    },
+    {
+        "x": -133,
+        "y": -133,
+        "type": "FUEL_STATION",
+        "symbol": "X1-KP23-B6",
+        "traits": [
+            "MARKETPLACE"
+        ],
+        "has_fuel": true
+    },
+    {
+        "x": -308,
+        "y": -152,
+        "type": "ASTEROID_BASE",
+        "symbol": "X1-KP23-B7",
+        "traits": [
+            "HOLLOWED_INTERIOR",
+            "OUTPOST",
+            "MARKETPLACE"
+        ],
+        "has_fuel": true
+    },
+    {
+        "x": -108,
+        "y": -331,
+        "type": "ASTEROID",
+        "symbol": "X1-KP23-B8",
+        "traits": [
+            "MINERAL_DEPOSITS"
+        ],
+        "has_fuel": false
+    },
+    {
+        "x": -236,
+        "y": -277,
+        "type": "ASTEROID",
+        "symbol": "X1-KP23-B9",
+        "traits": [
+            "MINERAL_DEPOSITS"
+        ],
+        "has_fuel": false
+    },
+    {
+        "x": 139,
+        "y": 67,
+        "type": "GAS_GIANT",
+        "symbol": "X1-KP23-C37",
+        "traits": [
+            "TOXIC_ATMOSPHERE"
+        ],
+        "has_fuel": false
+    },
+    {
+        "x": 139,
+        "y": 67,
+        "type": "ORBITAL_STATION",
+        "symbol": "X1-KP23-C38",
+        "traits": [
+            "OUTPOST",
+            "INDUSTRIAL",
+            "MARKETPLACE",
+            "SHIPYARD"
+        ],
+        "has_fuel": true
+    },
+    {
+        "x": 104,
+        "y": 50,
+        "type": "FUEL_STATION",
+        "symbol": "X1-KP23-C39",
+        "traits": [
+            "MARKETPLACE"
+        ],
+        "has_fuel": true
+    },
+    {
+        "x": 19,
+        "y": -81,
+        "type": "PLANET",
+        "symbol": "X1-KP23-D40",
+        "traits": [
+            "OCEAN",
+            "SCATTERED_SETTLEMENTS",
+            "PERPETUAL_OVERCAST",
+            "PERPETUAL_DAYLIGHT",
+            "ASH_CLOUDS",
+            "METHANE_POOLS",
+            "CANYONS",
+            "INDUSTRIAL",
+            "MARKETPLACE"
+        ],
+        "has_fuel": true
+    },
+    {
+        "x": 19,
+        "y": -81,
+        "type": "MOON",
+        "symbol": "X1-KP23-D41",
+        "traits": [
+            "VOLCANIC",
+            "SPRAWLING_CITIES",
+            "VIBRANT_AURORAS",
+            "THIN_ATMOSPHERE",
+            "INDUSTRIAL",
+            "MARKETPLACE"
+        ],
+        "has_fuel": true
+    },
+    {
+        "x": -40,
+        "y": 36,
+        "type": "PLANET",
+        "symbol": "X1-KP23-E42",
+        "traits": [
+            "BARREN",
+            "OUTPOST",
+            "EXPLOSIVE_GASES",
+            "SCARCE_LIFE",
+            "INDUSTRIAL",
+            "MARKETPLACE"
+        ],
+        "has_fuel": true
+    },
+    {
+        "x": -40,
+        "y": 36,
+        "type": "MOON",
+        "symbol": "X1-KP23-E43",
+        "traits": [
+            "FROZEN",
+            "OUTPOST",
+            "INDUSTRIAL",
+            "MARKETPLACE"
+        ],
+        "has_fuel": true
+    },
+    {
+        "x": -40,
+        "y": 36,
+        "type": "MOON",
+        "symbol": "X1-KP23-E44",
+        "traits": [
+            "FROZEN",
+            "EXTREME_TEMPERATURES",
+            "EXTREME_PRESSURE",
+            "VIBRANT_AURORAS"
+        ],
+        "has_fuel": false
+    },
+    {
+        "x": -75,
+        "y": 13,
+        "type": "PLANET",
+        "symbol": "X1-KP23-F45",
+        "traits": [
+            "ROCKY",
+            "SCATTERED_SETTLEMENTS",
+            "SCARCE_LIFE",
+            "BREATHABLE_ATMOSPHERE",
+            "CANYONS",
+            "MARKETPLACE"
+        ],
+        "has_fuel": true
+    },
+    {
+        "x": -75,
+        "y": 13,
+        "type": "ORBITAL_STATION",
+        "symbol": "X1-KP23-F46",
+        "traits": [
+            "VOLCANIC",
+            "OUTPOST",
+            "EXTREME_TEMPERATURES",
+            "STRONG_MAGNETOSPHERE",
+            "HIGH_TECH",
+            "MARKETPLACE"
+        ],
+        "has_fuel": true
+    },
+    {
+        "x": 61,
+        "y": 20,
+        "type": "PLANET",
+        "symbol": "X1-KP23-G47",
+        "traits": [
+            "BARREN",
+            "SCATTERED_SETTLEMENTS",
+            "SALT_FLATS",
+            "MAGMA_SEAS",
+            "CORROSIVE_ATMOSPHERE",
+            "INDUSTRIAL",
+            "MARKETPLACE"
+        ],
+        "has_fuel": true
+    },
+    {
+        "x": 61,
+        "y": 20,
+        "type": "MOON",
+        "symbol": "X1-KP23-G48",
+        "traits": [
+            "ROCKY",
+            "THIN_ATMOSPHERE",
+            "MARKETPLACE"
+        ],
+        "has_fuel": true
+    },
+    {
+        "x": 42,
+        "y": -17,
+        "type": "PLANET",
+        "symbol": "X1-KP23-H49",
+        "traits": [
+            "JUNGLE",
+            "OUTPOST",
+            "PERPETUAL_OVERCAST",
+            "INDUSTRIAL",
+            "MARKETPLACE"
+        ],
+        "has_fuel": true
+    },
+    {
+        "x": 42,
+        "y": -17,
+        "type": "MOON",
+        "symbol": "X1-KP23-H50",
+        "traits": [
+            "FROZEN",
+            "SCATTERED_SETTLEMENTS",
+            "EXTREME_TEMPERATURES",
+            "STRONG_MAGNETOSPHERE",
+            "INDUSTRIAL",
+            "MARKETPLACE",
+            "SHIPYARD"
+        ],
+        "has_fuel": true
+    },
+    {
+        "x": 42,
+        "y": -17,
+        "type": "MOON",
+        "symbol": "X1-KP23-H51",
+        "traits": [
+            "ROCKY",
+            "OUTPOST",
+            "TOXIC_ATMOSPHERE",
+            "INDUSTRIAL",
+            "MARKETPLACE"
+        ],
+        "has_fuel": true
+    },
+    {
+        "x": 42,
+        "y": -17,
+        "type": "MOON",
+        "symbol": "X1-KP23-H52",
+        "traits": [
+            "ROCKY",
+            "OUTPOST",
+            "EXTREME_PRESSURE",
+            "INDUSTRIAL",
+            "MARKETPLACE"
+        ],
+        "has_fuel": true
+    },
+    {
+        "x": -146,
+        "y": 427,
+        "type": "JUMP_GATE",
+        "symbol": "X1-KP23-I53",
+        "traits": [
+            "MARKETPLACE"
+        ],
+        "has_fuel": true
+    },
+    {
+        "x": -74,
+        "y": 218,
+        "type": "FUEL_STATION",
+        "symbol": "X1-KP23-I54",
+        "traits": [
+            "MARKETPLACE"
+        ],
+        "has_fuel": true
+    },
+    {
+        "x": -194,
+        "y": 568,
+        "type": "FUEL_STATION",
+        "symbol": "X1-KP23-J55",
+        "traits": [
+            "MARKETPLACE"
+        ],
+        "has_fuel": true
+    },
+    {
+        "x": -233,
+        "y": 681,
+        "type": "ASTEROID_BASE",
+        "symbol": "X1-KP23-J56",
+        "traits": [
+            "HOLLOWED_INTERIOR",
+            "PIRATE_BASE",
+            "MARKETPLACE"
+        ],
+        "has_fuel": true
+    },
+    {
+        "x": 461,
+        "y": -597,
+        "type": "ASTEROID",
+        "symbol": "X1-KP23-J57",
+        "traits": [
+            "MINERAL_DEPOSITS",
+            "SHALLOW_CRATERS"
+        ],
+        "has_fuel": false
+    },
+    {
+        "x": 749,
+        "y": -37,
+        "type": "ASTEROID",
+        "symbol": "X1-KP23-J58",
+        "traits": [
+            "MINERAL_DEPOSITS",
+            "RADIOACTIVE"
+        ],
+        "has_fuel": false
+    },
+    {
+        "x": 754,
+        "y": -231,
+        "type": "ASTEROID",
+        "symbol": "X1-KP23-J59",
+        "traits": [
+            "COMMON_METAL_DEPOSITS",
+            "DEEP_CRATERS"
+        ],
+        "has_fuel": false
+    },
+    {
+        "x": 474,
+        "y": -560,
+        "type": "ASTEROID",
+        "symbol": "X1-KP23-J60",
+        "traits": [
+            "MINERAL_DEPOSITS",
+            "MICRO_GRAVITY_ANOMALIES",
+            "RADIOACTIVE"
+        ],
+        "has_fuel": false
+    },
+    {
+        "x": 731,
+        "y": -286,
+        "type": "ASTEROID",
+        "symbol": "X1-KP23-J61",
+        "traits": [
+            "COMMON_METAL_DEPOSITS",
+            "DEEP_CRATERS",
+            "DEBRIS_CLUSTER"
+        ],
+        "has_fuel": false
+    },
+    {
+        "x": 670,
+        "y": -291,
+        "type": "ASTEROID",
+        "symbol": "X1-KP23-J62",
+        "traits": [
+            "RARE_METAL_DEPOSITS"
+        ],
+        "has_fuel": false
+    },
+    {
+        "x": 523,
+        "y": 559,
+        "type": "ASTEROID",
+        "symbol": "X1-KP23-J63",
+        "traits": [
+            "MINERAL_DEPOSITS",
+            "SHALLOW_CRATERS"
+        ],
+        "has_fuel": false
+    },
+    {
+        "x": 401,
+        "y": 672,
+        "type": "ASTEROID",
+        "symbol": "X1-KP23-J64",
+        "traits": [
+            "COMMON_METAL_DEPOSITS",
+            "RADIOACTIVE"
+        ],
+        "has_fuel": false
+    },
+    {
+        "x": 222,
+        "y": 676,
+        "type": "ASTEROID",
+        "symbol": "X1-KP23-J65",
+        "traits": [
+            "COMMON_METAL_DEPOSITS",
+            "DEEP_CRATERS",
+            "RADIOACTIVE",
+            "MICRO_GRAVITY_ANOMALIES"
+        ],
+        "has_fuel": false
+    },
+    {
+        "x": 457,
+        "y": 548,
+        "type": "ASTEROID",
+        "symbol": "X1-KP23-J66",
+        "traits": [
+            "MINERAL_DEPOSITS",
+            "DEBRIS_CLUSTER"
+        ],
+        "has_fuel": false
+    },
+    {
+        "x": -4,
+        "y": 762,
+        "type": "ASTEROID",
+        "symbol": "X1-KP23-J67",
+        "traits": [
+            "COMMON_METAL_DEPOSITS",
+            "EXPLOSIVE_GASES",
+            "SHALLOW_CRATERS",
+            "RADIOACTIVE"
+        ],
+        "has_fuel": false
+    },
+    {
+        "x": -134,
+        "y": 770,
+        "type": "ASTEROID",
+        "symbol": "X1-KP23-J68",
+        "traits": [
+            "MINERAL_DEPOSITS"
+        ],
+        "has_fuel": false
+    },
+    {
+        "x": -225,
+        "y": 736,
+        "type": "ASTEROID",
+        "symbol": "X1-KP23-J69",
+        "traits": [
+            "COMMON_METAL_DEPOSITS"
+        ],
+        "has_fuel": false
+    },
+    {
+        "x": -275,
+        "y": 738,
+        "type": "ASTEROID",
+        "symbol": "X1-KP23-J70",
+        "traits": [
+            "COMMON_METAL_DEPOSITS",
+            "DEEP_CRATERS",
+            "SHALLOW_CRATERS"
+        ],
+        "has_fuel": false
+    },
+    {
+        "x": -749,
+        "y": 73,
+        "type": "ASTEROID",
+        "symbol": "X1-KP23-J71",
+        "traits": [
+            "MINERAL_DEPOSITS",
+            "SHALLOW_CRATERS",
+            "EXPLOSIVE_GASES"
+        ],
+        "has_fuel": false
+    },
+    {
+        "x": -767,
+        "y": 26,
+        "type": "ASTEROID",
+        "symbol": "X1-KP23-J72",
+        "traits": [
+            "COMMON_METAL_DEPOSITS",
+            "MICRO_GRAVITY_ANOMALIES",
+            "SHALLOW_CRATERS"
+        ],
+        "has_fuel": false
+    },
+    {
+        "x": -676,
+        "y": 233,
+        "type": "ASTEROID",
+        "symbol": "X1-KP23-J73",
+        "traits": [
+            "MINERAL_DEPOSITS",
+            "SHALLOW_CRATERS"
+        ],
+        "has_fuel": false
+    },
+    {
+        "x": -618,
+        "y": -385,
+        "type": "ASTEROID",
+        "symbol": "X1-KP23-J74",
+        "traits": [
+            "COMMON_METAL_DEPOSITS",
+            "EXPLOSIVE_GASES"
+        ],
+        "has_fuel": false
+    },
+    {
+        "x": -353,
+        "y": -665,
+        "type": "ASTEROID",
+        "symbol": "X1-KP23-J75",
+        "traits": [
+            "MINERAL_DEPOSITS",
+            "DEEP_CRATERS"
+        ],
+        "has_fuel": false
+    },
+    {
+        "x": -742,
+        "y": -196,
+        "type": "ASTEROID",
+        "symbol": "X1-KP23-J76",
+        "traits": [
+            "MINERAL_DEPOSITS",
+            "UNSTABLE_COMPOSITION"
+        ],
+        "has_fuel": false
+    },
+    {
+        "x": -698,
+        "y": -155,
+        "type": "ASTEROID",
+        "symbol": "X1-KP23-J77",
+        "traits": [
+            "MINERAL_DEPOSITS",
+            "EXPLOSIVE_GASES"
+        ],
+        "has_fuel": false
+    },
+    {
+        "x": -547,
+        "y": -540,
+        "type": "ASTEROID",
+        "symbol": "X1-KP23-J78",
+        "traits": [
+            "COMMON_METAL_DEPOSITS",
+            "UNSTABLE_COMPOSITION"
+        ],
+        "has_fuel": false
+    },
+    {
+        "x": -161,
+        "y": -721,
+        "type": "ASTEROID",
+        "symbol": "X1-KP23-J79",
+        "traits": [
+            "PRECIOUS_METAL_DEPOSITS"
+        ],
+        "has_fuel": false
+    },
+    {
+        "x": 307,
+        "y": -700,
+        "type": "ASTEROID",
+        "symbol": "X1-KP23-J80",
+        "traits": [
+            "RARE_METAL_DEPOSITS",
+            "SHALLOW_CRATERS",
+            "EXPLOSIVE_GASES"
+        ],
+        "has_fuel": false
+    },
+    {
+        "x": 225,
+        "y": -746,
+        "type": "ASTEROID",
+        "symbol": "X1-KP23-J81",
+        "traits": [
+            "COMMON_METAL_DEPOSITS",
+            "EXPLOSIVE_GASES",
+            "RADIOACTIVE"
+        ],
+        "has_fuel": false
+    },
+    {
+        "x": 556,
+        "y": -476,
+        "type": "ASTEROID",
+        "symbol": "X1-KP23-J82",
+        "traits": [
+            "MINERAL_DEPOSITS",
+            "DEBRIS_CLUSTER"
+        ],
+        "has_fuel": false
+    },
+    {
+        "x": 14,
+        "y": -756,
+        "type": "ASTEROID",
+        "symbol": "X1-KP23-J83",
+        "traits": [
+            "COMMON_METAL_DEPOSITS"
+        ],
+        "has_fuel": false
+    },
+    {
+        "x": 382,
+        "y": -631,
+        "type": "ASTEROID",
+        "symbol": "X1-KP23-J84",
+        "traits": [
+            "MINERAL_DEPOSITS"
+        ],
+        "has_fuel": false
+    },
+    {
+        "x": 681,
+        "y": -260,
+        "type": "ASTEROID",
+        "symbol": "X1-KP23-J85",
+        "traits": [
+            "PRECIOUS_METAL_DEPOSITS",
+            "HOLLOWED_INTERIOR"
+        ],
+        "has_fuel": false
+    },
+    {
+        "x": -28,
+        "y": 100,
+        "type": "PLANET",
+        "symbol": "X1-KP23-K86",
+        "traits": [
+            "SWAMP",
+            "SCATTERED_SETTLEMENTS",
+            "THIN_ATMOSPHERE",
+            "BREATHABLE_ATMOSPHERE",
+            "INDUSTRIAL",
+            "MARKETPLACE"
+        ],
+        "has_fuel": true
+    }
+]

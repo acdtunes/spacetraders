@@ -68,6 +68,68 @@ func TestAssignedSlot_SurplusHullsOwnNoSlot(t *testing.T) {
 	}
 }
 
+// TRUNCATION DROPS FROM THE END: with fewer hulls than slots the caller's PLACEMENT PRIORITY
+// order decides which slots go unused — the tail. The slot set arrives era-invariant-anchors
+// first ((1) H-stack, (2) far sink, (3) far source base, (4) E-stack, then the demand-ranked
+// central fill), so two hulls park on the H-stack and the far sink. The alphabetical symbol-zip
+// alone would have taken the two lowest SYMBOLS (here the central fill) and stranded both
+// high-value anchors — the placement gain the whole set exists for.
+func TestAssignedSlot_FewerHullsThanSlotsDropsTheLowestPrioritySlots(t *testing.T) {
+	// Priority order deliberately anti-correlated with symbol order.
+	slots := []string{"X1-Z-HSTACK", "X1-Y-FARSINK", "X1-X-FARBASE", "X1-A-CENTRAL"}
+
+	two := []string{"H-1", "H-2"}
+	got := map[string]bool{}
+	for _, hull := range two {
+		slot, ok := AssignedSlot(hull, two, slots)
+		if !ok {
+			t.Fatalf("AssignedSlot(%s) ok=false, want one of the two priority slots", hull)
+		}
+		got[slot] = true
+	}
+	if !got["X1-Z-HSTACK"] || !got["X1-Y-FARSINK"] || len(got) != 2 {
+		t.Fatalf("2 hulls over 4 slots occupied %v, want the two HIGHEST-PRIORITY slots (H-stack, far sink)", got)
+	}
+
+	three := []string{"H-1", "H-2", "H-3"}
+	got = map[string]bool{}
+	for _, hull := range three {
+		slot, ok := AssignedSlot(hull, three, slots)
+		if !ok {
+			t.Fatalf("AssignedSlot(%s) ok=false, want one of the three priority slots", hull)
+		}
+		got[slot] = true
+	}
+	if got["X1-A-CENTRAL"] || len(got) != 3 {
+		t.Fatalf("3 hulls over 4 slots occupied %v, want the first three priority slots (the 4th dropped)", got)
+	}
+}
+
+// The truncation is a NO-OP whenever the fleet is at least as large as the slot set: the
+// one-hull-per-park symbol-zip, and every hull's assignment, is byte-identical to the
+// pre-sp-9suun behaviour there. Duplicate slot symbols collapse before the count, so a repeated
+// entry never eats a priority slot.
+func TestAssignedSlot_TruncationIsANoOpWhenTheFleetCoversTheSlots(t *testing.T) {
+	slots := []string{"X1-Z-HSTACK", "X1-Y-FARSINK", "X1-A-CENTRAL"}
+	fleet := []string{"H-1", "H-2", "H-3"}
+
+	for hull, want := range map[string]string{"H-1": "X1-A-CENTRAL", "H-2": "X1-Y-FARSINK", "H-3": "X1-Z-HSTACK"} {
+		if got, ok := AssignedSlot(hull, fleet, slots); !ok || got != want {
+			t.Fatalf("AssignedSlot(%s) = %q,%v, want %q (plain symbol-zip, no truncation)", hull, got, ok, want)
+		}
+	}
+
+	// Two hulls, and a slot set whose 3 entries are only 2 DISTINCT symbols → nothing truncated.
+	dupSlots := []string{"X1-Z-HSTACK", "X1-Y-FARSINK", "X1-Z-HSTACK"}
+	pair := []string{"H-1", "H-2"}
+	if got, ok := AssignedSlot("H-1", pair, dupSlots); !ok || got != "X1-Y-FARSINK" {
+		t.Fatalf("AssignedSlot(H-1) = %q,%v, want X1-Y-FARSINK (duplicates collapse before the count)", got, ok)
+	}
+	if got, ok := AssignedSlot("H-2", pair, dupSlots); !ok || got != "X1-Z-HSTACK" {
+		t.Fatalf("AssignedSlot(H-2) = %q,%v, want X1-Z-HSTACK (duplicates collapse before the count)", got, ok)
+	}
+}
+
 // A hull absent from the passed fleet roster is still placed (it is added to the roster), and
 // an empty slot set yields no slot (homing disabled / no placement resolved).
 func TestAssignedSlot_ShipAddedToRosterAndEmptySlotsYieldNone(t *testing.T) {

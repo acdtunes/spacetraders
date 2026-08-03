@@ -2,9 +2,13 @@ package grpc
 
 import (
 	"context"
+	"fmt"
 	"sort"
+	"strings"
+	"sync"
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
+	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	appContract "github.com/andrescamacho/spacetraders-go/internal/application/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/contractscaler"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
@@ -18,10 +22,17 @@ import (
 // FIXED delivery placement slots (TopDeliverySlots) — the SAME selection the scaler buys against, via
 // the SHARED dedupedCentralParkSymbols helper, so the two positioning consumers agree on ONE slot set
 // with no drift. The runtime homing zips hulls onto these slots by symbol — NO demand. It computes NO
-// plan and holds NO state; the coordinator resolves it live each pass. RULINGS #14 (home-system only);
-// RULINGS #3 (a READ, never a config write).
+// plan and holds NO placement state; the coordinator resolves it live each pass. RULINGS #14
+// (home-system only); RULINGS #3 (a READ, never a config write).
+//
+// loggedMisses is a LOG LATCH ONLY — the last anchor-miss signature reported per player, so a
+// template break is logged when it appears and when it changes instead of once per homing pass.
+// It never feeds a placement decision; clearing it would change nothing but the log volume.
 type contractStandbyPlacementProvider struct {
 	resolver *contractScalerRoleResolver
+
+	mu           sync.Mutex
+	loggedMisses map[int]string
 }
 
 var _ appContract.StandbyPlacementProvider = (*contractStandbyPlacementProvider)(nil)
@@ -51,8 +62,36 @@ func (p *contractStandbyPlacementProvider) StandbyPlacement(ctx context.Context,
 		return nil, err
 	}
 	roles := contractscaler.ResolveRoles(markets)
-	deduped := dedupedCentralParkSymbols(roles, markets, demand)
-	return contractscaler.TopDeliverySlots(deduped, demand), nil
+	roles.CentralParks = dedupedCentralParkSymbols(roles, markets, demand)
+	p.reportAnchorMisses(ctx, playerID, roles.Anchors)
+	return contractscaler.TopDeliverySlots(roles, demand), nil
+}
+
+// reportAnchorMisses WARNs when this era's charted template failed to produce one of the
+// era-invariant standby anchors. Those slots silently degrade to the demand-ranked central set
+// (which is the whole point of failing open), so without this log a template change looks
+// exactly like a healthy era and the analyst never re-ranks the slot from the contract corpus.
+// Latched on the miss SIGNATURE so a persistent break costs one line, not one per homing pass.
+func (p *contractStandbyPlacementProvider) reportAnchorMisses(ctx context.Context, playerID int, anchors contractscaler.EraAnchors) {
+	misses := anchors.Misses()
+	signature := strings.Join(misses, ",")
+
+	p.mu.Lock()
+	if p.loggedMisses == nil {
+		p.loggedMisses = map[int]string{}
+	}
+	repeat := p.loggedMisses[playerID] == signature
+	p.loggedMisses[playerID] = signature
+	p.mu.Unlock()
+
+	if repeat || len(misses) == 0 {
+		return
+	}
+	common.LoggerFromContext(ctx).Log("WARN", fmt.Sprintf(
+		"Contract standby placement: this era charted no %v anchor(s) — those slots fall back to the demand-ranked central set; re-rank them from the contract corpus",
+		misses), map[string]interface{}{
+		"action": "contract_standby_anchor_miss", "player_id": playerID, "missing_anchors": misses,
+	})
 }
 
 // dedupedCentralParkSymbols returns the era's central-park symbols coord-deduped to one representative

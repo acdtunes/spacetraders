@@ -57,7 +57,7 @@ type PlanUnit struct {
 // is STRUCTURALLY MANDATED (delivery hulls to the knee before the lumpy warehouse
 // bundle), not a marginal-$/hr greedy. Deterministic: demand-desc, symbol-stable.
 func BuildPlan(roles EraRoles, parkDemand map[string]float64) []PlanUnit {
-	slots := TopDeliverySlots(roles.CentralParks, parkDemand)
+	slots := TopDeliverySlots(roles, parkDemand)
 
 	plan := make([]PlanUnit, 0, len(slots)+WarehouseUnits+StockerUnits)
 	for _, park := range slots {
@@ -67,10 +67,7 @@ func BuildPlan(roles EraRoles, parkDemand map[string]float64) []PlanUnit {
 	// The central hub anchors the warehouse + stocker (central far-source storage,
 	// NOT the far J sink). "" when the era has no central park — then the warehouse
 	// bundle has no home and is omitted (delivery-only fallback).
-	hub := ""
-	if len(slots) > 0 {
-		hub = slots[0]
-	}
+	hub := centralHub(roles.CentralParks, parkDemand)
 	if hub != "" {
 		for i := 0; i < WarehouseUnits; i++ {
 			plan = append(plan, PlanUnit{Role: Warehouse, ShipType: ScalerShipType, Target: hub})
@@ -82,19 +79,99 @@ func BuildPlan(roles EraRoles, parkDemand map[string]float64) []PlanUnit {
 	return plan
 }
 
-// TopDeliverySlots is the FIXED delivery-hull placement set: the central parks ranked
-// highest-demand first (symbol-stable on ties), capped at the MaxDeliveryHulls knee. It is the
-// SINGLE selection both the scaler buys against (BuildPlan) AND the fixed homing zips hulls onto
-// (the standby set), so the two positioning consumers agree on ONE ≤6 slot set with no drift.
+// TopDeliverySlots is the FIXED delivery-hull placement set, in PLACEMENT ORDER: the four
+// ERA-INVARIANT anchors first — (1) H-stack, (2) far sink, (3) far source base, (4) E-stack
+// (see anchors.go) — then the remaining central parks ranked highest-demand first
+// (symbol-stable on ties), all capped at the MaxDeliveryHulls knee. It is the SINGLE selection
+// both the scaler buys against (BuildPlan) AND the fixed homing zips hulls onto (the standby
+// set), so the two positioning consumers agree on ONE ≤6 slot set with no drift.
+//
+// The ORDER is the priority: a fleet smaller than the set drops the LAST slots
+// (domain/contract.AssignedSlot), so three hulls take H-stack + far sink + far source base and
+// two take H-stack + far sink — never an alphabetical accident.
+//
+// FAIL-OPEN: each anchor this era's charted template did not produce (an empty EraAnchors
+// field) degrades to the next demand-ranked central park, so a changed template costs that one
+// slot's placement quality and nothing else. With NO anchors at all the result is exactly the
+// central-only demand ranking this selection has always returned.
+//
 // Demand is an input HERE, resolved ONCE at arm — the RUNTIME homing carries no demand at all
 // (it zips hulls to these slots by symbol; see domain/contract.AssignedSlot). Co-located parks
-// are deduped upstream by the resolver, so this ranks distinct LOCATIONS. Empty parks → empty.
-func TopDeliverySlots(parks []string, demand map[string]float64) []string {
-	ranked := rankParks(parks, demand)
-	if len(ranked) > MaxDeliveryHulls {
-		ranked = ranked[:MaxDeliveryHulls]
+// are deduped upstream by the resolver, so this ranks distinct LOCATIONS. Empty era → empty.
+func TopDeliverySlots(roles EraRoles, demand map[string]float64) []string {
+	fill := &centralFill{pool: rankParks(roles.CentralParks, demand)}
+	slots := make([]string, 0, MaxDeliveryHulls)
+
+	// The knee is the SINGLE cap and it binds the anchors too: were MaxDeliveryHulls ever set
+	// below the four anchors, the placement order decides which of them survive.
+	for _, anchor := range roles.Anchors.Ordered() {
+		if len(slots) >= MaxDeliveryHulls {
+			break
+		}
+		if slot, filled := fill.anchorOrCentral(anchor); filled {
+			slots = append(slots, slot)
+		}
 	}
-	return ranked
+	for len(slots) < MaxDeliveryHulls {
+		slot, filled := fill.central()
+		if !filled {
+			break
+		}
+		slots = append(slots, slot)
+	}
+	return slots
+}
+
+// centralFill hands out the demand-ranked central parks at most ONCE each: as the fail-open
+// substitute for an anchor the era template did not resolve, and as the filler for the slots
+// past the four anchors. Claiming an anchor through the same ledger is what stops a central-band
+// anchor (which is itself a central park) from being handed out a second time as filler.
+type centralFill struct {
+	pool    []string
+	next    int
+	claimed map[string]bool
+}
+
+func (f *centralFill) claim(symbol string) bool {
+	if f.claimed == nil {
+		f.claimed = map[string]bool{}
+	}
+	if f.claimed[symbol] {
+		return false
+	}
+	f.claimed[symbol] = true
+	return true
+}
+
+func (f *centralFill) central() (string, bool) {
+	for f.next < len(f.pool) {
+		park := f.pool[f.next]
+		f.next++
+		if f.claim(park) {
+			return park, true
+		}
+	}
+	return "", false
+}
+
+func (f *centralFill) anchorOrCentral(anchor string) (string, bool) {
+	if anchor != "" && f.claim(anchor) {
+		return anchor, true
+	}
+	return f.central()
+}
+
+// centralHub is where the warehouse + stocker are stationed: the highest-demand CENTRAL park
+// (symbol-stable on ties) — the central far-source-storage insight, never the far J sink. It is
+// deliberately independent of the delivery slot ORDER, so the era-invariant anchor ordering
+// (sp-9suun) repositions delivery hulls without moving the depot. "" when the era resolved no
+// central park; the warehouse bundle then has no home and is omitted.
+func centralHub(parks []string, demand map[string]float64) string {
+	ranked := rankParks(parks, demand)
+	if len(ranked) == 0 {
+		return ""
+	}
+	return ranked[0]
 }
 
 // RoleTargets counts how many of each role the fixed plan holds — the per-role fill
