@@ -55,10 +55,6 @@ func (a *ArrivalTime) CalculateWaitTime() int {
 	return int(waitSeconds)
 }
 
-func (a *ArrivalTime) Timestamp() string {
-	return a.timestamp
-}
-
 func (a *ArrivalTime) String() string {
 	return fmt.Sprintf("ArrivalTime(%s)", a.timestamp)
 }
