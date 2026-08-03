@@ -42,18 +42,17 @@ type MetricsCollector interface {
 // DaemonServer implements the gRPC daemon service
 // Handles CLI requests and orchestrates background container operations
 type DaemonServer struct {
-	mediator       common.Mediator
-	listener       net.Listener
-	db             *gorm.DB // Database for creating repositories on demand
-	logRepo        persistence.ContainerLogRepository
-	containerRepo  *persistence.ContainerRepositoryGORM
-	waypointRepo   *persistence.GormWaypointRepository
-	shipRepo       navigation.ShipRepository
-	playerRepo     player.PlayerRepository
-	frontierStatus frontierStatusProvider // sp-pvw3 frontier-status query; injected post-construction, nil until wired
-	routingClient  routing.RoutingClient
-	apiClient      domainPorts.APIClient
-	clock          shared.Clock
+	mediator      common.Mediator
+	listener      net.Listener
+	db            *gorm.DB // Database for creating repositories on demand
+	logRepo       persistence.ContainerLogRepository
+	containerRepo *persistence.ContainerRepositoryGORM
+	waypointRepo  *persistence.GormWaypointRepository
+	shipRepo      navigation.ShipRepository
+	playerRepo    player.PlayerRepository
+	routingClient routing.RoutingClient
+	apiClient     domainPorts.APIClient
+	clock         shared.Clock
 
 	// storageRecovery re-seeds the in-memory StorageCoordinator's per-good cargo
 	// availability from live ship state on boot (sp-o477). The coordinator is

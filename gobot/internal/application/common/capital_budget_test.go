@@ -302,12 +302,12 @@ func TestConstructionHasWorkIsDemandNotLiveness(t *testing.T) {
 			wantTradeBudget: deployable, wantConstruction: 0,
 		},
 		{
-			name: "live drain with an OUTSTANDING bill holds trade to its share even with zero promotions",
+			name:      "live drain with an OUTSTANDING bill holds trade to its share even with zero promotions",
 			drainLive: true, demand: true, wantHasWork: true,
 			wantTradeBudget: 679631, wantConstruction: deployable - 679631,
 		},
 		{
-			name: "a STOPPED drain has no work whatever its bill says — it cannot spend a credit",
+			name:      "a STOPPED drain has no work whatever its bill says — it cannot spend a credit",
 			drainLive: false, demand: true, wantHasWork: false,
 			wantTradeBudget: deployable, wantConstruction: 0,
 		},

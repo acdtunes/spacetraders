@@ -208,19 +208,9 @@ func (s *daemonServiceImpl) AutoOutfitCoordinator(ctx context.Context, req *pb.A
 	return &pb.AutoOutfitCoordinatorResponse{ContainerId: containerID, Status: "RUNNING"}, nil
 }
 
-// FrontierExpansionCoordinator always fails: DaemonServer.FrontierExpansionCoordinator is retired.
+// FrontierExpansionCoordinator is retired; the engine was deleted. Always fails.
 func (s *daemonServiceImpl) FrontierExpansionCoordinator(ctx context.Context, req *pb.FrontierExpansionCoordinatorRequest) (*pb.FrontierExpansionCoordinatorResponse, error) {
-	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, req.AgentSymbol)
-	if err != nil {
-		return nil, fmt.Errorf("failed to resolve player: %w", err)
-	}
-
-	containerID, err := s.daemon.FrontierExpansionCoordinator(ctx, playerID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to start frontier expansion coordinator: %w", err)
-	}
-
-	return &pb.FrontierExpansionCoordinatorResponse{ContainerId: containerID, Status: "RUNNING"}, nil
+	return nil, fmt.Errorf("frontier expansion coordinator is retired; probe sensing supersedes it")
 }
 
 // ShipyardBackfillCoordinator starts the standing shipyard-backfill sweep (sp-s1ek — the launch

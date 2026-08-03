@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
-	expansionCmd "github.com/andrescamacho/spacetraders-go/internal/application/expansion/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/application/probebuy"
 	shipNav "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
 	shipyardCmd "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/commands"
@@ -855,7 +854,7 @@ func NewExpansionScanner(
 
 // ExpansionCandidates returns every gate-reachable system within maxHops of the anchor
 // set, annotated with hop distance, known-market count, and a charted flag.
-func (s *ExpansionScanner) ExpansionCandidates(ctx context.Context, playerID int, maxHops int) ([]expansionCmd.ExpansionCandidate, error) {
+func (s *ExpansionScanner) ExpansionCandidates(ctx context.Context, playerID int, maxHops int) ([]ExpansionCandidate, error) {
 	adj, err := s.gateGraph.Adjacency(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("gate adjacency unreadable: %w", err)
@@ -877,12 +876,12 @@ func (s *ExpansionScanner) ExpansionCandidates(ctx context.Context, playerID int
 	// Corridor (branch) identity per reachable system — the depth slice's bearing.
 	branchRoots := bfsBranchRoots(adj, anchors, maxHops)
 
-	candidates := make([]expansionCmd.ExpansionCandidate, 0, len(hops))
+	candidates := make([]ExpansionCandidate, 0, len(hops))
 	for sys, h := range hops {
 		marketCount := s.knownMarketCount(ctx, playerID, sys)
 		_, hasEdges := adj[sys]
 		charted := hasEdges || marketCount > 0
-		candidates = append(candidates, expansionCmd.ExpansionCandidate{
+		candidates = append(candidates, ExpansionCandidate{
 			SystemSymbol: sys,
 			Hops:         h,
 			KnownMarkets: marketCount,

@@ -65,8 +65,8 @@ import (
 type GuardName string
 
 const (
-	GuardDemand        GuardName = "demand"       // unmet demand for the class AND it survived the anti-thrash streak
-	GuardPerTickCap    GuardName = "per_tick_cap" // hulls already bought this tick
+	GuardDemand        GuardName = "demand"        // unmet demand for the class AND it survived the anti-thrash streak
+	GuardPerTickCap    GuardName = "per_tick_cap"  // hulls already bought this tick
 	GuardPrice         GuardName = "price"         // yard ask readable (fail-closed) AND within both ceilings
 	GuardHeavyCap      GuardName = "heavy_cap"     // owned HEAVY HULLS below the operator's heavy cap
 	GuardAffordability GuardName = "affordability" // BOTH treasury tests: the pct-per-buy rule AND the reserve floor+margin

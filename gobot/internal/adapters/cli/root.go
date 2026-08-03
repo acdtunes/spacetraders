@@ -61,7 +61,6 @@ Examples:
 	rootCmd.AddCommand(NewContractCommand())
 	rootCmd.AddCommand(NewScoutCommand())
 	rootCmd.AddCommand(NewSensingCommand())
-	rootCmd.AddCommand(NewFrontierCommand())
 	rootCmd.AddCommand(NewLedgerCommand())
 	rootCmd.AddCommand(NewWorkflowCommand())
 	rootCmd.AddCommand(NewContainerCommand())

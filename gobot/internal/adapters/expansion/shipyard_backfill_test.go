@@ -12,7 +12,6 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	expansionCmd "github.com/andrescamacho/spacetraders-go/internal/application/expansion/commands"
 	scoutingCmd "github.com/andrescamacho/spacetraders-go/internal/application/scouting/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
@@ -43,7 +42,7 @@ func TestChartedShipyardEnumerator_IntersectsReachableWithShipyardTrait(t *testi
 		yardWaypoint("X1-FAR-Y1"),
 		yardWaypoint("X1-GONE-Y1"), // known shipyard, but not in the current reachable set
 	}
-	candidates := []expansionCmd.ExpansionCandidate{
+	candidates := []ExpansionCandidate{
 		{SystemSymbol: "X1-NEAR", Hops: 2},
 		{SystemSymbol: "X1-FAR", Hops: 7},
 		{SystemSymbol: "X1-NOYARD", Hops: 3}, // reachable but holds no shipyard
@@ -79,7 +78,7 @@ func TestChartedShipyardEnumerator_OneRepresentativeYardPerSystem(t *testing.T) 
 		yardWaypoint("X1-MULTI-Y2"),
 	}
 	enum := NewChartedShipyardEnumerator(
-		&fakeCandidateLister{candidates: []expansionCmd.ExpansionCandidate{{SystemSymbol: "X1-MULTI", Hops: 4}}},
+		&fakeCandidateLister{candidates: []ExpansionCandidate{{SystemSymbol: "X1-MULTI", Hops: 4}}},
 		&fakeShipyardWaypointLister{waypoints: waypoints},
 	)
 
@@ -101,7 +100,7 @@ func TestChartedShipyardEnumerator_HonorsCallerReach_DeepInGraphYardsAtWideReach
 		yardWaypoint("X1-DEEP8-Y1"),
 		yardWaypoint("X1-DEEP20-Y1"),
 	}
-	candidates := []expansionCmd.ExpansionCandidate{
+	candidates := []ExpansionCandidate{
 		{SystemSymbol: "X1-SHALLOW", Hops: 2},
 		{SystemSymbol: "X1-DEEP5", Hops: 5},
 		{SystemSymbol: "X1-DEEP8", Hops: 8},

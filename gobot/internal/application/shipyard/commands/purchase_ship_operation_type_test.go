@@ -20,8 +20,8 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	ledgerCommands "github.com/andrescamacho/spacetraders-go/internal/application/ledger/commands"
-	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
+	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
