@@ -205,9 +205,23 @@ two remaining policies reporting themselves.
 
 ## Money Guards — Unchanged
 
-The 50k `common.ImmutableReserveFloor` applies to **both** fleets, unchanged. RULINGS #4: money
-guards fail closed and are never weakened. This is a simplification of *control flow*, not of
-*spend safety*. No new floor, no new knob, no config seam (RULINGS #5).
+Money guards apply to **both** fleets, unchanged. RULINGS #4: money guards fail closed and are
+never weakened. This is a simplification of *control flow*, not of *spend safety*. No new floor,
+no new knob, no config seam (RULINGS #5).
+
+> **CORRECTION (2026-08-03, from the phase 2 drafting pass).** An earlier version of this section
+> named "the 50k `common.ImmutableReserveFloor`" as the floor on this path. **That is the wrong
+> constant for the manufacturing spend path**, and quoting it would misdiagnose a park — someone
+> would look for a 50k breach that never occurs.
+>
+> Verified in source: `common.ImmutableReserveFloor = 50000`, but
+> `common.NonContractWorkingCapitalFloor = ImmutableReserveFloor + 100_000` = **150k**, and
+> `production_executor_spend_guards.go:26` binds `defaultWorkingCapitalReserve` to the **150k**
+> constant (its own comment: *"sp-q8bon: the non-contract 150k floor (was the 50k base)"*). The
+> per-operation capital budget can raise the effective bar further still.
+>
+> Neither phase touches these guards. The correction is to the spec's description, not to the
+> code — but an operator debugging a refused gate buy needs the right number.
 
 ## Risks
 
