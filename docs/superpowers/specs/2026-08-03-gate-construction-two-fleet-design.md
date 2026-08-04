@@ -186,8 +186,21 @@ look identical.
 Both policies must record their decisions:
 
 - **Delivery pause:** factory, good, observed supply, resume condition.
-- **Fill outcome:** per trip — capacity, what was loaded, what was skipped and why (paused /
-  bill satisfied / no supply).
+- **Fill outcome:** per trip — capacity, what was loaded, what was skipped and why (hold full /
+  bill satisfied / paused / no supply).
+
+> **CORRECTION (2026-08-04, from phase 2 implementation).** The skip-reason precedence is **not**
+> the flat `hold_full → bill_satisfied → paused → no_supply` an earlier draft implied. `hold_full`
+> **yields** to `paused` and `no_supply` while a material's bill is still outstanding.
+>
+> Why: with a full hold and two materials tied on remaining bill, a lexicographic tie-break let the
+> *eligible* material take the whole hull, and the *paused* one was then reported `hold_full` —
+> so a paused material's reported reason flipped with the good's **name**, hiding the pause exactly
+> when the fleet runs at capacity. `fill.go` exempts a still-wanted blocked material from
+> `hold_full` for that reason; removing the exemption fails a named test. A *satisfied* bill is
+> deliberately not exempt, so a met bill is never reported as "paused".
+>
+> Phase 3 must read `fill.go`'s comments rather than this prose if the two ever disagree again.
 - **Factory feed:** good, resolved feed target, dispatched vs declined with reason.
 
 This is the narrow, load-bearing part of a decision ledger: not ten instrumented gates, just the
