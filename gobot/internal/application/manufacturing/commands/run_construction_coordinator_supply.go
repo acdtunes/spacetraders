@@ -36,6 +36,15 @@ func (h *RunConstructionCoordinatorHandler) supplyTask(ctx context.Context, cmd 
 	if !h.claimTaskForSupply(ctx, lot.task, lot.ship) {
 		return false
 	}
+
+	// A DELIVERY-role hull buys terminal-factory output and hauls it to the gate. It never
+	// fabricates and never walks the recipe graph, so it takes its own leg rather than the shared
+	// source-then-deliver path. The condition lives in runsGateLeg because the dispatch planner
+	// declines hulls on the strength of what this leg can do and must never disagree with it.
+	if h.runsGateLeg(lot.claimIdentity) {
+		return h.deliverGateLeg(ctx, cmd, systemSymbol, lot, playerID)
+	}
+
 	leg := &supplyLeg{lot: lot, ship: lot.ship}
 
 	if settled, advanced := h.deliverOnHandCargo(ctx, leg, playerID); settled {

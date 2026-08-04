@@ -12,6 +12,7 @@ import (
 	appContract "github.com/andrescamacho/spacetraders-go/internal/application/contract"
 	ledgerQuery "github.com/andrescamacho/spacetraders-go/internal/application/ledger/queries"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing/gate"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
@@ -112,9 +113,11 @@ func observeFleetShape(ships []*navigation.Ship, obs *bootstrapCmd.Observation) 
 			obs.Haulers = append(obs.Haulers, bootstrapCmd.HaulerSnapshot{Symbol: s.ShipSymbol(), Waypoint: wp})
 		} else if s.DedicatedFleet() == tradeFleetTag {
 			obs.TradeHullCount++
-		} else if s.DedicatedFleet() == manufacturingFleetTag {
-			// Gate-construction workers: the worker-sizing "have" count, so the staged top-up buy
-			// never overshoots. Appended in lock-step so len(GateWorkerHulls)==GateWorkers.
+		} else if gate.IsGateFleetTag(s.DedicatedFleet()) {
+			// EVERY gate tag — the delivery role, the factory role, and the legacy one — is a
+			// gate worker. This total is the worker-sizing "have" count, so a role-tagged hull
+			// counted as nothing would under-report the workforce and let the staged top-up buy
+			// past gateWorkerTarget. Appended in lock-step so len(GateWorkerHulls)==GateWorkers.
 			obs.GateWorkers++
 			obs.GateWorkerHulls = append(obs.GateWorkerHulls, bootstrapCmd.GateWorkerSnapshot{
 				Symbol: s.ShipSymbol(),

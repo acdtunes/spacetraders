@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/application/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing/gate"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
@@ -38,6 +40,26 @@ func (h *RunConstructionCoordinatorHandler) dedicatedFleet(cmd *RunConstructionC
 	return operationManufacturing
 }
 
+// claimIdentityFor is the ClaimShip operation string for ONE hull.
+//
+// This is load-bearing and easy to get silently wrong. ClaimShip authorizes a NEW claim only
+// when the hull's dedicated_fleet EQUALS the operation (ship_repository_claims.go: a mismatch
+// returns ShipDedicatedToOtherFleetError). So a hull tagged gate-delivery, claimed under the
+// drain's DEFAULT "manufacturing" identity, is rejected at the DB — the hull is discovered,
+// paired with a lot, dispatched, and then silently never works. That failure ships green.
+//
+// The GATE-tag allowlist is deliberate and must not be relaxed to "whatever tag the hull
+// carries". Claiming under any tag would let the drain claim a CONTRACT or TRADE hull under that
+// fleet's own identity and sail straight past the dedication guard, defeating the no-poach rule
+// entirely. An undedicated hull ("") claims under the drain's identity as before; a
+// foreign-pinned hull claims under the drain's identity too, precisely so ClaimShip REJECTS it.
+func (h *RunConstructionCoordinatorHandler) claimIdentityFor(cmd *RunConstructionCoordinatorCommand, ship *navigation.Ship) string {
+	if tag := ship.DedicatedFleet(); gate.IsGateFleetTag(tag) {
+		return tag
+	}
+	return h.dedicatedFleet(cmd)
+}
+
 // selectHaulers builds the tick's ordered claim pool, PREFERRING the drain's own dedicated fleet.
 // FindIdleLightHaulers EXCLUDES every dedicated hull by design (ship_pool_manager.go:
 // `if ship.DedicatedFleet() != "" { continue }`), so the drain's own dedicated fleet must be
@@ -54,26 +76,45 @@ func (h *RunConstructionCoordinatorHandler) dedicatedFleet(cmd *RunConstructionC
 func (h *RunConstructionCoordinatorHandler) selectHaulers(ctx context.Context, cmd *RunConstructionCoordinatorCommand, playerID shared.PlayerID, systemSymbol string) ([]*navigation.Ship, error) {
 	fleet := h.dedicatedFleet(cmd)
 
-	// The drain's OWN dedicated fleet: idle, cargo-capable members. FindIdleShipsByFleet is fleet-wide
-	// (no system filter), so restrict to the operating system here — an out-of-system dedicated hull is
-	// UNSELECTABLE, not claimed-then-failed (fail-closed, matching FindIdleLightHaulers' own
-	// single-system pre-filter).
-	dedicatedIdle, _, err := contract.FindIdleShipsByFleet(ctx, playerID, h.shipRepo, fleet, contract.RequireCargoCapacity)
-	if err != nil {
-		return nil, fmt.Errorf("failed to discover dedicated construction haulers: %w", err)
+	// Discover the drain's own identity AND every gate ROLE pool. FindIdleLightHaulers excludes
+	// every dedicated hull by design (ship_pool_manager.go: `if ship.DedicatedFleet() != "" {
+	// continue }`), so a role-tagged hull appears in NO pool unless its own tag is queried here —
+	// it would simply be invisible to the drain forever. FindIdleShipsByFleet is fleet-wide (no
+	// system filter), so the union is restricted to the operating system below: an out-of-system
+	// hull is UNSELECTABLE, not claimed-then-failed (fail-closed, matching FindIdleLightHaulers'
+	// own single-system pre-filter).
+	fleets := gateDiscoveryFleets(fleet)
+	seen := make(map[string]bool)
+	var dedicatedIdle []*navigation.Ship
+	for _, pool := range fleets {
+		found, _, err := contract.FindIdleShipsByFleet(ctx, playerID, h.shipRepo, pool, contract.RequireCargoCapacity)
+		if err != nil {
+			return nil, fmt.Errorf("failed to discover %s construction haulers: %w", pool, err)
+		}
+		for _, ship := range found {
+			if ship == nil || seen[ship.ShipSymbol()] {
+				continue // one hull, one lot: a duplicate would be dispatched twice
+			}
+			seen[ship.ShipSymbol()] = true
+			dedicatedIdle = append(dedicatedIdle, ship)
+		}
 	}
 	dedicatedIdle = haulersInSystem(dedicatedIdle, systemSymbol)
 
-	// EXCLUSIVE MODE (opt-in): once ANY hull carries the fleet tag, the drain is sealed to its
+	// EXCLUSIVE MODE (opt-in): once ANY hull carries a gate fleet tag, the drain is sealed to its
 	// dedicated members and never supplements from the opportunistic pool — even when no
-	// dedicated hull is dispatchable this tick.
+	// dedicated hull is dispatchable this tick. Membership is checked across the SAME set
+	// discovery reads: a seal that only saw the drain's own identity would read "no dedicated
+	// fleet" while role-tagged hulls exist and fall through to poaching opportunistic hulls.
 	if cmd.ExclusiveDedicatedFleet {
-		active, err := contract.FleetHasMembers(ctx, playerID, h.shipRepo, fleet)
-		if err != nil {
-			return nil, fmt.Errorf("failed to check dedicated fleet membership: %w", err)
-		}
-		if active {
-			return dedicatedIdle, nil
+		for _, pool := range fleets {
+			active, err := contract.FleetHasMembers(ctx, playerID, h.shipRepo, pool)
+			if err != nil {
+				return nil, fmt.Errorf("failed to check dedicated fleet membership: %w", err)
+			}
+			if active {
+				return dedicatedIdle, nil
+			}
 		}
 	}
 
@@ -85,6 +126,24 @@ func (h *RunConstructionCoordinatorHandler) selectHaulers(ctx context.Context, c
 		return nil, fmt.Errorf("failed to discover idle haulers: %w", err)
 	}
 	return append(dedicatedIdle, opportunistic...), nil
+}
+
+// gateDiscoveryFleets is the ordered, de-duplicated set of dedicated pools the drain looks up:
+// its own launch identity FIRST (so its own hulls are still paired ahead of any other), then every
+// gate ROLE tag. An empty identity is dropped (FindIdleShipsByFleet answers nothing for it), and a
+// launch identity that happens to EQUAL a role tag is listed once — scanning a pool twice would
+// surface the same hull twice and pair it with two lots.
+func gateDiscoveryFleets(fleet string) []string {
+	pools := make([]string, 0, 1+len(gate.RoleFleetTags()))
+	listed := make(map[string]bool)
+	for _, pool := range append([]string{fleet}, gate.RoleFleetTags()...) {
+		if pool == "" || listed[pool] {
+			continue
+		}
+		listed[pool] = true
+		pools = append(pools, pool)
+	}
+	return pools
 }
 
 // haulersInSystem keeps only ships whose CURRENT system equals systemSymbol; a hull whose location is
@@ -121,6 +180,11 @@ type constructionLot struct {
 	// original ready task (always dispatched alongside a clone) owns those, so the ready queue stays at
 	// the planner's one-task-per-material and the fan-out re-derives parallelism from live hulls each tick.
 	ephemeral bool
+	// claimIdentity is the ClaimShip operation this lot's hull must be claimed under: its OWN
+	// gate tag, or the drain's identity for an undedicated/foreign hull. Resolved at plan time
+	// from the paired hull, because the worker that claims runs long after the tick that planned
+	// it and must not re-derive from a tag that may have changed underneath.
+	claimIdentity string
 }
 
 // buyReservation is what this lot can actually PAY FOR on its trip: its fill cap, bounded by what the
@@ -150,11 +214,20 @@ func (l constructionLot) buyReservation() int {
 // only a few hulls will actually be started. maxLots is the tick's free budget under max_workers:
 // every lot minted here is dispatched, and a slot a haul frees is refilled by the next tick from live
 // hulls rather than from a plan made before that haul began.
-func (h *RunConstructionCoordinatorHandler) planDispatchLots(ctx context.Context, tasks []*manufacturing.ManufacturingTask, idleShips []*navigation.Ship, maxLots int) []constructionLot {
+func (h *RunConstructionCoordinatorHandler) planDispatchLots(ctx context.Context, cmd *RunConstructionCoordinatorCommand, tasks []*manufacturing.ManufacturingTask, idleShips []*navigation.Ship, maxLots int) []constructionLot {
 	if len(idleShips) == 0 || maxLots <= 0 {
 		return nil
 	}
 	budget := h.materialBuyBudgets(ctx, tasks, representativeLotUnits(idleShips))
+
+	// Drop hulls that can do NO work this tick before any lot is minted against them (see
+	// wedgedAtFullHold). Done here, after the budget, because "can this hull do anything" is a
+	// question about the outstanding BILL, not about the hull alone.
+	idleShips = h.dispatchableByHold(ctx, cmd, idleShips, budget)
+	if len(idleShips) == 0 {
+		return nil
+	}
+
 	lotCeiling := budget.lotCeiling(len(idleShips), maxLots)
 
 	lots := make([]constructionLot, 0, lotCeiling)
@@ -176,7 +249,7 @@ func (h *RunConstructionCoordinatorHandler) planDispatchLots(ctx context.Context
 		if hull == nil {
 			break
 		}
-		lots = append(lots, constructionLot{task: task, ship: hull})
+		lots = append(lots, constructionLot{task: task, ship: hull, claimIdentity: h.claimIdentityFor(cmd, hull)})
 		budget.assign(key)
 	}
 
@@ -195,12 +268,77 @@ func (h *RunConstructionCoordinatorHandler) planDispatchLots(ctx context.Context
 		if hull == nil {
 			break
 		}
-		lots = append(lots, constructionLot{task: clone, ship: hull, ephemeral: true})
+		lots = append(lots, constructionLot{task: clone, ship: hull, ephemeral: true, claimIdentity: h.claimIdentityFor(cmd, hull)})
 		budget.assign(key)
 	}
 
 	budget.assignFillCaps(lots)
 	return lots
+}
+
+// dispatchableByHold drops hulls that can do NO work this tick, so they stop consuming a lot every
+// tick forever. Every drop is logged by name: a hull silently missing from the pool is exactly the
+// invisibility this whole phase exists to remove.
+func (h *RunConstructionCoordinatorHandler) dispatchableByHold(ctx context.Context, cmd *RunConstructionCoordinatorCommand, ships []*navigation.Ship, budget *materialBudget) []*navigation.Ship {
+	logger := common.LoggerFromContext(ctx)
+	usable := make([]*navigation.Ship, 0, len(ships))
+	for _, ship := range ships {
+		// THE SAME FUNCTION supplyTask routes on. The decline is only sound for a hull that will
+		// actually run the gate leg: with the collaborator unwired, a delivery-tagged hull takes the
+		// shared fabricate path and recovers there like any other. Sharing runsGateLeg makes that
+		// agreement structural instead of a comment two files apart — the divergence that produced D2.
+		if !h.runsGateLeg(h.claimIdentityFor(cmd, ship)) || !wedgedAtFullHold(ship, budget) {
+			usable = append(usable, ship)
+			continue
+		}
+		logger.Log("WARNING", fmt.Sprintf("Construction drain: gate-delivery hull %s has a FULL hold and carries nothing any ready material still needs — its leg can neither deliver nor buy, so it is not dispatched this tick. Its cargo must be sold or transferred before it can work again", ship.ShipSymbol()), map[string]interface{}{
+			"ship": ship.ShipSymbol(), "action": "skip_wedged_full_hold",
+		})
+	}
+	return usable
+}
+
+// wedgedAtFullHold reports whether a DELIVERY-role hull can make NO progress on any ready material:
+// its hold is FULL, and nothing aboard is a material whose bill is still open.
+//
+// Such a hull cannot deliver (nothing it carries is wanted) and cannot buy (no free hold). Left in
+// the pool it takes a lot, plans zero stops, parks — and because haulerPool.take PREFERS a hull
+// already holding the lot's good, it is handed the same lot again next tick, consuming a dispatch
+// slot forever while the drain reports RUNNING. This is the gate's EXPECTED end state, not an edge
+// case: when a material's bill closes, every in-flight hull still holding it lands here, and
+// reconcilePipelinesFromSite only ever RAISES delivered counters, so the bill never re-opens.
+// Declining converts a fleet-wide stall into one degraded hull.
+//
+// THE CALLER SCOPES THIS TO THE DELIVERY ROLE, and that scoping is load-bearing. "Cannot deliver
+// and cannot buy" is true only of the gate leg, whose whole repertoire is flush-then-buy. The
+// LEGACY fabricate role recovers the same hull by a route this predicate cannot see:
+// sourceAndDeliverRemainder has no free-capacity precheck, and fabricateGood navigates to the
+// factory and frees the hold there before harvesting (its step-0 stocked branch skips the buy
+// entirely and calls makeRoomForOutputHarvest).
+//
+// That recovery is STRONGER than an unload of inputs, which is what makes the scoping justified
+// rather than merely cautious. makeRoomForOutputHarvest delegates to freeCargoSpace, which SELLS
+// every item aboard except protectGood — and protectGood is the good currently being harvested
+// (the fabricated output, withheld only because dumping it at the factory's own bid is the −258k
+// MEDICINE incident). A finished material whose bill already closed draws no lot, so it is never
+// the harvested good and never the protected one: the legacy role clears that hull BY SELLING its
+// load outright. A hull idled with a full hold — fabrication inputs, or a met-bill material,
+// exactly what an abandoned supplyTask leaves behind, "the hull keeps its load" — carries no
+// material any task NAMES, so an unscoped predicate would declare it dead and drop it every tick
+// forever, foreclosing a recovery that would have emptied the hold. That would relocate this very
+// failure mode onto a role that had a working recovery.
+//
+// It decides on POSITIVE evidence only. An unreadable or capacity-less hold is never called
+// wedged — we drop a hull because we can show it has no work, never because we could not tell.
+func wedgedAtFullHold(ship *navigation.Ship, budget *materialBudget) bool {
+	cargo := ship.Cargo()
+	if cargo == nil || cargo.Capacity <= 0 {
+		return false
+	}
+	if cargo.Capacity-cargo.Units > 0 {
+		return false // hold left to buy into
+	}
+	return !budget.wantsMaterialAboard(ship)
 }
 
 // materialBudget is the tick's fan-out arithmetic for one drain: how many units of each distinct
@@ -209,9 +347,16 @@ func (h *RunConstructionCoordinatorHandler) planDispatchLots(ctx context.Context
 type materialBudget struct {
 	order     []string
 	remaining map[string]int
-	repTask   map[string]*manufacturing.ManufacturingTask
-	assigned  map[string]int
-	lotUnits  int
+	// rawRemaining is the material's OUTSTANDING BILL, before in-flight reservations are netted
+	// out. It answers a different question from remaining and the two must not be confused:
+	// remaining is how much may still be BOUGHT, rawRemaining is how much the site still WANTS.
+	// Delivering cargo already aboard spends nothing, so it is governed by demand, never by a buy
+	// budget — a hull whose material is fully reserved by in-flight workers is still carrying units
+	// the site needs, and can still unload them for free.
+	rawRemaining map[string]int
+	repTask      map[string]*manufacturing.ManufacturingTask
+	assigned     map[string]int
+	lotUnits     int
 }
 
 // materialBuyBudgets reads, once per distinct material, how many units may still be BOUGHT this
@@ -221,16 +366,21 @@ type materialBudget struct {
 // against the raw bill would buy the same units twice.
 func (h *RunConstructionCoordinatorHandler) materialBuyBudgets(ctx context.Context, tasks []*manufacturing.ManufacturingTask, lotUnits int) *materialBudget {
 	b := &materialBudget{
-		order:     make([]string, 0, len(tasks)),
-		remaining: make(map[string]int),
-		repTask:   make(map[string]*manufacturing.ManufacturingTask),
-		assigned:  make(map[string]int),
-		lotUnits:  lotUnits,
+		order:        make([]string, 0, len(tasks)),
+		remaining:    make(map[string]int),
+		rawRemaining: make(map[string]int),
+		repTask:      make(map[string]*manufacturing.ManufacturingTask),
+		assigned:     make(map[string]int),
+		lotUnits:     lotUnits,
 	}
 	for _, task := range tasks {
 		key := materialKey(task)
 		if _, seen := b.remaining[key]; !seen {
-			b.remaining[key] = h.remainingBill(ctx, task) - h.supplies.reservedUnits(key)
+			// One read, two questions: the site's outstanding DEMAND, and what may still be BOUGHT
+			// against it once in-flight workers' reservations are netted out.
+			bill := h.remainingBill(ctx, task)
+			b.rawRemaining[key] = bill
+			b.remaining[key] = bill - h.supplies.reservedUnits(key)
 			b.repTask[key] = task
 			b.order = append(b.order, key)
 		}
@@ -247,6 +397,27 @@ func (b *materialBudget) desiredLots(key string) int {
 // wantsAnotherLot reports whether the material still has unmet bill AND unfilled lot budget.
 func (b *materialBudget) wantsAnotherLot(key string) bool {
 	return b.remaining[key] > 0 && b.assigned[key] < b.desiredLots(key)
+}
+
+// wantsMaterialAboard reports whether the hull carries any material the SITE still wants — the
+// material a deliver-on-hand phase (or the gate leg's flush) could actually unload.
+//
+// It asks rawRemaining, the outstanding BILL, deliberately: `remaining` is a BUY budget, already
+// net of what in-flight workers are authorized to purchase, and unloading cargo already aboard is
+// not a purchase. Asking the buy budget would declare a hull carrying genuinely-wanted material to
+// be carrying nothing — declining it while an in-flight worker pays market for the very units it
+// was holding, and telling the operator something false in a WARNING besides.
+func (b *materialBudget) wantsMaterialAboard(ship *navigation.Ship) bool {
+	for _, key := range b.order {
+		task := b.repTask[key]
+		if task == nil || b.rawRemaining[key] <= 0 {
+			continue
+		}
+		if onHandUnits(ship, task.Good()) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func (b *materialBudget) assign(key string) {
@@ -271,8 +442,12 @@ func (b *materialBudget) lotCeiling(idleHulls, maxLots int) int {
 // good. An interrupted delivery leaves its load aboard, and pairing was pool-order and cargo-blind:
 // the laden hull drew whichever task came up while an empty one re-bought the same material at
 // market, so paid-for gate material rode along undelivered. Pairing on the hull's ACTUAL cargo
-// re-adopts that load with no cross-tick state to go stale — PHASE-1 deliver-on-hand then unloads it
-// before any buy. An all-empty pool hands out in pool order, so dedicated hulls still come first.
+// re-adopts that load with no cross-tick state to go stale — the leg then unloads it before any buy:
+// PHASE-1 deliver-on-hand for every shared-path role, and flushOnHandGateMaterials for the
+// gate-delivery role, which is routed ahead of that phase and therefore carries its own flush. Both
+// must exist: a role that re-adopts a laden hull with no unload wedges it at a full hold forever,
+// because a zero free capacity plans zero stops. An all-empty pool hands out in pool order, so
+// dedicated hulls still come first.
 type haulerPool struct {
 	ships []*navigation.Ship
 	taken []bool

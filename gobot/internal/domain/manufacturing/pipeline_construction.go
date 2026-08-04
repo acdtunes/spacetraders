@@ -86,6 +86,34 @@ func (p *ManufacturingPipeline) SetGoodOverrides(overrides GoodGatingOverrides) 
 	p.goodOverrides = overrides
 }
 
+// DeliveryBuyFloor and DeliveryResumeFloor are the gate DELIVERY fleet's supply-anchored
+// buy/pause thresholds, persisted on this construction pipeline row.
+//
+// They are LIVE KNOBS on the pattern-C surface: the drain re-reads them off this row on
+// every leg, so a `construction override --buy-floor/--resume-floor` write takes effect on
+// the next leg with no restart, and the value survives a daemon bounce (RULINGS #2).
+//
+// The row is deliberately NOT a manufacturing config key. The manufacturing coordinator is
+// pattern B — its resolve*Config clears persisted keys and re-injects from config.yaml on
+// every build — so a floor stored there would appear to work, silently revert on the next
+// restart, and give no indication it had. That is the same defect class as the inert
+// prefer-buy override this design removes.
+//
+// Empty means UNSET, which the reader resolves to the ARMED defaults (MODERATE buy, HIGH
+// resume). Unset is a default, never an off switch: nothing here is default-off.
+func (p *ManufacturingPipeline) DeliveryBuyFloor() string { return p.deliveryBuyFloor }
+
+func (p *ManufacturingPipeline) DeliveryResumeFloor() string { return p.deliveryResumeFloor }
+
+// SetDeliveryFloors sets both thresholds. Both are set together because they are one
+// decision: a resume floor is only meaningful relative to the buy floor it sits above, and
+// letting them be written independently invites a half-applied tune that collapses the
+// hysteresis gap. An empty value clears that floor back to the armed default.
+func (p *ManufacturingPipeline) SetDeliveryFloors(buyFloor, resumeFloor string) {
+	p.deliveryBuyFloor = buyFloor
+	p.deliveryResumeFloor = resumeFloor
+}
+
 // AddMaterial adds a material target to the construction pipeline
 func (p *ManufacturingPipeline) AddMaterial(material *ConstructionMaterialTarget) error {
 	if p.pipelineType != PipelineTypeConstruction {

@@ -228,8 +228,6 @@ func (e *ProductionExecutor) buyGood(
 	systemSymbol string,
 	playerID int,
 ) (*ProductionResult, error) {
-	logger := common.LoggerFromContext(ctx)
-
 	ctx, marketResult, mode, parked, err := e.resolveInputSource(ctx, node.Good, systemSymbol, playerID)
 	if err != nil {
 		return nil, err
@@ -238,35 +236,60 @@ func (e *ProductionExecutor) buyGood(
 		return parked, nil
 	}
 
+	return e.fillFromSource(ctx, ship, node.Good, marketResult, systemSymbol, playerID, mode)
+}
+
+// fillFromSource navigates to source, makes room, and runs the tranche loop until the hold,
+// the trip target or a guard stops it.
+//
+// It is shared by the SELECTED-source path (buyGood, which resolves the market first) and the
+// PINNED-source path (BuyAtTerminalFactory, whose market phase 1's topology already resolved).
+// Extracted rather than duplicated on purpose: every money guard in this loop is re-checked per
+// iteration and fails closed, and a second copy would be free to drift from this one silently —
+// which is how a guard stops guarding without any test noticing.
+//
+// Behaviour is unchanged from the inline version: same order, same guards, same stop
+// conditions. Only the caller's source resolution moved out.
+func (e *ProductionExecutor) fillFromSource(
+	ctx context.Context,
+	ship *navigation.Ship,
+	good string,
+	source *MarketLocatorResult,
+	systemSymbol string,
+	playerID int,
+	mode inputSourceMode,
+) (*ProductionResult, error) {
+	logger := common.LoggerFromContext(ctx)
 	playerIDValue := shared.MustNewPlayerID(playerID)
-	updatedShip, err := e.NavigateAndDock(ctx, ship.ShipSymbol(), marketResult.WaypointSymbol, playerIDValue)
+
+	updatedShip, err := e.NavigateAndDock(ctx, ship.ShipSymbol(), source.WaypointSymbol, playerIDValue)
 	if err != nil {
 		return nil, fmt.Errorf("failed to navigate to market: %w", err)
 	}
 
-	updatedShip, roomFreed := e.makeRoomForInputBuy(ctx, updatedShip, node.Good, playerIDValue)
+	updatedShip, roomFreed := e.makeRoomForInputBuy(ctx, updatedShip, good, playerIDValue)
 	if !roomFreed {
 		return &ProductionResult{
 			QuantityAcquired: 0,
 			TotalCost:        0,
-			WaypointSymbol:   marketResult.WaypointSymbol,
+			WaypointSymbol:   source.WaypointSymbol,
 		}, nil
 	}
 
 	// A zero-volume market cannot be bought from (preserves the prior "trade volume is zero"
 	// error for both the single-tranche and hull-fill paths).
-	if marketResult.TradeVolume <= 0 {
-		return nil, fmt.Errorf("trade volume is zero for %s", node.Good)
+	if source.TradeVolume <= 0 {
+		return nil, fmt.Errorf("trade volume is zero for %s", good)
 	}
 
-	fill := newHullFill(ctx, updatedShip, marketResult, node.Good)
+	fill := newHullFill(ctx, updatedShip, source, good)
 	for {
 		trancheQty := fill.nextTranche()
 		if trancheQty <= 0 {
 			break // STOP: hold full, or fill target / remaining bill met
 		}
 
-		ask := marketResult.Price
+		ask := source.Price
 		if fill.loopFill {
 			liveAsk, ok := e.trancheAsk(ctx, fill, systemSymbol, playerID, mode)
 			if !ok {
@@ -280,13 +303,13 @@ func (e *ProductionExecutor) buyGood(
 		// aboard rather than forcing the buy.
 		projectedCost := trancheQty * ask
 		if breached, enforcedFloor := e.spendFloorBreached(ctx, playerID, projectedCost); breached {
-			logSpendFloorStop(ctx, node.Good, marketResult.WaypointSymbol, fill.acquired, projectedCost, enforcedFloor)
+			logSpendFloorStop(ctx, good, source.WaypointSymbol, fill.acquired, projectedCost, enforcedFloor)
 			break
 		}
 
 		purchaseCmd := &shipCargo.PurchaseCargoCommand{
 			ShipSymbol: updatedShip.ShipSymbol(),
-			GoodSymbol: node.Good,
+			GoodSymbol: good,
 			Units:      trancheQty,
 			PlayerID:   playerIDValue,
 		}
@@ -301,16 +324,16 @@ func (e *ProductionExecutor) buyGood(
 		if response == nil {
 			// Empty tranche persisted across the retry bound — the market is drained. STOP the fill
 			// and deliver whatever is aboard (nothing yet if this was the first tranche).
-			logEmptyTrancheStop(ctx, node.Good, marketResult.WaypointSymbol, fill.acquired)
+			logEmptyTrancheStop(ctx, good, source.WaypointSymbol, fill.acquired)
 			break
 		}
 
 		fill.record(response.UnitsAdded, response.TotalCost)
-		logger.Log("INFO", fmt.Sprintf("Purchased %d units of %s for %d credits", response.UnitsAdded, node.Good, response.TotalCost), map[string]interface{}{
-			"good":       node.Good,
+		logger.Log("INFO", fmt.Sprintf("Purchased %d units of %s for %d credits", response.UnitsAdded, good, response.TotalCost), map[string]interface{}{
+			"good":       good,
 			"quantity":   response.UnitsAdded,
 			"total_cost": response.TotalCost,
-			"market":     marketResult.WaypointSymbol,
+			"market":     source.WaypointSymbol,
 		})
 
 		if !fill.loopFill {

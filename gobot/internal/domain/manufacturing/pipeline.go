@@ -92,6 +92,9 @@ type ManufacturingPipeline struct {
 	maxWorkers       int                           // Maximum parallel workers (0=unlimited, default 5)
 	minSupply        string                        // Caller-set EXPORT sourcing floor, e.g. "SCARCE". Empty = unset (defaults to MODERATE).
 	goodOverrides    GoodGatingOverrides           // Per-good buy-gating overrides. Persisted so a per-good sourcing-floor override survives a restart (RULINGS #2).
+
+	deliveryBuyFloor    string // Gate delivery fleet's supply BUY floor, e.g. "MODERATE". Empty = unset (reader resolves the armed default).
+	deliveryResumeFloor string // Gate delivery fleet's supply RESUME floor, e.g. "HIGH". Empty = unset (reader resolves the armed default).
 }
 
 // NewPipeline creates a new fabrication pipeline (counted toward max_pipelines limit)

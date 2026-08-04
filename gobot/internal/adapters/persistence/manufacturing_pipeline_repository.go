@@ -276,6 +276,9 @@ func (r *GormManufacturingPipelineRepository) pipelineToModel(p *manufacturing.M
 		MaxWorkers:       p.MaxWorkers(),
 		MinSupply:        p.MinSupply(),
 		GoodOverrides:    p.GoodOverrides().Encode(),
+
+		DeliveryBuyFloor:    p.DeliveryBuyFloor(),
+		DeliveryResumeFloor: p.DeliveryResumeFloor(),
 	}
 }
 
@@ -307,6 +310,12 @@ func (r *GormManufacturingPipelineRepository) modelToPipeline(m *ManufacturingPi
 		m.MinSupply,
 		goodOverrides,
 	)
+
+	// Set through the post-reconstruct setter rather than by extending ReconstitutePipeline's
+	// positional signature: that constructor already takes 20 positional arguments, and every
+	// one added is another chance for two strings to be transposed at the single call site with
+	// no compiler complaint. SetMaterials below is set the same way for the same reason.
+	pipeline.SetDeliveryFloors(m.DeliveryBuyFloor, m.DeliveryResumeFloor)
 
 	// Parse and set materials for construction pipelines
 	if m.Materials != "" && m.Materials != "[]" {

@@ -172,6 +172,10 @@ type RunConstructionCoordinatorHandler struct {
 	// set a tiny bound directly to keep the liveness test fast.
 	reapGrace time.Duration
 	warehouse warehouseSourcing
+	// gate is the delivery-fleet collaborator set + the LIVE buy policy, whose pause state must
+	// survive across legs (that state IS the hysteresis). Wired by SetGateDelivery; nil leaves the
+	// delivery leg off and the drain byte-identical to before.
+	gate *gateDelivery
 	// siteSource reads the LIVE construction site so each tick can reconcile the pipeline's delivered
 	// counters against the server. Wired by SetConstructionSiteSource; left nil the drain
 	// logs that reconciliation is OFF every tick rather than silently trusting a cache that only ever
@@ -379,7 +383,7 @@ func (h *RunConstructionCoordinatorHandler) drainOnce(ctx context.Context, cmd *
 	// gate needs — and by the slots this tick has free. The whole pool is offered to the planner even
 	// when it may only start a few of them, so a hull already laden with a material is still paired
 	// with THAT material rather than trimmed off the end of the pool and its load re-bought.
-	lots := h.planDispatchLots(ctx, tasks, idleShips, slots)
+	lots := h.planDispatchLots(ctx, cmd, tasks, idleShips, slots)
 	if len(lots) == 0 {
 		// Every ready material's bill is already met (a met/racing-replenishment leftover) — nothing to
 		// buy without over-supplying. Report a clean no-drain tick rather than dispatch an empty haul.
@@ -504,13 +508,16 @@ func (h *RunConstructionCoordinatorHandler) runSupplyWorker(ctx context.Context,
 		}
 	}()
 
-	// Atomic claim under the drain's dedicated-fleet identity: a hull pinned to ANOTHER fleet, or
-	// grabbed since discovery, is rejected at the DB, not clobbered. The operation string equals the
-	// preferred fleet tag (h.dedicatedFleet, default "manufacturing" == operationManufacturing) so
-	// the drain can claim its OWN dedicated hulls (tag == operation) while a foreign-pinned hull is
-	// still rejected.
-	if err := h.shipRepo.ClaimShip(ctx, hull, cmd.ContainerID, playerID, h.dedicatedFleet(cmd)); err != nil {
-		logger.Log("WARNING", fmt.Sprintf("Skipping hauler %s for construction: claim rejected: %v", hull, err), nil)
+	// Atomic claim under THE HULL'S OWN identity: a role-tagged gate hull is claimed under its own
+	// tag (ClaimShip authorizes only when tag == operation, so the drain's default identity would be
+	// REJECTED and the hull would silently never work), an undedicated hull under the drain's
+	// identity, and a hull pinned to ANOTHER fleet is rejected at the DB, not clobbered.
+	identity := lot.claimIdentity
+	if identity == "" {
+		identity = h.dedicatedFleet(cmd) // defensive: a lot built without one keeps today's behaviour
+	}
+	if err := h.shipRepo.ClaimShip(ctx, hull, cmd.ContainerID, playerID, identity); err != nil {
+		logger.Log("WARNING", fmt.Sprintf("Skipping hauler %s for construction: claim rejected under identity %q: %v", hull, identity, err), nil)
 		return // lot stays undispatched; the material's task is retried next tick
 	}
 	claimed = true

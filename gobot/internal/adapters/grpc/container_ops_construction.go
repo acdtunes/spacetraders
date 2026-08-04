@@ -10,7 +10,9 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/goods"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing/gate"
 	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/pkg/utils"
 )
 
@@ -434,6 +436,120 @@ func (s *DaemonServer) MutateConstructionMaxWorkers(ctx context.Context, constru
 	pipeline.SetMaxWorkers(count)
 	if err := pipelineRepo.Update(ctx, pipeline); err != nil {
 		return nil, fmt.Errorf("failed to persist worker cap %d for pipeline %s: %w", count, pipeline.ID(), err)
+	}
+	return result, nil
+}
+
+// --- gate DELIVERY floors: the live buy/resume hysteresis knobs ----------------------------------
+
+// ConstructionDeliveryFloorsResult reports the floors in force after the mutation. BuyFloor and
+// ResumeFloor are the RESOLVED pair — an unset dimension reports the armed default it resolves
+// to, never the blank the row stores — and the IsDefault flags say which side that was, so a
+// resolved floor is distinguishable from one somebody explicitly pinned.
+type ConstructionDeliveryFloorsResult struct {
+	ConstructionSite     string
+	BuyFloor             string
+	ResumeFloor          string
+	BuyFloorIsDefault    bool
+	ResumeFloorIsDefault bool
+	Changed              bool
+}
+
+// defaultedSideNote names the side of the pair that came from the ARMED default rather than
+// from a value the operator typed or the row already held. Without it a one-sided tune is
+// refused by a comparison against a number that appears nowhere in the command: `--resume-floor
+// MODERATE` on a fresh row reads as "MODERATE must be strictly above the buy floor MODERATE",
+// which looks like the knob contradicting itself. Both-unset cannot reach this — the armed
+// defaults are a valid pair, asserted by the gate package's own test — so it has no branch here.
+func defaultedSideNote(nextBuy, nextResume string, effectiveBuy, effectiveResume shared.SupplyLevel) string {
+	if nextBuy == "" {
+		return fmt.Sprintf(" (the unset buy floor defaults to %s)", effectiveBuy)
+	}
+	if nextResume == "" {
+		return fmt.Sprintf(" (the unset resume floor defaults to %s)", effectiveResume)
+	}
+	return ""
+}
+
+// MutateConstructionDeliveryFloors sets the gate delivery fleet's supply buy/resume
+// thresholds on the RUNNING construction pipeline for constructionSite, persisting them on
+// the pipeline row (RULINGS #2) with no restart. The drain re-reads them off that row on
+// every leg, so the tune takes effect on the next leg.
+//
+// An EMPTY floor argument leaves that dimension unchanged, so an operator can widen or
+// narrow the hysteresis gap from either end without restating the other. Clearing a floor
+// back to the armed default is done by naming the default explicitly, not by sending an
+// empty string -- an empty argument that meant "reset" would make "leave unchanged"
+// inexpressible, and those two intents must not share an encoding on a money-adjacent knob.
+//
+// Validation lives at the CLI boundary (strict tier check + the strictly-above-buy-floor
+// gap check). This layer re-checks the ORDERING anyway, fail-closed: a caller that reached
+// the daemon another way must not be able to persist a zero-gap hysteresis, which would
+// reintroduce exactly the boundary chatter the second floor exists to prevent.
+func (s *DaemonServer) MutateConstructionDeliveryFloors(ctx context.Context, constructionSite string, playerID int, buyFloor, resumeFloor string) (*ConstructionDeliveryFloorsResult, error) {
+	if buyFloor != "" && !shared.IsValidSupply(buyFloor) {
+		return nil, fmt.Errorf("invalid delivery buy floor %q: want one of ABUNDANT, HIGH, MODERATE, LIMITED, SCARCE", buyFloor)
+	}
+	if resumeFloor != "" && !shared.IsValidSupply(resumeFloor) {
+		return nil, fmt.Errorf("invalid delivery resume floor %q: want one of ABUNDANT, HIGH, MODERATE, LIMITED, SCARCE", resumeFloor)
+	}
+
+	pipelineRepo := persistence.NewGormManufacturingPipelineRepository(s.db)
+
+	pipeline, err := pipelineRepo.FindByConstructionSite(ctx, constructionSite, playerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to locate construction pipeline for %s: %w", constructionSite, err)
+	}
+	if pipeline == nil {
+		return nil, fmt.Errorf("no active construction pipeline for %s (player %d) — start one before setting its delivery floors", constructionSite, playerID)
+	}
+
+	// An unset argument keeps the persisted value; the effective pair is what gets checked
+	// and written, so a one-sided tune is still validated against the other side.
+	nextBuy := pipeline.DeliveryBuyFloor()
+	if buyFloor != "" {
+		nextBuy = buyFloor
+	}
+	nextResume := pipeline.DeliveryResumeFloor()
+	if resumeFloor != "" {
+		nextResume = resumeFloor
+	}
+
+	// Fail closed on a collapsed gap. Both-unset is fine (the reader resolves the armed
+	// MODERATE/HIGH defaults); one-sided is checked against the other side's resolved value.
+	effectiveBuy, effectiveResume := gate.DefaultBuyFloor, gate.DefaultResumeFloor
+	if nextBuy != "" {
+		effectiveBuy = shared.ParseSupplyLevel(nextBuy)
+	}
+	if nextResume != "" {
+		effectiveResume = shared.ParseSupplyLevel(nextResume)
+	}
+	if effectiveResume.Order() <= effectiveBuy.Order() {
+		return nil, fmt.Errorf("delivery resume floor %s must be strictly above the buy floor %s%s — an equal or lower resume floor collapses the hysteresis into the single threshold that chatters at the supply boundary",
+			effectiveResume, effectiveBuy, defaultedSideNote(nextBuy, nextResume, effectiveBuy, effectiveResume))
+	}
+
+	changed := pipeline.DeliveryBuyFloor() != nextBuy || pipeline.DeliveryResumeFloor() != nextResume
+	// The RESULT reports the RESOLVED pair — what the knob became — while the WRITE below
+	// persists the raw values. An unset dimension must report the armed default it resolves to
+	// (never a blank, which is what the row stores and what the operator would otherwise be
+	// shown on the most likely first command), yet must stay unset ON THE ROW: freezing today's
+	// default there would pin the pipeline to it and make "unset" unreachable.
+	result := &ConstructionDeliveryFloorsResult{
+		ConstructionSite:     constructionSite,
+		BuyFloor:             effectiveBuy.String(),
+		ResumeFloor:          effectiveResume.String(),
+		BuyFloorIsDefault:    nextBuy == "",
+		ResumeFloorIsDefault: nextResume == "",
+		Changed:              changed,
+	}
+	if !changed {
+		return result, nil // idempotent verb: nothing to persist
+	}
+
+	pipeline.SetDeliveryFloors(nextBuy, nextResume)
+	if err := pipelineRepo.Update(ctx, pipeline); err != nil {
+		return nil, fmt.Errorf("failed to persist delivery floors (buy %s, resume %s) for pipeline %s: %w", nextBuy, nextResume, pipeline.ID(), err)
 	}
 	return result, nil
 }

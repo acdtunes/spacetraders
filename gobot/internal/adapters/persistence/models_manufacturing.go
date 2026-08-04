@@ -29,6 +29,9 @@ type ManufacturingPipelineModel struct {
 	MaxWorkers       int     `gorm:"column:max_workers;default:5"`
 	MinSupply        string  `gorm:"column:min_supply;size:20;default:''"`
 	GoodOverrides    string  `gorm:"column:good_overrides;type:text;default:''"` // Per-good buy-gating overrides (JSON), persisted for restart-resilience (RULINGS #2)
+
+	DeliveryBuyFloor    string `gorm:"column:delivery_buy_floor;size:20;default:''"`    // Gate delivery fleet supply BUY floor; '' = unset (armed default MODERATE)
+	DeliveryResumeFloor string `gorm:"column:delivery_resume_floor;size:20;default:''"` // Gate delivery fleet supply RESUME floor; '' = unset (armed default HIGH)
 }
 
 func (ManufacturingPipelineModel) TableName() string {

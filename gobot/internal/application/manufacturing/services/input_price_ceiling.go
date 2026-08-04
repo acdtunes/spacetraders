@@ -168,9 +168,41 @@ func (e *ProductionExecutor) inputPriceCeilingParked(ctx context.Context, waypoi
 		return true
 	}
 	if count < inputPriceCeilingMinSamples {
-		// No eligible (MODERATE+) source: the buy is on the selector's rescue path, already
-		// gated by the 1.2x rescue cap. The cross-market ceiling has no healthy peer set to
-		// price against here, so it defers rather than double-parking a validated rescue buy.
+		// No eligible (MODERATE+) source to price against, so the ceiling DEFERS rather than
+		// parks. The justification only holds with its precondition attached:
+		//
+		// SELECTOR-ROUTED buys (buyGood -> resolveInputSource -> selectInputSource). Reaching
+		// here means the selector found no MODERATE+ source and returned a rescue/fallback
+		// pick it had ALREADY validated against the 1.2x rescue cap. Deferring avoids
+		// double-parking a buy that was priced once — the buy is not unpriced.
+		//
+		// PINNED-SOURCE buys (BuyAtTerminalFactory) break that implication: they never run the
+		// selector, so nothing upstream applied a rescue cap. When count reaches 0 — NO MODERATE+
+		// exporter of the material anywhere in the system — this branch defers, and no price
+		// validation applies to that buy. It is then bounded only by the working-capital spend
+		// floor and the cross-container concurrent-spend cap, which are solvency guards, not
+		// price guards.
+		//
+		// SCOPE THAT PRECISELY, because the obvious reading of it is wrong. At the shipped default
+		// buy floor (MODERATE) the delivery fleet's BuyPolicy PAUSES the material before the leg
+		// would ever buy at a below-MODERATE factory, so "the terminal factory has drained below
+		// MODERATE" does not reach here at all. That scenario opens only if an operator tunes
+		// --buy-floor beneath MODERATE.
+		//
+		// The genuinely reachable window is narrower and different: MID-FILL DEPLETION. Our own
+		// tranches can push the factory below MODERATE inside a single fillFromSource loop,
+		// dropping count to 0 for the remaining tranches of that same fill — after the policy
+		// already ruled on a pre-buy reading. It is bounded by gateMaxTranchesPerStop, by hull
+		// capacity, and by the working-capital floor.
+		//
+		// Note also that the delivery leg does NOT stamp gate mode, and inputPriceCeilingParked
+		// returns false unconditionally under IsUnifiedGateNode. So this path is MORE
+		// price-guarded than the gate acquisition path it takes work from, not less.
+		//
+		// That is ACCEPTED, not overlooked: the delivery fleet's spec says price is deliberately
+		// not a gate for it. But do not read this deferral as a price backstop for a pinned buy —
+		// in that case there is none. Giving the pinned path its own baseline is a design decision
+		// for the phase, not something to graft on here.
 		return false
 	}
 

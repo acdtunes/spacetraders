@@ -310,3 +310,304 @@ func TestRunConstructionOverride_ErrorPropagates(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "FAB_MATS")
 }
+
+// --- pipeline-wide gate DELIVERY floors: the second RPC behind the same verb -----------------------
+//
+// These pin the operator surface for --buy-floor/--resume-floor. They are PIPELINE-WIDE
+// (no --good), so they get their own request shape and their own RPC; the verb dispatches
+// on which flags were set. Everything here is asserted against the pure builder/runner for
+// the same reason the per-good cases above are: RunE's happy path dials a real daemon.
+
+// The pipeline-wide floors are a DIFFERENT decision from the per-good override: they have
+// no good. Passing --good with them is a mistake worth rejecting loudly rather than
+// silently ignoring, because an operator who typed it believes it did something.
+func TestBuildConstructionDeliveryFloorsRequest_RejectsGoodAndRequiresSite(t *testing.T) {
+	_, err := buildConstructionDeliveryFloorsRequest(
+		constructionOverrideFlags{site: "X1-VB74-I55", good: "FAB_MATS", buyFloor: "MODERATE"},
+		&PlayerIdentifier{PlayerID: 1})
+	require.Error(t, err, "--good must be rejected: the delivery floors are pipeline-wide")
+
+	_, err = buildConstructionDeliveryFloorsRequest(
+		constructionOverrideFlags{buyFloor: "MODERATE"}, &PlayerIdentifier{PlayerID: 1})
+	require.Error(t, err, "--site is required")
+
+	// --clear removes a PER-GOOD override; there is no such thing as clearing a
+	// pipeline-wide floor (unset resolves to the armed default, it is not an off switch),
+	// so combining them is ambiguous rather than merely redundant.
+	_, err = buildConstructionDeliveryFloorsRequest(
+		constructionOverrideFlags{site: "X1-VB74-I55", clear: true, buyFloor: "MODERATE"},
+		&PlayerIdentifier{PlayerID: 1})
+	require.Error(t, err, "--clear cannot be combined with the pipeline-wide floors")
+}
+
+// Tier values are validated at the CLI boundary. ParseSupplyLevel is deliberately lenient
+// (unknown -> MODERATE) for scanned market data; operator input is not, or a typo would
+// silently become a floor the operator never chose.
+//
+// The ADVERTISED vocabulary must be the ACCEPTED vocabulary, per flag. The two floors do not
+// take the same set — ABUNDANT cannot be a buy floor and SCARCE cannot be a resume floor
+// (see the two ladder-end tests below) — so a refusal that listed all five would answer a
+// rejected value with a menu whose obvious next pick is rejected too.
+func TestBuildConstructionDeliveryFloorsRequest_RejectsAnInvalidTier(t *testing.T) {
+	_, err := buildConstructionDeliveryFloorsRequest(
+		constructionOverrideFlags{site: "X1-VB74-I55", buyFloor: "PLENTIFUL"}, &PlayerIdentifier{PlayerID: 1})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "PLENTIFUL")
+	require.Contains(t, err.Error(), "SCARCE", "the refusal must list the accepted vocabulary")
+	require.NotContains(t, err.Error(), "ABUNDANT",
+		"--buy-floor must not advertise ABUNDANT: it is refused, so offering it sends the operator to a second rejection")
+
+	_, err = buildConstructionDeliveryFloorsRequest(
+		constructionOverrideFlags{site: "X1-VB74-I55", resumeFloor: "LOTS"}, &PlayerIdentifier{PlayerID: 1})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "LOTS")
+	require.Contains(t, err.Error(), "ABUNDANT", "the refusal must list the accepted vocabulary")
+	require.NotContains(t, err.Error(), "SCARCE",
+		"--resume-floor must not advertise SCARCE: it is refused, so offering it sends the operator to a second rejection")
+}
+
+// The two per-flag vocabularies must stay the canonical five minus exactly one end each, or
+// a level could be silently dropped from an operator's reach (or a rejected one silently
+// re-offered) without any test noticing. Pins them against the --min-supply whitelist, which
+// is the full ladder.
+func TestDeliveryFloorVocabularies_AreTheFullLadderMinusOneEndEach(t *testing.T) {
+	require.ElementsMatch(t,
+		[]manufacturing.SupplyLevel{
+			manufacturing.SupplyLevelHigh, manufacturing.SupplyLevelModerate,
+			manufacturing.SupplyLevelLimited, manufacturing.SupplyLevelScarce,
+		}, validBuyFloors, "--buy-floor is the full ladder minus ABUNDANT (the top)")
+
+	require.ElementsMatch(t,
+		[]manufacturing.SupplyLevel{
+			manufacturing.SupplyLevelAbundant, manufacturing.SupplyLevelHigh,
+			manufacturing.SupplyLevelModerate, manufacturing.SupplyLevelLimited,
+		}, validResumeFloors, "--resume-floor is the full ladder minus SCARCE (the bottom)")
+
+	// Neither list may drift away from the canonical ladder it is carved out of.
+	require.Subset(t, validMinSupplyLevels, validBuyFloors)
+	require.Subset(t, validMinSupplyLevels, validResumeFloors)
+	require.Len(t, validMinSupplyLevels, 5)
+}
+
+// A resume floor at or below the buy floor collapses the hysteresis to the single
+// threshold that chatters. Reject it at the boundary, naming both values, rather than
+// letting the domain silently raise it -- an operator who asked for a gap of zero has a
+// mental model worth correcting.
+func TestBuildConstructionDeliveryFloorsRequest_RejectsANonPositiveHysteresisGap(t *testing.T) {
+	_, err := buildConstructionDeliveryFloorsRequest(
+		constructionOverrideFlags{site: "X1-VB74-I55", buyFloor: "HIGH", resumeFloor: "MODERATE"},
+		&PlayerIdentifier{PlayerID: 1})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "HIGH")
+	require.Contains(t, err.Error(), "MODERATE")
+
+	_, err = buildConstructionDeliveryFloorsRequest(
+		constructionOverrideFlags{site: "X1-VB74-I55", buyFloor: "HIGH", resumeFloor: "HIGH"},
+		&PlayerIdentifier{PlayerID: 1})
+	require.Error(t, err, "an equal resume floor is a zero gap")
+}
+
+// ABUNDANT is the top of the supply ladder, so NO resume floor can sit strictly above it:
+// gate.nextLevelAbove(ABUNDANT) returns ABUNDANT and the hysteresis gap collapses to zero.
+// A one-sided --buy-floor ABUNDANT slips past the pairwise gap check (there is no second
+// value to compare against), so it is refused on its own -- otherwise the only thing
+// standing between the operator and a chattering fleet is a daemon round-trip whose error
+// names a --resume-floor they never typed.
+func TestBuildConstructionDeliveryFloorsRequest_RejectsATopOfLadderBuyFloor(t *testing.T) {
+	_, err := buildConstructionDeliveryFloorsRequest(
+		constructionOverrideFlags{site: "X1-VB74-I55", buyFloor: "ABUNDANT"}, &PlayerIdentifier{PlayerID: 1})
+	require.Error(t, err, "no resume floor can sit above ABUNDANT, so it is not a settable buy floor")
+	require.Contains(t, err.Error(), "ABUNDANT")
+
+	// ABUNDANT remains a legal RESUME floor -- it is the strictest recovery bar, and the
+	// gap above a lower buy floor is real.
+	req, err := buildConstructionDeliveryFloorsRequest(
+		constructionOverrideFlags{site: "X1-VB74-I55", buyFloor: "HIGH", resumeFloor: "ABUNDANT"},
+		&PlayerIdentifier{PlayerID: 1})
+	require.NoError(t, err, "ABUNDANT is a valid resume floor above a lower buy floor")
+	require.Equal(t, "ABUNDANT", *req.ResumeFloor)
+}
+
+// The MIRROR of the ABUNDANT case, and the worse of the two because it had no guard at all.
+// SCARCE is the bottom of the ladder (Order 1), so effectiveResume.Order() <= effectiveBuy.Order()
+// holds for EVERY buy floor -- a one-sided --resume-floor SCARCE slips past the pairwise check
+// (which needs both flags) and dies at the daemon with an error naming a --buy-floor the
+// operator never typed. That is word for word the failure mode the ABUNDANT guard exists to
+// prevent, so it is refused at the same boundary with an equally explanatory message.
+func TestBuildConstructionDeliveryFloorsRequest_RejectsABottomOfLadderResumeFloor(t *testing.T) {
+	_, err := buildConstructionDeliveryFloorsRequest(
+		constructionOverrideFlags{site: "X1-VB74-I55", resumeFloor: "SCARCE"}, &PlayerIdentifier{PlayerID: 1})
+	require.Error(t, err, "no buy floor can sit below SCARCE, so it is not a settable resume floor")
+	require.Contains(t, err.Error(), "SCARCE")
+	require.Contains(t, strings.ToLower(err.Error()), "bottom",
+		"the refusal must explain WHY, like its ABUNDANT mirror, not just reject")
+
+	// SCARCE remains a legal BUY floor -- it is the most permissive buying bar, and a resume
+	// floor above it is expressible.
+	req, err := buildConstructionDeliveryFloorsRequest(
+		constructionOverrideFlags{site: "X1-VB74-I55", buyFloor: "SCARCE", resumeFloor: "LIMITED"},
+		&PlayerIdentifier{PlayerID: 1})
+	require.NoError(t, err, "SCARCE is a valid buy floor below a higher resume floor")
+	require.Equal(t, "SCARCE", *req.BuyFloor)
+}
+
+// Setting ONE floor is legal: the other keeps whatever is already persisted. The request
+// carries only the provided knob, so an unset one leaves that dimension unchanged --
+// matching how --min-supply/--price-ceiling-mult already behave on this verb.
+func TestBuildConstructionDeliveryFloorsRequest_SendsOnlyTheProvidedFloors(t *testing.T) {
+	req, err := buildConstructionDeliveryFloorsRequest(
+		constructionOverrideFlags{site: "X1-VB74-I55", buyFloor: "LIMITED"}, &PlayerIdentifier{PlayerID: 1})
+	require.NoError(t, err)
+	require.NotNil(t, req.BuyFloor)
+	require.Equal(t, "LIMITED", *req.BuyFloor)
+	require.Nil(t, req.ResumeFloor, "an unset resume floor must leave that dimension unchanged")
+	require.Equal(t, "X1-VB74-I55", req.ConstructionSite)
+	require.NotNil(t, req.PlayerId)
+	require.Equal(t, int32(1), *req.PlayerId, "the resolved player must reach the daemon")
+}
+
+// fakeConstructionFloorsClient records the request and serves a canned response.
+type fakeConstructionFloorsClient struct {
+	gotReq  *pb.ConstructionDeliveryFloorsRequest
+	resp    *pb.ConstructionDeliveryFloorsResponse
+	respErr error
+}
+
+func (f *fakeConstructionFloorsClient) ConstructionDeliveryFloors(_ context.Context, req *pb.ConstructionDeliveryFloorsRequest) (*pb.ConstructionDeliveryFloorsResponse, error) {
+	f.gotReq = req
+	if f.respErr != nil {
+		return nil, f.respErr
+	}
+	return f.resp, nil
+}
+
+// The confirmation must state the RESOLVED floors in force and that no restart is needed
+// -- the operator's only evidence the knob is live.
+func TestRunConstructionDeliveryFloors_ReportsTheResolvedFloorsAndLiveness(t *testing.T) {
+	client := &fakeConstructionFloorsClient{resp: &pb.ConstructionDeliveryFloorsResponse{
+		ConstructionSite: "X1-VB74-I55", BuyFloor: "LIMITED", ResumeFloor: "MODERATE", Changed: true,
+	}}
+	req := &pb.ConstructionDeliveryFloorsRequest{ConstructionSite: "X1-VB74-I55"}
+
+	msg, err := runConstructionDeliveryFloors(context.Background(), client, req)
+	require.NoError(t, err)
+	require.Same(t, req, client.gotReq)
+	require.Contains(t, msg, "LIMITED")
+	require.Contains(t, msg, "MODERATE")
+	require.Contains(t, strings.ToLower(msg), "no restart")
+}
+
+// The most likely FIRST command against a fresh pipeline sets one floor. The other side is
+// then resolved from the armed default, and the confirmation must say so: a bare "resume=HIGH"
+// is indistinguishable from a HIGH a predecessor pinned, and the operator cannot tell which
+// half of the pair they actually control. Neither floor may ever render blank.
+func TestRunConstructionDeliveryFloors_AnnotatesTheSideResolvedFromTheDefault(t *testing.T) {
+	client := &fakeConstructionFloorsClient{resp: &pb.ConstructionDeliveryFloorsResponse{
+		ConstructionSite: "X1-VB74-I55", BuyFloor: "LIMITED", ResumeFloor: "HIGH",
+		BuyFloorIsDefault: false, ResumeFloorIsDefault: true, Changed: true,
+	}}
+
+	msg, err := runConstructionDeliveryFloors(context.Background(), client,
+		&pb.ConstructionDeliveryFloorsRequest{ConstructionSite: "X1-VB74-I55"})
+	require.NoError(t, err)
+	require.Contains(t, msg, "buy=LIMITED")
+	require.Contains(t, msg, "resume=HIGH (default)",
+		"the side resolved from the armed default must be marked as such")
+	require.NotContains(t, msg, "buy=LIMITED (default)",
+		"an explicitly-set floor must NOT be marked as a default")
+}
+
+// The no-op report is read for exactly the same "which of these did I set?" question as a
+// successful tune -- more so, since a re-run of a command that changed nothing is usually the
+// operator checking. It is the SECOND message path, so the annotation is pinned on it
+// independently; sharing a helper today is not a guarantee both paths call it tomorrow.
+func TestRunConstructionDeliveryFloors_NoOpReportsUnchanged(t *testing.T) {
+	client := &fakeConstructionFloorsClient{resp: &pb.ConstructionDeliveryFloorsResponse{
+		ConstructionSite: "X1-VB74-I55", BuyFloor: "MODERATE", ResumeFloor: "HIGH",
+		BuyFloorIsDefault: true, ResumeFloorIsDefault: false, Changed: false,
+	}}
+	msg, err := runConstructionDeliveryFloors(context.Background(), client,
+		&pb.ConstructionDeliveryFloorsRequest{ConstructionSite: "X1-VB74-I55"})
+	require.NoError(t, err)
+	require.Contains(t, strings.ToLower(msg), "unchanged")
+	require.Contains(t, msg, "buy=MODERATE (default)",
+		"the unchanged path must mark a defaulted floor too, or a re-run tells the operator less than the first run did")
+	require.NotContains(t, msg, "resume=HIGH (default)",
+		"an explicitly-set floor must NOT be marked as a default on the unchanged path either")
+}
+
+// A daemon refusal (a collapsed gap caught by the fail-closed re-check, or no running
+// pipeline) must surface to the operator, not be swallowed into a success line.
+func TestRunConstructionDeliveryFloors_ErrorPropagates(t *testing.T) {
+	client := &fakeConstructionFloorsClient{respErr: errors.New("no active construction pipeline for X1-VB74-I55")}
+	_, err := runConstructionDeliveryFloors(context.Background(), client,
+		&pb.ConstructionDeliveryFloorsRequest{ConstructionSite: "X1-VB74-I55"})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "X1-VB74-I55")
+}
+
+// ONE VERB, TWO RPCs (adjudication #5), dispatched on which flags were set. The floors
+// have no good; the per-good override requires one. Mixing them in one call is ambiguous,
+// so it is rejected rather than silently resolved to one of the two.
+func TestConstructionOverrideFlags_DispatchesFloorsAndPerGoodSeparately(t *testing.T) {
+	require.True(t, constructionOverrideFlags{buyFloor: "MODERATE"}.anyFloorSet())
+	require.True(t, constructionOverrideFlags{resumeFloor: "HIGH"}.anyFloorSet())
+	require.False(t, constructionOverrideFlags{minSupply: "LIMITED"}.anyFloorSet())
+
+	require.True(t, constructionOverrideFlags{minSupply: "LIMITED"}.anyKnobSet())
+	require.False(t, constructionOverrideFlags{buyFloor: "MODERATE"}.anyKnobSet(),
+		"a delivery floor is not a per-good knob; anyKnobSet must not claim it")
+}
+
+// A flag the operator cannot type is a knob that does not exist. This asserts the two
+// floors are actually REGISTERED on the verb -- the failure mode a builder/runner test
+// cannot see, and exactly the silent-no-op class this phase exists to remove.
+func TestNewConstructionOverrideCommand_RegistersTheDeliveryFloorFlags(t *testing.T) {
+	cmd := newConstructionOverrideCommand()
+	for _, name := range []string{"buy-floor", "resume-floor"} {
+		flag := cmd.Flags().Lookup(name)
+		require.NotNil(t, flag, "--%s must be registered on `construction override`", name)
+		require.Equal(t, "", flag.DefValue,
+			"--%s must default to UNSET; the armed default is resolved by the reader, not stamped by the CLI", name)
+	}
+}
+
+// A flag that advertises what it refuses costs the operator a round-trip to discover the
+// exclusion -- so each floor's help must carry its OWN vocabulary, and it is DERIVED from the
+// list the validator rejects against rather than retyped beside it. This pins the derivation
+// against the realistic regression: someone re-hardcodes the help, it is correct that day, and
+// a later vocabulary change desyncs it silently.
+//
+// The excluded ladder end is asserted by COUNT, not absence: the help names it deliberately in
+// the prose clause that explains why it is gone ("not ABUNDANT: nothing sits strictly above
+// it"), so a bare NotContains would fail on the very sentence that makes the help useful.
+// Exactly once means named as excluded and NOT present in the vocabulary -- promote a ladder
+// end into its own flag's accepted set and the count goes to two.
+func TestNewConstructionOverrideCommand_FloorHelpAdvertisesOnlyItsOwnVocabulary(t *testing.T) {
+	cmd := newConstructionOverrideCommand()
+
+	for _, tc := range []struct {
+		flagName string
+		accepts  []manufacturing.SupplyLevel
+		excluded manufacturing.SupplyLevel
+	}{
+		{"buy-floor", validBuyFloors, manufacturing.SupplyLevelAbundant},
+		{"resume-floor", validResumeFloors, manufacturing.SupplyLevelScarce},
+	} {
+		flag := cmd.Flags().Lookup(tc.flagName)
+		require.NotNil(t, flag, "--%s must be registered", tc.flagName)
+		require.NotEmpty(t, tc.accepts,
+			"--%s vocabulary is empty, so the loop below would assert nothing", tc.flagName)
+
+		for _, level := range tc.accepts {
+			require.Contains(t, flag.Usage, string(level),
+				"--%s accepts %s, so its help must advertise it", tc.flagName, level)
+		}
+
+		require.Equal(t, 1, strings.Count(flag.Usage, string(tc.excluded)),
+			"--%s must name %s exactly once -- in the clause explaining its exclusion, never in the accepted vocabulary",
+			tc.flagName, tc.excluded)
+		require.Contains(t, flag.Usage, "not "+string(tc.excluded),
+			"--%s must say WHY %s is unavailable, not merely omit it", tc.flagName, tc.excluded)
+	}
+}

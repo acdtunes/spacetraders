@@ -21,10 +21,12 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/api"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	bootstrapCmd "github.com/andrescamacho/spacetraders-go/internal/application/bootstrap/commands"
+	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	contractScalerCmd "github.com/andrescamacho/spacetraders-go/internal/application/contractscaler/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/contractscaler"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing/gate"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
@@ -326,8 +328,13 @@ func (r *bootstrapGateSurplusReleaser) retagGateWorkers(ctx context.Context, pla
 		if !requested[ship.ShipSymbol()] {
 			continue // never touch a hull outside the selected set
 		}
-		if ship.DedicatedFleet() != manufacturingFleetTag {
-			continue // re-tagged/adopted since the observation → skip
+		// Any GATE tag qualifies — the two role tags and the legacy one. Guarding on the
+		// legacy tag alone would strand every role-tagged hull dedicated forever: neither the
+		// surplus release nor the EXPANSION trade redirect could ever touch it, and nothing
+		// else writes that column. Still deliberately NARROW: a contract or trade hull is not
+		// a gate hull, and re-tagging one here would be a poach (RULINGS #7).
+		if !gate.IsGateFleetTag(ship.DedicatedFleet()) {
+			continue // foreign fleet, undedicated, or re-tagged since the observation → skip
 		}
 		if !ship.IsIdle() || ship.IsInTransit() {
 			continue // picked up a construction task since the observation → never yank mid-task
@@ -353,20 +360,79 @@ type bootstrapGateWorkerAcquirer struct {
 	shipRepo navigation.ShipRepository
 }
 
+// nextGateRole is the role the next gate hull should carry, derived from the LIVE fleet.
+//
+// Reading the counts rather than keeping a cursor is what makes the D/F/F/D order correct
+// after a daemon restart, a hull loss, or an operator re-tag: there is no stored position to
+// fall out of step with the fleet. Legacy manufacturing hulls are deliberately NOT counted —
+// they carry no role (phase 3 re-roles them), and folding them into either count would skew
+// every subsequent purchase.
+//
+// FAILS CLOSED on an unreadable fleet. A role guessed from an unknown count is a hull
+// working the wrong half of the operation, which is worse than a purchase deferred one tick.
+//
+// CALLERS MUST CHECK err. The Role returned alongside an error is the ZERO VALUE, and the zero
+// value is NOT a sentinel: gate.Role(0) IS gate.RoleDelivery, so a caller that dropped the error
+// would silently tag the hull "delivery" rather than trip over an obviously invalid role. There
+// is deliberately no RoleUnknown to return instead — a sentinel would break gate.NextRole's
+// total-function property (it answers for every count, by design) and change Task 1's shipped
+// surface. The error is the only signal, so it is the one that must not be discarded.
+func nextGateRole(ctx context.Context, shipRepo navigation.ShipRepository, playerID shared.PlayerID) (gate.Role, error) {
+	ships, err := shipRepo.FindAllByPlayer(ctx, playerID)
+	if err != nil {
+		return 0, fmt.Errorf("cannot derive the next gate role from an unreadable fleet: %w", err)
+	}
+	delivery, factory := 0, 0
+	for _, ship := range ships {
+		if ship == nil {
+			continue
+		}
+		role, ok := gate.ParseFleetTag(ship.DedicatedFleet())
+		if !ok {
+			continue // legacy or foreign: carries no role
+		}
+		if role == gate.RoleDelivery {
+			delivery++
+			continue
+		}
+		factory++
+	}
+	return gate.NextRole(delivery, factory), nil
+}
+
 // BuyForConstruction buys one hull (reuse the asset-agnostic batch-purchase path) and dedicates it to the
-// manufacturing fleet so the executor claims it as a gate worker.
+// gate fleet under its ROLE tag, so the drain claims it as that role's worker.
+//
+// The role is derived from the live fleet BEFORE the buy, so a failure to resolve it costs a deferred
+// purchase rather than a mis-roled hull. The order is delivery, factory, factory, delivery: first hull
+// delivery so any already-accumulated factory stock starts moving immediately, and the interleave means
+// stopping after two leaves one of each rather than two of the same — the state that actually occurs
+// when treasury is tight.
+//
+// AssignFleet remains the single write path for the tag (RULINGS #3); only the value written changed.
+// The buy itself is untouched — same money-integrity batch path, same guards (RULINGS #4).
 func (a *bootstrapGateWorkerAcquirer) BuyForConstruction(ctx context.Context, playerID int, shipType, yard string) (bootstrapCmd.BuyResult, error) {
+	pid, perr := shared.NewPlayerID(playerID)
+	if perr != nil {
+		return bootstrapCmd.BuyResult{}, perr
+	}
+	// Resolve the role BEFORE spending: an unreadable fleet defers the buy instead of producing a
+	// hull tagged by guess (or left untagged, which strands it outside every gate path).
+	role, rerr := nextGateRole(ctx, a.shipRepo, pid)
+	if rerr != nil {
+		return bootstrapCmd.BuyResult{}, rerr
+	}
+
 	bought, err := a.bootstrapAcquirer.Buy(ctx, playerID, shipType, yard)
 	if err != nil {
 		return bootstrapCmd.BuyResult{}, err
 	}
-	pid, perr := shared.NewPlayerID(playerID)
-	if perr != nil {
-		return bought, perr
-	}
-	if derr := a.shipRepo.AssignFleet(ctx, bought.ShipSymbol, manufacturingFleetTag, pid); derr != nil {
+	if derr := a.shipRepo.AssignFleet(ctx, bought.ShipSymbol, role.FleetTag(), pid); derr != nil {
 		return bought, derr
 	}
+	common.LoggerFromContext(ctx).Log("INFO", fmt.Sprintf("Dedicated gate worker %s to the %s role (fleet tag %q)", bought.ShipSymbol, role, role.FleetTag()), map[string]interface{}{
+		"ship": bought.ShipSymbol, "gate_role": role.String(), "dedicated_fleet": role.FleetTag(),
+	})
 	return bought, nil
 }
 

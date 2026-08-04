@@ -198,12 +198,25 @@ type constructionOverrideFlags struct {
 	minSupply        string
 	priceCeilingMult float64
 	multProvided     bool // whether --price-ceiling-mult was set on the command line
+
+	// buyFloor/resumeFloor are the PIPELINE-WIDE gate DELIVERY fleet thresholds. They take no
+	// --good and route to their own RPC; see anyFloorSet.
+	buyFloor    string
+	resumeFloor string
 }
 
 // anyKnobSet reports whether at least one tunable knob (--min-supply or
 // --price-ceiling-mult) was provided on the command line.
 func (f constructionOverrideFlags) anyKnobSet() bool {
 	return f.minSupply != "" || f.multProvided
+}
+
+// anyFloorSet reports whether a PIPELINE-WIDE delivery floor was provided. It is
+// deliberately separate from anyKnobSet: the floors and the per-good override are two
+// different decisions on one verb, routed to two different RPCs (the per-good request
+// requires a `good`, which pipeline-wide floors do not have).
+func (f constructionOverrideFlags) anyFloorSet() bool {
+	return f.buyFloor != "" || f.resumeFloor != ""
 }
 
 // buildConstructionOverrideRequest validates the `construction override` flags at the boundary and
@@ -304,6 +317,168 @@ func formatOverrideKnobs(resp *pb.ConstructionGoodOverrideResponse) string {
 	return strings.Join(parts, ", ")
 }
 
+// --- pipeline-wide gate DELIVERY floors (the second RPC behind the same verb) --------------------
+
+// constructionDeliveryFloorsMutator is the narrow daemon surface the delivery-floor half of
+// `construction override` needs. By construction it exposes ONLY the floors RPC — no
+// pipeline restart/stop — so "no restart" is guaranteed by the surface this verb can reach.
+type constructionDeliveryFloorsMutator interface {
+	ConstructionDeliveryFloors(ctx context.Context, req *pb.ConstructionDeliveryFloorsRequest) (*pb.ConstructionDeliveryFloorsResponse, error)
+}
+
+// validBuyFloors and validResumeFloors are the PER-FLAG accepted sets, and they are
+// deliberately NOT the same set. Each floor excludes the ladder end that makes a strictly
+// positive hysteresis gap inexpressible: nothing can sit strictly above ABUNDANT (so it is not
+// a buy floor) and nothing can sit strictly below SCARCE (so it is not a resume floor). Each
+// flag therefore advertises only what it actually accepts — listing all five on both would
+// answer a rejected value with a menu whose obvious next pick is rejected too. Both are carved
+// out of validMinSupplyLevels, the full ladder, and a test pins them to it so neither can drift.
+var (
+	validBuyFloors = []manufacturing.SupplyLevel{
+		manufacturing.SupplyLevelHigh,
+		manufacturing.SupplyLevelModerate,
+		manufacturing.SupplyLevelLimited,
+		manufacturing.SupplyLevelScarce,
+	}
+	validResumeFloors = []manufacturing.SupplyLevel{
+		manufacturing.SupplyLevelAbundant,
+		manufacturing.SupplyLevelHigh,
+		manufacturing.SupplyLevelModerate,
+		manufacturing.SupplyLevelLimited,
+	}
+)
+
+// supplyLevelList renders a vocabulary for an error message, e.g. "HIGH, MODERATE, LIMITED, SCARCE".
+func supplyLevelList(levels []manufacturing.SupplyLevel) string {
+	parts := make([]string, 0, len(levels))
+	for _, level := range levels {
+		parts = append(parts, string(level))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// validateDeliveryFloorFlag strictly validates one pipeline-wide floor value against the set
+// that FLAG accepts, naming the flag and listing only its own vocabulary. An empty value is
+// unset and always valid — it leaves that dimension unchanged.
+func validateDeliveryFloorFlag(flagName, value string, allowed []manufacturing.SupplyLevel) error {
+	if value == "" {
+		return nil
+	}
+	for _, level := range allowed {
+		if manufacturing.SupplyLevel(value) == level {
+			return nil
+		}
+	}
+	return fmt.Errorf("invalid --%s value %q: must be one of %s", flagName, value, supplyLevelList(allowed))
+}
+
+// buildConstructionDeliveryFloorsRequest validates the pipeline-wide floor flags at the
+// boundary and assembles the gRPC request.
+//
+// --good is REJECTED here rather than ignored. These floors are pipeline-wide, so a
+// supplied good does nothing — and an operator who typed it believes it did something,
+// which is exactly the class of silent no-op this design exists to remove.
+//
+// Tiers are validated strictly. shared.ParseSupplyLevel is deliberately lenient (unknown ->
+// MODERATE) because it parses scanned market data; operator input is not, or a typo becomes
+// a floor nobody chose.
+//
+// A resume floor that is not STRICTLY ABOVE the buy floor is rejected, naming both values.
+// The domain would silently raise it, but silently correcting an operator leaves them with
+// a wrong mental model of a knob they are actively tuning.
+func buildConstructionDeliveryFloorsRequest(f constructionOverrideFlags, playerIdent *PlayerIdentifier) (*pb.ConstructionDeliveryFloorsRequest, error) {
+	if f.site == "" {
+		return nil, fmt.Errorf("--site is required (the construction site whose pipeline to tune)")
+	}
+	if f.good != "" {
+		return nil, fmt.Errorf("--good cannot be combined with --buy-floor/--resume-floor: the delivery floors are PIPELINE-WIDE, not per-good (use --min-supply/--price-ceiling-mult for a per-good override)")
+	}
+	if f.clear {
+		return nil, fmt.Errorf("--clear removes a per-good override; to reset the delivery floors, set them explicitly (--buy-floor MODERATE --resume-floor HIGH, the armed defaults)")
+	}
+	// The two LADDER-END exclusions are checked before the vocabulary check so a real supply
+	// level that simply cannot work on this flag gets an explanation rather than a bare menu:
+	// that is a different operator mistake from a typo, and telling them apart is the
+	// difference between one retry and two. Neither is reachable by the pairwise check below,
+	// which needs BOTH flags — one-sided, each would otherwise die at the daemon with an error
+	// naming the flag the operator never typed.
+	//
+	// ABUNDANT is the top of the ladder: no resume floor can sit strictly above it, so the
+	// hysteresis gap collapses to zero (the domain's nextLevelAbove(ABUNDANT) returns ABUNDANT).
+	if manufacturing.SupplyLevel(f.buyFloor) == manufacturing.SupplyLevelAbundant {
+		return nil, fmt.Errorf("--buy-floor ABUNDANT is not settable: ABUNDANT is the top of the supply ladder, so no --resume-floor can sit strictly above it and the hysteresis gap would collapse to zero (HIGH is the strictest usable buy floor)")
+	}
+	// SCARCE is the bottom: no buy floor can sit strictly below it, so every buy floor
+	// collapses the gap against it.
+	if manufacturing.SupplyLevel(f.resumeFloor) == manufacturing.SupplyLevelScarce {
+		return nil, fmt.Errorf("--resume-floor SCARCE is not settable: SCARCE is the bottom of the supply ladder, so no --buy-floor can sit strictly below it and the hysteresis gap would collapse to zero (LIMITED is the most permissive usable resume floor)")
+	}
+
+	if err := validateDeliveryFloorFlag("buy-floor", f.buyFloor, validBuyFloors); err != nil {
+		return nil, err
+	}
+	if err := validateDeliveryFloorFlag("resume-floor", f.resumeFloor, validResumeFloors); err != nil {
+		return nil, err
+	}
+
+	if f.buyFloor != "" && f.resumeFloor != "" {
+		if manufacturing.SupplyLevel(f.resumeFloor).Order() <= manufacturing.SupplyLevel(f.buyFloor).Order() {
+			return nil, fmt.Errorf("--resume-floor %s must be strictly above --buy-floor %s: an equal or lower resume floor collapses the hysteresis into the single threshold that chatters at the supply boundary", f.resumeFloor, f.buyFloor)
+		}
+	}
+
+	playerID, agentSymbol := playerPointers(playerIdent)
+	req := &pb.ConstructionDeliveryFloorsRequest{
+		ConstructionSite: f.site,
+		PlayerId:         playerID,
+		AgentSymbol:      agentSymbol,
+	}
+	// Only PROVIDED floors become non-nil, so an unset one leaves that dimension unchanged
+	// and the gap can be tuned from either end.
+	if f.buyFloor != "" {
+		req.BuyFloor = &f.buyFloor
+	}
+	if f.resumeFloor != "" {
+		req.ResumeFloor = &f.resumeFloor
+	}
+	return req, nil
+}
+
+// annotateFloorProvenance renders one RESOLVED floor and marks it when the daemon resolved it
+// from the ARMED DEFAULT rather than reading a value explicitly set on the row. The value alone
+// cannot carry that: a bare "resume=HIGH" is indistinguishable from a HIGH a predecessor pinned,
+// so after the most likely first command — a one-sided tune of a fresh pipeline — the operator
+// cannot tell which half of the pair they actually control. The annotation is the only thing
+// that says so, and it is deliberately about PROVENANCE, not blankness: the resolved value is
+// always present (the daemon never returns the row's raw unset value), so this never stands in
+// for a missing floor.
+func annotateFloorProvenance(floor string, isDefault bool) string {
+	if isDefault {
+		return floor + " (default)"
+	}
+	return floor
+}
+
+// runConstructionDeliveryFloors sends the floor tune and formats the operator-facing result.
+// It reports the RESOLVED floors now in force — what the knob became, not what was sent — marks
+// whichever side came from the armed default, and states the liveness, which is the operator's
+// only evidence the tune took. BOTH message paths annotate: a no-op report of an untouched pair
+// is read for exactly the same "which of these did I set?" question as a successful tune.
+func runConstructionDeliveryFloors(ctx context.Context, client constructionDeliveryFloorsMutator, req *pb.ConstructionDeliveryFloorsRequest) (string, error) {
+	resp, err := client.ConstructionDeliveryFloors(ctx, req)
+	if err != nil {
+		return "", fmt.Errorf("failed to set the delivery floors on %s: %w", req.ConstructionSite, err)
+	}
+	buy := annotateFloorProvenance(resp.BuyFloor, resp.BuyFloorIsDefault)
+	resume := annotateFloorProvenance(resp.ResumeFloor, resp.ResumeFloorIsDefault)
+	if !resp.Changed {
+		return fmt.Sprintf("• %s delivery floors are already buy=%s / resume=%s — unchanged.\n",
+			resp.ConstructionSite, buy, resume), nil
+	}
+	return fmt.Sprintf("✓ set the %s delivery floors to buy=%s / resume=%s. The drain re-reads them off the pipeline row on every leg, so this takes effect on the next leg; no restart, and it survives a daemon bounce.\n",
+		resp.ConstructionSite, buy, resume), nil
+}
+
 // newConstructionOverrideCommand creates the `construction override` subcommand — live per-good
 // tuning of the buy-gating override map on a RUNNING construction pipeline, the construction
 // analogue of `goods factory workers`. No restart: the coordinator re-reads the persisted
@@ -328,10 +503,26 @@ Knobs (set only the ones you want to change; the rest stay as they are):
 --clear removes the good's override entirely, reverting it to the pipeline's global default.
 A non-overridden good is always byte-identical to the global default.
 
+Pipeline-wide gate DELIVERY fleet knobs (no --good; these apply to the whole pipeline):
+  --buy-floor          buy while the terminal factory's supply is AT OR ABOVE this level, default
+                       MODERATE (HIGH|MODERATE|LIMITED|SCARCE — not ABUNDANT: nothing sits strictly above it)
+  --resume-floor       once paused, resume only when supply recovers to this level, default
+                       HIGH (ABUNDANT|HIGH|MODERATE|LIMITED — not SCARCE: nothing sits strictly below it)
+
+The two floors take DIFFERENT vocabularies, and they are not the full --min-supply ladder:
+each excludes the ladder end that makes a strictly positive gap inexpressible.
+
+Two thresholds, not one: a single threshold chatters at the boundary — pause, one unit
+regenerates, resume, immediately deplete. --resume-floor must be strictly above --buy-floor.
+These are TUNABLES, not feature flags: they ship armed at MODERATE/HIGH and adjust a value
+in a path that always runs. They are distinct from --min-supply, which is the pipeline's
+READY-admission floor — a different decision at a different stage.
+
 Examples:
   spacetraders construction override --site X1-VB74-I55 --good FAB_MATS --min-supply LIMITED
   spacetraders construction override --site X1-VB74-I55 --good FAB_MATS --price-ceiling-mult 2.0
-  spacetraders construction override --site X1-VB74-I55 --good FAB_MATS --clear`,
+  spacetraders construction override --site X1-VB74-I55 --good FAB_MATS --clear
+  spacetraders construction override --site X1-VB74-I55 --buy-floor LIMITED --resume-floor MODERATE`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			f.multProvided = cmd.Flags().Changed("price-ceiling-mult")
 
@@ -339,6 +530,15 @@ Examples:
 			if err != nil {
 				return err
 			}
+
+			// ONE VERB, TWO RPCs. The pipeline-wide floors and the per-good override are
+			// different decisions on different scopes — the per-good request requires a `good`,
+			// which the floors do not have — so the verb dispatches on which flags were set
+			// rather than forcing them into one request shape.
+			if f.anyFloorSet() {
+				return runFloorsDispatch(f, playerIdent)
+			}
+
 			req, multClamped, err := buildConstructionOverrideRequest(f, playerIdent)
 			if err != nil {
 				return err
@@ -367,8 +567,47 @@ Examples:
 	cmd.Flags().BoolVar(&f.clear, "clear", false, "Remove the good's override, reverting it to the pipeline's global default")
 	cmd.Flags().StringVar(&f.minSupply, "min-supply", "", "Per-good EXPORT sourcing floor (ABUNDANT, HIGH, MODERATE, LIMITED, SCARCE)")
 	cmd.Flags().Float64Var(&f.priceCeilingMult, "price-ceiling-mult", 0, "Per-good ladder-chase input-price ceiling multiplier (clamped to the domain cap)")
+	// Each floor advertises ONLY its own vocabulary, and that vocabulary is DERIVED from the
+	// same list the validator rejects against — not retyped beside it. A hardcoded help string
+	// next to a list-driven validator is the very drift this fixed: it would be correct today
+	// and silently wrong the first time a level moves, leaving the operator's only route to the
+	// truth a refusal they had to trigger. The two sets already differ, so the invariant is live
+	// from day one rather than latent. The exclusion CLAUSES stay prose: they explain WHY a
+	// ladder end is absent, and there is nothing to derive an explanation from.
+	cmd.Flags().StringVar(&f.buyFloor, "buy-floor", "", fmt.Sprintf(
+		"Gate DELIVERY fleet: buy while the terminal factory's supply is at or above this level (%s — not ABUNDANT: nothing sits strictly above it; pipeline-wide; default MODERATE)",
+		supplyLevelList(validBuyFloors)))
+	cmd.Flags().StringVar(&f.resumeFloor, "resume-floor", "", fmt.Sprintf(
+		"Gate DELIVERY fleet: once paused, resume only when supply recovers to this level (%s — not SCARCE: nothing sits strictly below it; pipeline-wide; default HIGH, must be above --buy-floor)",
+		supplyLevelList(validResumeFloors)))
 
 	return cmd
+}
+
+// runFloorsDispatch is the delivery-floor half of the `construction override` verb: validate at
+// the boundary, dial, send, print. Split out of RunE so the two RPCs the verb fronts read as two
+// paths rather than one nested branch.
+func runFloorsDispatch(f constructionOverrideFlags, playerIdent *PlayerIdentifier) error {
+	req, err := buildConstructionDeliveryFloorsRequest(f, playerIdent)
+	if err != nil {
+		return err
+	}
+
+	client, err := connectDaemon()
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	msg, err := runConstructionDeliveryFloors(ctx, client, req)
+	if err != nil {
+		return err
+	}
+	fmt.Print(msg)
+	return nil
 }
 
 // --- live `construction workers` verb (sp-duljg) -------------------------------------------------

@@ -994,6 +994,15 @@ func run(cfg *config.Config) error {
 	// Unwired, those counters can only drift BEHIND (they are written after the server already
 	// accepted a supply) and the drain over-sources material the gate no longer needs.
 	constructionCoordinatorHandler.SetConstructionSiteSource(constructionSiteRepo)
+	// The gate DELIVERY fleet: phase 1's role-based topology resolves this era's terminal factory
+	// (the waypoint that EXPORTS each gate material — never a hardcoded symbol), and the executor
+	// buys there with every money guard unchanged. The handler holds ONE buy policy for the process,
+	// so the supply-anchored pause hysteresis survives across legs. Optional collaborator: unwired,
+	// the drain behaves exactly as before.
+	constructionCoordinatorHandler.SetGateDelivery(
+		goodsServices.NewGateTopology(goodsMarketLocator, goods.ExportToImportMap),
+		constructionExecutor,
+	)
 	if err := mediator.RegisterHandler[*goodsCmd.RunConstructionCoordinatorCommand](med, constructionCoordinatorHandler); err != nil {
 		return fmt.Errorf("failed to register ConstructionCoordinator handler: %w", err)
 	}

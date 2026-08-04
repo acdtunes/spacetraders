@@ -203,3 +203,13 @@ func (c *DaemonClient) ConstructionWorkerCap(ctx context.Context, constructionSi
 
 	return resp, nil
 }
+
+// ConstructionDeliveryFloors sends the gate delivery fleet's buy/resume floor tune to the
+// daemon. The request is built and validated by the CLI boundary; this only carries it.
+func (c *DaemonClient) ConstructionDeliveryFloors(ctx context.Context, req *pb.ConstructionDeliveryFloorsRequest) (*pb.ConstructionDeliveryFloorsResponse, error) {
+	resp, err := c.client.ConstructionDeliveryFloors(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf(grpcCallFailed, err)
+	}
+	return resp, nil
+}

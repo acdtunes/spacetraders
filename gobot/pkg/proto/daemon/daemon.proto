@@ -282,6 +282,13 @@ service DaemonService {
   // cap persists across daemon restarts. The construction analogue of FactoryWorkerCap.
   rpc ConstructionWorkerCap(ConstructionWorkerCapRequest) returns (ConstructionWorkerCapResponse);
 
+  // ConstructionDeliveryFloors sets the gate DELIVERY fleet's supply-anchored buy/resume
+  // thresholds on a RUNNING construction pipeline, live, with no restart. A SEPARATE rpc
+  // from ConstructionGoodOverride because these floors are PIPELINE-WIDE and that request
+  // requires a `good`, which they do not have. The CLI presents both behind the one
+  // `construction override` verb and dispatches on which flags were set.
+  rpc ConstructionDeliveryFloors(ConstructionDeliveryFloorsRequest) returns (ConstructionDeliveryFloorsResponse);
+
   // --- Contract depot management (sp-u9xa) ---
   // The daemon is the single writer of contract-depot topology; every mutation is durable
   // the instant it returns (through the application Store into the DB), so a granular edit
@@ -1778,6 +1785,39 @@ message ConstructionWorkerCapResponse {
   // changed is false when the verb was a no-op (the cap already equalled count),
   // so the CLI can report it honestly.
   bool changed = 3;
+}
+
+// ConstructionDeliveryFloorsRequest sets the gate delivery fleet's supply buy/resume
+// thresholds on a running construction pipeline. construction_site identifies the target.
+// Both floors are optional: an unset one leaves that dimension unchanged, so an operator
+// can widen or narrow the hysteresis gap from either end. Values are the SupplyLevel
+// vocabulary (ABUNDANT|HIGH|MODERATE|LIMITED|SCARCE); the CLI validates strictly at the
+// boundary and rejects a resume floor that is not strictly above the buy floor.
+message ConstructionDeliveryFloorsRequest {
+  string construction_site = 1;
+  optional int32 player_id = 2;
+  optional string agent_symbol = 3;
+  optional string buy_floor = 4;
+  optional string resume_floor = 5;
+}
+
+// ConstructionDeliveryFloorsResponse returns the floors now in force after the mutation.
+message ConstructionDeliveryFloorsResponse {
+  string construction_site = 1;
+  // The RESOLVED floors in force, so the operator sees what the knob actually became rather
+  // than what was sent. Never empty: an unset dimension reports the ARMED default it resolves
+  // to, not the blank the row stores. The row itself keeps the raw unset value — resolving is
+  // a read-time concern, and freezing today's default onto the row would make "unset"
+  // unreachable.
+  string buy_floor = 2;
+  string resume_floor = 3;
+  // changed is false when the verb was a no-op (both floors already matched).
+  bool changed = 4;
+  // Which side of the pair was RESOLVED from the armed default rather than read from a value
+  // explicitly set on the row. Without these a resolved floor is indistinguishable from one a
+  // predecessor pinned, and the operator cannot tell which half of the pair they control.
+  bool buy_floor_is_default = 5;
+  bool resume_floor_is_default = 6;
 }
 
 // --- Contract depot management messages (sp-u9xa) ---

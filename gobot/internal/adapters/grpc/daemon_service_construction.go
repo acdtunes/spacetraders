@@ -181,3 +181,41 @@ func (s *daemonServiceImpl) ConstructionWorkerCap(ctx context.Context, req *pb.C
 		Changed:          result.Changed,
 	}, nil
 }
+
+// ConstructionDeliveryFloors sets the gate delivery fleet's supply buy/resume thresholds on
+// a running construction pipeline. Resolves the player like the sibling construction RPCs,
+// then delegates the persisted-row mutation to the daemon — the single writer (RULINGS #3).
+// The drain re-reads the floors off the pipeline row on every leg, so the tune converges on
+// the next leg with no restart.
+func (s *daemonServiceImpl) ConstructionDeliveryFloors(ctx context.Context, req *pb.ConstructionDeliveryFloorsRequest) (*pb.ConstructionDeliveryFloorsResponse, error) {
+	var pid int32
+	if req.PlayerId != nil {
+		pid = *req.PlayerId
+	}
+	playerID, err := s.resolvePlayerID(ctx, pid, req.AgentSymbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve player: %w", err)
+	}
+
+	buyFloor, resumeFloor := "", ""
+	if req.BuyFloor != nil {
+		buyFloor = *req.BuyFloor
+	}
+	if req.ResumeFloor != nil {
+		resumeFloor = *req.ResumeFloor
+	}
+
+	result, err := s.daemon.MutateConstructionDeliveryFloors(ctx, req.ConstructionSite, playerID, buyFloor, resumeFloor)
+	if err != nil {
+		return nil, fmt.Errorf("failed to set construction delivery floors: %w", err)
+	}
+
+	return &pb.ConstructionDeliveryFloorsResponse{
+		ConstructionSite:     result.ConstructionSite,
+		BuyFloor:             result.BuyFloor,
+		ResumeFloor:          result.ResumeFloor,
+		BuyFloorIsDefault:    result.BuyFloorIsDefault,
+		ResumeFloorIsDefault: result.ResumeFloorIsDefault,
+		Changed:              result.Changed,
+	}, nil
+}

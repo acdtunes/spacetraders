@@ -2,6 +2,7 @@ package grpc
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing/gate"
 	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
 )
@@ -269,4 +271,234 @@ func TestGetAPIClientReturnsInjectedClient(t *testing.T) {
 
 	require.Same(t, injected, got,
 		"getAPIClient must return the injected shared client, not a fresh instance")
+}
+
+// --- gate DELIVERY floors: the daemon single-writer (RULINGS #3) ---------------------------------
+
+// TestMutateConstructionDeliveryFloors_PersistsAndSurvivesReload drives the acceptance through
+// the REAL persistence path. This is the property the whole knob rests on: the pipeline ROW is
+// both the store and the restart-recovery source, so the drain's per-leg re-read sees the tune
+// with no restart and a daemon bounce does not revert it (RULINGS #2). Deliberately NOT a
+// manufacturing config key: that coordinator is pattern B, and its resolve*Config would clobber
+// a live tune from config.yaml on the next build.
+func TestMutateConstructionDeliveryFloors_PersistsAndSurvivesReload(t *testing.T) {
+	db, err := database.NewTestConnection()
+	require.NoError(t, err)
+	seedOverridePlayer(t, db, 1, "FLOORS-AGENT")
+
+	repo := persistence.NewGormManufacturingPipelineRepository(db)
+	ctx := context.Background()
+
+	// A running pipeline with UNSET floors — the reader resolves the armed MODERATE/HIGH.
+	pipeline := manufacturing.NewConstructionPipeline("X1-VB74-I55", 1, 3, 5)
+	require.NoError(t, repo.Create(ctx, pipeline))
+	require.Equal(t, "", pipeline.DeliveryBuyFloor(), "unset is the launch state")
+
+	s := &DaemonServer{db: db}
+
+	res, err := s.MutateConstructionDeliveryFloors(ctx, "X1-VB74-I55", 1, "LIMITED", "MODERATE")
+	require.NoError(t, err)
+	require.True(t, res.Changed)
+	require.Equal(t, "LIMITED", res.BuyFloor)
+	require.Equal(t, "MODERATE", res.ResumeFloor)
+
+	// Reload = daemon bounce: the live-set floors survived it.
+	reloaded, err := repo.FindByConstructionSite(ctx, "X1-VB74-I55", 1)
+	require.NoError(t, err)
+	require.NotNil(t, reloaded)
+	require.Equal(t, "LIMITED", reloaded.DeliveryBuyFloor(), "the buy floor must survive a daemon restart")
+	require.Equal(t, "MODERATE", reloaded.DeliveryResumeFloor(), "the resume floor must survive a daemon restart")
+
+	// Re-sending the same pair is an honest no-op that skips the write.
+	noop, err := s.MutateConstructionDeliveryFloors(ctx, "X1-VB74-I55", 1, "LIMITED", "MODERATE")
+	require.NoError(t, err)
+	require.False(t, noop.Changed)
+	require.Equal(t, "LIMITED", noop.BuyFloor)
+}
+
+// TestMutateConstructionDeliveryFloors_OneSidedTuneKeepsTheOtherFloor: an EMPTY argument means
+// "leave unchanged", never "reset". Those two intents must not share an encoding — an empty
+// argument that meant reset would make "leave unchanged" inexpressible on a knob an operator
+// tunes one end at a time. The unnamed side is still validated against the named one.
+func TestMutateConstructionDeliveryFloors_OneSidedTuneKeepsTheOtherFloor(t *testing.T) {
+	db, err := database.NewTestConnection()
+	require.NoError(t, err)
+	seedOverridePlayer(t, db, 1, "FLOORS-AGENT")
+
+	repo := persistence.NewGormManufacturingPipelineRepository(db)
+	ctx := context.Background()
+	pipeline := manufacturing.NewConstructionPipeline("X1-VB74-I55", 1, 3, 5)
+	pipeline.SetDeliveryFloors("LIMITED", "HIGH")
+	require.NoError(t, repo.Create(ctx, pipeline))
+
+	s := &DaemonServer{db: db}
+
+	// Raise only the buy floor; the persisted HIGH resume floor is retained, not blanked.
+	res, err := s.MutateConstructionDeliveryFloors(ctx, "X1-VB74-I55", 1, "MODERATE", "")
+	require.NoError(t, err)
+	require.True(t, res.Changed)
+	require.Equal(t, "MODERATE", res.BuyFloor)
+	require.Equal(t, "HIGH", res.ResumeFloor, "an unset argument must keep the persisted floor")
+
+	reloaded, err := repo.FindByConstructionSite(ctx, "X1-VB74-I55", 1)
+	require.NoError(t, err)
+	require.Equal(t, "MODERATE", reloaded.DeliveryBuyFloor())
+	require.Equal(t, "HIGH", reloaded.DeliveryResumeFloor())
+}
+
+// TestMutateConstructionDeliveryFloors_FailsClosedOnACollapsedGap: the CLI validates, but the
+// daemon is the single writer and re-checks the ORDERING fail-closed, so a caller that reached
+// it another way cannot persist a zero-gap hysteresis — which would reintroduce exactly the
+// boundary chatter the second floor exists to prevent. A rejected pair must leave the stored
+// floors untouched: no partial write.
+func TestMutateConstructionDeliveryFloors_FailsClosedOnACollapsedGap(t *testing.T) {
+	db, err := database.NewTestConnection()
+	require.NoError(t, err)
+	seedOverridePlayer(t, db, 1, "FLOORS-AGENT")
+
+	repo := persistence.NewGormManufacturingPipelineRepository(db)
+	ctx := context.Background()
+	pipeline := manufacturing.NewConstructionPipeline("X1-VB74-I55", 1, 3, 5)
+	pipeline.SetDeliveryFloors("LIMITED", "MODERATE")
+	require.NoError(t, repo.Create(ctx, pipeline))
+
+	s := &DaemonServer{db: db}
+
+	for _, tc := range []struct{ name, buy, resume string }{
+		{"resume below buy", "HIGH", "MODERATE"},
+		{"resume equals buy", "HIGH", "HIGH"},
+		// One-sided: MODERATE against the PERSISTED MODERATE resume floor is still a zero gap.
+		{"one-sided collapse against the persisted floor", "MODERATE", ""},
+		// ABUNDANT is the top of the ladder: nothing can sit strictly above it.
+		{"top-of-ladder buy floor", "ABUNDANT", ""},
+		// SCARCE is the bottom: nothing can sit strictly below it, so it is refused as a
+		// resume floor against EVERY buy floor. The CLI guards this too; the daemon is the
+		// fail-closed backstop for a caller that arrived another way.
+		{"bottom-of-ladder resume floor", "", "SCARCE"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := s.MutateConstructionDeliveryFloors(ctx, "X1-VB74-I55", 1, tc.buy, tc.resume)
+			require.Error(t, err, "a collapsed hysteresis gap must be refused before any write")
+
+			reloaded, ferr := repo.FindByConstructionSite(ctx, "X1-VB74-I55", 1)
+			require.NoError(t, ferr)
+			require.Equal(t, "LIMITED", reloaded.DeliveryBuyFloor(), "a rejected pair must not touch the stored floors")
+			require.Equal(t, "MODERATE", reloaded.DeliveryResumeFloor())
+		})
+	}
+}
+
+// TestMutateConstructionDeliveryFloors_RejectsAnInvalidSupplyLevel: shared.ParseSupplyLevel is
+// lenient by design (unknown -> MODERATE) because it parses scanned market data. Routing operator
+// input through it unchecked would turn a typo into a silently-different floor, so the writer
+// validates against the strict vocabulary first and names the accepted set.
+func TestMutateConstructionDeliveryFloors_RejectsAnInvalidSupplyLevel(t *testing.T) {
+	db, err := database.NewTestConnection()
+	require.NoError(t, err)
+	seedOverridePlayer(t, db, 1, "FLOORS-AGENT")
+
+	repo := persistence.NewGormManufacturingPipelineRepository(db)
+	ctx := context.Background()
+	pipeline := manufacturing.NewConstructionPipeline("X1-VB74-I55", 1, 3, 5)
+	pipeline.SetDeliveryFloors("LIMITED", "HIGH")
+	require.NoError(t, repo.Create(ctx, pipeline))
+
+	s := &DaemonServer{db: db}
+
+	_, err = s.MutateConstructionDeliveryFloors(ctx, "X1-VB74-I55", 1, "PLENTIFUL", "")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "PLENTIFUL", "the refusal must name the rejected value")
+	require.Contains(t, err.Error(), "SCARCE", "the refusal must list the accepted vocabulary")
+
+	_, err = s.MutateConstructionDeliveryFloors(ctx, "X1-VB74-I55", 1, "", "LOTS")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "LOTS")
+
+	reloaded, err := repo.FindByConstructionSite(ctx, "X1-VB74-I55", 1)
+	require.NoError(t, err)
+	require.Equal(t, "LIMITED", reloaded.DeliveryBuyFloor(), "a rejected value must not touch the stored floors")
+	require.Equal(t, "HIGH", reloaded.DeliveryResumeFloor())
+}
+
+// TestMutateConstructionDeliveryFloors_ResolvesTheDefaultSideButPersistsRawUnset covers the
+// most likely FIRST command against a fresh pipeline: set one floor, leave the other alone.
+// The RESULT must report the pair actually in force — the response's contract is the RESOLVED
+// floors, "what the knob became, not what was sent" — so the unset side reports the armed
+// default and neither side is ever blank. The ROW meanwhile keeps the RAW unset value: freezing
+// today's default onto the row would silently pin a pipeline to it and make "unset" unreachable.
+func TestMutateConstructionDeliveryFloors_ResolvesTheDefaultSideButPersistsRawUnset(t *testing.T) {
+	db, err := database.NewTestConnection()
+	require.NoError(t, err)
+	seedOverridePlayer(t, db, 1, "FLOORS-AGENT")
+
+	repo := persistence.NewGormManufacturingPipelineRepository(db)
+	ctx := context.Background()
+
+	// A fresh pipeline: BOTH floors unset, exactly as `construction start` leaves it.
+	pipeline := manufacturing.NewConstructionPipeline("X1-VB74-I55", 1, 3, 5)
+	require.NoError(t, repo.Create(ctx, pipeline))
+
+	s := &DaemonServer{db: db}
+
+	res, err := s.MutateConstructionDeliveryFloors(ctx, "X1-VB74-I55", 1, "LIMITED", "")
+	require.NoError(t, err)
+	require.NotEmpty(t, res.BuyFloor, "the confirmation must never print a blank floor")
+	require.NotEmpty(t, res.ResumeFloor, "the confirmation must never print a blank floor")
+	require.Equal(t, "LIMITED", res.BuyFloor)
+	require.Equal(t, string(gate.DefaultResumeFloor), res.ResumeFloor,
+		"the unset side must report the armed default it actually resolves to")
+	require.False(t, res.BuyFloorIsDefault, "an explicitly-set floor is not a default")
+	require.True(t, res.ResumeFloorIsDefault,
+		"the operator must be able to tell which half of the pair they actually control")
+
+	// The ROW keeps the raw unset value — the default is resolved at read time, not frozen here.
+	reloaded, err := repo.FindByConstructionSite(ctx, "X1-VB74-I55", 1)
+	require.NoError(t, err)
+	require.Equal(t, "LIMITED", reloaded.DeliveryBuyFloor())
+	require.Equal(t, "", reloaded.DeliveryResumeFloor(),
+		"an unset floor must stay unset on the row, never be frozen to today's default")
+}
+
+// TestMutateConstructionDeliveryFloors_CollapsedGapErrorDisclosesTheDefaultedSide: on a
+// one-sided tune the refusal compares against a value the operator never typed. Naming one
+// MODERATE and being told "MODERATE must be strictly above the buy floor MODERATE" reads as
+// the knob contradicting itself unless the error discloses where the second MODERATE came from.
+func TestMutateConstructionDeliveryFloors_CollapsedGapErrorDisclosesTheDefaultedSide(t *testing.T) {
+	db, err := database.NewTestConnection()
+	require.NoError(t, err)
+	seedOverridePlayer(t, db, 1, "FLOORS-AGENT")
+
+	repo := persistence.NewGormManufacturingPipelineRepository(db)
+	ctx := context.Background()
+	pipeline := manufacturing.NewConstructionPipeline("X1-VB74-I55", 1, 3, 5)
+	require.NoError(t, repo.Create(ctx, pipeline))
+
+	s := &DaemonServer{db: db}
+
+	// Fresh row, only --resume-floor given: it is checked against the DEFAULT buy floor.
+	_, err = s.MutateConstructionDeliveryFloors(ctx, "X1-VB74-I55", 1, "", "MODERATE")
+	require.Error(t, err)
+	require.Contains(t, strings.ToLower(err.Error()), "unset buy floor defaults to",
+		"the refusal must disclose the implicit value it compared against")
+	require.Contains(t, err.Error(), string(gate.DefaultBuyFloor))
+
+	// The mirror: only --buy-floor given, checked against the persisted resume floor's default.
+	pipeline2 := manufacturing.NewConstructionPipeline("X1-FB5-I56", 1, 3, 5)
+	require.NoError(t, repo.Create(ctx, pipeline2))
+	_, err = s.MutateConstructionDeliveryFloors(ctx, "X1-FB5-I56", 1, "ABUNDANT", "")
+	require.Error(t, err)
+	require.Contains(t, strings.ToLower(err.Error()), "unset resume floor defaults to")
+}
+
+// TestMutateConstructionDeliveryFloors_NoActivePipelineErrors: tuning the floors of a site with
+// no running construction pipeline is a clear operator error, not a silent no-op.
+func TestMutateConstructionDeliveryFloors_NoActivePipelineErrors(t *testing.T) {
+	db, err := database.NewTestConnection()
+	require.NoError(t, err)
+	seedOverridePlayer(t, db, 1, "FLOORS-AGENT")
+
+	s := &DaemonServer{db: db}
+	_, err = s.MutateConstructionDeliveryFloors(context.Background(), "X1-NONE-I1", 1, "LIMITED", "MODERATE")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "no active construction pipeline")
 }
