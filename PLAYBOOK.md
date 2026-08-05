@@ -351,6 +351,63 @@ Where the engine automates a behavior, the book only says how to interpret or tu
   consolidate-then-retire / keep-as-memory / retire-stale). The store that survives into a
   new era should be small and operational — books carry the doctrine.
 
+## 13. Comment discipline
+
+The cost of a stale comment is not bytes, it is misinformation. A comment describing a
+defect fixed three lanes ago actively lies to the next reader, and every agent that opens
+the file pays for it in context. Nothing ever deletes a comment on its own, so later lanes
+edit code around narrative that has quietly stopped being true.
+
+**The discriminator — apply it sentence by sentence.** *Would this still be true and useful
+to a reader who had never seen the previous version of this file?* If no, cut it. A comment
+documents the code as it STANDS. How it got there is a retrospective, not a comment.
+
+**KEEP.** Each of these is a present-tense property of the code in front of the reader:
+
+- godoc on every exported symbol, in the `// Name ...` form.
+- Non-obvious invariants: what must hold, and what breaks when it stops holding.
+- "This looks wrong but is deliberate because X" — where X is a property the reader can
+  verify in the code as it stands, never an event that happened.
+- Contracts a caller must honour: preconditions, ordering, what the callee will *not* do.
+- Units, ownership, nil-semantics, mutation, goroutine-safety, which errors are fatal.
+- Why a bound or a guard EXISTS — what breaks without it. Not the arithmetic that picked
+  the number, and not the incident that prompted it.
+
+**CUT.** Each of these is true only by reference to history:
+
+- Incident retelling: "the defect this closed", before/after narratives, "used to",
+  "previously", "was found", "this fixed", "the live result was".
+- Measured counts and live numbers — hull counts, row counts, waypoint counts, prices,
+  timings, percentages, "measured live". They are a MEASUREMENT of a past era and they rot
+  SILENTLY: no test fails when the map grows. Cut the number, not just refresh it; a
+  refreshed number is the same trap re-armed.
+- Bead ids (`sp-xxxx`). The bead is in `.beads/issues.jsonl` and in `git log`. A bead id in
+  source is a pointer that outlives the thing it points at.
+- Justification aimed at the REVIEWER rather than the reader. A comment written to defend a
+  change at the gate has done its job the moment the change merges.
+- Any sentence whose subject is a previous version of the code.
+
+It goes to `docs/retrospectives/` or it goes away. `git log` and `git blame` already keep
+the history losslessly and, unlike a comment, they are correctly dated.
+
+**When a block mixes both** — a genuine contract wrapped in incident history — REWRITE, do
+not blank-delete. Keep the contract sentence in the present tense and drop the story around
+it. Deleting a comment that documented a real invariant is the failure mode that matters;
+"I could not tell" means keep it and rewrite it as a property.
+
+**Self-check before the gate** (from `gobot/`):
+
+```
+make comment-audit-check ONLY=<touched packages>   # fails if a package you touched got DENSER
+make comment-audit ARGS="-explain"                 # every archaeology marker, with file:line
+make comment-audit-baseline                        # re-record — only after a sweep LOWERS a package
+```
+
+The standing mechanism is a RATCHET, not an absolute bar: a package inherited dense does
+not block a lane that merely touches it, but no lane may leave one denser than it found it.
+Re-recording the baseline to clear a regression is the one move that defeats the whole
+rule — re-record only to bank an improvement.
+
 ---
 
 *Maintenance: standing-rule changes land here the same way RULINGS.md changes do — through

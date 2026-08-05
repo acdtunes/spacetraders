@@ -1,4 +1,4 @@
-.PHONY: build test clean proto lint install-tools routing-service build-watchkeeper run-watchkeeper build-captain run-captain cli-reference restart-daemon restart-watchkeeper install-cli launchd install-launchd deploy assert-live-stamp man cli-docs install-man assert-prod-env
+.PHONY: comment-audit comment-audit-check comment-audit-baseline build test clean proto lint install-tools routing-service build-watchkeeper run-watchkeeper build-captain run-captain cli-reference restart-daemon restart-watchkeeper install-cli launchd install-launchd deploy assert-live-stamp man cli-docs install-man assert-prod-env
 
 # ---- Build stamp (sp-898q) --------------------------------------------------
 # Injected into internal/infrastructure/buildinfo at LINK time so every binary's
@@ -379,6 +379,29 @@ fmt:
 	@echo "Formatting code..."
 	@go fmt ./...
 	@goimports -w .
+
+# Comment density census — the keep/cut rule lives in PLAYBOOK §13.
+COMMENT_BASELINE := .comment-baseline.json
+
+# Report comment ratio and archaeology markers per package.
+#   make comment-audit                       # full report
+#   make comment-audit ARGS="-top 20"        # densest 20
+#   make comment-audit ARGS="-explain"       # every marker with file:line
+comment-audit:
+	@go run ./cmd/comment-audit -root . $(ARGS)
+
+# Fail if a package got DENSER than the recorded baseline. This is the check a
+# lane self-runs before the gate; scope it to the touched set with ONLY=.
+#   make comment-audit-check
+#   make comment-audit-check ONLY=internal/application/parkedsensing
+comment-audit-check:
+	@go run ./cmd/comment-audit -root . -baseline $(COMMENT_BASELINE) \
+		$(if $(ONLY),-only $(ONLY),) -quiet
+
+# Re-record the baseline. Run this only after a deliberate sweep LOWERS a
+# package; never to bless a regression.
+comment-audit-baseline:
+	@go run ./cmd/comment-audit -root . -write-baseline $(COMMENT_BASELINE)
 
 # Generate protobuf code
 proto:

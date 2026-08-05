@@ -1,0 +1,676 @@
+{
+  "packages": {
+    "cmd/captain-gate": {
+      "ratio": 0,
+      "comment": 0,
+      "total": 53,
+      "markers": 0
+    },
+    "cmd/captain-migrate": {
+      "ratio": 0,
+      "comment": 0,
+      "total": 61,
+      "markers": 0
+    },
+    "cmd/comment-audit": {
+      "ratio": 0.11735537190082644,
+      "comment": 71,
+      "total": 605,
+      "markers": 0
+    },
+    "cmd/era-close": {
+      "ratio": 0,
+      "comment": 0,
+      "total": 92,
+      "markers": 0
+    },
+    "cmd/routing-service": {
+      "ratio": 0.13191489361702127,
+      "comment": 31,
+      "total": 235,
+      "markers": 0
+    },
+    "cmd/spacetraders": {
+      "ratio": 0,
+      "comment": 0,
+      "total": 9,
+      "markers": 0
+    },
+    "cmd/spacetraders-daemon": {
+      "ratio": 0.4191564147627416,
+      "comment": 954,
+      "total": 2276,
+      "markers": 72
+    },
+    "cmd/watchkeeper": {
+      "ratio": 0.211864406779661,
+      "comment": 25,
+      "total": 118,
+      "markers": 1
+    },
+    "internal/adapters/api": {
+      "ratio": 0.20871487211872433,
+      "comment": 1322,
+      "total": 6334,
+      "markers": 11
+    },
+    "internal/adapters/cli": {
+      "ratio": 0.09711169235906283,
+      "comment": 1745,
+      "total": 17969,
+      "markers": 83
+    },
+    "internal/adapters/expansion": {
+      "ratio": 0.33302583025830257,
+      "comment": 722,
+      "total": 2168,
+      "markers": 15
+    },
+    "internal/adapters/flowfeed": {
+      "ratio": 0.3308270676691729,
+      "comment": 88,
+      "total": 266,
+      "markers": 0
+    },
+    "internal/adapters/graph": {
+      "ratio": 0.16149068322981366,
+      "comment": 26,
+      "total": 161,
+      "markers": 0
+    },
+    "internal/adapters/grpc": {
+      "ratio": 0.28157463094587204,
+      "comment": 5665,
+      "total": 20119,
+      "markers": 369
+    },
+    "internal/adapters/metrics": {
+      "ratio": 0.2571428571428571,
+      "comment": 1413,
+      "total": 5495,
+      "markers": 17
+    },
+    "internal/adapters/parkedsensing": {
+      "ratio": 0.4456726880560798,
+      "comment": 1653,
+      "total": 3709,
+      "markers": 16
+    },
+    "internal/adapters/persistence": {
+      "ratio": 0.2362053085489408,
+      "comment": 2821,
+      "total": 11943,
+      "markers": 46
+    },
+    "internal/adapters/routing": {
+      "ratio": 0.10599721059972106,
+      "comment": 76,
+      "total": 717,
+      "markers": 0
+    },
+    "internal/adapters/telemetry": {
+      "ratio": 0.2147239263803681,
+      "comment": 35,
+      "total": 163,
+      "markers": 0
+    },
+    "internal/adapters/twinreport": {
+      "ratio": 0.3582089552238806,
+      "comment": 24,
+      "total": 67,
+      "markers": 0
+    },
+    "internal/application/auth": {
+      "ratio": 0.102803738317757,
+      "comment": 11,
+      "total": 107,
+      "markers": 0
+    },
+    "internal/application/autooutfit": {
+      "ratio": 0.20521172638436483,
+      "comment": 126,
+      "total": 614,
+      "markers": 0
+    },
+    "internal/application/bootstrap/commands": {
+      "ratio": 0.39516375880012244,
+      "comment": 1291,
+      "total": 3267,
+      "markers": 8
+    },
+    "internal/application/common": {
+      "ratio": 0.5754583921015515,
+      "comment": 408,
+      "total": 709,
+      "markers": 13
+    },
+    "internal/application/contract": {
+      "ratio": 0.3880952380952381,
+      "comment": 1141,
+      "total": 2940,
+      "markers": 14
+    },
+    "internal/application/contract/commands": {
+      "ratio": 0.2887085868830291,
+      "comment": 1281,
+      "total": 4437,
+      "markers": 51
+    },
+    "internal/application/contract/depotstore": {
+      "ratio": 0.27741935483870966,
+      "comment": 43,
+      "total": 155,
+      "markers": 2
+    },
+    "internal/application/contract/queries": {
+      "ratio": 0.1464968152866242,
+      "comment": 23,
+      "total": 157,
+      "markers": 0
+    },
+    "internal/application/contract/services": {
+      "ratio": 0.2223719676549865,
+      "comment": 495,
+      "total": 2226,
+      "markers": 33
+    },
+    "internal/application/contract/types": {
+      "ratio": 0.5714285714285714,
+      "comment": 152,
+      "total": 266,
+      "markers": 4
+    },
+    "internal/application/contractscaler/commands": {
+      "ratio": 0.32027649769585254,
+      "comment": 278,
+      "total": 868,
+      "markers": 16
+    },
+    "internal/application/fleet/commands": {
+      "ratio": 0.3665212217374058,
+      "comment": 924,
+      "total": 2521,
+      "markers": 5
+    },
+    "internal/application/gas/commands": {
+      "ratio": 0.1555806087936866,
+      "comment": 276,
+      "total": 1774,
+      "markers": 3
+    },
+    "internal/application/gas/queries": {
+      "ratio": 0.20491803278688525,
+      "comment": 25,
+      "total": 122,
+      "markers": 0
+    },
+    "internal/application/health": {
+      "ratio": 0.40219378427787933,
+      "comment": 220,
+      "total": 547,
+      "markers": 0
+    },
+    "internal/application/ledger/commands": {
+      "ratio": 0.23766816143497757,
+      "comment": 53,
+      "total": 223,
+      "markers": 0
+    },
+    "internal/application/ledger/queries": {
+      "ratio": 0.0665024630541872,
+      "comment": 27,
+      "total": 406,
+      "markers": 0
+    },
+    "internal/application/liquidation": {
+      "ratio": 0.22661870503597123,
+      "comment": 63,
+      "total": 278,
+      "markers": 0
+    },
+    "internal/application/liveconfig": {
+      "ratio": 0.5125,
+      "comment": 41,
+      "total": 80,
+      "markers": 0
+    },
+    "internal/application/logging": {
+      "ratio": 0.4148936170212766,
+      "comment": 39,
+      "total": 94,
+      "markers": 2
+    },
+    "internal/application/manufacturing/commands": {
+      "ratio": 0.35650396115512395,
+      "comment": 1395,
+      "total": 3913,
+      "markers": 17
+    },
+    "internal/application/manufacturing/services": {
+      "ratio": 0.27822804485400243,
+      "comment": 2506,
+      "total": 9007,
+      "markers": 122
+    },
+    "internal/application/manufacturing/types": {
+      "ratio": 0.6458333333333334,
+      "comment": 31,
+      "total": 48,
+      "markers": 0
+    },
+    "internal/application/mediator": {
+      "ratio": 0.14678899082568808,
+      "comment": 16,
+      "total": 109,
+      "markers": 0
+    },
+    "internal/application/parkedsensing": {
+      "ratio": 0.5328620346846349,
+      "comment": 4824,
+      "total": 9053,
+      "markers": 48
+    },
+    "internal/application/player": {
+      "ratio": 0.4520547945205479,
+      "comment": 33,
+      "total": 73,
+      "markers": 0
+    },
+    "internal/application/player/commands": {
+      "ratio": 0.2222222222222222,
+      "comment": 26,
+      "total": 117,
+      "markers": 0
+    },
+    "internal/application/player/queries": {
+      "ratio": 0.1095890410958904,
+      "comment": 8,
+      "total": 73,
+      "markers": 0
+    },
+    "internal/application/probebuy": {
+      "ratio": 0.48655913978494625,
+      "comment": 181,
+      "total": 372,
+      "markers": 5
+    },
+    "internal/application/scouting/commands": {
+      "ratio": 0.3650020721094074,
+      "comment": 3523,
+      "total": 9652,
+      "markers": 58
+    },
+    "internal/application/scouting/queries": {
+      "ratio": 0.1134020618556701,
+      "comment": 11,
+      "total": 97,
+      "markers": 0
+    },
+    "internal/application/setup": {
+      "ratio": 0.1696969696969697,
+      "comment": 28,
+      "total": 165,
+      "markers": 0
+    },
+    "internal/application/ship": {
+      "ratio": 0.296551724137931,
+      "comment": 1720,
+      "total": 5800,
+      "markers": 4
+    },
+    "internal/application/ship/commands/assignment": {
+      "ratio": 0.3333333333333333,
+      "comment": 182,
+      "total": 546,
+      "markers": 0
+    },
+    "internal/application/ship/commands/cargo": {
+      "ratio": 0.33946360153256705,
+      "comment": 443,
+      "total": 1305,
+      "markers": 2
+    },
+    "internal/application/ship/commands/navigation": {
+      "ratio": 0.24579932789246278,
+      "comment": 512,
+      "total": 2083,
+      "markers": 2
+    },
+    "internal/application/ship/commands/outfitting": {
+      "ratio": 0.256198347107438,
+      "comment": 186,
+      "total": 726,
+      "markers": 0
+    },
+    "internal/application/ship/commands/tactics": {
+      "ratio": 0.12761020881670534,
+      "comment": 55,
+      "total": 431,
+      "markers": 0
+    },
+    "internal/application/ship/dtos": {
+      "ratio": 0.43243243243243246,
+      "comment": 16,
+      "total": 37,
+      "markers": 0
+    },
+    "internal/application/ship/queries": {
+      "ratio": 0.21746031746031746,
+      "comment": 137,
+      "total": 630,
+      "markers": 0
+    },
+    "internal/application/ship/strategies": {
+      "ratio": 0.37344398340248963,
+      "comment": 90,
+      "total": 241,
+      "markers": 0
+    },
+    "internal/application/ship/types": {
+      "ratio": 0.2694610778443114,
+      "comment": 45,
+      "total": 167,
+      "markers": 0
+    },
+    "internal/application/shipyard/commands": {
+      "ratio": 0.21894904458598727,
+      "comment": 275,
+      "total": 1256,
+      "markers": 10
+    },
+    "internal/application/shipyard/queries": {
+      "ratio": 0.33562822719449226,
+      "comment": 195,
+      "total": 581,
+      "markers": 4
+    },
+    "internal/application/storage": {
+      "ratio": 0.22808764940239043,
+      "comment": 229,
+      "total": 1004,
+      "markers": 7
+    },
+    "internal/application/storage/commands": {
+      "ratio": 0.2199074074074074,
+      "comment": 95,
+      "total": 432,
+      "markers": 1
+    },
+    "internal/application/system/gategraph": {
+      "ratio": 0.46321525885558584,
+      "comment": 510,
+      "total": 1101,
+      "markers": 24
+    },
+    "internal/application/system/queries": {
+      "ratio": 0.1794871794871795,
+      "comment": 28,
+      "total": 156,
+      "markers": 0
+    },
+    "internal/application/trading/commands": {
+      "ratio": 0.3825779257948691,
+      "comment": 7352,
+      "total": 19217,
+      "markers": 545
+    },
+    "internal/application/trading/queries": {
+      "ratio": 0.3484848484848485,
+      "comment": 46,
+      "total": 132,
+      "markers": 1
+    },
+    "internal/application/trading/services": {
+      "ratio": 0.34895457822638787,
+      "comment": 484,
+      "total": 1387,
+      "markers": 2
+    },
+    "internal/captain": {
+      "ratio": 0.27813938720431813,
+      "comment": 1752,
+      "total": 6299,
+      "markers": 173
+    },
+    "internal/domain/absorption": {
+      "ratio": 0.5925925925925926,
+      "comment": 64,
+      "total": 108,
+      "markers": 2
+    },
+    "internal/domain/apibudget": {
+      "ratio": 0.28502415458937197,
+      "comment": 59,
+      "total": 207,
+      "markers": 0
+    },
+    "internal/domain/buffer": {
+      "ratio": 0.543859649122807,
+      "comment": 31,
+      "total": 57,
+      "markers": 0
+    },
+    "internal/domain/captain": {
+      "ratio": 0.6101694915254238,
+      "comment": 180,
+      "total": 295,
+      "markers": 1
+    },
+    "internal/domain/container": {
+      "ratio": 0.3014354066985646,
+      "comment": 189,
+      "total": 627,
+      "markers": 3
+    },
+    "internal/domain/contract": {
+      "ratio": 0.32254901960784316,
+      "comment": 329,
+      "total": 1020,
+      "markers": 14
+    },
+    "internal/domain/contract/depot": {
+      "ratio": 0.34151329243353784,
+      "comment": 167,
+      "total": 489,
+      "markers": 1
+    },
+    "internal/domain/contractscaler": {
+      "ratio": 0.34589502018842533,
+      "comment": 257,
+      "total": 743,
+      "markers": 4
+    },
+    "internal/domain/daemon": {
+      "ratio": 0.5061728395061729,
+      "comment": 41,
+      "total": 81,
+      "markers": 0
+    },
+    "internal/domain/dutycycle": {
+      "ratio": 0.26851851851851855,
+      "comment": 29,
+      "total": 108,
+      "markers": 0
+    },
+    "internal/domain/goods": {
+      "ratio": 0.23820224719101124,
+      "comment": 106,
+      "total": 445,
+      "markers": 1
+    },
+    "internal/domain/ledger": {
+      "ratio": 0.29430379746835444,
+      "comment": 372,
+      "total": 1264,
+      "markers": 13
+    },
+    "internal/domain/manufacturing": {
+      "ratio": 0.2637215528781794,
+      "comment": 591,
+      "total": 2241,
+      "markers": 1
+    },
+    "internal/domain/manufacturing/gate": {
+      "ratio": 0.42280701754385963,
+      "comment": 482,
+      "total": 1140,
+      "markers": 5
+    },
+    "internal/domain/market": {
+      "ratio": 0.21972318339100347,
+      "comment": 127,
+      "total": 578,
+      "markers": 9
+    },
+    "internal/domain/marketscan": {
+      "ratio": 0.6090225563909775,
+      "comment": 324,
+      "total": 532,
+      "markers": 2
+    },
+    "internal/domain/navigation": {
+      "ratio": 0.28641171684296174,
+      "comment": 704,
+      "total": 2458,
+      "markers": 2
+    },
+    "internal/domain/outfitting": {
+      "ratio": 0.2782874617737003,
+      "comment": 91,
+      "total": 327,
+      "markers": 0
+    },
+    "internal/domain/parkedsensing": {
+      "ratio": 0.5365853658536586,
+      "comment": 286,
+      "total": 533,
+      "markers": 1
+    },
+    "internal/domain/placement": {
+      "ratio": 0.45384615384615384,
+      "comment": 59,
+      "total": 130,
+      "markers": 0
+    },
+    "internal/domain/player": {
+      "ratio": 0.3881578947368421,
+      "comment": 59,
+      "total": 152,
+      "markers": 0
+    },
+    "internal/domain/ports": {
+      "ratio": 0.36507936507936506,
+      "comment": 184,
+      "total": 504,
+      "markers": 0
+    },
+    "internal/domain/routing": {
+      "ratio": 0.3804347826086957,
+      "comment": 140,
+      "total": 368,
+      "markers": 0
+    },
+    "internal/domain/scouting": {
+      "ratio": 0.43790322580645163,
+      "comment": 543,
+      "total": 1240,
+      "markers": 1
+    },
+    "internal/domain/shared": {
+      "ratio": 0.2751015670342426,
+      "comment": 474,
+      "total": 1723,
+      "markers": 1
+    },
+    "internal/domain/shipyard": {
+      "ratio": 0.429042904290429,
+      "comment": 130,
+      "total": 303,
+      "markers": 0
+    },
+    "internal/domain/storage": {
+      "ratio": 0.26588465298142716,
+      "comment": 272,
+      "total": 1023,
+      "markers": 1
+    },
+    "internal/domain/system": {
+      "ratio": 0.3543859649122807,
+      "comment": 101,
+      "total": 285,
+      "markers": 0
+    },
+    "internal/domain/telemetry": {
+      "ratio": 0.2644628099173554,
+      "comment": 64,
+      "total": 242,
+      "markers": 0
+    },
+    "internal/domain/trading": {
+      "ratio": 0.5338177752934601,
+      "comment": 955,
+      "total": 1789,
+      "markers": 23
+    },
+    "internal/domain/yardscan": {
+      "ratio": 0.7194244604316546,
+      "comment": 200,
+      "total": 278,
+      "markers": 3
+    },
+    "internal/infrastructure/buildinfo": {
+      "ratio": 0.43661971830985913,
+      "comment": 31,
+      "total": 71,
+      "markers": 0
+    },
+    "internal/infrastructure/config": {
+      "ratio": 0.48950381679389315,
+      "comment": 1026,
+      "total": 2096,
+      "markers": 64
+    },
+    "internal/infrastructure/daemonlock": {
+      "ratio": 0.3108108108108108,
+      "comment": 23,
+      "total": 74,
+      "markers": 1
+    },
+    "internal/infrastructure/database": {
+      "ratio": 0.3291139240506329,
+      "comment": 78,
+      "total": 237,
+      "markers": 1
+    },
+    "internal/infrastructure/pidfile": {
+      "ratio": 0.233502538071066,
+      "comment": 46,
+      "total": 197,
+      "markers": 2
+    },
+    "internal/infrastructure/supervise": {
+      "ratio": 0.24193548387096775,
+      "comment": 60,
+      "total": 248,
+      "markers": 1
+    },
+    "pkg/utils": {
+      "ratio": 0.40963855421686746,
+      "comment": 34,
+      "total": 83,
+      "markers": 0
+    },
+    "tools/commentclean": {
+      "ratio": 0.03804347826086957,
+      "comment": 14,
+      "total": 368,
+      "markers": 0
+    },
+    "tools/commentclean/internal/strip": {
+      "ratio": 0.148014440433213,
+      "comment": 246,
+      "total": 1662,
+      "markers": 3
+    }
+  }
+}

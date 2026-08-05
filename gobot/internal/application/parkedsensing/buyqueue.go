@@ -24,23 +24,19 @@ type drainState struct {
 // DrainBuyQueue fills as many wanted placements as the treasury and the probe
 // cap allow, in priority order.
 //
-// Order is deliberate and tested: FILLS first — placements in systems already
-// judged IN_SCOPE, deepest system first — then SEEDS, the spare hulls that go
-// out to frontier systems nobody has screened yet. A fill earns its keep
-// immediately (it watches a market we know we want); a seed is speculative. So
-// a tick that can only afford one probe spends it on the known-good placement.
+// Order: FILLS first — placements in systems already judged IN_SCOPE, deepest
+// system first — then SEEDS, the spare hulls sent to frontier systems nobody has
+// screened. A fill watches a market we know we want; a seed is speculative, so a
+// tick that can afford one probe spends it on the known-good placement.
 //
 // Both ceilings are re-checked on EVERY pop, not once at the top: each purchase
-// moves the treasury and grows the fleet, so a batch that was affordable when
-// the tick started may not be by its third buy.
+// moves the treasury and grows the fleet, so a batch affordable when the tick
+// started may not be by its third buy.
 //
-// THE TICK IS IN TWO HALVES, split at the same place expansion's is: free work
-// that fills a placement from a hull we already own, and work that pays for a
-// new one. BuyKnobs.SpendEnabled off runs the first half and none of the second,
-// so an operator who switched expansion off gets zero purchases while coverage
-// keeps growing on the fleet already bought. When adding a pass here, the
-// invariant to preserve is that one: if it can read a live price, claim a
-// placement for purchase, or pay a counter, it belongs below the gate.
+// THE TICK IS IN TWO HALVES: free work that fills a placement from a hull we
+// already own, and work that pays for a new one. BuyKnobs.SpendEnabled off runs
+// the first half and none of the second. A pass that can read a live price,
+// claim a placement for purchase, or pay a counter belongs below that gate.
 func DrainBuyQueue(
 	ctx context.Context,
 	p BuyPorts,
@@ -53,17 +49,11 @@ func DrainBuyQueue(
 		clock = shared.NewRealClock()
 	}
 
-	// The heavy reservation is read FIRST, ahead of every gate, so rep.HeavyReserve is populated
-	// on EVERY return path — including the two that stop before a floor is ever built (nothing
-	// queued, and the probe cap held). The heartbeat publishes this number beside the autosizer's
-	// own per-tick gauge, and an operator correlating the two must never see them disagree merely
-	// because this tick took a short path. The probe cap makes that concrete: it is a long-lived
-	// steady state, so the heartbeat would otherwise read 0 for hours with a reserve genuinely
-	// outstanding, and "the two halves disagree" is the one signal these diagnostics exist to keep
-	// trustworthy.
-	//
-	// It does not break the cheapest-first ordering below: all three reads behind this port are
-	// LOCAL DB queries (containers, ships, shipyard_inventory), never an API call.
+	// The heavy reservation is read FIRST, ahead of every gate, so rep.HeavyReserve is populated on
+	// EVERY return path — including the two that stop before a floor is built (nothing queued, and
+	// the probe cap held). It is published beside the autosizer's own per-tick gauge and the two must
+	// not disagree merely because a tick took a short path. It does not break the cheapest-first
+	// ordering below: all three reads behind this port are LOCAL DB queries, never an API call.
 	heavyReserve, err := readHeavyReserve(ctx, p, playerID)
 	if err != nil {
 		return rep, err
@@ -71,32 +61,27 @@ func DrainBuyQueue(
 	rep.HeavyReserve = heavyReserve
 
 	// Cheapest-first gate order: the ledger reads are local, the treasury and
-	// price reads are network. A tick with nothing to buy — the overwhelmingly
-	// common case once the map is placed — must not cost an API call.
+	// price reads are network. A tick with nothing to buy must not cost an API call.
 	candidates, yards, err := drainCandidates(ctx, p, playerID)
 	if err != nil || len(candidates) == 0 {
 		return rep, err
 	}
-	// Published even on the paused path below, because "the queue is ordered and
-	// the switch is off" and "the ordering never sees a shipyard" are the two
-	// readings an operator has to tell apart while spending is stood down.
+	// Published even on the paused path below: "the queue is ordered and the switch
+	// is off" and "the ordering never sees a shipyard" must read differently.
 	rep.YardsQueued, rep.YardsAtHead = yards.queued, yards.atHead
 
-	// THE SPEND GATE, and it sits AHEAD of every money read because a tick that
-	// may not buy must not price anything either. The reads below are the
-	// expensive half — LiveCredits is an API call — and evaluating a ceiling
-	// against a purchase that cannot happen would burn budget to produce a
-	// CapHeld/FloorHeld the operator would then have to discount.
-	//
-	// The candidate list above is deliberately still built: the free passes in the
-	// loop below fill placements from hulls we already own, and they need to know
-	// which placements are open. See BuyKnobs.SpendEnabled.
+	// THE SPEND GATE, and it sits AHEAD of every money read because a tick that may
+	// not buy must not price anything either. LiveCredits is an API call, and a
+	// ceiling evaluated against a purchase that cannot happen yields a
+	// CapHeld/FloorHeld the operator has to discount. The candidate list above is
+	// still built: the free passes in the loop below fill placements from hulls we
+	// already own, and need to know which placements are open. See
+	// BuyKnobs.SpendEnabled.
 	rep.SpendingPaused = !k.SpendEnabled
 
 	// st stays zero-valued while paused, and every consumer of it below is behind
-	// the same k.SpendEnabled gate for that reason: a zero cap beside a zero owned
-	// count would otherwise read as "at the probe cap" and report a ceiling nobody
-	// consulted.
+	// the same k.SpendEnabled gate: a zero cap beside a zero owned count would
+	// otherwise read as "at the probe cap" and report a ceiling nobody consulted.
 	var st drainState
 	if k.SpendEnabled {
 		var capHeld bool
@@ -112,24 +97,21 @@ func DrainBuyQueue(
 
 	t := &drainTick{
 		p: p, playerID: playerID, k: k, st: &st, rep: &rep,
-		// One memo per TICK, never longer. A refusal is re-learned on the next tick
-		// from scratch, so a counter that was merely having a bad minute is retried
-		// 30 seconds later rather than blacklisted.
+		// One memo per TICK, never longer: a refusal is re-learned from scratch next
+		// tick, so a counter merely having a bad minute is retried, not blacklisted.
 		memo: newRefusalMemo(&rep),
-		// One foothold broker per TICK, for the same reason and with the same
-		// lifetime: it holds the surplus pool the tick allocates from, so two
+		// Per-TICK: it holds the surplus pool the tick allocates from, so two
 		// placements cannot both be handed the same hull.
 		footholds: &footholdBroker{},
-		// One cross-system buying broker per TICK, for the same reason and with the
-		// same lifetime: it holds where our hulls stand and the gate walker deciding
-		// which of those places can reach a placement, so a burst of placements reads
-		// the ledger once and each source's walk once.
+		// Per-TICK: it holds where our hulls stand and the gate walker deciding which
+		// of those places can reach a placement, so a burst of placements reads the
+		// ledger once and each source's walk once.
 		ferry: &ferryBroker{},
 	}
 
-	// How many attempts the FILLS may spend before standing aside for the seeds
-	// queued behind them — the whole budget when no seed is outstanding. It
-	// SPLITS maxDrainAttempts rather than adding to it. See seedshare.go.
+	// The attempts the FILLS may spend before standing aside for queued seeds — the
+	// whole budget when none is outstanding. It SPLITS maxDrainAttempts, never adds
+	// to it. See seedshare.go.
 	fillBudget := fillAttemptBudget(candidates)
 
 	for _, slot := range candidates {
@@ -146,11 +128,9 @@ func DrainBuyQueue(
 			continue
 		}
 
-		// Whether THIS placement stands on a shipyard the fleet cannot price,
-		// taken once because every fill path below reports against it. Counted at
-		// the moment a placement is actually funded rather than inferred from
-		// rep.Bought afterwards, because by then the queue no longer knows which
-		// slot the hull went to.
+		// Whether THIS placement stands on a shipyard the fleet cannot price, taken
+		// once because every fill path below reports against it, and at the moment of
+		// funding — rep.Bought afterwards cannot say which slot the hull went to.
 		darkYard := yards.wants(slot.Waypoint)
 
 		funded, halt, err := t.fundPlacement(ctx, slot, clock.Now())
@@ -168,16 +148,16 @@ func DrainBuyQueue(
 // fundPlacement fills one placement by the cheapest means available, and reports
 // whether it was funded and whether the whole drain must stop.
 func (t *drainTick) fundPlacement(ctx context.Context, slot QueuedSlot, now time.Time) (bool, bool, error) {
-	// The system's slots serve both the spare-reuse scan and the
-	// purchasing-hull lookup below, so they are read once per pop.
+	// The system's slots serve both the spare-reuse scan and the purchasing-hull
+	// lookup below, so they are read once per pop.
 	inSystem, err := t.p.Ledger.SlotsBySystem(ctx, t.playerID, slot.System)
 	if err != nil {
 		return false, false, fmt.Errorf("sensing slots in %q unreadable: %w", slot.System, err)
 	}
 
-	// A spare hull already standing in this system fills the placement for
-	// free. Always preferred over buying — it spends nothing and consumes
-	// no cap headroom (the hull merely changes which slot claims it).
+	// A spare hull already standing in this system fills the placement for free.
+	// Always preferred over buying — it spends nothing and consumes no cap headroom
+	// (the hull merely changes which slot claims it).
 	reused, err := t.reuseSpareHull(ctx, slot, inSystem)
 	if err != nil {
 		return false, false, err
@@ -189,16 +169,13 @@ func (t *drainTick) fundPlacement(ctx context.Context, slot QueuedSlot, now time
 	}
 
 	// PAUSED: the free half is done for this placement, and everything past this
-	// point either prices a hull or pays for one.
-	//
-	// The foothold is still attempted, and that is not an oversight. It fills a
-	// placement by flying a hull we ALREADY OWN across a gate — no credit, no
-	// API call — so switching it off with the purchases would starve the
-	// placement machine of destinations while saving nothing, which is the
-	// exact defect the expansion pause was reshaped to avoid (see
-	// ExpandKnobs.SpendEnabled). A placement it cannot fill is simply left
-	// WANTED for the tick the switch comes back on; it is NOT counted as
-	// SkippedNoYard, which means something specific and would be a lie here.
+	// point either prices a hull or pays for one. The foothold is still attempted:
+	// it fills a placement by flying a hull we ALREADY OWN across a gate — no
+	// credit, no API call — so switching it off with the purchases would starve the
+	// placement machine of destinations while saving nothing (see
+	// ExpandKnobs.SpendEnabled). A placement it cannot fill is left WANTED for the
+	// tick the switch comes back on, and is NOT counted as SkippedNoYard, which
+	// means something specific and would be a lie here.
 	if !t.k.SpendEnabled {
 		paused, err := t.footholds.fill(ctx, t.p, t.playerID, slot, t.rep)
 		return paused, false, err
@@ -209,23 +186,20 @@ func (t *drainTick) fundPlacement(ctx context.Context, slot QueuedSlot, now time
 		return false, false, err
 	}
 	if len(buys) == 0 {
-		// No yard in this system has a hull of ours we can buy through.
-		//
-		// For a SPARE placement this IS the buying deadlock: expansion asked
-		// for a foothold in a system we have judged but never occupied, and
-		// the only way to buy there is to already be there. The foothold path
-		// is the one thing that breaks it — it flies a surplus hull in from
-		// within gate reach, after which the system funds itself. It spends
-		// no money and issues no API call, so it costs no attempt.
+		// No yard in this system has a hull of ours we can buy through. For a SPARE
+		// placement this IS the buying deadlock: expansion asked for a foothold in a
+		// system we have judged but never occupied, and buying there needs a hull
+		// there already. The foothold path breaks it — it flies a surplus hull in
+		// from within gate reach, after which the system funds itself. No money and
+		// no API call, so it costs no attempt.
 		foothold, err := t.footholds.fill(ctx, t.p, t.playerID, slot, t.rep)
 		if err != nil {
 			return false, false, err
 		}
 		if !foothold {
-			// Everything else simply waits until expansion puts a usable probe
-			// within reach. Not an error and not worth a log line per tick, and
-			// never a blind cross-map buy. Costs no attempt because it touched
-			// no API.
+			// Everything else waits until expansion puts a usable probe within
+			// reach — never a blind cross-map buy. Costs no attempt because it
+			// touched no API.
 			t.rep.SkippedNoYard++
 		}
 		return foothold, false, nil
@@ -285,15 +259,14 @@ func openDrainBudget(
 	}
 	spend, err := p.CargoSpend.AbsCargoBuySpendSince(ctx, playerID, now.Add(-cargoSpendLookback))
 	if err != nil {
-		// An unknowable cargo outflow is NOT a zero one. Reading it as zero
-		// would collapse the runway term and hand back the cheapest floor
-		// available exactly when we understand the least.
+		// An unknowable cargo outflow is NOT a zero one. Reading it as zero collapses
+		// the runway term and hands back the cheapest floor available exactly when we
+		// understand the least.
 		return drainState{}, false, fmt.Errorf("cargo spend unreadable, buying nothing this tick: %w", err)
 	}
-	// The heavy reservation (read at the top of the tick) is capex in the literal sense
-	// CapexReserve documents: credits held back for ship capex committed elsewhere. Folding it
-	// into that term is what makes probe buying stand down while a heavy accumulates, and resume
-	// the moment it lands.
+	// The heavy reservation is capex in the literal sense CapexReserve documents: credits held back
+	// for capex committed elsewhere. Folding it into that term stands probe buying down while a
+	// heavy accumulates, and resumes it the moment the heavy lands.
 	return drainState{
 		credits:  credits,
 		owned:    owned,
@@ -313,21 +286,18 @@ func openDrainBudget(
 //
 // Working down the candidate yards matters because a refusal is usually LOCAL to
 // the counter — out of stock, a hull that moved between selection and purchase —
-// while the placement itself is still perfectly fillable at the yard next door.
-// Abandoning the slot on the first refusal would leave it claimed and unfilled
-// for a whole tick, every tick, whenever its nearest yard is the unreliable one.
+// while the placement is still fillable at the yard next door. Abandoning the
+// slot on the first refusal leaves it claimed and unfilled every tick whenever
+// its nearest yard is the unreliable one.
 //
 // Every yard tried costs an attempt, including the ones that fail. See
 // maxDrainAttempts for why failure must not be the cheap path.
 func (t *drainTick) fillSlot(ctx context.Context, slot QueuedSlot, buys []purchaseCandidate) (bool, error) {
 	for _, candidate := range buys {
-		// A counter that already refused THIS TICK is not asked again. The
-		// refusal belongs to the counter — an unpriceable yard, a hull that
-		// cannot buy — not to the placement that happened to meet it first, so
-		// re-asking inside one tick spends an attempt to re-learn a fact already
-		// recorded, and spends it out of the budget a working yard would have
-		// used. It costs no attempt for the same reason a placement with no
-		// reachable yard costs none: it touches no API.
+		// A counter that already refused THIS TICK is not asked again: the refusal
+		// belongs to the counter, not to the placement that met it first, so
+		// re-asking spends an attempt a working yard would have used to re-learn a
+		// recorded fact. The skip costs no attempt — it touches no API.
 		if t.memo.blocks(candidate.yard, candidate.buyer) {
 			continue
 		}
@@ -338,36 +308,31 @@ func (t *drainTick) fillSlot(ctx context.Context, slot QueuedSlot, buys []purcha
 
 		quote, err := t.p.Purchaser.Quote(ctx, t.playerID, candidate.yard)
 		if err != nil {
-			// Unpriceable counter: no floor check is possible, try the next. The
-			// buyer is deliberately not named — no hull was engaged.
+			// Unpriceable counter: no floor check possible, try the next. No buyer is
+			// named because no hull was engaged in it.
 			t.memo.record(BuyStepQuote, candidate.yard, "", err.Error())
 			continue
 		}
-		// THE FLOOR BINDS ON LANDED COST, NOT STICKER. A probe bought at
-		// a counter in another system still has to be flown to its post, and every
-		// gate it crosses on the way charges a fee. Checking the quote alone
-		// authorised 10.15M of probes and then spent 6.44M more delivering them —
-		// 63% over an explicit Admiral budget that the guard never saw coming.
-		//
-		// This can only ever make the guard STRICTER: ferry is non-negative by
-		// construction and LandedProbeCost is floored at the quote, so a placement
-		// bought at its own destination prices exactly as it did before.
+		// THE FLOOR BINDS ON LANDED COST, NOT STICKER. A probe bought at a counter in
+		// another system still has to be flown to its post, and every gate it crosses
+		// charges a fee the quote alone does not see. Landed cost can only ever make
+		// the guard STRICTER: ferry is non-negative by construction and
+		// LandedProbeCost is floored at the quote, so a placement bought at its own
+		// destination prices at the quote alone.
 		ferry := candidate.ferryCost()
 		landed := domainSensing.LandedProbeCost(quote, ferry)
 		if t.st.credits-landed < t.st.floor {
 			// At the floor. Stop rather than shop for a cheaper yard: the floor
-			// exists to protect working capital, and a marginally cheaper probe
-			// erodes it just the same.
+			// protects working capital, and a cheaper probe erodes it just the same.
 			t.rep.FloorHeld = true
 			return true, nil
 		}
 
 		probe, err := t.p.Purchaser.Buy(ctx, t.playerID, candidate.buyer, candidate.yard, t.p.ClaimOwnerContainerID)
 		if err != nil || probe.ShipSymbol == "" {
-			// This counter refused; the placement is still fillable elsewhere.
-			// The buyer IS named here: "the yard is out of stock" and "this hull
-			// cannot buy" are the two readings an operator has to choose
-			// between, and the hull is what tells them apart.
+			// This counter refused; the placement is still fillable elsewhere. The
+			// buyer IS named here: the hull is what tells "the yard is out of stock"
+			// apart from "this hull cannot buy".
 			t.memo.record(BuyStepBuy, candidate.yard, candidate.buyer, buyRefusalReason(err))
 			continue
 		}
@@ -377,23 +342,20 @@ func (t *drainTick) fillSlot(ctx context.Context, slot QueuedSlot, buys []purcha
 		}
 		t.rep.Bought++
 		if candidate.ferried {
-			// A subset of Bought, counted here rather than inferred later: this is
-			// the only point that still knows which counter actually sold.
+			// A subset of Bought: only this point still knows which counter sold.
 			t.rep.Ferried++
 		}
 		t.st.owned++
 
 		paid := chargedForProbe(quote, probe.Price)
-		// The ferry is subtracted AFTER postBuyCredits rather than folded into
-		// `paid`, because the two numbers are different KINDS of fact and mixing
-		// them would corrupt the better one. postBuyCredits reconciles against
-		// probe.CreditsAfter — the API's authoritative balance the instant the
-		// purchase settled — and the ferry has not been flown yet, so it is absent
-		// from that balance by definition. Adding it to `paid` would make the
-		// reconciliation compare a spend that happened against a balance that
-		// predates it, and the `CreditsAfter < arithmetic` branch would silently
-		// discard the ferry every time. Held back separately, it reserves the
-		// delivery against the placements this same tick has yet to pop.
+		// The ferry is subtracted AFTER postBuyCredits, never folded into `paid`.
+		// postBuyCredits reconciles against probe.CreditsAfter — the authoritative
+		// balance the instant the purchase settled — and the ferry has not been flown
+		// yet, so it is absent from that balance by definition. Folded into `paid` it
+		// would be compared against a balance that predates it and the
+		// `CreditsAfter < arithmetic` branch would silently discard it every time.
+		// Held back separately, it reserves the delivery against the placements this
+		// same tick has yet to pop.
 		t.st.credits = postBuyCredits(t.st.credits, paid, probe) - ferry
 
 		logProbeLandedCost(ctx, slot, candidate, probe, paid, ferry)
@@ -422,8 +384,8 @@ func chargedForProbe(quote, charged int64) int64 {
 	return quote
 }
 
-// logProbeLandedCost publishes purchase, ferry and landed cost SEPARATELY: on the
-// purchase alone a 16.6M expansion reads as the 10.15M it quoted.
+// logProbeLandedCost publishes purchase, ferry and landed cost SEPARATELY: read
+// on the purchase alone, an expansion costs only what it quoted.
 func logProbeLandedCost(
 	ctx context.Context,
 	slot QueuedSlot,
@@ -463,10 +425,9 @@ func (t *drainTick) haltForPriceDrift(ctx context.Context, candidate purchaseCan
 }
 
 // postBuyCredits is the treasury the NEXT pop's floor check runs against. The
-// shipyard's own post-settlement balance is authoritative when it reports one,
-// but it is only ever ACCEPTED when it is the more conservative of the two
-// numbers — a shipyard reporting a balance higher than (before − price) would
-// otherwise relax the floor on the strength of a value we did not compute.
+// shipyard's own post-settlement balance is authoritative when it reports one, but
+// is only ACCEPTED when it is the more conservative of the two: a balance higher
+// than (before − price) would relax the floor on a value we did not compute.
 func postBuyCredits(before, price int64, probe BoughtProbe) int64 {
 	arithmetic := before - price
 	if probe.CreditsAfter > 0 && probe.CreditsAfter < arithmetic {

@@ -13,74 +13,43 @@ import (
 // foothold.go breaks the buying deadlock at the edge of the map.
 //
 // THE DEADLOCK. The queue can only buy a probe where a hull of ours is already
-// standing at the counter (see buyerAt). Expansion asks for a seed by writing a
-// SPARE want at a probe yard in a system bordering the frontier — and it is
-// perfectly willing to pick a yard in a system we have JUDGED but never actually
-// occupied. That want can then never be funded: there is no hull there to buy
-// through, and the only way to put one there is to buy one. A system reachable
-// in one gate hop, with three yards that would double the fleet's buying
-// network, sits unfillable forever while the queue re-reads it every tick.
+// standing at the counter (see buyerAt), and expansion writes SPARE wants at probe
+// yards in systems we have JUDGED but never occupied. Such a want can never be
+// funded: there is no hull there to buy through, and the only way to put one there
+// is to buy one. WHAT BREAKS IT is a hull we already own, flown across the gate to
+// stand on that yard: the moment it parks, buyerAt answers for every yard in the
+// system and the system funds its own placements — and its own onward seeds — from
+// the local counter. That leverage is why this path is restricted to SPARE
+// placements; a MARKET want is worth one probe, a foothold is worth a system.
 //
-// WHAT BREAKS IT. A hull we already own, flown across the gate to stand on that
-// yard. One hull converts the whole system: the moment it parks, buyerAt answers
-// for every yard in it, and the system funds its own placements — and its own
-// onward seeds — out of the local counter from then on. That leverage is the
-// entire justification for taking a hull off a working market, and it is why
-// this path is restricted to SPARE placements, which are exactly the requests
-// for a buying foothold. A MARKET want is worth one probe; a foothold is worth a
-// system.
-//
-// WHAT IT COSTS, AND WHY THAT COST IS BOUNDED. The hull comes off a PARKED
-// MARKET placement somewhere within gate reach, and that market stops being
-// watched. Two guards decide which hull may be taken, and between them they mean
-// the sacrifice is never coverage the fleet actually depends on:
-//
-//   - GOODS REDUNDANCY. Every whitelisted good the candidate observes must ALSO
-//     be observed by another parked market probe in the SAME system. The system
-//     therefore keeps reporting prices on exactly the goods it reported before —
-//     what is lost is a second look at goods already being watched, never the
-//     last look at anything. See surplusPool.
-//   - MANNED POSTS. A hull named by a scout post is manning that post and is not
-//     this engine's to take, whatever the sensing ledger says about it. On the
-//     live fleet this is not a hypothetical: seven of the home system's thirteen
-//     parked market hulls are also standing scout-post hulls, and a redundancy
-//     rule on its own would have taken them.
-//
-// The market the hull leaves reverts to WANTED rather than being deleted, so it
-// is still a placement the queue wants filled and will buy for as soon as a
-// counter can fund it. The coverage is DEFERRED, not abandoned.
-//
-// NOTHING HERE WAITS. The two ledger writes are the whole of it: the target is
-// claimed IN_TRANSIT naming the hull, the source is released, and the tick
-// returns. The flying is the placement machine's job — dispatchClaim reads the
-// claimed row on a later tick and advances it one RouteAcross step at a time —
-// so a crossing that takes many ticks costs this tick nothing.
+// WHAT IT COSTS is a PARKED MARKET placement within gate reach, which stops being
+// watched. Two guards decide which hull may be taken: GOODS REDUNDANCY — every
+// whitelisted good the candidate observes must ALSO be observed by another parked
+// market probe in the SAME system, so what is lost is a second look and never the
+// last (see surplusPool) — and MANNED POSTS, since a hull named by a scout post is
+// not this engine's to take whatever the sensing ledger says. The market the hull
+// leaves reverts to WANTED rather than being deleted: coverage is DEFERRED, not
+// abandoned. NOTHING HERE WAITS — the target is claimed IN_TRANSIT naming the hull,
+// the source is released, and the tick returns; the flying is the placement
+// machine's job.
 
-// maxFootholdRetasks bounds how many surplus hulls one tick may send across a
-// gate. A plain constant, deliberately not a knob, in the manner of
-// MaxExpansionActions and DefaultMaxPlacementActions: it paces a burst of
-// writes rather than expressing an economic preference.
+// maxFootholdRetasks bounds how many surplus hulls one tick may send across a gate.
+// A plain constant, deliberately not a knob, in the manner of MaxExpansionActions
+// and DefaultMaxPlacementActions: it paces a burst of writes rather than expressing
+// an economic preference.
 //
-// TWO, because two is what the constraint costs to break. Each re-task converts
-// one system from unbuyable to self-funding, and the systems worth converting
-// are the immediate gate neighbours holding yards — a handful, reached in a
-// tick or two. A larger number would not convert them faster (the placement
-// machine still flies one step per tick) and would let a single tick take
-// several hulls out of one system on the strength of one redundancy reading.
-//
-// The bound is a backstop, not the safety property. Correctness comes from
-// surplusPool re-deciding redundancy after every take, so the invariant holds
-// at any cap.
+// A larger number would not convert systems faster — the placement machine still
+// flies one step per tick — and would let a single tick take several hulls out of
+// one system on the strength of one redundancy reading. The bound is a backstop,
+// not the safety property: correctness comes from surplusPool re-deciding
+// redundancy after every take, so the invariant holds at any cap.
 const maxFootholdRetasks = 2
 
-// footholdBroker is one tick's foothold state: the pool of releasable hulls,
-// read LAZILY on first need, and the per-tick budget spent against it.
-//
-// LAZY BECAUSE THE COMMON TICK MUST NOT PAY FOR IT. Once the map is placed,
-// every candidate finds a local counter and this path is never reached; loading
-// the pool at the top of the drain would spend two ledger reads per tick to
-// answer a question nobody asked. The reads happen on the first placement that
-// actually cannot fund itself, and then once for the whole tick.
+// footholdBroker is one tick's foothold state: the pool of releasable hulls, read
+// LAZILY on first need, and the per-tick budget spent against it. Lazily because
+// once the map is placed every candidate finds a local counter and this path is
+// never reached, so loading at the top of the drain would spend two ledger reads
+// per tick to answer a question nobody asked.
 type footholdBroker struct {
 	pool *surplusPool
 	// sent counts re-tasks against maxFootholdRetasks.
@@ -96,18 +65,16 @@ type footholdBroker struct {
 	reach *gateReach
 }
 
-// fill tries to establish a foothold for a placement no local counter can fund,
-// and reports whether a hull was sent.
+// fill tries to establish a foothold for a placement no local counter can fund, and
+// reports whether a hull was sent.
 //
-// The eligibility test is deliberately narrow, and every clause earns its place:
+// The eligibility test is deliberately narrow:
 //
-//   - SPARE ONLY. A SPARE want is expansion's request for a buying foothold and
-//     always sits on a probe yard, so filling one converts a whole system. A
-//     MARKET want is worth a single probe, which never justifies taking a hull
-//     off a market that is already working.
-//   - WANTED ONLY. A QUEUED placement was claimed for purchase by an earlier
-//     tick and may have money moving against it; re-tasking it would race that
-//     intent.
+//   - SPARE ONLY. A SPARE want always sits on a probe yard, so filling one
+//     converts a whole system. A MARKET want is worth a single probe, which never
+//     justifies taking a hull off a market that is already working.
+//   - WANTED ONLY. A QUEUED placement was claimed for purchase by an earlier tick
+//     and may have money moving against it; re-tasking it would race that intent.
 //   - BOTH GUARD PORTS WIRED. See BuyPorts.Gates / MannedHulls.
 func (b *footholdBroker) fill(
 	ctx context.Context,
@@ -136,10 +103,10 @@ func (b *footholdBroker) fill(
 	// placements sharing a neighbourhood reads the topology once per source rather
 	// than once per placement — and every read is the gate STORE, never the API.
 	if b.reach == nil {
-		// MaxWalkRings, NOT the seed's SeedFlightUnbounded: this walker decides how far a
-		// surplus SCANNING HULL may be drawn to fill a placement, which is a different and
-		// much shorter journey than a charting seed's. The seed's reach is the graph; this
-		// one deliberately is not.
+		// MaxWalkRings, NOT the seed's SeedFlightUnbounded: this walker decides how
+		// far a surplus SCANNING HULL may be drawn to fill a placement, a much
+		// shorter journey than a charting seed's. The seed's reach is the graph;
+		// this one deliberately is not.
 		b.reach = newGateReach(p.Gates, nil, MaxWalkRings)
 	}
 	reach, err := sourcesWithinReach(ctx, b.reach, b.pool, target.System)
@@ -166,15 +133,15 @@ func (b *footholdBroker) fill(
 	return sent, nil
 }
 
-// load reads the two facts the guards are built on and reports whether the pool
-// is usable.
+// load reads the two facts the guards are built on and reports whether the pool is
+// usable.
 //
 // FAIL-CLOSED AND LATCHED. Either read failing means a hull cannot be PROVEN
-// releasable — an unreadable post list read permissively is an empty one, which
-// says "no hull is manned" and would hand the scouting fleet's hulls away — so
-// the tick does no footholds at all. It is logged rather than returned as an
-// error because the drain's other work is unaffected and must go on: this path
-// is an extension to the queue, not a precondition for it.
+// releasable — an unreadable post list read permissively is an empty one, which says
+// "no hull is manned" and would hand the scouting fleet's hulls away — so the tick
+// does no footholds at all. Logged rather than returned as an error because the
+// drain's other work is unaffected: this path is an extension to the queue, not a
+// precondition for it.
 func (b *footholdBroker) load(ctx context.Context, p BuyPorts, playerID int) bool {
 	parked, err := p.Ledger.SlotsByState(ctx, playerID, SlotStateParked)
 	if err != nil {
@@ -201,11 +168,10 @@ func (b *footholdBroker) load(ctx context.Context, p BuyPorts, playerID int) boo
 
 // MannedHullReader reports which hulls are currently manning a scout post.
 //
-// A SEPARATE PORT rather than a flag on the slot row, because the fact lives in
-// a different table owned by a different engine: the sensing ledger has no
-// column that could carry it, and a hull can hold a sensing placement and a
-// scout post at the same time. Reading it here is what keeps this path from
-// treating the scouting fleet's hulls as its own reserve.
+// A SEPARATE PORT rather than a flag on the slot row, because the fact lives in a
+// different table owned by a different engine and a hull can hold a sensing
+// placement and a scout post at the same time. Reading it here is what keeps this
+// path from treating the scouting fleet's hulls as its own reserve.
 type MannedHullReader interface {
 	// MannedHulls returns the set of hulls named by a post. An implementation
 	// reports every post it can see; a hull absent from the set is one no post
@@ -213,21 +179,16 @@ type MannedHullReader interface {
 	MannedHulls(ctx context.Context, playerID int) (map[string]bool, error)
 }
 
-// surplusPool is the tick's picture of which parked market hulls could be
-// released, and it is MUTATED as they are taken.
+// surplusPool is the tick's picture of which parked market hulls could be released,
+// and it is MUTATED as they are taken.
 //
 // THE MUTATION IS THE CORRECTNESS ARGUMENT, not an optimisation. Redundancy is a
-// property of a SET, so it cannot be evaluated once and then spent twice: in a
-// system where A and B both watch ADVANCED_CIRCUITRY and nothing else does, a
-// snapshot marks BOTH redundant — each is covered by the other — and taking both
-// on the strength of that one reading loses the good entirely. Every take
-// therefore removes the row from the pool, and the next take re-decides against
-// what is actually left. After A goes, B is the only observer and stops being
-// eligible.
-//
-// That is also what makes the rule self-limiting ACROSS ticks: the pool is
-// rebuilt from the ledger each tick, so a system drained to its irreducible
-// coverage offers nothing on the next one.
+// property of a SET, so it cannot be evaluated once and then spent twice: where A
+// and B both watch one good and nothing else does, a snapshot marks BOTH redundant
+// and taking both loses the good entirely. Every take removes the row, and the next
+// re-decides against what is left. That is also what makes the rule self-limiting
+// ACROSS ticks: the pool is rebuilt from the ledger each tick, so a system drained
+// to its irreducible coverage offers nothing on the next one.
 type surplusPool struct {
 	// bySystem holds the PARKED MARKET rows still standing in each system.
 	bySystem map[string][]QueuedSlot
@@ -237,13 +198,11 @@ type surplusPool struct {
 	manned map[string]bool
 }
 
-// newSurplusPool groups the parked placements this tick may draw on.
-//
-// Only PARKED MARKET rows naming a hull are admitted, and the narrowness is
-// deliberate on both counts. A row in any other state names a hull that is
-// already committed — being bought, or flying to a placement — and taking it
-// would fight the machine that is moving it. A SPARE row is not coverage at all,
-// and reuseSpareHull already has first claim on those.
+// newSurplusPool groups the parked placements this tick may draw on. Only PARKED
+// MARKET rows naming a hull are admitted: a row in any other state names a hull
+// already committed — being bought, or flying to a placement — and taking it would
+// fight the machine that is moving it, while a SPARE row is not coverage at all and
+// reuseSpareHull has first claim on those.
 func newSurplusPool(parked []QueuedSlot, manned map[string]bool) *surplusPool {
 	pool := &surplusPool{
 		bySystem: make(map[string][]QueuedSlot),
@@ -258,8 +217,8 @@ func newSurplusPool(parked []QueuedSlot, manned map[string]bool) *surplusPool {
 	for system := range pool.bySystem {
 		rows := pool.bySystem[system]
 		// Cheapest sacrifice first, then by waypoint so a tick is reproducible.
-		// Depth is the measured value of the market, so this always gives up the
-		// least valuable redundant market a system holds.
+		// Depth is the measured value of the market, so this gives up the least
+		// valuable redundant market a system holds.
 		sort.SliceStable(rows, func(i, j int) bool {
 			if rows[i].DepthCredits != rows[j].DepthCredits {
 				return rows[i].DepthCredits < rows[j].DepthCredits
@@ -271,14 +230,11 @@ func newSurplusPool(parked []QueuedSlot, manned map[string]bool) *surplusPool {
 	return pool
 }
 
-// systems lists the systems still holding a candidate hull, in symbol order.
-//
-// Symbol order rather than map order because it is the input to a reachability
-// ranking whose ties are broken by symbol: an unordered candidate list would make
-// two equally-distant sources swap places between ticks for no reason.
-//
-// It reflects the pool as it stands NOW, so a system drained by an earlier
-// placement in the same tick stops being offered to the next one.
+// systems lists the systems still holding a candidate hull, in symbol order — not
+// map order, because it feeds a reachability ranking whose ties are broken by
+// symbol and an unordered list would make two equally-distant sources swap places
+// between ticks. It reflects the pool as it stands NOW, so a system drained by an
+// earlier placement in the same tick stops being offered to the next one.
 func (p *surplusPool) systems() []string {
 	out := make([]string, 0, len(p.bySystem))
 	for system := range p.bySystem {
@@ -288,22 +244,17 @@ func (p *surplusPool) systems() []string {
 	return out
 }
 
-// take removes and returns the least valuable releasable hull in system, if
-// there is one.
-//
-// "Releasable" is the conjunction of the two guards this file exists to apply:
+// take removes and returns the least valuable releasable hull in system, if there is
+// one. "Releasable" is the conjunction of the two guards this file exists to apply:
 // the hull is claimed by no scout post, and every whitelisted good it observes
-// survives its departure — in another parked market of the same system, or at
-// the destination the hull is being sent to.
+// survives its departure — in another parked market of the same system, or at the
+// destination the hull is being sent to.
 //
-// destinationGoods is what the hull will be watching once it ARRIVES, and
-// counting it is what makes the rule correct for a move that stays inside one
-// system. A hull sent from market A to market B in the same system
-// does not subtract coverage, it RELOCATES it: B's goods are observed after the
-// move exactly as A's were before. Ignoring that would refuse a move that costs
-// the system nothing. Pass nil for a destination that watches no market — an
-// expansion foothold on a bare probe yard — and the test collapses to "some
-// other row already covers it", which is the original rule.
+// destinationGoods is what the hull will be watching once it ARRIVES, which is what
+// makes the rule correct for a move that stays inside one system: A-to-B in the same
+// system does not subtract coverage, it RELOCATES it. Pass nil for a destination
+// that watches no market — an expansion foothold on a bare probe yard — and the test
+// collapses to "some other row already covers it".
 func (p *surplusPool) take(system string, destinationGoods []string) (QueuedSlot, bool) {
 	rows := p.bySystem[system]
 	for i, row := range rows {
@@ -319,32 +270,22 @@ func (p *surplusPool) take(system string, destinationGoods []string) (QueuedSlot
 	return QueuedSlot{}, false
 }
 
-// coveredAfterMove reports whether every whitelisted good on candidate still has
-// an observer once candidate's hull leaves for a destination watching
-// destinationGoods.
+// coveredAfterMove reports whether every whitelisted good on candidate still has an
+// observer once candidate's hull leaves for a destination watching destinationGoods.
 //
-// THE INVARIANT IS UNCHANGED BY THE DESTINATION CLAUSE, which is why it is safe
-// to widen: no whitelisted good in the system may lose its LAST observer. The
-// clause only recognises an observer the original test could not see, because
-// the original was written for a move that leaves the system altogether and this
-// one may not. What it does not do is excuse the transient: between departure and
-// arrival neither waypoint is watched, and that gap is bounded by an in-system
-// flight rather than by anything this function can assert. The permanent property
-// is what is being guarded here.
+// THE INVARIANT IS: no whitelisted good in the system may lose its LAST observer.
+// The destination clause only recognises an observer the in-system test cannot see;
+// it does not excuse the transient, since between departure and arrival neither
+// waypoint is watched and that gap is bounded by the flight rather than by anything
+// this function can assert. The permanent property is what is guarded here.
 //
-// FAIL-CLOSED ON MISSING GOODS, in both directions, and neither is an accident:
-//
-//   - A candidate with no recorded goods is never releasable. An empty list is
-//     "we do not know what this market watches", not "it watches nothing", and
-//     redundancy cannot be PROVEN of an unknown. The adapter yields an empty
-//     list for a row whose goods column will not decode, so a corrupt row is
-//     pinned in place rather than given away.
-//   - A row with no recorded goods covers nothing, so it cannot be the thing
-//     that makes another row releasable.
-//
-// Both readings shrink the eligible set, which is the safe direction: the cost
-// of being wrong here is a foothold delayed, against a market silently going
-// dark.
+// FAIL-CLOSED ON MISSING GOODS in both directions: a candidate with no recorded
+// goods is never releasable, because an empty list is "we do not know what this
+// market watches" — the adapter yields one for a row whose goods column will not
+// decode — and redundancy cannot be PROVEN of an unknown; and a row with no
+// recorded goods covers nothing, so it cannot make another row releasable. Both
+// shrink the eligible set, the safe direction: the cost of being wrong here is a
+// foothold delayed, against a market silently going dark.
 func coveredAfterMove(candidate QueuedSlot, rows []QueuedSlot, destinationGoods []string) bool {
 	if len(candidate.WhitelistGoods) == 0 {
 		return false
@@ -361,9 +302,8 @@ func coveredAfterMove(candidate QueuedSlot, rows []QueuedSlot, destinationGoods 
 }
 
 // containsGood reports whether goods carries good. A nil or empty list carries
-// nothing — the same reading observedElsewhere gives an empty row, and the one
-// that keeps an unknown destination from being credited with coverage it may not
-// have.
+// nothing — the same reading observedElsewhere gives an empty row, and the one that
+// keeps an unknown destination from being credited with coverage it may not have.
 func containsGood(goods []string, good string) bool {
 	for _, g := range goods {
 		if g == good {
@@ -392,41 +332,34 @@ func observedElsewhere(good, exclude string, rows []QueuedSlot) bool {
 // sourcesWithinReach lists the systems holding a surplus hull that could actually
 // be flown TO target, nearest ring first.
 //
-// IT ASKS THE RIGHT QUESTION, AND THE INVERSE ONE IS WRONG. Walking FORWARD OUT
-// OF THE TARGET and treating the result as valid sources is
-// correct only if a gate edge always has a reverse, and on the live map 624 of
-// 5,488 edges (11.4%) do not. For a target reachable only by a one-way edge that
-// search returns precisely the systems a hull CANNOT arrive from: it
+// IT ASKS THE RIGHT QUESTION, AND THE INVERSE ONE IS WRONG. Walking FORWARD out of
+// the target and treating the result as valid sources is correct only if a gate edge
+// always has a reverse, and some do not. For a target reachable only by a one-way
+// edge, that search returns precisely the systems a hull CANNOT arrive from: it
 // dispatches onto a route nextHopToward cannot resolve, and the row sits IN_TRANSIT
 // naming a hull that never arrives while still counting against the probe cap.
 //
-// THE CANDIDATE SET IS THE SURPLUS POOL, not the graph. Only a system actually
-// holding a takeable hull can answer this placement, so walking from those — and
-// only those — keeps the cost proportional to the pool rather than to the map,
-// and shrinks as the tick spends it.
+// The candidate set is the SURPLUS POOL, not the graph, so the cost is proportional
+// to the pool rather than to the map. BOUNDED BY MaxWalkRings through the shared
+// walker, and it must be: that constant is the reach of the walk the placement
+// machine will actually fly, and a claim written for a hull further out stalls
+// silently. The target's own system is never returned — reach.hops reports false for
+// origin==target, and a hull already there is reuseSpareHull's business.
 //
-// BOUNDED BY MaxWalkRings through the shared walker, and it must be: that
-// constant is the reach of the walk the placement machine will actually fly, and
-// a claim written for a hull further out stalls silently. The bound is read from
-// the same declaration the walk reads, so the two cannot drift. The target's own
-// system is never returned — reach.hops reports false for origin==target, and a
-// hull already there is reuseSpareHull's business, not this path's.
-//
-// A read failure is returned rather than swallowed. An empty reach read
-// permissively would be indistinguishable from a genuinely isolated system, and
-// this is the one caller that must not silently conclude "nowhere to draw from"
-// when the truth is "the topology store did not answer".
+// A read failure is returned rather than swallowed: an empty reach read permissively
+// would be indistinguishable from a genuinely isolated system, and this is the one
+// caller that must not silently conclude "nowhere to draw from" when the truth is
+// "the topology store did not answer".
 func sourcesWithinReach(ctx context.Context, reach *gateReach, pool *surplusPool, target string) ([]string, error) {
 	return reach.originsWithin(ctx, pool.systems(), target)
 }
 
-// footholdFromSurplus fills a SPARE placement no local counter can fund by
-// flying a surplus hull to it from within gate reach. It reports whether one was
-// sent.
+// footholdFromSurplus fills a SPARE placement no local counter can fund by flying a
+// surplus hull to it from within gate reach. It reports whether one was sent.
 //
-// THE WRITE ORDER IS A MONEY GUARD, and it is the same one reuseSpareHull and
-// claimSpares are built on. One hull is named by two rows for an instant, and
-// which instant is chosen decides which way a crash miscounts:
+// THE WRITE ORDER IS A MONEY GUARD, the same one reuseSpareHull and claimSpares are
+// built on. One hull is named by two rows for an instant, and which instant is
+// chosen decides which way a crash miscounts:
 //
 //   - Claim the target FIRST, as here: a failure between the writes leaves both
 //     rows naming the hull, so CountOwnedProbes counts it twice, the cap reads
@@ -446,10 +379,9 @@ func footholdFromSurplus(
 ) (bool, error) {
 	for _, system := range reach {
 		// A foothold target is a SPARE want on a bare probe yard, which watches no
-		// market and therefore contributes no coverage. Passing its goods rather
-		// than nil is deliberate all the same: the field is the destination's
-		// contract, and reading it here means a SPARE placement that ever did carry
-		// goods would be credited correctly instead of silently under-counted.
+		// market and contributes no coverage. Its goods are passed rather than nil
+		// all the same, because the field is the destination's contract: a SPARE
+		// placement that did carry goods is credited instead of under-counted.
 		source, found := pool.take(system, target.WhitelistGoods)
 		if !found {
 			continue
@@ -472,10 +404,9 @@ func footholdFromSurplus(
 			return false, fmt.Errorf("failed to re-task surplus hull %s to foothold %s: %w", hull, target.Waypoint, err)
 		}
 
-		// The market the hull leaves goes back to being a want with no hull
-		// behind it. WANTED rather than deleted: the placement is still one we
-		// intend to fill, and leaving it on the books is what gets a replacement
-		// bought there once a counter can fund it.
+		// WANTED rather than deleted: the placement is still one we intend to
+		// fill, and leaving it on the books is what gets a replacement bought
+		// there once a counter can fund it.
 		cleared := ""
 		if err := p.Ledger.TransitionSlot(ctx, playerID, SlotTransition{
 			Waypoint: source.Waypoint, Kind: source.Kind, From: SlotStateParked, To: SlotStateWanted,
@@ -493,10 +424,9 @@ func footholdFromSurplus(
 // hullIsStandingStill asks the ships table whether a hull the ledger calls PARKED
 // really is. The two can disagree — a row is written from the last confirmed
 // reading, and another engine may have moved the hull since — and re-tasking a hull
-// that is mid-flight would have two machines steering it.
-//
-// Unreadable or absent answers NO: a hull we cannot locate is never acted on,
-// exactly as advanceSeed treats one.
+// that is mid-flight would have two machines steering it. Unreadable or absent
+// answers NO: a hull we cannot locate is never acted on, exactly as advanceSeed
+// treats one.
 func hullIsStandingStill(ctx context.Context, p BuyPorts, playerID int, hull string) bool {
 	pos, err := p.Ships.ShipAt(ctx, playerID, hull)
 	return err == nil && pos.Found && pos.NavStatus != navigation.NavStatusInTransit

@@ -17,8 +17,8 @@ type ShipPos struct {
 
 // QueuedSlot is one placement row as the buy queue and the placement machine
 // see it: the ledger's own columns, with the nullable ones flattened to empty
-// strings (nothing here distinguishes NULL from empty, and treating them alike
-// is what keeps every "is a hull recorded?" check a simple != "").
+// strings. Nothing distinguishes NULL from empty, which keeps every "is a hull
+// recorded?" check a simple != "".
 type QueuedSlot struct {
 	Waypoint     string
 	System       string
@@ -28,14 +28,11 @@ type QueuedSlot struct {
 	PurchaseYard string
 	DepthCredits int64
 	// WhitelistGoods is the whitelisted goods this placement was recorded as
-	// watching. It is what lets the foothold path prove that releasing a hull
-	// leaves its system's goods coverage intact (see coveredAfterMove).
-	//
-	// EMPTY MEANS UNKNOWN, NEVER "WATCHES NOTHING". The adapter yields an empty
-	// list both for a row that genuinely records no goods and for one whose
-	// goods column will not decode, and every reader here must treat the two
-	// alike: as an absence of evidence that can only ever make a hull LESS
-	// eligible to be moved, never more.
+	// watching — what lets the foothold path prove that releasing a hull leaves
+	// its system's goods coverage intact (see coveredAfterMove). EMPTY MEANS
+	// UNKNOWN, NEVER "WATCHES NOTHING": the adapter yields an empty list both for
+	// a row that records no goods and for one whose goods column will not decode,
+	// so it can only ever make a hull LESS eligible to be moved, never more.
 	WhitelistGoods []string
 }
 
@@ -45,21 +42,18 @@ type ScreenedSystem struct {
 	DepthCredits int64
 	// ScreenedAt is when this system was last looked at, or NIL for one that
 	// never has been. It is what lets the sweep rotate least-recently-screened
-	// first instead of re-screening a fixed alphabetical head forever.
-	//
-	// NIL IS MEANINGFUL AND MUST NOT COLLAPSE TO THE ZERO TIME. A never-screened
-	// system is the newly-discovered frontier — the case the sweep most needs to
-	// reach — and the zero time would merely make it sort first by accident,
-	// leaving any reader that dereferences the pointer to panic instead. The
-	// pointer keeps "never" a case a comparator has to answer for explicitly.
+	// first instead of re-screening a fixed alphabetical head forever. NIL IS
+	// MEANINGFUL AND MUST NOT COLLAPSE TO THE ZERO TIME: a never-screened system
+	// is the newly-discovered frontier, the case the sweep most needs to reach,
+	// and the zero time would make it sort first only by accident.
 	ScreenedAt *time.Time
 }
 
 // SlotFields carries the field writes a transition applies ATOMICALLY with the
 // state flip. A nil pointer leaves the stored value alone; a pointer to the
 // empty string CLEARS the column. Clearing matters: releasing a spare hull must
-// actually drop its ship reference, or the ledger keeps counting a hull that
-// now belongs to another slot.
+// drop its ship reference, or the ledger keeps counting a hull that now belongs
+// to another slot.
 type SlotFields struct {
 	AssignedShip *string
 	PurchaseYard *string

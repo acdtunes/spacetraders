@@ -14,67 +14,48 @@ import (
 )
 
 // scanner.go is the data plane of the parked-probe sensing model: the engine
-// that actually spends the scan budget the rest of the model sizes.
+// that spends the scan budget the rest of the model sizes.
 //
-// ONE pacer goroutine issues every parked-market scan in the fleet. That is the
-// whole design. Per-probe scan loops would each have to guess at a share of the
-// rate limiter and would collectively overrun it exactly when the fleet is
-// busiest; a single pacer holds the fleet-wide rotation, so the budget the
-// reconcile hands in is the rate that is actually spent, whatever the fleet
-// looks like.
+// ONE pacer goroutine issues every parked-market scan in the fleet, so the rate
+// the reconcile hands to SyncMembership is the rate actually spent. Work runs on
+// a bounded pool of short-lived workers; when every in-flight token is held the
+// pacer BLOCKS rather than queueing, so a slow API throttles issuance at the
+// source instead of backlogging scans against prices that have since moved.
 //
-// Work is executed by a bounded pool of short-lived workers. The bound is the
-// backpressure reflex: when every in-flight token is held, the pacer BLOCKS on
-// acquisition rather than queueing, so a slow or degraded API throttles scan
-// issuance at the source instead of building a backlog of scans against prices
-// that have since moved.
-//
-// The rotation is in memory and is rebuilt from the ledger by each reconcile.
-// Nothing here is durable and nothing needs to be: a restart re-reads the slots,
-// and every slot's last_scan_attempt_at survives in the ledger, so the rotation
-// resumes with its pacing intact.
-//
-// THAT REBUILD IS WHY THE PACING CLOCK IS DURABLE AND SEPARATE. SyncMembership
-// replaces the members map and the heap wholesale on EVERY reconcile, so the
-// local clock requeue keeps is authoritative for one tick and no longer. Any
-// change to what a turn records in the ledger is therefore a change to the
-// pacing, whether or not it looks like one — see runScan.
+// Nothing here is durable: SyncMembership replaces the members map and the heap
+// wholesale on EVERY reconcile, so the clock requeue keeps lasts one tick and the
+// durable pacing stamp is the ledger's last_scan_attempt_at. Any change to what a
+// turn records in the ledger is therefore a change to the pacing — see runScan.
 
-// emptyRotationPoll is how long the pacer parks when it has nothing to scan.
-// Membership only changes at a reconcile, so this is a liveness poll, not a
-// pacing decision — it costs no API call and simply keeps the pacer responsive
-// to the next SyncMembership.
+// emptyRotationPoll is how long the pacer parks when it has nothing to scan. A
+// liveness poll, not a pacing decision: membership only changes at a reconcile.
 const emptyRotationPoll = 5 * time.Second
 
-// yardScanWeight is the fixed share a shipyard slot earns. A yard is watched for
-// hull prices, which move on their own schedule and not with market spread, so
-// it is neither promoted nor demoted by the spread weighting — it holds the
-// baseline share and its own cadence floor.
+// yardScanWeight is the fixed share a shipyard slot earns. Hull prices move on
+// their own schedule, not with market spread, so a yard is neither promoted nor
+// demoted by the spread weighting: baseline share plus its own cadence floor.
 const yardScanWeight = 1.0
 
 // defaultInflightCap is the in-flight bound used when the caller passes a
-// non-positive one. Three concurrent scans is enough to keep the pacer from
-// serialising on API latency and small enough that a degraded API is felt as
-// backpressure within a few scans.
+// non-positive one: enough to keep the pacer off API latency, small enough that a
+// degraded API is felt as backpressure within a few scans.
 const defaultInflightCap = 3
 
 // minWeightClamp is the lowest weighting clamp the scanner will operate at. A
-// clamp below 1 collapses ScanWeight's optimistic prior to zero, which
-// Interval reads as a degenerate weight and degrades that slot to hourly
-// scans — so an operator who sets the knob to 0 would silently darken the
-// rotation rather than merely flatten it. Flattening is the intended meaning of
-// a low clamp, so it is clamped up to it.
+// clamp below 1 collapses ScanWeight's optimistic prior to zero, which Interval
+// reads as a degenerate weight and degrades that slot to hourly scans — a knob of
+// 0 would darken the rotation rather than flatten it, and flattening is what a
+// low clamp means.
 const minWeightClamp = 1
 
 // scanGuardComponent labels the panic guard around a scan worker.
 const scanGuardComponent = "parked-sensing-scan:"
 
 // SensingSlotView is one parked placement as the scan rotation sees it: where to
-// scan, what to measure there, and when it was last measured.
-//
-// It is a projection of the ledger row, handed in wholesale by each reconcile.
-// The scanner holds no other membership state, so a slot that stops being
-// PARKED simply stops appearing and leaves the rotation.
+// scan, what to measure there, and when it was last measured. It is a projection
+// of the ledger row handed in wholesale by each reconcile, and the scanner holds
+// no other membership state, so a slot that stops being PARKED leaves the
+// rotation by ceasing to appear.
 type SensingSlotView struct {
 	// Waypoint is the market or yard to scan.
 	Waypoint string
@@ -85,124 +66,84 @@ type SensingSlotView struct {
 	State string
 	// Whitelist is the goods this slot exists to watch. Empty means there is
 	// nothing to measure here (a yard), and the spread observation is skipped
-	// entirely rather than read as a zero.
+	// rather than read as a zero.
 	Whitelist []string
 	// SpreadEWMA is the smoothed relative spread observed so far. Zero means
-	// unmeasured, which ScanWeight deliberately treats as optimistic rather
-	// than as the worst possible reading.
+	// unmeasured, which ScanWeight treats as optimistic rather than as the worst
+	// possible reading.
 	SpreadEWMA float64
 	// LastScan is the stamp the rotation PACES against: when this slot last had
 	// its turn, whether or not the turn produced data. The zero time means never
-	// attempted, which makes the slot due immediately.
-	//
-	// IT IS THE ATTEMPT CLOCK, NOT THE FRESHNESS CLAIM — see LastDataAt, and
-	// sp-zml2u for why the two must be separate. It is fed from
-	// last_scan_attempt_at.
+	// attempted, which makes the slot due immediately. It is the ATTEMPT clock,
+	// not the freshness claim (see LastDataAt), fed from last_scan_attempt_at.
 	LastScan time.Time
-	// LastDataAt is when market data was last actually WRITTEN for this
-	// waypoint — the honest freshness stamp, fed from last_scan_at.
-	//
-	// It paces nothing. It exists because the fleet's market-scan budget declines
-	// most turns (92%, measured) and a declined turn writes nothing, so a single
-	// stamp serving both the rotation and the staleness gauge has to lie to one of
-	// them. The rotation needs the turn to count; the gauge needs it not to. This
-	// is the field the gauge reads. The zero time means never scanned, and the
+	// LastDataAt is when market data was last actually WRITTEN here — the honest
+	// freshness stamp, fed from last_scan_at. It paces nothing: a declined turn
+	// writes nothing, so one stamp serving both the rotation and the staleness
+	// gauge would have to lie to one of them. Zero means never scanned, and the
 	// gauge EXCLUDES such a slot rather than reading it as infinitely stale.
 	LastDataAt time.Time
-	// YardCadence is the quartermaster's re-read interval, and applies to YARD
-	// slots only. It is a FLOOR on the interval, never a target: a yard falls
-	// due at the later of its weighted turn and last scan + cadence, so the
-	// budget can slow a yard down but never speed it past the cadence.
+	// YardCadence is the quartermaster's re-read interval, YARD slots only. It is
+	// a FLOOR, never a target: a yard falls due at the later of its weighted turn
+	// and last scan + cadence, so the budget can slow a yard but never speed it.
 	YardCadence time.Duration
 }
 
-// MarketScanRunner performs one market scan and persists what it found.
+// MarketScanRunner performs one market scan and persists what it found. The
+// implementation, not this package, tags the call as scanning-source and
+// low-priority: scans must lose a contended rate-limit token to every other
+// consumer.
 //
-// The implementation is an adapter over the existing market scanner, and it —
-// not this package — is where the call is tagged as scanning-source, low-priority
-// work. Scans are the one class of call that must lose a contended rate-limit
-// token to every other consumer, and putting that tag in the adapter keeps this
-// layer free of an API-client import.
-//
-// Run reports whether the scan actually WROTE market data. A false with a nil
-// error is a budget DECLINE: the fleet's one market-scan allowance served this
-// waypoint from the store instead of spending a request. That is a success for
-// the caller — the prices it will read are the ones it would have read anyway —
-// but it is not a scan, and runScan is the reason the distinction has to survive
-// this interface: an error-only Run collapses the two, and the ledger then
-// records a freshness claim nothing wrote.
+// Run reports whether the scan actually WROTE market data. False with a nil error
+// is a budget DECLINE: the allowance served this waypoint from the store instead
+// of spending a request — a success for the caller, but not a scan. Collapse that
+// distinction into the error and the ledger records a freshness claim nothing
+// wrote.
 type MarketScanRunner interface {
 	Run(ctx context.Context, playerID int, waypoint string) (scanned bool, err error)
 }
 
 // SpreadObserver reads the prices a completed scan just persisted for ONE
-// waypoint. It is deliberately a narrow per-waypoint read and not a market
-// listing: the scanner's per-scan cost must not grow with how many markets the
-// player has visited.
+// waypoint. Narrow by design: the scanner's per-scan cost must not grow with how
+// many markets the player has visited.
 type SpreadObserver interface {
 	MarketPrices(ctx context.Context, playerID int, waypoint string) ([]GoodPrice, error)
 }
 
-// ScanLedger is the scan path's slice of the placement ledger: one write,
-// recording that a slot was scanned and what it showed.
-//
-// It is a separate, narrower interface from the screen's SlotLedger and the
-// queue's BuyLedger for the same reason those are separate from each other, and
-// here the separation is stronger than convention: MarkScanned touches only the
-// freshness and spread columns, while every state transition belongs to the
-// other two. Those write sets are disjoint BY CONSTRUCTION, which is what lets
-// the pacer run concurrently with the reconcile without either fighting the
-// other for a row.
-//
-// The TWO verbs are the whole freshness fix. MarkScanned says data was
-// written and advances both scan clocks; MarkScanAttempted says only that the
-// rotation spent this slot's turn, and advances the pacing clock alone. They are
-// separate methods rather than one method with a flag because the columns they
-// may touch differ, and the ownership rules on this table are per-COLUMN.
+// ScanLedger is the scan path's slice of the placement ledger: the writes that
+// record a slot was scanned and what it showed. MarkScanned touches only the
+// freshness and spread columns; every state transition belongs to the screen's
+// SlotLedger and the queue's BuyLedger. Those write sets are disjoint BY
+// CONSTRUCTION, which is what lets the pacer run concurrently with the reconcile
+// without either fighting the other for a row. TWO verbs rather than one with a
+// flag: MarkScanned advances both scan clocks, MarkScanAttempted only the pacing
+// clock — the columns they may touch differ, and ownership here is per-COLUMN.
 type ScanLedger interface {
 	MarkScanned(ctx context.Context, playerID int, waypoint, kind string, at time.Time, spreadEWMA float64) error
 	// MarkScanAttempted records a turn that produced no data — a budget decline.
-	// It MUST advance the durable pacing clock: the reconcile rebuilds the whole
-	// rotation from the ledger every tick, so a decline that advanced nothing
-	// would leave the slot due again immediately and, at the measured 92% decline
-	// rate, spin the entire rotation at full speed producing nothing.
+	// It MUST advance the durable pacing clock: the reconcile rebuilds the rotation
+	// from the ledger every tick, so a decline that advanced nothing leaves the slot
+	// due immediately and spins the rotation at full speed producing nothing.
 	MarkScanAttempted(ctx context.Context, playerID int, waypoint, kind string, at time.Time) error
 }
 
-// ScanPorts is everything the scanner needs from the outside world.
-//
-// There is deliberately no rate port and no pressure port. The pacer does not
-// size its own budget: the reconcile computes the rate from the API budget
-// (including the pressure brake) and hands it to SyncMembership, so there is
-// exactly one place the rate is decided and no way for the pacer to brake
+// ScanPorts is everything the scanner needs from the outside world. There is
+// deliberately no rate port and no pressure port: the reconcile computes the rate
+// from the API budget (including the pressure brake) and hands it to
+// SyncMembership, so the rate is decided in one place and the pacer cannot brake
 // against pressure a second time.
 type ScanPorts struct {
 	Scan     MarketScanRunner
 	Ledger   ScanLedger
 	SpreadOf SpreadObserver
-	// Yard reads the SHIPYARD standing at the same waypoint the scan just read,
-	// which is how a waypoint that is both a market and a shipyard comes to be
-	// sensed as BOTH.
-	//
-	// It closes the blind spot the slot KIND created. A probe-selling yard that is
-	// also a whitelisted market is placed as a MARKET slot (that kind carries the
-	// goods list; YARD does not), so the hull standing there was a market sensor
-	// and nothing ever asked it about the counter under its feet — measured live,
-	// nine shipyards had one of our hulls parked on them and no recorded
-	// inventory at all. So the kind does not decide: EVERY parked scan
-	// also reads the yard, and the adapter's cached SHIPYARD-trait check makes
-	// that free at the waypoints that are only markets.
-	//
-	// It is the SAME port the free catalogue pass drives (yardcatalog.go), so a
-	// reading taken from a parked hull and one taken from across the map write
-	// through one code path. The difference is what they get back: a presence-less
-	// read learns only what the yard SELLS, while this one — issued from a hull
-	// standing at the counter — also carries the PRICES, which is the only way a
-	// yard becomes buyable rather than merely known.
-	//
-	// Nil-safe so the pacing tests can drive a scanner over no ports at all. It is
-	// NOT an arming seam: the coordinator's wired() check requires it, so a
-	// production tick cannot run without it.
+	// Yard reads the SHIPYARD standing at the same waypoint the scan just read, so
+	// a waypoint that is both market and shipyard is sensed as BOTH. The slot KIND
+	// does not decide — only MARKET slots carry a goods list, so EVERY parked scan
+	// also reads the yard, and the adapter's cached SHIPYARD-trait check makes that
+	// free where there is no yard. It is the SAME port the free catalogue pass
+	// drives (yardcatalog.go); the difference is that a read issued from a hull at
+	// the counter also carries PRICES, which is what makes a yard buyable. Nil-safe
+	// for the pacing tests; not an arming seam — the coordinator's wired() needs it.
 	Yard YardCatalogReader
 }
 
@@ -216,12 +157,10 @@ type ScanKnobs struct {
 	ClampR int
 }
 
-// Scanner owns the fleet-wide scan rotation.
-//
-// The mutex guards the rotation as a whole — the heap, the membership map, the
-// budget totals it was normalised against, and the set of waypoints currently
-// being scanned. They are one consistent picture and are never locked
-// separately: a weight read against one total and a due time computed against
+// Scanner owns the fleet-wide scan rotation. The mutex guards the rotation as a
+// whole — heap, membership map, the budget totals it was normalised against, and
+// the waypoints currently being scanned. They are one consistent picture and are
+// never locked separately: a weight read against one total and a due time against
 // another would silently mis-pace the rotation.
 type Scanner struct {
 	playerID int
@@ -232,10 +171,9 @@ type Scanner struct {
 	// tokens is the in-flight bound. A worker holds one for its whole life, and
 	// the pacer blocks acquiring one — see launch.
 	tokens chan struct{}
-	// wake nudges a sleeping pacer when a worker returns a slot to the
-	// rotation. Buffered to one and only ever sent to without blocking, so a
-	// worker never waits on the pacer and a burst of completions collapses to
-	// the single re-evaluation it warrants. See requeue for why it exists.
+	// wake nudges a sleeping pacer when a worker returns a slot to the rotation.
+	// Buffered to one and only ever sent without blocking, so a worker never waits
+	// on the pacer and a burst of completions collapses to one re-evaluation.
 	wake chan struct{}
 	// workers tracks live scans so RunPacer can drain before returning.
 	workers sync.WaitGroup
@@ -245,10 +183,9 @@ type Scanner struct {
 	due *domainSensing.NextDueHeap
 	// members is every slot eligible to be scanned, by waypoint.
 	members map[string]SensingSlotView
-	// scanning is the waypoints a worker currently holds. They are absent from
-	// the heap and are not re-added by a reconcile — only the worker's
-	// completion path returns them, which is what makes two concurrent scans of
-	// one market structurally impossible.
+	// scanning is the waypoints a worker currently holds. They are absent from the
+	// heap and are not re-added by a reconcile — only the worker's completion path
+	// returns them, which makes two concurrent scans of one market impossible.
 	scanning map[string]struct{}
 
 	totalWeight float64
@@ -256,11 +193,9 @@ type Scanner struct {
 	median      float64
 }
 
-// NewScanner builds a scanner for one player.
-//
-// The rotation starts empty: membership arrives from the first reconcile, which
-// is also what supplies the rate. A scanner whose pacer is started before its
-// first SyncMembership simply polls until it has members.
+// NewScanner builds a scanner for one player. The rotation starts empty:
+// membership and rate both arrive with the first reconcile, so a pacer started
+// before the first SyncMembership polls until it has members.
 func NewScanner(playerID int, p ScanPorts, clock shared.Clock, k ScanKnobs) *Scanner {
 	if clock == nil {
 		clock = shared.NewRealClock()
@@ -287,18 +222,13 @@ func NewScanner(playerID int, p ScanPorts, clock shared.Clock, k ScanKnobs) *Sca
 }
 
 // SyncMembership replaces the rotation with the placements the reconcile just
-// read, re-rated to the budget it just computed.
-//
-// The whole heap is rebuilt on every call rather than diffed. Renormalisation is
-// wholesale by nature — one slot joining changes the total weight and therefore
-// every other slot's interval — and at reconcile cadence over a rotation of this
-// size the rebuild is far cheaper than the bookkeeping a diff would need to be
-// correct. Each slot's due time is recomputed from its own last scan, so a slot
-// that has been waiting keeps the credit for that wait.
-//
-// Slots currently in flight are deliberately NOT re-added. They are still
-// members (the worker's completion path reads the refreshed view), but the heap
-// must not hold a copy of a slot a worker is already scanning.
+// read, re-rated to the budget it just computed. The whole heap is rebuilt rather
+// than diffed because renormalisation is wholesale by nature — one slot joining
+// changes the total weight and so every other slot's interval — and each slot's
+// due time is recomputed from its own last scan, so a slot that has been waiting
+// keeps the credit for that wait. Slots currently in flight are deliberately NOT
+// re-added: they are still members (the worker's completion path reads the
+// refreshed view), but the heap must not hold a copy of a slot being scanned.
 func (s *Scanner) SyncMembership(slots []SensingSlotView, rate float64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -331,30 +261,19 @@ func (s *Scanner) SyncMembership(slots []SensingSlotView, rate float64) {
 	}
 
 	// Tell the pacer the rotation changed under it, for the same reason requeue
-	// does. A pacer that went to sleep on an EMPTY rotation is parked on the 5s
-	// liveness poll, and one that slept on a distant due time is parked for
-	// longer still — either way the members this call just admitted would wait
-	// out a sleep computed before they existed. That is most visible on the very
-	// first reconcile after a restart, which is exactly when the rotation is
-	// being populated from nothing.
-	//
-	// Non-blocking and sent under the lock, matching requeue: the buffer holds
-	// the one signal a sleeping pacer needs, a full buffer means a re-evaluation
-	// is already pending, and sending before the unlock closes the window where a
-	// pacer that has computed its sleep but not yet entered the select would miss
-	// the signal.
+	// does: a pacer asleep on the empty-rotation poll or a distant due time would
+	// wait out a sleep computed before these members existed. Non-blocking, and
+	// sent under the lock so a pacer mid-way to its select cannot miss it.
 	select {
 	case s.wake <- struct{}{}:
 	default:
 	}
 }
 
-// RunPacer issues scans until ctx is cancelled, then drains its workers.
-//
-// The loop is deliberately trivial: every scheduling decision is nextAction's,
-// and every backpressure decision is launch's. Sleeping selects on ctx rather
-// than the clock so a cancelled coordinator stops promptly instead of at the end
-// of a scan interval.
+// RunPacer issues scans until ctx is cancelled, then drains its workers. Every
+// scheduling decision is nextAction's and every backpressure decision is
+// launch's; sleeping selects on ctx, so a cancelled coordinator stops promptly
+// instead of at the end of a scan interval.
 func (s *Scanner) RunPacer(ctx context.Context) {
 	defer s.workers.Wait()
 
@@ -365,15 +284,10 @@ func (s *Scanner) RunPacer(ctx context.Context) {
 
 		waypoint, sleepFor, ok := s.nextAction(s.clock.Now())
 		if !ok {
-			// The wake case is what keeps a SMALL rotation spending its budget.
-			// Once every member is in flight the heap is empty and sleepFor is
-			// the empty-rotation poll — a fixed 5s that has nothing to do with
-			// the scan rate, and that a fleet of a few probes would otherwise
-			// sit through after every pass. Sleeping on the timer ALONE also
-			// oversleeps whenever a completing scan falls due sooner than the
-			// slot this sleep was computed for. Either way the budget is
-			// under-spent silently, so the pacer re-evaluates on every
-			// completion instead.
+			// The wake case is what keeps a SMALL rotation spending its budget:
+			// once every member is in flight the heap is empty and sleepFor is
+			// the empty-rotation poll, unrelated to the scan rate. A timer-only
+			// sleep also oversleeps a scan that completes and falls due sooner.
 			select {
 			case <-ctx.Done():
 				return
@@ -386,8 +300,7 @@ func (s *Scanner) RunPacer(ctx context.Context) {
 		view, member := s.memberView(waypoint)
 		if !member {
 			// A reconcile dropped the slot between the pop and this read. Hand
-			// the mark back so the waypoint is not stranded as permanently
-			// in-flight, and take the next one.
+			// the mark back so the waypoint is not stranded as in-flight.
 			s.release(waypoint)
 			continue
 		}
@@ -397,16 +310,14 @@ func (s *Scanner) RunPacer(ctx context.Context) {
 
 // nextAction is the pacer's whole scheduling decision, as a pure function of the
 // rotation and the time: either a waypoint to scan now, or how long to wait.
+// Popping is what takes a slot OUT of the rotation and nothing puts it back
+// except a worker completing — the no-overlap property, held without a lock
+// across the scan itself.
 //
-// Popping is what takes a slot OUT of the rotation, and nothing puts it back
-// except a worker completing. That is the no-overlap property: at most one scan
-// per market can be in flight, without a lock held across the scan itself.
-//
-// The sweep past a not-yet-due slot exists for the yard cadence. The heap orders
-// on the unfloored due time, so a yard held back by its cadence can surface as
-// the heap minimum while a market behind it is genuinely due — sleeping on the
-// yard would idle the entire rotation for a cadence. Slots passed over are held
-// and pushed back unchanged, and the sweep is bounded by the rotation size.
+// The sweep past a not-yet-due slot exists for the yard cadence: the heap orders
+// on the UNFLOORED due time, so a cadence-held yard can surface as the minimum
+// while a market behind it is genuinely due, and sleeping on it would idle the
+// whole rotation. Slots passed over are held and pushed back unchanged.
 func (s *Scanner) nextAction(now time.Time) (string, time.Duration, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -448,13 +359,9 @@ func (s *Scanner) nextAction(now time.Time) (string, time.Duration, bool) {
 }
 
 // launch runs one scan on a worker, holding the pacer until there is a token for
-// it.
-//
-// Blocking here rather than queueing is the point. The in-flight bound is the
-// only place the fleet's scan issuance responds to how fast scans actually
-// complete, so a degraded API stalls the pacer — which is precisely the
-// behaviour wanted, since a scan whose result arrives late is a price that has
-// already moved.
+// it. Blocking rather than queueing is the point: the in-flight bound is the only
+// place scan issuance responds to how fast scans actually complete, so a degraded
+// API stalls the pacer — a scan whose result arrives late is a price already moved.
 func (s *Scanner) launch(ctx context.Context, slot SensingSlotView) {
 	select {
 	case s.tokens <- struct{}{}:
@@ -467,46 +374,30 @@ func (s *Scanner) launch(ctx context.Context, slot SensingSlotView) {
 	go func() {
 		defer s.workers.Done()
 		defer func() { <-s.tokens }()
-		// A panicking scan must cost one slot one turn, never the fleet's whole
-		// rotation. runScan returns the slot to the heap on the way out of the
-		// panic, and the guard absorbs it here.
+		// A panicking scan costs one slot one turn, never the whole rotation.
+		// runScan returns the slot on the way out; the guard absorbs the panic.
 		supervise.Guard(scanGuardComponent+slot.Waypoint, func() { s.runScan(ctx, slot) })
 	}()
 }
 
 // runScan is one worker's whole life: scan, measure, record, and return the slot
-// to the rotation.
+// to the rotation. The requeue is DEFERRED, so every exit returns the slot — a
+// failed scan, an unreadable market, a refused ledger write, or a panic. A slot
+// that failed to leave on its own turn would not scan again until the next
+// reconcile rebuilt the heap around it.
 //
-// The requeue is DEFERRED, so every exit returns the slot — a failed scan, an
-// unreadable market, a ledger that refused the write, or a panic on the way
-// through any of them. A slot that failed to leave the rotation on its own turn
-// would never scan again until the next reconcile rebuilt the heap around it.
-//
-// A TURN HAS THREE OUTCOMES, not two, and they differ ONLY in what the ledger is
-// told:
+// A TURN HAS THREE OUTCOMES, not two, differing ONLY in what the ledger is told:
 //
 //	SCANNED   data written    → MarkScanned:       both clocks advance
 //	DECLINED  budget said no  → MarkScanAttempted: pacing clock only
 //	FAILED    error           → nothing written:   neither clock advances durably
 //
-// THE PACING IS IDENTICAL IN ALL THREE. Every exit requeues, which advances the
-// LOCAL pacing clock, and the first two also advance the DURABLE one. That
-// symmetry is not tidiness — it is the safety property. The scan budget declines
-// most turns (92%, measured), so a decline that did not pace would leave the slot
-// due immediately and turn the whole rotation into a hot loop against the store.
-// The same reasoning is why the stamp was already refreshed on FAILURE: a failing
-// waypoint must not become a hot retry loop against an API that is already
-// failing.
-//
-// The durable clock matters because the in-memory one does not survive: the
-// reconcile calls SyncMembership every tick and rebuilds the entire heap from the
-// ledger, so a decline that advanced only requeue's local view would be re-paced
-// from its last REAL scan within one tick — and every declined slot would read as
-// permanently due. Skipping MarkScanned alone, without MarkScanAttempted beside
-// it, is precisely that bug.
-//
-// A FAILED turn still advances no durable clock, unchanged: it is paced locally
-// until the next reconcile, which re-reads the older stamp and tries again.
+// THE PACING IS IDENTICAL IN ALL THREE: every exit requeues, advancing the LOCAL
+// clock, and the first two also advance the DURABLE one — the clock that survives,
+// since the reconcile rebuilds the heap from the ledger every tick and a turn that
+// advanced only the local view reads as permanently due. A decline that did not
+// pace would spin the rotation against the store, and a failing waypoint that did
+// not pace would become a hot retry loop against an API that is already failing.
 func (s *Scanner) runScan(ctx context.Context, slot SensingSlotView) {
 	at := s.clock.Now()
 	spread := slot.SpreadEWMA
@@ -526,20 +417,14 @@ func (s *Scanner) runScan(ctx context.Context, slot SensingSlotView) {
 		spread = domainSensing.UpdateSpreadEWMA(slot.SpreadEWMA, observed)
 	}
 
-	// The second half of a parked probe's turn: whatever else this waypoint is,
-	// if it is ALSO a shipyard the hull standing here can price it, and nothing
-	// else in the fleet will. See ScanPorts.Yard.
-	//
-	// IT RUNS ON A DECLINED TURN TOO. The market budget declining says nothing
-	// about the shipyard — this is the only path in the fleet that ever PRICES a
-	// yard we occupy, and gating it on the market outcome would silently drop 92%
-	// of those readings.
+	// If this waypoint is ALSO a shipyard the hull standing here can price it, and
+	// nothing else will. IT RUNS ON A DECLINED TURN TOO — the market budget says
+	// nothing about the shipyard, and this is the only path that PRICES a yard.
 	s.readYard(ctx, slot)
 
 	if !scanned {
-		// DECLINED. The budget served this waypoint from the store, so no market
-		// data was written and the freshness stamp must not move. Only the turn
-		// is recorded, which is what keeps the rotation paced.
+		// DECLINED. No market data was written, so the freshness stamp must not
+		// move; only the turn is recorded, which is what keeps the rotation paced.
 		if err := s.ports.Ledger.MarkScanAttempted(ctx, s.playerID, slot.Waypoint, slot.Kind, at); err != nil {
 			s.warn(ctx, "parked_sensing_mark_attempt_failed", slot.Waypoint,
 				fmt.Sprintf("failed to record a declined sensing scan of %s: %v", slot.Waypoint, err))
@@ -549,28 +434,21 @@ func (s *Scanner) runScan(ctx context.Context, slot SensingSlotView) {
 	wrote = true
 
 	if err := s.ports.Ledger.MarkScanned(ctx, s.playerID, slot.Waypoint, slot.Kind, at, spread); err != nil {
-		// Logged, never fatal to the slot. MarkScanned records freshness; losing
-		// that write costs one stale stamp, while dropping the slot for it would
-		// cost the waypoint every future scan.
+		// Logged, never fatal to the slot: losing this write costs one stale
+		// stamp, while dropping the slot would cost every future scan.
 		s.warn(ctx, "parked_sensing_mark_scanned_failed", slot.Waypoint,
 			fmt.Sprintf("failed to record sensing scan of %s: %v", slot.Waypoint, err))
 	}
 }
 
 // readYard records what the shipyard at this waypoint sells and what it charges,
-// riding the turn the market scan just took.
-//
-// IT DECIDES NOTHING ABOUT WHAT THE WAYPOINT IS, deliberately. Whether the
-// waypoint carries a SHIPYARD trait is a cached, era-agnostic local fact the
-// adapter already reads before it spends anything, so a market that is only a
-// market costs one map lookup here and no API call — while a kind test in this
-// layer would reproduce the very mistake this exists to fix, deciding by the
-// slot's kind what the waypoint actually is.
-//
-// FAULTS ARE LOGGED AND SWALLOWED, matching MarkScanned beside it. The market
-// scan has already succeeded and its prices are already persisted; failing the
-// slot for a shipyard read would cost the waypoint its whole market rotation to
-// recover a reading the free catalogue pass will take again next tick anyway.
+// riding the turn the market scan just took. IT DECIDES NOTHING ABOUT WHAT THE
+// WAYPOINT IS: the SHIPYARD trait is a cached local fact the adapter reads before
+// it spends anything, so a market that is only a market costs one map lookup and
+// no API call. Faults are logged and swallowed, matching MarkScanned beside it —
+// the market prices are already persisted, and failing the slot here would cost
+// the waypoint its whole market rotation to recover a reading the free catalogue
+// pass takes again next tick.
 func (s *Scanner) readYard(ctx context.Context, slot SensingSlotView) {
 	if s.ports.Yard == nil {
 		return
@@ -582,13 +460,10 @@ func (s *Scanner) readYard(ctx context.Context, slot SensingSlotView) {
 }
 
 // observe reads the spread the scan just wrote, and reports whether there is an
-// observation to fold in at all.
-//
-// A slot with no whitelist has nothing to measure, and an unreadable market is
-// an unanswered question — neither is a zero. The distinction matters because a
-// zero IS a meaningful observation (a market that stopped quoting the goods we
-// watch should decay out of the hot rotation), so it must not be manufactured by
-// a slot that was never asked or a read that failed.
+// observation to fold in at all. A slot with no whitelist has nothing to measure
+// and an unreadable market is an unanswered question — neither is a zero. A zero
+// IS a meaningful observation (a market that stopped quoting the goods we watch
+// should decay out of the hot rotation), so it must not be manufactured.
 func (s *Scanner) observe(ctx context.Context, slot SensingSlotView) (float64, bool) {
 	if len(slot.Whitelist) == 0 {
 		return 0, false
@@ -603,11 +478,8 @@ func (s *Scanner) observe(ctx context.Context, slot SensingSlotView) (float64, b
 	spread, inverted := RelativeSpread(prices, slot.Whitelist)
 	if inverted > 0 {
 		// One line per scan, not per good. An inverted quote is impossible market
-		// data with two possible causes, and sp-en5h7 proved the SECOND one is the
-		// likelier: either GoodPrice was wired from the persisted columns by name,
-		// or the persisted row itself is transposed. Name both, writer first — the
-		// previous wording named only the wiring and sent readers to a file that
-		// was already correct.
+		// data with two causes — a transposed persisted row, or GoodPrice wired
+		// from the persisted columns by name — so the message names both.
 		s.warn(ctx, "parked_sensing_inverted_quote", slot.Waypoint,
 			fmt.Sprintf("%d good(s) at %s quote an ask below their bid and were skipped; "+
 				"check what the scanner persisted (market_data.purchase_price must EXCEED "+
@@ -617,21 +489,15 @@ func (s *Scanner) observe(ctx context.Context, slot SensingSlotView) (float64, b
 	return spread, true
 }
 
-// requeue returns a scanned slot to the rotation with what the scan learned.
-//
-// The stored view is re-read rather than overwritten wholesale: a reconcile may
-// have refreshed this slot while the scan was in flight, and the worker's copy
-// is older for everything EXCEPT the two fields it just measured. A slot that
-// left membership mid-scan is dropped here, which is the only place an in-flight
-// slot can leave.
-//
-// The rotation's total weight is deliberately not recomputed. Weights are
-// renormalised wholesale by SyncMembership; adjusting the total on every scan
-// would re-pace every other slot mid-rotation on the strength of a single
-// observation.
-// wrote says whether the turn actually produced market data. It advances
-// LastDataAt; LastScan (the pacing clock) advances either way, because the slot
-// has had its turn whatever came of it.
+// requeue returns a scanned slot to the rotation with what the scan learned, and
+// wrote says whether the turn produced market data — it advances LastDataAt,
+// while LastScan (the pacing clock) advances either way, the slot having had its
+// turn. The stored view is re-read rather than overwritten wholesale: a reconcile
+// may have refreshed this slot mid-scan, and the worker's copy is older for
+// everything EXCEPT the two fields it just measured. A slot that left membership
+// mid-scan is dropped here, the only place an in-flight slot can leave. The total
+// weight is deliberately not recomputed — SyncMembership renormalises wholesale,
+// and adjusting it per scan would re-pace every slot on one observation.
 func (s *Scanner) requeue(waypoint string, at time.Time, spreadEWMA float64, wrote bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -651,12 +517,9 @@ func (s *Scanner) requeue(waypoint string, at time.Time, spreadEWMA float64, wro
 
 	heap.Push(s.due, s.scheduleFor(view))
 
-	// Tell the pacer the rotation changed under it. Non-blocking: the buffer
-	// holds the one signal a sleeping pacer needs, and a full buffer means a
-	// re-evaluation is already pending, so dropping this one loses nothing. It
-	// is sent under the lock deliberately — a pacer that has computed its sleep
-	// but not yet entered the select still finds the signal buffered, so there
-	// is no window where a completion is missed.
+	// Tell the pacer the rotation changed under it. Non-blocking: a full buffer
+	// means a re-evaluation is already pending. Sent under the lock so a pacer
+	// that has computed its sleep but not yet entered the select cannot miss it.
 	select {
 	case s.wake <- struct{}{}:
 	default:
@@ -718,16 +581,11 @@ func (s *Scanner) restore(held []domainSensing.SlotSchedule) {
 }
 
 // RotationSize reports the rotation as the pacer currently holds it: how many
-// slots are members, and the rate they are being paced at.
-//
-// Membership is the number the reconcile CANNOT derive for itself. It reads the
-// ledger's parked slots and hands them in, but the rotation keeps only the ones
-// that are actually scannable (SPARE hulls and non-PARKED placements are
-// dropped), so a heartbeat reporting the ledger count would overstate what is
-// being watched — and would go on overstating it while a mis-shaped slot sat in
-// the ledger doing nothing. The rate is reported alongside because the two are
-// only meaningful together: N slots at R req/s is the cadence, either alone is
-// not.
+// slots are members, and the rate they are being paced at. Membership is the
+// number the reconcile CANNOT derive for itself — it hands in the ledger's parked
+// slots, but the rotation keeps only the scannable ones, so a heartbeat reporting
+// the ledger count would overstate what is being watched. The rate travels with
+// it because N slots at R req/s is the cadence and neither alone is.
 func (s *Scanner) RotationSize() (members int, rate float64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -754,8 +612,7 @@ func (s *Scanner) pendingWaypoints() []string {
 }
 
 // warn records a scan-path fault. Every fault here is non-fatal by design — the
-// slot is returned to the rotation regardless — so the log line is the only
-// trace a persistent failure leaves.
+// slot returns to the rotation regardless — so the log line is the only trace.
 func (s *Scanner) warn(ctx context.Context, action, waypoint, msg string) {
 	common.LoggerFromContext(ctx).Log("WARN", msg, map[string]interface{}{
 		"action":   action,
@@ -763,14 +620,11 @@ func (s *Scanner) warn(ctx context.Context, action, waypoint, msg string) {
 	})
 }
 
-// inRotation reports whether a placement is scannable at all.
-//
-// PARKED is required because a scan is issued FROM the probe standing there.
-// MARKET and YARD are the only kinds with anything to read; SPARE is excluded
-// on purpose and the exclusion is structural, not cosmetic — a spare is a hull
-// in reserve whose row the placement machine is actively transitioning, and
-// admitting it would put the scan path's writes on a row the placement path
-// owns.
+// inRotation reports whether a placement is scannable at all. PARKED is required
+// because a scan is issued FROM the probe standing there, and MARKET and YARD are
+// the only kinds with anything to read. The SPARE exclusion is structural: a spare
+// is a hull in reserve whose row the placement machine is actively transitioning,
+// and admitting it would put scan writes on a row the placement path owns.
 func inRotation(v SensingSlotView) bool {
 	if v.State != SlotStateParked {
 		return false

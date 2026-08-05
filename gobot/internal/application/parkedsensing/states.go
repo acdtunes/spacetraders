@@ -7,13 +7,12 @@ package parkedsensing
 // the exact strings the persistence layer stores in sensing_systems.verdict,
 // sensing_slots.slot_kind and sensing_slots.state.
 //
-// They live here, exported, because the database does NOT validate them: the
-// columns are plain sized strings. A typo'd state is therefore not a loud error
-// but a silent one — a slot written as "PARKED " or "IN-TRANSIT" simply stops
-// matching the probe-cap count (which selects on BOUGHT|IN_TRANSIT|PARKED),
-// under-reporting how many hulls we own and authorising the purchase of probes
-// we already paid for. That is a money-unsafe direction, so every producer and
-// consumer of these strings imports them from here rather than spelling them.
+// They live here, exported, because the database does NOT validate them — the
+// columns are plain sized strings — so a typo'd state is a silent error: a slot
+// written "PARKED " stops matching the probe-cap count (which selects on
+// BOUGHT|IN_TRANSIT|PARKED), under-reporting how many hulls we own and
+// authorising the purchase of probes we already paid for. Every producer and
+// consumer imports them from here rather than spelling them.
 const (
 	// VerdictPending is a system not yet judged: still charting, or charted with
 	// no whitelisted market found YET.
@@ -31,13 +30,12 @@ const (
 	SlotKindMarket = "MARKET"
 	// SlotKindYard is a shipyard we want watched.
 	//
-	// A slot's KIND is not a reliable index of what a waypoint is. When a
-	// probe-selling yard is also a whitelisted market it is slotted as MARKET,
-	// because that kind carries the goods list and YARD does not — so a yard we
-	// are watching may hold a slot of either kind. Anything asking "is a probe
-	// present at this yard?" must therefore match on waypoint + PARKED state and
-	// ignore slot_kind; a kind-filtered lookup would miss a probe already parked
-	// there and authorise buying a second one for the same waypoint.
+	// A slot's KIND is not a reliable index of what a waypoint is: a probe-selling
+	// yard that is also a whitelisted market is slotted as MARKET, because that
+	// kind carries the goods list and YARD does not. Anything asking "is a probe
+	// present at this yard?" must match on waypoint + PARKED state and ignore
+	// slot_kind, or it misses a probe already parked there and authorises buying
+	// a second one for the same waypoint.
 	SlotKindYard = "YARD"
 	// SlotKindSpare is a parked reserve hull — still a probe we paid for.
 	SlotKindSpare = "SPARE"
@@ -48,13 +46,11 @@ const (
 // them, and then either fill a placement there or move on.
 //
 // The seed's TARGET is the row it is written on — sensing_systems has no target
-// column, so "this system's row names a hull" IS the mission. Retargeting a seed
-// is therefore two writes (clear the old row, stamp the new one) and never one.
-//
-// A hull on an errand is named by its system row and by NO slot row, so it is
-// invisible to the probe-cap count for the length of the errand. That undercount
-// is accepted deliberately and is bounded — see the DeleteSlot call site in
-// expansion.go for why it is the safe direction and how it heals.
+// column, so "this system's row names a hull" IS the mission, and retargeting a
+// seed is two writes (clear the old row, stamp the new one) and never one. A hull
+// on an errand is named by its system row and by NO slot row, so it is invisible
+// to the probe-cap count for the length of the errand; that undercount is
+// deliberate and bounded — see the DeleteSlot call site for how it heals.
 const (
 	// SeedStateDispatched is a seed that has not reached its target system yet.
 	SeedStateDispatched = "DISPATCHED"

@@ -8,131 +8,68 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/logging"
 )
 
-// ferry.go breaks the buying deadlock for MARKET placements.
+// ferry.go breaks the buying deadlock for MARKET placements: a purchase needs a hull
+// ALREADY STANDING at the counter (see buyerAt), so a system holding no probe of ours
+// cannot bootstrap itself. It buys where a counter exists and lets the hull cross;
+// nothing here flies it — the purchase is recorded BOUGHT exactly as a local one is
+// and the placement machine's dispatch → flyToSlot → RouteAcross walk carries it, so
+// this file adds no navigation, no deadline and no wait.
 //
-// THE DEADLOCK. A purchase needs a hull ALREADY STANDING at the counter (see
-// buyerAt), and resolvePurchaseCandidates looked only inside the placement's own
-// system. So a system with no probe in it had no buyer, produced no candidates,
-// and could never be filled: purchase required presence and presence required
-// purchase, and there is no way to bootstrap a system from inside itself.
-// Measured live: 247 pending placements, ZERO purchases per tick, 3.8M treasury,
-// probes at 24,356, and of the ~22 systems holding a pending placement exactly
-// ONE had any evidenced probe yard. The nine yards that exist are all somewhere
-// else.
-//
-// WHAT BREAKS IT. Buy at a system that DOES have a counter, and fly the hull to
-// the target. Nothing here flies it: the purchase is recorded BOUGHT against the
-// placement exactly as a local one is, and the placement machine's existing
-// dispatch → flyToSlot → RouteAcross walk carries it from there, one step per
-// tick. That is the same machinery the foothold path and the seed claims already
-// ride, and reusing it is why this file adds no navigation, no deadline, and no
-// wait — the non-blocking property is preserved by reuse rather than
-// re-argued.
-//
-// THE ROUTE IS RESOLVED BEFORE THE MONEY MOVES, which is the safety property
-// rather than a preference. A hull bought for a target its source cannot reach is
-// STRANDED: nextHopToward names no next system, the step errors every tick, and
-// the row sits IN_TRANSIT naming a hull that never arrives while still counting
-// against the probe cap. That is strictly worse than not buying — money spent for
-// a probe that can never scan, and cap headroom held forever — so a source that
-// cannot reach the target is not offered as a counter at all.
-//
-// THE DIRECTION OF THAT TEST IS LOAD-BEARING. Walking FORWARD OUT OF THE
-// TARGET and treating the result as valid sources gives the same set only on a
-// symmetric graph — and 624 of 5,488 live gate edges (11.4%) have no reverse row.
-// For a target reachable only over a one-way edge that search returns precisely
-// the systems a hull CANNOT arrive from. So each candidate source is asked
-// whether IT can reach the target, through the same forward-per-origin walker the
-// foothold path uses, and the route offered is the route the
-// placement machine will actually fly.
-//
-// THE FRONTIER IS NOT REFUSED FOREVER by the reach bound. Each ferried hull
-// converts another system to covered, and a covered system's own counters come
-// inside the reach of the next ring out. The map widens by conversion.
+// THE ROUTE IS RESOLVED BEFORE THE MONEY MOVES: a hull bought for a target its source
+// cannot reach is STRANDED — the step errors every tick, the row sits IN_TRANSIT
+// naming a hull that never arrives, and cap headroom is held forever — so an
+// unreachable source is never offered as a counter. THE DIRECTION OF THAT TEST IS
+// LOAD-BEARING: gate edges are not all reciprocal, so walking forward OUT OF the
+// target returns precisely the systems a hull CANNOT arrive from. Each source is
+// asked whether IT reaches the target, and that route is the one that will be flown.
+// The bound refuses no frontier forever — each ferried hull converts a system to
+// covered, bringing its counters inside the next ring's reach.
 
-// maxFerryCandidates bounds how many CROSS-SYSTEM counters one placement may
-// offer. The local list is never truncated — this bound applies only to the
-// fallback.
-//
-// It exists because the attempt budget is shared by the whole tick. fillSlot
-// works down a placement's candidates until one sells, and every counter tried
-// costs an attempt whether it sells or not, so an unbounded remote list would let
-// ONE placement in an unlucky region spend all six attempts re-learning that its
-// neighbourhood is not selling — starving every other placement behind it,
-// including the seeds. Three preserves the reason fillSlot walks a list at all (a
-// refusal is usually local to the counter, and the yard next door is still good)
-// while capping one placement's share of the budget at half.
+// maxFerryCandidates bounds how many CROSS-SYSTEM counters one placement may offer;
+// the local list is never truncated. The attempt budget is shared by the whole tick
+// and every counter tried costs an attempt whether it sells or not, so an unbounded
+// remote list lets ONE placement spend the entire budget re-learning that its
+// neighbourhood is not selling and starve everything behind it, seeds included.
+// Three still lets fillSlot walk a list — a refusal is usually local to the counter.
 const maxFerryCandidates = 3
 
-// maxFerryHops is how far a BOUGHT hull may be flown to reach the placement it
-// was bought for.
-//
-// IT IS THE FERRY'S OWN BOUND — neither the router's nor the seed's — and it must
-// stay inside the router's reach. A ferried hull is carried by the placement
-// machine's RouteAcross, which resolves one hop at a time through nextHopToward, a
-// breadth-first search that returns an ERROR when the destination is not found.
-// Buying past what that can resolve does not stretch the walk, it strands the
-// hull: the step errors every tick, the slot sits IN_TRANSIT naming a hull that
-// never arrives, and the probe cap is held the whole time.
-//
-// WHY NOT MaxWalkRings. That constant bounds the FOOTHOLD path's draw of an
-// already-parked scanning hull off a working market — a different and deliberately
-// shorter journey, and one whose cost is real (a market stops being watched).
-// Measured live, it stranded 143 of 238 pending placements sitting 3-9 hops from
-// their nearest funder: routable, and refused by a bound borrowed from another
-// concern. MaxWalkRings is deliberately left where it is.
-//
-// WHY NOT SeedFlightUnbounded. A seed's reach is the graph rather than a count,
-// because the one system that can still grow the map sits past any number we would
-// pick. A FERRY carries a hull to a remote COUNTER so a placement in a yardless
-// system can be bought, and nine hops of transit to make one purchase is already a
-// long way to send a scanner. Inheriting the seed's unbounded reach would widen the
-// BUY path on the strength of a decision taken about charting.
-//
-// WHAT NINE COSTS IS TICKS **AND CREDITS**. A gate jump burns no fuel but a
-// crossing charges a fee, measured at a mean of 5,900 credits over 4,235 jumps, so
-// at nine hops the ferry alone is ~53k against an ~83k probe. Assuming it free is
-// what let an authorised 10.15M probe expansion spend a further 6.44M delivering
-// the hulls, 63% over budget. The flight is now PRICED — see
-// domain/parkedsensing.FerryCost and the landed-cost check in fillSlot — so a
-// distant placement is refused by the buy floor when it is genuinely unaffordable
-// instead of being bought and discovered later. Nine is where this graph saturated
-// when the bound was chosen; it stays until someone measures the ferry on its own
-// terms.
+// maxFerryHops is how far a BOUGHT hull may be flown to reach the placement it was
+// bought for. IT IS THE FERRY'S OWN BOUND — neither the router's nor the seed's —
+// and must stay inside the router's reach: a ferried hull is carried by RouteAcross,
+// which resolves one hop at a time through nextHopToward and ERRORS when the
+// destination is not found, so buying past that strands the hull (the step errors
+// every tick, the slot sits IN_TRANSIT, and the probe cap is held the whole time).
+// NOT MaxWalkRings, which bounds the FOOTHOLD path's shorter draw of a parked
+// scanning hull off a working market; NOT SeedFlightUnbounded either, whose reach is
+// the graph rather than a count because the system that can still grow the map sits
+// past any number we would pick. The flight costs CREDITS as well as ticks — a gate
+// crossing charges a fee — so it is PRICED (domain/parkedsensing.FerryCost and the
+// landed-cost check in fillSlot) and refused by the buy floor when unaffordable.
 const maxFerryHops = 9
 
-// ferryBroker is one tick's cross-system buying state: where our hulls actually
-// stand, and the gate walker that decides which of those places can reach a given
-// placement.
+// ferryBroker is one tick's cross-system buying state: where our hulls stand, and
+// the gate walker deciding which of those places can reach a given placement.
 //
-// LAZY AND LATCHED, for the same reason footholdBroker is. Once a region is
-// covered every placement finds a local counter and this path is never reached;
-// loading it at the top of the drain would spend a ledger read per tick to answer
-// a question nobody asked. The read happens on the first placement that genuinely
-// cannot fund itself, and then once for the whole tick.
-//
-// Per-tick, never longer (RULINGS #2): it is constructed by DrainBuyQueue and
-// discarded with it, so a source that stops holding a hull is re-learned next
-// tick rather than remembered.
+// LAZY AND LATCHED, as footholdBroker is: once a region is covered every placement
+// finds a local counter and this path is never reached, so the ledger read happens on
+// the first placement that cannot fund itself, then once for the whole tick.
+// Per-tick, never longer (RULINGS #2) — a source that stops holding a hull is
+// re-learned next tick rather than remembered.
 type ferryBroker struct {
-	// systems names every system holding a PARKED placement — the systems where a
-	// buyer could plausibly be standing. It is the candidate set the reach test
-	// filters, and it is why this path enumerates our own presence rather than the
-	// whole map: a source with no hull of ours cannot sell to us at any distance.
+	// systems names every system holding a PARKED placement — where a buyer could
+	// plausibly be standing, and the candidate set the reach test filters. A source
+	// with no hull of ours cannot sell to us at any distance.
 	systems []string
 	reach   *gateReach
-	// loaded and blocked are the two terminal states of the lazy read, latched so
-	// a failure costs one read for the tick rather than one per placement.
+	// loaded and blocked are the two terminal states of the lazy read, latched so a
+	// failure costs one read for the tick rather than one per placement.
 	loaded, blocked bool
 }
 
 // load reads where our hulls stand and reports whether a cross-system search is
-// possible at all.
-//
-// A read failure is LATCHED rather than returned: the drain's local work is
-// unaffected and must go on, exactly as footholdBroker.load treats the same
-// failure. It is logged rather than swallowed, because "no remote counter" and
-// "we could not look" are different facts and only one of them is normal.
+// possible at all. A read failure is LATCHED rather than returned — the drain's local
+// work is unaffected and must go on — and logged rather than swallowed, because "no
+// remote counter" and "we could not look" are different facts.
 func (b *ferryBroker) load(ctx context.Context, p BuyPorts, playerID int) bool {
 	if b.blocked {
 		return false
@@ -158,31 +95,23 @@ func (b *ferryBroker) load(ctx context.Context, p BuyPorts, playerID int) bool {
 		b.systems = append(b.systems, row.System)
 	}
 	sort.Strings(b.systems)
-	// maxFerryHops, which is the ROUTER's reach rather than the foothold path's.
-	// See the constant: a bought hull is flown by RouteAcross, and buying beyond
-	// what nextHopToward can resolve strands it.
+	// maxFerryHops is the ROUTER's reach, not the foothold path's: a bought hull is
+	// flown by RouteAcross, and buying beyond what nextHopToward resolves strands it.
 	b.reach = newGateReach(p.Gates, nil, maxFerryHops)
 	b.loaded = true
 	return true
 }
 
-// candidates lists executable counters in OTHER systems for a placement its
-// own system cannot fund, nearest gate ring first.
+// candidates lists executable counters in OTHER systems for a placement its own
+// system cannot fund, nearest gate ring first.
 //
-// SOURCE ORDER IS BY GATE JUMPS, then symbol. A nearer source is fewer
-// RouteAcross steps, which is both fewer navigation calls and a hull that starts
-// scanning sooner. Within a source, ListProbeYards is already ordered
-// cheapest-first, so the cheapest counter of the nearest ring is tried first and
-// price still breaks the tie where it can.
-//
-// COSTS NO API CALL TO RESOLVE. All three reads behind it — the gate adjacency,
-// the yard list, and the docked-hull lookup — are local store reads by contract.
-// Only the Quote and Buy that fillSlot then makes touch the network, and those
-// are already bounded by the attempt budget.
-//
-// Returns nothing, rather than an error, when the topology cannot be read or no
-// source has a counter. Both are ordinary answers: the placement simply waits,
-// and the drain's other work is unaffected.
+// SOURCE ORDER IS BY GATE JUMPS, then symbol: a nearer source is fewer RouteAcross
+// steps and a hull scanning sooner, and within a source ListProbeYards is already
+// cheapest-first so price still breaks the tie. It COSTS NO API CALL to resolve —
+// gate adjacency, yard list and docked-hull lookup are local store reads by contract;
+// only the Quote and Buy that fillSlot then makes touch the network. It returns
+// nothing rather than an error when the topology cannot be read or no source has a
+// counter: the placement waits, and other work is unaffected.
 func (b *ferryBroker) candidates(ctx context.Context, p BuyPorts, playerID int, slot QueuedSlot) ([]purchaseCandidate, error) {
 	sources := b.sources(ctx, p, playerID, slot)
 
@@ -194,9 +123,8 @@ func (b *ferryBroker) candidates(ctx context.Context, p BuyPorts, playerID int, 
 			return nil, fmt.Errorf("failed to list probe yards in %q: %w", source, err)
 		}
 		for _, yard := range yards {
-			// inSystem is nil on purpose: it is the TARGET system's ledger rows,
-			// and none of them can name a hull standing in a different system. The
-			// docked-hull read is the authority for a remote counter.
+			// inSystem is nil on purpose: the TARGET system's ledger rows cannot name
+			// a hull elsewhere, so the docked-hull read is the authority here.
 			buyer, found, err := buyerAt(ctx, p, playerID, yard, nil)
 			if err != nil {
 				return nil, err
@@ -215,16 +143,14 @@ func (b *ferryBroker) candidates(ctx context.Context, p BuyPorts, playerID int, 
 	return candidates, nil
 }
 
-// sources are the systems holding a hull that could fly to this placement.
-//
-// Each candidate source is asked whether IT can reach the target — the direction
-// the hull will actually fly. See the file header for why the reverse walk is not
-// equivalent. An empty answer covers all three ordinary refusals: no topology
-// wired, no hulls loaded, and a gate store that could not answer.
+// sources are the systems holding a hull that could fly to this placement. Each is
+// asked whether IT can reach the target — the direction the hull will actually fly;
+// see the file header for why the reverse walk is not equivalent. An empty answer
+// covers all three ordinary refusals: no topology, no hulls, no readable gate store.
 func (b *ferryBroker) sources(ctx context.Context, p BuyPorts, playerID int, slot QueuedSlot) []string {
 	if p.Gates == nil {
-		// No topology wired: no cross-system guess. This is the pre-ferry
-		// behaviour exactly, and it is a supported wiring (see BuyPorts.Gates).
+		// No topology wired: no cross-system guess, local counters only. A supported
+		// wiring, not a fault (see BuyPorts.Gates).
 		return nil
 	}
 	if !b.load(ctx, p, playerID) {
@@ -232,10 +158,8 @@ func (b *ferryBroker) sources(ctx context.Context, p BuyPorts, playerID int, slo
 	}
 	sources, err := b.reach.originsWithin(ctx, b.systems, slot.System)
 	if err != nil {
-		// The topology store could not answer. Only this placement is passed over
-		// — another's neighbourhood may read perfectly well — and it is NAMED, so
-		// an operator can tell an unreadable gate graph apart from a genuinely
-		// unserved region.
+		// The topology store could not answer. Only this placement is passed over, and
+		// it is NAMED so an unreadable gate graph reads differently from an unserved region.
 		logging.LoggerFromContext(ctx).Log("WARN", "sensing placement could not resolve its gate reach; no cross-system counter this tick", map[string]interface{}{
 			"action":   "parked_sensing_ferry_reach_failed",
 			"waypoint": slot.Waypoint,
@@ -247,15 +171,13 @@ func (b *ferryBroker) sources(ctx context.Context, p BuyPorts, playerID int, slo
 	return sources
 }
 
-// hopsFrom is the hop count the buy floor prices the delivery from. It COSTS
-// NOTHING to ask: originsWithin has already run this exact walk to order the
-// sources, and gateReach memoises one BFS per origin for the tick, so this is a map
-// lookup rather than a second traversal.
+// hopsFrom is the hop count the buy floor prices the delivery from. It COSTS NOTHING
+// to ask: originsWithin has already run this exact walk to order the sources and
+// gateReach memoises one BFS per origin for the tick, so this is a map lookup.
 //
-// An unreadable walk is not read as zero hops. Zero would price a cross-system
-// ferry as free, which is the defect being closed — so the count is simply left
-// unset and FerryHops charges the one-gate minimum that `ferried` alone already
-// proves.
+// An unreadable walk is NOT read as zero hops — zero would price a cross-system ferry
+// as free. The count is left unset, and FerryHops charges the one-gate minimum that
+// `ferried` alone already proves.
 func (b *ferryBroker) hopsFrom(ctx context.Context, source, target string) int {
 	hops, within, err := b.reach.hops(ctx, source, target)
 	if err != nil || !within {

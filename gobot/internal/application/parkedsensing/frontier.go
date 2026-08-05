@@ -27,30 +27,16 @@ func knownSystems(systems []ExpandSystem) map[string]bool {
 // to test for that, because "we have charted the gate" and "the store has rows"
 // are the same fact.
 //
-// This replaces a judged-only rule, whose stated objection was that expanding
-// through an unscreened neighbour would flood the ledger — and then the
-// screening sweep's API budget — with a galaxy we have no reason to believe is
-// worth anything. Both halves have been re-decided:
-//
-//   - The flood is the goal. Judging needs screening, screening needs charting,
-//     and charting is flight-bound, so judged-only advanced the frontier one
-//     FULLY-CHARTED RING at a time — chart ~50 waypoints, judge, discover,
-//     repeat. Gating on the gate alone advances it at the speed of charting ONE
-//     waypoint, which is the difference between a ledger that grows and one that
-//     sits at sixteen systems while twelve charting seeds fly.
-//   - The API budget is not spent here, and does not grow with the frontier.
-//     Marking a neighbour PENDING is a ledger write. The screening sweep that
-//     consumes those rows is bounded to screenSweepBatch systems per tick no
-//     matter how many are waiting, so a larger frontier lengthens that QUEUE
-//     rather than widening its per-tick spend. Both stores this tick reads to
-//     expand — the gate adjacency here and the yard catalog in stagingYardFor —
-//     are local database reads that cost no request token at all.
+// Propagating through unjudged systems does not widen the API budget. Marking a
+// neighbour PENDING is a ledger write, the screening sweep that consumes those
+// rows is bounded to screenSweepBatch systems per tick however many wait, and
+// both stores read to expand — the gate adjacency here and the yard catalog in
+// stagingYardFor — are local reads costing no request token at all.
 //
 // Widening the origins widens stagingYardFor's search with it, deliberately: a
 // probe yard in a charted-but-unjudged system is a measured fact about where a
 // seed can be bought, and the purchase it stages is still funded by the buy
-// queue under the same floor and probe cap as every other. More places to stage
-// from is the direct cure for a frontier target that no judged system borders.
+// queue under the same floor and probe cap as every other.
 func readNeighbours(ctx context.Context, p ExpandPorts, systems []ExpandSystem, book *slotBook) (map[string][]string, error) {
 	origins := make(map[string]bool, len(systems))
 	for _, s := range systems {

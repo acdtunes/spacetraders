@@ -7,12 +7,9 @@ import (
 )
 
 // probeYardsIn lists a system's probe-selling shipyards, memoised for the TICK.
-//
-// One map is shared by every consumer in the tick — the finishing seed's
-// placement choice and seed staging both ask about the systems we hold, and they
-// overlap heavily — so a system's yards are read at most once however many times
-// they are wanted. The read is a local catalog query, never an API call, and the
-// answer cannot change while the tick runs.
+// One map is shared by every consumer in the tick, so a system's yards are read at
+// most once however many times they are wanted. The read is a local catalog query,
+// never an API call, and the answer cannot change while the tick runs.
 func (t *expandTick) probeYardsIn(ctx context.Context, system string) ([]string, error) {
 	if yards, cached := t.probeYards[system]; cached {
 		return yards, nil
@@ -30,55 +27,42 @@ func (t *expandTick) probeYardsIn(ctx context.Context, system string) ([]string,
 // no SPARE placement of its own.
 //
 // WHERE WE CAN TRANSACT AND WHAT IS NEAR THE TARGET ARE TWO DIFFERENT QUESTIONS,
-// AND WELDING THEM IS A STRUCTURAL DEAD ZONE rather than a mere inefficiency.
-// Require a yard to be staffed AND to sit within the placement walk's couple of
-// rings OF THE TARGET, and a target whose in-reach systems all happen to lack a
-// shipyard can never be seeded, however many staffed yards the fleet owns
-// elsewhere; because a system with no shipyard can never itself be staffed, the
-// dead zone propagates outward. Measured live it
-// left 18 of 23 unseeded targets unservable, including the only two systems whose
-// charting could add anything to the ledger.
+// AND WELDING THEM IS A STRUCTURAL DEAD ZONE. Require a yard to be staffed AND to
+// sit within the placement walk's couple of rings OF THE TARGET, and a target
+// whose in-reach systems all lack a shipyard can never be seeded however many
+// staffed yards the fleet owns elsewhere; because a system with no shipyard can
+// never itself be staffed, the dead zone propagates outward.
 //
-// SO THE TWO ARE NOT COUPLED AND THE MONEY CONSTRAINT IS NOT DROPPED. Eligibility is
-// routability — can a seed bought here actually fly to that target, bounded by
-// SeedFlightUnbounded, which is the bound the seed's own walk resolves under — and
-// candidates are ordered NEAREST FIRST, because a shorter flight is fewer ticks
-// holding probe-cap headroom. The staffedAt test below is untouched: the buy
-// queue can only transact where a hull of ours stands, so a nearer yard we do not
-// hold is still skipped for a further one we do.
+// So eligibility is routability alone, bounded by SeedFlightUnbounded (the bound
+// the seed's own walk resolves under), with candidates ordered NEAREST FIRST
+// because a shorter flight is fewer ticks holding probe-cap headroom. The money
+// constraint is not dropped: staffedAt still applies on top, so a nearer yard we
+// do not hold is skipped for a further one we do.
 //
-// "OUR OWN" IS ENFORCED, not merely intended, and nothing upstream supplies it:
-// the origins this walks are every system carrying a screening VERDICT, and a
-// verdict says "screened and worth trading with", never "we have a hull there".
-// Unenforced, a seed is staged at a yard in a system we have never visited, the
-// buy queue — which only buys where one of our hulls is already at the counter —
-// refuses it on that tick and every tick after, and the target never gets eyes.
-// Measured on the live fleet, every outstanding SPARE want sat in a system with
-// zero probes.
+// "OUR OWN" IS ENFORCED, and nothing upstream supplies it: the origins this walks
+// are every system carrying a screening VERDICT, and a verdict says "screened and
+// worth trading with", never "we have a hull there". Unenforced, a seed is staged
+// at a yard in a system we have never visited, the buy queue refuses it on that
+// tick and every tick after, and the target never gets eyes.
 //
-// The enforcement is the staffedYard test below, and it belongs HERE rather than
-// in the origin set. `neighbours` is shared with frontier propagation, which needs
-// every system whose gate adjacency we have measured precisely BECAUSE it has no
-// verdict yet; narrowing that map to occupied systems would silently collapse
-// the frontier back to one fully-charted ring at a time. Occupancy is a
-// requirement of STAGING A PURCHASE, not of believing a gate edge, so it is
-// applied at the yard and the map is left whole.
+// The enforcement belongs HERE rather than in the origin set. `neighbours` is
+// shared with frontier propagation, which needs every system whose gate adjacency
+// we have measured precisely BECAUSE it has no verdict yet; narrowing that map to
+// occupied systems would collapse the frontier back to one fully-charted ring at a
+// time. Occupancy is a requirement of STAGING A PURCHASE, not of believing a gate
+// edge, so it is applied at the yard and the map is left whole.
 //
-// Writing nothing is strictly better than writing an unfundable want: nothing
-// retires a WANTED SPARE row, and through takeSupplyFor a stale one goes on
-// suppressing the correct request that could be made once a bordering system
-// finally is occupied. One bad row poisons its target indefinitely.
+// Writing nothing beats writing an unfundable want: nothing retires a WANTED SPARE
+// row, and through takeSupplyFor a stale one goes on suppressing the correct
+// request that could be made once a bordering system finally is occupied.
 //
 // The free-waypoint requirement is a money guard in depth: placement rows are
 // keyed on the waypoint, so writing a SPARE want over the yard's existing row
-// would overwrite whatever state it held — dropping a parked probe out of the
-// cap count and authorising the purchase of a replacement standing right there.
-//
-// The ledger refuses that write on its own (UpsertSlotMetadata cannot touch
-// state or assigned_ship), so this guard is defence in depth rather
-// than the only thing standing between a miss and a double purchase. It still
-// earns its place: staging a seed on an occupied yard would be pointless work,
-// and picking a free one is how two seed requests avoid the same waypoint.
+// would overwrite whatever state it held — dropping a parked probe out of the cap
+// count and authorising the purchase of a replacement standing right there. The
+// ledger refuses that write on its own (UpsertSlotMetadata cannot touch state or
+// assigned_ship), so this is defence in depth; it still earns its place, because
+// picking a free yard is how two seed requests avoid the same waypoint.
 func (t *expandTick) stagingYardFor(ctx context.Context, target string) (string, string, error) {
 	origins, err := t.reach.originsWithin(ctx, t.reach.origins(), target)
 	if err != nil {
@@ -110,9 +94,7 @@ func (t *expandTick) stagingYardPass(ctx context.Context, origins []string, want
 			// row, so a yard we have already priced and found probe-less comes back
 			// looking exactly like one we have never looked at. Staging one of those
 			// writes a want the buy queue scans, learns nothing from, and then
-			// correctly refuses for the memo's whole TTL — measured live, 14 of the
-			// outstanding wants sat on such yards while 8 evidenced ones existed
-			// elsewhere in the fleet.
+			// correctly refuses for the memo's whole TTL.
 			stock, err := t.stagedProbeStock(ctx, yard)
 			if err != nil {
 				return "", "", err
@@ -120,11 +102,10 @@ func (t *expandTick) stagingYardPass(ctx context.Context, origins []string, want
 			if !stock.acceptsStaging(wantEvidence) {
 				continue
 			}
-			// A hull of ours must be STANDING at this counter. Without it the
-			// buy queue cannot fund the want at all — it only ever buys where one
-			// of our hulls is already docked — so staging here would write a row
-			// that is refused every tick forever. See staffedAt, which is the
-			// same predicate the supply test above applies.
+			// A hull of ours must be STANDING at this counter. Without it the buy
+			// queue cannot fund the want at all — it only ever buys where one of our
+			// hulls is already docked — so staging here would write a row that is
+			// refused every tick forever.
 			manned, err := t.staffedAt(ctx, yard)
 			if err != nil {
 				return "", "", err
@@ -144,14 +125,12 @@ func (t *expandTick) stagingYardPass(ctx context.Context, origins []string, want
 }
 
 // stagedProbeStock reads what the stored listings say about one yard, memoised for the TICK.
+// The same yard is offered for several targets in a neighbourhood and the answer cannot change
+// while the tick runs, so the memo keeps this at one local store read per yard rather than one
+// per (yard, target) pair.
 //
-// The same yard is offered for several targets in a neighbourhood, and the answer cannot change
-// while the tick runs, so a re-read per target would scale with the frontier exactly as the frontier
-// succeeds. It is a local store read either way — zero API calls — but the memo is what keeps it one
-// read per yard rather than one per (yard, target) pair.
-//
-// A READ FAILURE PROPAGATES. Staging onto a yard we could not read is how the unfundable want gets
-// written in the first place; the tick is idempotent and re-derived, so failing loudly costs a cycle.
+// A READ FAILURE PROPAGATES. Staging onto a yard we could not read is how an unfundable want gets
+// written; the tick is idempotent and re-derived, so failing loudly costs only a cycle.
 func (t *expandTick) stagedProbeStock(ctx context.Context, yard string) (probeStock, error) {
 	if stock, cached := t.listings[yard]; cached {
 		return stock, nil

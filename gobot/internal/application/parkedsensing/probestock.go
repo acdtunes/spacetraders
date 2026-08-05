@@ -9,33 +9,18 @@ import (
 // probeListingMemoTTL is how long a PERSISTED shipyard listing set is trusted
 // before the yard is asked again.
 //
-// THE WASTE IT REMOVES. ListProbeYards falls back to shipyard-TRAIT waypoints
-// whenever a system has no stored probe listing, and that fallback is the normal
-// path — only a handful of true probe yards are known fleet-wide. Those waypoints
-// are real shipyards that simply do not sell probes, so every one of them that a
-// hull happens to stand at costs one live quote per drain tick, forever, and the
-// answer is discarded each time. The per-tick refusalMemo already stops the
-// REPEATS within a tick; nothing carried the fact ACROSS ticks.
+// WHAT IT SAVES. ListProbeYards falls back to shipyard-TRAIT waypoints whenever a
+// system has no stored probe listing, and that fallback is the normal path. Those
+// waypoints are real shipyards that simply do not sell probes, so without a
+// persisted memo every one of them a hull stands at costs one live quote per drain
+// tick, forever, for an answer that is discarded each time. The per-tick
+// refusalMemo stops the REPEATS within a tick; this carries the fact ACROSS ticks.
 //
-// WHY SIX HOURS. At ~57 drain cycles an hour a dead yard costs ~57 calls/hour
-// today; trusting a stored reading for six hours costs one call per six hours per
-// yard, a ~99.7% reduction, while still re-checking each yard ~20 times inside a
-// ~120-hour era. A shorter interval does not scale with the thing that creates
-// these yards: charting toward the 300-system target keeps adding shipyard-trait
-// waypoints, and at one call/hour each a few dozen of them would re-create the
-// very cost this removes. A longer one buys little more — the second six hours
-// saves a further 0.08 calls/hour per yard — while widening the window in which a
-// restocked yard is wrongly written off.
-//
-// BEING WRONG IS CHEAP AND SELF-HEALING, which is what makes six hours defensible
-// rather than merely convenient: a yard that starts selling probes is simply not
-// bought from until the interval elapses. It blocks nothing else — seed staging
-// tests hull PRESENCE (staffedAt), not probe stock, so expansion is unaffected —
-// and any other yard in the system still serves the placement.
-//
-// A plain constant, deliberately not a knob, in the manner of maxDrainAttempts:
-// it paces how long one local fact is trusted, and nothing downstream benefits
-// from tuning it.
+// The interval trades call volume against the window in which a restocked yard is
+// wrongly written off, and being wrong is cheap and self-healing: such a yard is
+// simply not bought from until the interval elapses, it blocks nothing else (seed
+// staging tests hull PRESENCE via staffedAt, not probe stock), and any other yard
+// in the system still serves the placement.
 const probeListingMemoTTL = 6 * time.Hour
 
 // probeStock is what a yard's STORED listings say about whether it sells a probe. It is the memo's
@@ -54,12 +39,10 @@ const (
 )
 
 // readProbeStock classifies one yard from the stored listings, applying the memo's staleness rule in
-// ONE place.
+// ONE place, so the buy queue and seed staging cannot drift apart on it.
 //
 // A STALE probe-less reading degrades to UNREAD, so a restocked counter is reconsidered rather than
-// written off for the era — the same rule skipKnownProbeless applies, and it is written here so the
-// buy queue and seed staging cannot drift apart on it. A nil memo answers UNREAD, which is exactly
-// the behaviour both callers had before the port existed.
+// written off for the era. A nil memo answers UNREAD.
 func readProbeStock(ctx context.Context, memo ProbeListingMemo, playerID int, yard string, now time.Time) (probeStock, time.Time, error) {
 	if memo == nil {
 		return probeStockUnread, time.Time{}, nil
@@ -83,10 +66,10 @@ func readProbeStock(ctx context.Context, memo ProbeListingMemo, playerID int, ya
 // ProbeYardIsCandidate answers the one question a probe-yard CANDIDATE LIST has
 // to ask of each waypoint: may this yard appear at all?
 //
-// It is the exported face of readProbeStock — the FOURTH consumer of that one
-// rule, not a fifth notion. It derives nothing of its own: the three-way
-// classification, the staleness degrade and the nil-memo default all stay in
-// readProbeStock, and this only names the projection a yard list needs.
+// It is the exported face of readProbeStock and derives nothing of its own — the
+// three-way classification, the staleness degrade and the nil-memo default all
+// stay there, so the adapter behind ListProbeYards never re-derives "does this
+// yard sell probes" in SQL. This only names the projection a yard list needs:
 //
 //   - SELLS  → candidate. Priced evidence.
 //   - UNREAD → candidate. Never priced, so it is a guess — but it is also how the
@@ -97,15 +80,8 @@ func readProbeStock(ctx context.Context, memo ProbeListingMemo, playerID int, ya
 //     readProbeStock degrades it to UNREAD, so a restocked counter is
 //     reconsidered rather than written off for the era.)
 //
-// EVIDENCE vs GUESS is deliberately NOT returned. The only caller — the adapter
-// behind ListProbeYards — already gets that ranking from the order it unions its
-// two sources in, so returning it here would be a second, unreachable way to say
-// the same thing.
-//
-// Without this the adapter would have to re-derive "does this yard sell probes"
-// in SQL, which is precisely the drift probeStock.acceptsStaging and
-// skipKnownProbeless were written to prevent — three engines answering one
-// question three ways.
+// EVIDENCE vs GUESS is deliberately NOT returned: the only caller already gets
+// that ranking from the order it unions its two sources in.
 func ProbeYardIsCandidate(
 	ctx context.Context,
 	memo ProbeListingMemo,

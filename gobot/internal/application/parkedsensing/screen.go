@@ -9,20 +9,19 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/scouting"
 )
 
-// ErrEmptyWhitelist is returned when ScreenSystem is called with no goods to
-// look for. It is a caller bug — a config load that failed, or a whitelist not
-// yet populated — and NOT a finding about the system, so the screen refuses the
-// tick and writes nothing rather than recording a verdict it cannot justify.
+// ErrEmptyWhitelist is returned when ScreenSystem is called with no goods to look
+// for. It is a caller bug and NOT a finding about the system, so the screen refuses
+// the tick and writes nothing rather than recording a verdict it cannot justify.
 var ErrEmptyWhitelist = errors.New("parked-probe screen requires a non-empty goods whitelist")
 
 // screen.go is the whitelist screen: it judges ONE system — does it deal in
 // anything we want? — and, when it does, plans the probe placements that would
-// watch it. It is the decision half of the parked-probe sensing model; buying
-// and dispatching hulls happen elsewhere, off the ledger rows written here.
+// watch it. Buying and dispatching hulls happen elsewhere, off the ledger rows
+// written here.
 //
-// The ports below are declared consumer-side and deliberately narrow. None of
-// them can enumerate the fleet: the screen's cost must scale with the system
-// being looked at, not with how many ships we own.
+// The ports below are declared consumer-side and deliberately narrow. None of them
+// can enumerate the fleet: the screen's cost must scale with the system being
+// looked at, not with how many ships we own.
 
 // WaypointCatalog is the system's charted geography.
 type WaypointCatalog interface {
@@ -35,34 +34,33 @@ type WaypointCatalog interface {
 	// uncharted. Non-zero means the screen has not seen the whole system yet.
 	//
 	// It counts exactly the set UnchartedCatalog.UnchartedWaypoints hands a seed
-	// to visit — the charting tour's completion signal, which verdictFor
-	// requires to read zero before it may write a system off durably. The two
-	// must never disagree about WHICH waypoints are outstanding; they are free
-	// to disagree about the order.
+	// to visit, and verdictFor requires it to read zero before writing a system
+	// off durably. The two must never disagree about WHICH waypoints are
+	// outstanding; they are free to disagree about the order.
 	ListUnchartedCount(ctx context.Context, system string) (int, error)
 	// ListProbeYards returns the system's shipyards that sell probes, cheapest
 	// first. Resolving "sells probes" — priced inventory, falling back to a bare
 	// SHIPYARD trait when nothing has been scanned — belongs to the adapter.
 	ListProbeYards(ctx context.Context, system string) ([]string, error)
 	// ListHeavyYards returns the system's shipyards that sell HEAVY hulls, cheapest
-	// first. A heavy yard earns a quartermaster for the same reason a probe yard does:
-	// a parked hull makes a future purchase there instant instead of requiring one to
-	// fly in first (spec §6). Used as a FALLBACK behind ListProbeYards — probes are what
-	// this engine actually buys, so the probe-priced ordering keeps precedence.
+	// first. A heavy yard earns a quartermaster for the same reason a probe yard
+	// does: a parked hull makes a future purchase there instant instead of
+	// requiring one to fly in first (spec §6). Ranked BEHIND ListProbeYards —
+	// probes are what this engine actually buys, so the probe-priced ordering
+	// keeps precedence.
 	ListHeavyYards(ctx context.Context, system string) ([]string, error)
 	// CatalogKnown reports whether the system's waypoint LIST has ever been
 	// swept — whether we know what is in it at all, as distinct from knowing
 	// what those waypoints hold.
 	//
-	// It exists because the other three reads CANNOT tell the difference. A
+	// It exists because the other three reads CANNOT tell the difference: a
 	// system nobody has ever visited has no waypoint rows, so it yields no
 	// markets, no uncharted waypoints and no yards — byte for byte the same
-	// answer as a system charted end to end that happens to deal in nothing we
-	// want. Without this signal the screen reads absence of evidence as evidence
-	// of absence and stamps NO_WHITELIST, which is DURABLE (only PENDING systems
-	// are re-screened) and, worse, makes the system a propagation origin for the
-	// expansion frontier — so one wrong write-off does not merely lose a system,
-	// it walks the mistake outward across the map.
+	// answer as a system charted end to end that deals in nothing we want.
+	// Without this signal the screen reads absence of evidence as evidence of
+	// absence and stamps NO_WHITELIST, which is DURABLE (only PENDING systems are
+	// re-screened) and makes the system a propagation origin for the expansion
+	// frontier, walking the mistake outward across the map.
 	CatalogKnown(ctx context.Context, system string) (bool, error)
 }
 
@@ -72,13 +70,12 @@ type MarketGoodsReader interface {
 	// GoodsAt returns the goods a market is known to deal in. The bool reports
 	// whether the local cache holds ANY row for the waypoint.
 	//
-	// NOTE the two cases it does NOT distinguish: a market cached as trading
-	// nothing and a market never scanned both come back (nil, false). The
-	// adapter reads market_data rows, and "no rows" is the same answer either
-	// way. So a false here means "the cache cannot answer", never "the cache says
-	// there is nothing" — callers that need the difference must resolve it
-	// elsewhere (screenMarkets falls through to the slot projection, then the
-	// API).
+	// It does NOT distinguish a market cached as trading nothing from a market
+	// never scanned: both come back (nil, false), because the adapter reads
+	// market_data rows and "no rows" is the same answer either way. A false here
+	// means "the cache cannot answer", never "the cache says there is nothing" —
+	// callers needing the difference must resolve it elsewhere (screenMarkets
+	// falls through to the slot projection, then the API).
 	GoodsAt(ctx context.Context, playerID int, waypoint string) ([]string, bool, error)
 	// DepthRowsAt returns the priced rows behind those goods — volume and
 	// mid-price per good. Only a scanned market has them; the goods list and the
@@ -96,24 +93,21 @@ type RemoteMarketFetcher interface {
 // ExistingSlot is a placement the ledger already holds, carrying what was
 // recorded when the placement was made.
 //
-// WhitelistGoods is a PROJECTION, not an inventory: it is the intersection of
-// the waypoint's goods with the whitelist AS OF the moment the slot was written,
-// so it names what we wanted there — never everything the market deals in. Empty
-// or nil therefore means "no whitelisted goods are known at this waypoint",
-// which is exactly what a YARD slot records, and what a market that matched
-// nothing would record. screenMarkets treats that as an AUTHORITATIVE answer
-// rather than a gap, so an empty projection suppresses the API call the same way
-// a populated one does.
+// WhitelistGoods is a PROJECTION, not an inventory: it is the intersection of the
+// waypoint's goods with the whitelist AS OF the moment the slot was written, so it
+// names what we wanted there — never everything the market deals in. Empty or nil
+// therefore means "no whitelisted goods are known at this waypoint", which is
+// exactly what a YARD slot records and what a market that matched nothing records.
+// screenMarkets treats that as an AUTHORITATIVE answer rather than a gap, so an
+// empty projection suppresses the API call the same way a populated one does
+// (pinned by TestScreenSystemTreatsEmptyProjectionAsAuthoritative).
 //
-// That behaviour is PINNED by TestScreenSystemTreatsEmptyProjectionAsAuthoritative,
-// and it is why `spacetraders sensing rescreen` re-opens VERDICTS only
-// and leaves this column alone: blanking it here would not re-open the question,
-// it would answer it wrongly and permanently — nothing rewrites an existing
-// slot's projection (recordSlots skips waypoints already held), an emptied
-// projection suppresses the very refetch that would repopulate it, and the scan
-// rotation would stop observing spread at that waypoint entirely (Scanner.observe
-// skips a slot with no whitelist). Re-opening never-scanned markets is therefore
-// a design change against a reviewed decision, tracked as sp-ysg8h.
+// That is why `spacetraders sensing rescreen` re-opens VERDICTS only and leaves
+// this column alone: blanking it would answer the question wrongly and
+// permanently, because nothing rewrites an existing slot's projection (recordSlots
+// skips waypoints already held), an emptied projection suppresses the very refetch
+// that would repopulate it, and the scan rotation would stop observing spread at
+// that waypoint entirely (Scanner.observe skips a slot with no whitelist).
 type ExistingSlot struct {
 	Waypoint       string
 	WhitelistGoods []string
@@ -123,10 +117,9 @@ type ExistingSlot struct {
 // SlotLedger is the durable side of the screen — the placement ledger the whole
 // model is re-derived from after a restart.
 type SlotLedger interface {
-	// ExistingSlots returns the placements the system already holds, in ANY
-	// state. It serves two purposes: the screen writes only the placements
-	// missing from this set, and it reads back the recorded goods instead of
-	// paying the API to rediscover them.
+	// ExistingSlots returns the placements the system already holds, in ANY state.
+	// The screen writes only the placements missing from this set, and reads back
+	// the recorded goods instead of paying the API to rediscover them.
 	ExistingSlots(ctx context.Context, playerID int, system string) ([]ExistingSlot, error)
 	// UpsertSlotMetadata declares one placement the screen wants. On a waypoint
 	// that already carries a placement it refreshes the screen's own columns
@@ -173,14 +166,14 @@ type SlotRecord struct {
 	WhitelistGoods []string
 	DepthCredits   int64
 	// AssignedShip is the hull already filling this placement. The screen never
-	// sets it — it plans WANTS, which by definition have no hull behind them —
-	// and leaves it empty so the column is written NULL.
+	// sets it — it plans WANTS, which by definition have no hull behind them — and
+	// leaves it empty so the column is written NULL.
 	//
-	// The expansion engine does set it, in the one case where a placement is
-	// born already filled: a finished charting seed standing itself down as a
-	// PARKED SPARE. Writing that row without the hull would record a parked
-	// probe the ledger cannot see, dropping it out of the probe-cap count and
-	// authorising the purchase of a replacement we already own.
+	// The expansion engine does set it, in the one case where a placement is born
+	// already filled: a finished charting seed standing itself down as a PARKED
+	// SPARE. Writing that row without the hull would record a parked probe the
+	// ledger cannot see, dropping it out of the probe-cap count and authorising the
+	// purchase of a replacement we already own.
 	AssignedShip string
 }
 
@@ -190,12 +183,12 @@ type SystemRecord struct {
 	Verdict        string
 	UnchartedCount int
 	DepthCredits   int64
-	// CatalogKnown records that the system's waypoint list was known AT THE TIME
-	// OF THIS SCREEN. It is written back so the expansion engine can read it off
-	// the row for free instead of asking the catalog again per system per tick —
-	// and, more usefully, so a system the fleet swept long before this model
-	// existed is recognised as known the first time it is screened, rather than
-	// being sent a charting seed to rediscover what is already in the database.
+	// CatalogKnown records that the system's waypoint list was known AT THE TIME OF
+	// THIS SCREEN. It is written back so the expansion engine reads it off the row
+	// instead of asking the catalog again per system per tick, and so a system the
+	// fleet swept before it held a sensing row is recognised as known the first
+	// time it is screened rather than being sent a charting seed to rediscover
+	// what the database already holds.
 	CatalogKnown bool
 }
 
@@ -211,13 +204,13 @@ type screenedMarket struct {
 //
 // The verdict turns on what is KNOWN, not on what has been looked at:
 //
-//   - IN_SCOPE as soon as ONE market is known to deal in a whitelisted good,
-//     even with waypoints still uncharted. Waiting for the whole system to be
-//     charted would idle a probe we could already buy for a market we can
-//     already see, so charting and placement run in parallel.
+//   - IN_SCOPE as soon as ONE market is known to deal in a whitelisted good, even
+//     with waypoints still uncharted. Waiting for the whole system to be charted
+//     would idle a probe we could already buy for a market we can already see, so
+//     charting and placement run in parallel.
 //   - NO_WHITELIST only when the system is charted through AND every market
-//     resolved AND none of them matched. This verdict is durable and stops
-//     further work, so it is never recorded on incomplete information.
+//     resolved AND none of them matched. This verdict is durable and stops further
+//     work, so it is never recorded on incomplete information.
 //   - PENDING otherwise — undecided, come back later.
 //
 // Placements are planned only for an IN_SCOPE system: a probe parked in a system
@@ -230,10 +223,9 @@ func ScreenSystem(
 	whitelist map[string]bool,
 ) (ScreenResult, error) {
 	// Refuse the tick outright rather than screening against nothing. Every
-	// market would fail to match, the system would be stamped NO_WHITELIST, and
-	// that verdict is DURABLE — only PENDING systems are ever re-screened — so a
-	// whitelist that was briefly empty (a config reload, a startup race) would
-	// permanently write off systems it never actually judged. Fail loud.
+	// market would fail to match and the system would be stamped NO_WHITELIST,
+	// which is DURABLE — only PENDING systems are ever re-screened — so a
+	// briefly-empty whitelist would permanently write off systems it never judged.
 	if len(whitelist) == 0 {
 		return ScreenResult{}, fmt.Errorf("screening %q: %w", system, ErrEmptyWhitelist)
 	}
@@ -320,13 +312,11 @@ func (s *screenPass) readSystemCatalog(ctx context.Context) (systemCatalog, erro
 //  3. the API, via FetchGoods — the only genuine gap fill, and the only one that
 //     costs anything.
 //
-// Source 2 is what makes the slot row a CACHE. Without it a waypoint discovered
-// remotely would be re-fetched on every screen of the system: market_data stays
-// empty until a probe actually parks there, so GoodsAt keeps reporting a gap
-// long after we have learned and durably recorded the answer. Reading the slot's
-// recorded goods closes that loop. It must SUPPLY the goods, not merely suppress
-// the fetch — an empty goods list would drop the waypoint out of the hit set and
-// take its own slot out of the plan.
+// Source 2 is what makes the slot row a CACHE. market_data stays empty until a
+// probe actually parks at a waypoint, so GoodsAt keeps reporting a gap long after
+// a remotely-discovered market has been learned and durably recorded. The slot row
+// must SUPPLY the goods, not merely suppress the fetch — an empty goods list would
+// drop the waypoint out of the hit set and take its own slot out of the plan.
 //
 // The second return reports whether EVERY market resolved: a market we failed to
 // read is not a market that deals in nothing, and must not harden into a
@@ -379,23 +369,16 @@ func (s *screenPass) screenMarkets(ctx context.Context, markets []string) ([]scr
 // a refetch would only confirm at the cost of an API call. A whitelist edited
 // MID-era breaks the axiom.
 //
-// The operator response is `spacetraders sensing rescreen`, which re-opens every
-// VERDICT so the sweep re-judges under the new list. That fixes every market the
-// cache can answer for — GoodsAt is consulted FIRST, so a market any probe has
-// scanned never reaches this branch at all. What it does NOT fix is a never-scanned
-// market: it is still judged from its stored projection, and the rescreen cannot
-// clear that projection because the clear would be permanent (recordSlots skips
-// waypoints that already hold a slot) and self-suppressing (the test below is on
-// the slot EXISTING, not on its projection being populated, so an emptied
-// projection would stop the refetch that would repopulate it). Closing that gap
-// needs this branch and recordSlots changed together — and note that the CURRENT
-// behaviour is deliberate and PINNED by
-// TestScreenSystemTreatsEmptyProjectionAsAuthoritative, so changing it is a design
-// decision rather than a bug fix. Tracked as sp-ysg8h.
+// The operator response to that is `spacetraders sensing rescreen`, which re-opens
+// every VERDICT so the sweep re-judges under the new list. It fixes every market
+// the cache can answer for, because GoodsAt is consulted FIRST and a market any
+// probe has scanned never reaches this branch. It does NOT fix a never-scanned
+// market, which is still judged from its stored projection — see ExistingSlot for
+// why the rescreen cannot simply clear that column, and note the test below is on
+// the slot EXISTING rather than on its projection being populated.
 //
-// It is also self-limiting: once a probe parks at the waypoint and scans it,
-// market_data answers GoodsAt and this branch stops governing that market — for as
-// long as market_data holds rows for it.
+// This branch is self-limiting: once a probe parks at the waypoint and scans it,
+// market_data answers GoodsAt and stops routing that market here.
 func (s *screenPass) goodsWithoutMarketData(ctx context.Context, waypoint string) ([]string, *ExistingSlot, bool) {
 	if slot, ok := s.existing[waypoint]; ok {
 		return slot.WhitelistGoods, &slot, true
@@ -438,17 +421,15 @@ func (s *screenPass) existingByWaypoint(ctx context.Context) (map[string]Existin
 	return byWaypoint, nil
 }
 
-// verdictFor applies the three-way rule. Rejection is the only DURABLE verdict,
-// so it demands three separate proofs that we actually looked: the system's
-// waypoint list is known at all, nothing in it is still uncharted, and every
-// market in it resolved. Any one missing leaves the system PENDING.
+// verdictFor applies the three-way rule. Rejection is the only DURABLE verdict, so
+// it demands three separate proofs that we actually looked: the system's waypoint
+// list is known at all, nothing in it is still uncharted, and every market in it
+// resolved. Any one missing leaves the system PENDING.
 //
-// catalogKnown is the proof that is easiest to omit and worst to get wrong. An
-// unswept system produces the same empty readings as a thoroughly-examined
-// barren one, and NO_WHITELIST systems are propagation origins for the expansion
-// frontier — so writing one off on absent evidence does not just lose that
-// system, it seeds the frontier from a place we never looked at and carries the
-// mistake outward.
+// catalogKnown is the proof easiest to omit and worst to get wrong: an unswept
+// system produces the same empty readings as a thoroughly-examined barren one, and
+// NO_WHITELIST systems are propagation origins for the expansion frontier, so a
+// write-off on absent evidence seeds the frontier from a place we never looked at.
 func verdictFor(hasMatch, allResolved, catalogKnown bool, unchartedCount int) string {
 	switch {
 	case hasMatch:
@@ -488,45 +469,34 @@ func planSlots(ctx context.Context, p ScreenPorts, system string, hits []screene
 	// ship of ours already standing at that shipyard. A yard we never place at is
 	// a counter we can never buy from, however cheap it is — and seed probes, the
 	// hulls this engine explores with, can only be ordered at a staffed
-	// probe-selling yard. Slotting only the first leaves every other shipyard in the
-	// system permanently unbuyable, which is what capped exploration.
+	// probe-selling yard.
 	//
-	// `placed` is CARRIED THROUGH this loop, not just read from it: it is what
-	// keeps the one-slot-per-waypoint invariant when a waypoint appears twice in
-	// the yard list, and it is why the loop cannot be collapsed into an append.
+	// `placed` is CARRIED THROUGH this loop, not just read from it: it keeps the
+	// one-slot-per-waypoint invariant when a waypoint appears twice in the yard
+	// list, which is why the loop cannot be collapsed into an append and what makes
+	// concatenating the two yard lists safe.
 	//
-	// CONTRACT — probe presence at a yard is WAYPOINT-wise, never KIND-wise.
-	// When a probe-selling yard is also a whitelisted market, the MARKET slot
-	// wins (a YARD slot would have to drop the goods list, losing the reason the
-	// waypoint is worth watching at all), so the yard ends up covered by a slot
-	// whose kind is MARKET. A consumer asking "do we have a probe at this yard?"
-	// MUST therefore match on waypoint + PARKED and ignore slot_kind entirely —
-	// filtering for kind == YARD would miss the probe standing right there and
-	// buy a second one for the same waypoint.
-	// Heavy-selling yards earn a quartermaster too (spec §6): a parked probe makes a
-	// future HEAVY purchase there instant instead of requiring a hull to fly in first.
+	// CONTRACT — probe presence at a yard is WAYPOINT-wise, never KIND-wise. When a
+	// probe-selling yard is also a whitelisted market the MARKET slot wins (a YARD
+	// slot would have to drop the goods list, losing the reason the waypoint is
+	// worth watching at all), so the yard ends up covered by a slot whose kind is
+	// MARKET. A consumer asking "do we have a probe at this yard?" MUST therefore
+	// match on waypoint + PARKED and ignore slot_kind entirely — filtering for
+	// kind == YARD would miss the probe standing right there and buy a second one.
 	//
-	// PRECEDENCE, NOT EXCLUSION. The heavy list is appended BEHIND the probe list, so
-	// the probe-priced cheapest-first ordering above keeps its precedence untouched —
-	// probes are what this engine actually buys, and a probe yard is still the first
-	// placement the system offers. The heavy list is nonetheless
-	// CONSULTED ALWAYS. Reading it only when the system offers no probe yard
-	// at all turns "probes come first" from an ordering
-	// claim into an exclusion, so a system that sells both never
-	// looks. Measured live: X1-QR78-AE4F sells probes AND heavy freighters, so
-	// X1-QR78 never consulted its heavy list, and its SECOND heavy yard X1-QR78-FE8C
-	// — which sells no probe — was invisible as a heavy yard entirely. The engine was
-	// hunting a SHIP_HEAVY_FREIGHTER at the time.
-	//
-	// The `placed` map below is what makes the concatenation safe: a waypoint selling
-	// both classes appears in both lists and still claims exactly one slot, in its
-	// probe-priced position.
+	// PRECEDENCE, NOT EXCLUSION. Heavy-selling yards earn a quartermaster too (spec
+	// §6), and the heavy list is appended BEHIND the probe list so the probe-priced
+	// cheapest-first ordering keeps its precedence. It is nonetheless CONSULTED
+	// ALWAYS: reading it only when the system offers no probe yard at all would turn
+	// "probes come first" from an ordering claim into an exclusion, and a system
+	// whose only probe yard also sells heavy hulls would never have its other heavy
+	// yards seen.
 	//
 	// The joined list is built into a FRESH slice rather than appended onto the one
-	// the port handed back. A port's return is the adapter's own buffer, and appending
-	// into its spare capacity would write through into whatever the adapter still
-	// holds — a defect that only appears once an adapter starts reusing its slice, and
-	// then appears as a corrupted yard list rather than as a build failure.
+	// the port handed back: a port's return is the adapter's own buffer, and
+	// appending into its spare capacity would write through into whatever the
+	// adapter still holds, surfacing as a corrupted yard list rather than a build
+	// failure.
 	heavyYards, err := p.Waypoints.ListHeavyYards(ctx, system)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list heavy yards in %q: %w", system, err)
@@ -550,39 +520,31 @@ func planSlots(ctx context.Context, p ScreenPorts, system string, hits []screene
 // the probe-cap count and authorise buying a replacement we already own.
 //
 // The skip is total — it freezes whitelist_goods and depth_credits at their
-// recorded values too, and that is DELIBERATE, not an oversight:
+// recorded values too, and that is DELIBERATE:
 //
 //   - Goods do not go stale in any way that matters. What a market DEALS IN is
 //     stable; it is the prices that move, and no part of this row holds prices.
-//   - Depth only orders placements that have not been filled yet. Once a probe
-//     is bought for a slot, the ordering has already done its work, so a fresher
-//     number would change nothing.
-//   - The one case where a refreshed depth would be interesting — a slot
-//     carrying the blind 0 prior, because we learned of it without prices —
-//     resolves itself without this path. Depth needs prices and prices need
-//     presence, so the number can only improve once a probe is actually parked
-//     there; and by then its scans have populated market_data, GoodsAt reports
-//     the waypoint as known, and screenMarkets computes depth FRESH from those
-//     prices without ever consulting the frozen row. The recorded value is read
-//     only while no prices exist — precisely when there is nothing better to
-//     record.
+//   - Depth only orders placements that have not been filled yet, so once a probe
+//     is bought for a slot the ordering has already done its work.
+//   - A slot carrying the blind 0 prior resolves itself without this path. Depth
+//     needs prices and prices need presence, so the number can only improve once a
+//     probe is parked there; by then its scans have populated market_data, GoodsAt
+//     reports the waypoint as known, and screenMarkets computes depth FRESH
+//     without consulting the frozen row.
 //
-// So a metadata-refresh path here would be code that cannot improve on what the
-// live path already produces. If that ever changes, the write to reach for is
-// UpsertSlotMetadata, which refreshes goods and depth and leaves the placement's
-// state and hull to the writers that own them (sp-wgjb7). Dropping the skip below
-// would therefore no longer corrupt a filled placement — it would just spend
-// writes re-asserting what the row already says.
+// A metadata-refresh path here could therefore not improve on what the live path
+// already produces. If that changes, the write to reach for is UpsertSlotMetadata,
+// which refreshes goods and depth and leaves the placement's state and hull to the
+// writers that own them.
 //
-// Note that re-screening is NOT confined to systems without placements: a
-// PENDING system can already hold slots when it is re-screened, because a seed
-// reading writes WANTED slots directly while the system's row still says PENDING
-// (the seed records no verdict; the next screen does). Re-screening is BATCHED —
-// the coordinator sweeps at most five PENDING systems per reconcile tick, so a
-// given system is screened whenever it makes the batch, not on every tick.
-// That is the live path this skip and the slot cache are both built for — the
-// seed-measured goods flow back through the cache and let the verdict reach
-// IN_SCOPE with no API call. Once a system is IN_SCOPE it is never re-screened.
+// Re-screening is NOT confined to systems without placements: a PENDING system can
+// already hold slots when it is re-screened, because a seed reading writes WANTED
+// slots directly while the system's row still says PENDING (the seed records no
+// verdict; the next screen does). Re-screening is also BATCHED — the coordinator
+// sweeps a bounded number of PENDING systems per reconcile tick — and that is the
+// live path this skip and the slot cache are both built for: the seed-measured
+// goods flow back through the cache and let the verdict reach IN_SCOPE with no API
+// call. Once a system is IN_SCOPE it is never re-screened.
 func (s *screenPass) recordSlots(ctx context.Context, slots []PlannedSlot) error {
 	for _, slot := range slots {
 		if _, held := s.existing[slot.Waypoint]; held {

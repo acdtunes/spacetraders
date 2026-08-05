@@ -16,29 +16,15 @@ import (
 // THE SPLIT IS THE API'S, NOT OURS. `GET /shipyard` answers with `shipTypes` —
 // what a counter sells — to anyone, and with `ships`, the listings carrying
 // purchasePrice, only when a hull of ours is standing at the waypoint. The free
-// pass harvests the first for nothing. The second cannot be harvested at all
-// without spending something, and what it costs is a HULL: a probe flown to the
-// yard, after which the ordinary scan rotation reads the price on its next turn
-// and keeps reading it thereafter.
+// pass harvests the first for nothing. The second costs a HULL: a probe flown to
+// the yard, after which the ordinary scan rotation reads the price on its next
+// turn and keeps reading it thereafter.
 //
-// WHY A SEPARATE PASS AND NOT A BRANCH OF THE BUY QUEUE. The obvious home looked
-// like DrainBuyQueue, which already fills placements from hulls we own via
-// reuseSpareHull and footholdBroker.fill, and whose WANTED candidate list already
-// contains almost every yard this pass wants (measured live: 1,554 of the 1,591
-// unpriced yards carry a WANTED market slot, because a yard that is also a
-// whitelisted market is slotted MARKET by the screen). It is the wrong home, and
-// the numbers say why rather than the taste. The drain runs at most
-// maxDrainAttempts = 6 placements per tick, ordered by how little coverage a
-// system already has, against 8,930 outstanding WANTED market slots. A
-// price-critical yard would sit behind thousands of ordinary placements that
-// outrank it on a criterion that knows nothing about shipyards, and would be
-// reached approximately never. Hanging presence off that queue would have shipped
-// a feature that reads correct and never fires.
-//
-// So the demand comes from the one component that can rank these yards — the
-// shipyard-read budget, whose top weight tier IS this set — and the movement
-// reuses the drain's own surplusPool rather than inventing a second idea of which
-// hull may be taken. This pass is the join, and it is deliberately thin.
+// The demand comes from the shipyard-read budget rather than from the buy queue's
+// drain, whose ordering knows nothing about shipyards and would leave a
+// price-critical yard behind every ordinary placement. The movement reuses the
+// drain's own surplusPool rather than inventing a second idea of which hull may be
+// taken. This pass is the join, and it is deliberately thin.
 //
 // RULINGS #2 — it holds NO cross-tick state. The request list is recomputed from
 // the budget's live facts every tick and the surplus pool is rebuilt from the
@@ -48,37 +34,30 @@ import (
 // is no purchaser on its ports and no code path here reaches one.
 
 // MaxYardPresenceDispatches bounds how many hulls ONE tick may send to unpriced
-// yards.
-//
-// A plain const in the manner of MaxYardCatalogReads and maxFootholdRetasks, and
-// a BACKSTOP rather than the safety property: correctness comes from the budget's
-// allowance (which refuses long before this binds) and from surplusPool
-// re-deciding redundancy after every take. Two, matching maxFootholdRetasks,
-// because the failure this bounds is the same one — a single tick reading one
-// redundancy picture and emptying a system on the strength of it.
+// yards. A BACKSTOP rather than the safety property: correctness comes from the
+// budget's allowance (which refuses long before this binds) and from surplusPool
+// re-deciding redundancy after every take. It exists because a single tick reads
+// one redundancy picture, and could empty a system on the strength of it.
 const MaxYardPresenceDispatches = 2
 
 // yardPresenceRequestLimit is how many ranked requests the pass asks for.
 //
-// LARGER THAN THE DISPATCH BOUND, and that gap is the point. Most requests fail
-// to find a releasable hull in their own system — measured live, only about 104
-// of 1,554 candidate yards have one — so asking for exactly two would usually
-// yield zero dispatches while two perfectly fillable yards sat just below the
-// cut. Asking for a wider slice and stopping at the first two that can actually
-// be filled is what turns the ranking into throughput. It is capped rather than
-// unbounded because the list is sorted, and everything past the head is a yard
-// the next tick will offer again anyway.
+// LARGER THAN THE DISPATCH BOUND, and that gap is the point: most requests find no
+// releasable hull in their own system, so asking for exactly
+// MaxYardPresenceDispatches would usually yield zero dispatches while fillable
+// yards sat just below the cut. It is capped rather than unbounded because the list
+// is sorted, and everything past the head is offered again next tick.
 const yardPresenceRequestLimit = 64
 
 // YardPresenceDemand reports which yards need a hull standing on them, best
 // first.
 //
-// A PULL, deliberately, and the direction matters. The shipyard-read budget owns
-// this judgement — the set is its top weight tier, recomputed from live facts —
-// and asking it per tick means a yard that has just been priced leaves the set on
-// its own. A push in the other direction would be a latching bridge: this pass
-// would hold the last list it was handed and keep sending hulls at counters that
-// no longer need one.
+// A PULL, deliberately. The shipyard-read budget owns this judgement, recomputed
+// from live facts, so asking it per tick means a yard that has just been priced
+// leaves the set on its own. A push would be a latching bridge: this pass would
+// hold the last list it was handed and keep sending hulls at counters that no
+// longer need one.
+//
 // The READ half is YardDemandReader, embedded rather than respelled, because the
 // buy queue's ordering consults the same set (yardqueue.go) and one spelling is
 // what stops the mover and the queue drifting into two ideas of which yard is
@@ -93,13 +72,10 @@ type YardPresenceDemand interface {
 }
 
 // YardPresencePorts is everything DispatchYardPresence needs from the outside
-// world.
-//
-// It is cut narrow on purpose, in the manner of the other engine bundles: no
-// purchaser, no treasury, no mover. This pass writes two ledger rows and nothing
-// else — the flying is the placement machine's job, exactly as it is for a
-// foothold — so a port that could spend a credit or steer a hull directly would
-// be a port it has no business holding.
+// world. Cut narrow on purpose: no purchaser, no treasury, no mover. This pass
+// writes two ledger rows and nothing else — the flying is the placement machine's
+// job — so a port that could spend a credit or steer a hull directly would be a
+// port it has no business holding.
 type YardPresencePorts struct {
 	Demand      YardPresenceDemand
 	Ledger      BuyLedger
@@ -122,40 +98,32 @@ type YardPresenceReport struct {
 	// Dispatched counts hulls actually re-tasked to a yard this tick.
 	Dispatched int
 	// NoHull counts requests that found no releasable hull in their own system.
-	// A high number beside a high Requested is the honest signal that the fleet is
-	// fully committed, not that the pass is broken.
+	// A high number beside a high Requested says the fleet is fully committed, not
+	// that the pass is broken.
 	NoHull int
-	// Metered counts requests that found a hull and were refused by the
-	// allowance. It separates "nothing to send" from "not allowed to send yet",
-	// which are the two readings an operator would otherwise have to guess between.
+	// Metered counts requests that found a hull and were refused by the allowance.
+	// It separates "nothing to send" from "not allowed to send yet".
 	Metered int
 }
 
 // DispatchYardPresence sends spare hulls to the yards the fleet cannot price,
 // bounded by MaxYardPresenceDispatches and by the budget's own allowance.
 //
-// WHAT COUNTS AS SPARE IS NOT DECIDED HERE. It is surplusPool's definition, the
-// same one the foothold path has used in production: a PARKED MARKET hull that no
-// scout post mans and whose every whitelisted good survives its departure. That
-// reuse is deliberate rather than convenient — a second, looser idea of "spare"
-// living in a discovery pass is exactly how a fleet ends up with its markets
-// quietly stripped, and the one place that judgement belongs is the place that
-// already got it reviewed.
+// WHAT COUNTS AS SPARE IS NOT DECIDED HERE. It is surplusPool's definition — a
+// PARKED MARKET hull that no scout post mans and whose every whitelisted good
+// survives its departure — and it is reused rather than restated because a second,
+// looser idea of "spare" is how a fleet ends up with its markets quietly stripped.
 //
 // IN-SYSTEM ONLY. The pool is asked for a hull in the REQUEST'S OWN system and
-// nowhere else, unlike the foothold path which walks gates to reach a target. A
+// nowhere else, unlike the foothold path which walks gates to reach a target: a
 // foothold converts a whole system from unbuyable to self-funding and can justify
-// a multi-tick crossing; a price read cannot. An in-system hop is minutes of
-// flight and a handful of API calls, and it is the tier the fleet can afford to
-// run continuously.
+// a multi-tick crossing, while a price read cannot.
 //
 // A REQUEST WITH NO WANTED SLOT AT ITS WAYPOINT IS SKIPPED, and the pass NEVER
 // creates one. Placements are the screen's to write; a discovery pass that could
-// invent them would be able to station hulls at waypoints the screen has judged
-// not worth watching. In practice this costs almost nothing — a yard that is also
-// a whitelisted market already carries a slot, which is 1,554 of the 1,591
-// unpriced yards — and what it buys is that this pass can only ever ACCELERATE a
-// placement the fleet had already decided it wanted.
+// invent them could station hulls at waypoints the screen has judged not worth
+// watching. So this pass can only ever ACCELERATE a placement the fleet had
+// already decided it wanted.
 func DispatchYardPresence(ctx context.Context, p YardPresencePorts, playerID int) (YardPresenceReport, error) {
 	var rep YardPresenceReport
 	if !p.wired() {
@@ -171,10 +139,8 @@ func DispatchYardPresence(ctx context.Context, p YardPresencePorts, playerID int
 	// The two guard reads, taken ONCE for the tick and FAIL-CLOSED. An unreadable
 	// post list read permissively is an empty one — "no hull is manned" — which
 	// would hand the scouting fleet's hulls to this pass. Both are returned as
-	// errors rather than logged-and-continued because unlike the foothold path
-	// (an extension inside a drain that has other work to do) this pass has no
-	// other work: a tick that cannot prove a hull releasable has nothing left to
-	// do but stop.
+	// errors rather than logged-and-continued: a tick that cannot prove a hull
+	// releasable has nothing left to do but stop.
 	parked, err := p.Ledger.SlotsByState(ctx, playerID, SlotStateParked)
 	if err != nil {
 		return rep, fmt.Errorf("parked sensing placements unreadable, sending no hull to any yard: %w", err)
@@ -205,10 +171,9 @@ func DispatchYardPresence(ctx context.Context, p YardPresencePorts, playerID int
 //
 // THE ORDER OF THE CHECKS IS THE COST ORDER, cheapest first, and the allowance
 // deliberately comes LAST. Asking the meter before a hull has been found would
-// spend a token on a yard that turns out to have nobody to send, and since most
-// requests are in that state the allowance would be consumed almost entirely by
-// requests that move nothing — the meter would throttle the pass without ever
-// pacing an actual reposition.
+// spend a token on a yard with nobody to send, and since most requests are in
+// that state the meter would throttle the pass without ever pacing an actual
+// reposition.
 func dispatchOnePresence(
 	ctx context.Context,
 	p YardPresencePorts,
@@ -237,13 +202,13 @@ func dispatchOnePresence(
 		return false, nil
 	}
 
-	// The ledger says PARKED; the ships table is asked whether the hull is
-	// actually standing still. The two can disagree — a row is written from the
-	// last confirmed reading, and another engine may have moved the hull since —
-	// and re-tasking one that is mid-flight would have two machines steering it.
-	// Unreadable or absent is treated as NOT takeable, exactly as the foothold
-	// path treats it. The row is already out of the pool, so a hull in this state
-	// is skipped for the tick rather than retried against the next request.
+	// The ledger says PARKED; the ships table is asked whether the hull is actually
+	// standing still. The two can disagree — a row is written from the last
+	// confirmed reading, and another engine may have moved the hull since — and
+	// re-tasking one that is mid-flight would have two machines steering it.
+	// Unreadable or absent is NOT takeable. The row is already out of the pool, so a
+	// hull in this state is skipped for the tick rather than retried against the
+	// next request.
 	pos, err := p.Ships.ShipAt(ctx, playerID, source.AssignedShip)
 	if err != nil || !pos.Found || pos.NavStatus == navigation.NavStatusInTransit {
 		return false, nil
@@ -257,12 +222,10 @@ func dispatchOnePresence(
 	return retaskToYard(ctx, p, playerID, source, target)
 }
 
-// presenceTarget finds the WANTED placement standing at a requested yard.
-//
-// It reads the yard's OWN SYSTEM's slots rather than filtering a global list,
-// which is the same read the drain makes per placement and is what keeps this
-// pass's cost proportional to the yards it is working on rather than to the
-// 8,930-row placement table.
+// presenceTarget finds the WANTED placement standing at a requested yard. It reads
+// the yard's OWN SYSTEM's slots rather than filtering a global list, which keeps
+// the cost proportional to the yards being worked on rather than to the whole
+// placement table.
 //
 // Matching is on WAYPOINT and never on kind. A yard that is also a whitelisted
 // market is slotted MARKET by the screen — see SlotKindYard's own note — so a
@@ -279,8 +242,7 @@ func presenceTarget(ctx context.Context, p YardPresencePorts, playerID int, requ
 		// WANTED ONLY. A QUEUED placement was claimed for purchase by the drain and
 		// may have money moving against it; anything from BOUGHT on already names a
 		// hull. Re-tasking either would race a machine that is mid-decision, and a
-		// yard whose placement is already being filled needs nothing from this pass
-		// — it is about to get a hull anyway.
+		// yard already being filled needs nothing from this pass.
 		if slot.State != SlotStateWanted {
 			return QueuedSlot{}, false, nil
 		}
@@ -292,10 +254,9 @@ func presenceTarget(ctx context.Context, p YardPresencePorts, playerID int, requ
 // retaskToYard performs the two ledger writes that move a hull from its market
 // to the yard.
 //
-// THE WRITE ORDER IS A MONEY GUARD, and it is the same one reuseSpareHull,
-// claimSpares and footholdFromSurplus are built on. One hull is named by two rows
-// for an instant, and which instant is chosen decides which way a crash
-// miscounts:
+// THE WRITE ORDER IS A MONEY GUARD, shared with reuseSpareHull, claimSpares and
+// footholdFromSurplus. One hull is named by two rows for an instant, and which
+// instant is chosen decides which way a crash miscounts:
 //
 //   - Claim the target FIRST, as here: a failure between the writes leaves both
 //     rows naming the hull, so CountOwnedProbes counts it twice, the cap reads the
@@ -308,7 +269,7 @@ func presenceTarget(ctx context.Context, p YardPresencePorts, playerID int, requ
 // The target goes straight to IN_TRANSIT with no BOUGHT state, because there is
 // nothing to buy. That writes IN_TRANSIT for a hull that has not been told to move
 // and is not standing at the target; the placement machine's dispatchClaim branch
-// is what notices and flies it, exactly as it does for a re-tasked spare.
+// is what notices and flies it.
 func retaskToYard(ctx context.Context, p YardPresencePorts, playerID int, source, target QueuedSlot) (bool, error) {
 	hull := source.AssignedShip
 
@@ -326,9 +287,8 @@ func retaskToYard(ctx context.Context, p YardPresencePorts, playerID int, source
 	}
 
 	// The market the hull leaves goes back to being a want with no hull behind it.
-	// WANTED rather than deleted: it is still a placement the fleet intends to
-	// fill, and leaving it on the books is what gets it re-covered once a hull can
-	// be spared for it.
+	// WANTED rather than deleted: it is still a placement the fleet intends to fill,
+	// and leaving it on the books is what gets it re-covered later.
 	cleared := ""
 	if err := p.Ledger.TransitionSlot(ctx, playerID, SlotTransition{
 		Waypoint: source.Waypoint, Kind: source.Kind, From: SlotStateParked, To: SlotStateWanted,

@@ -9,43 +9,32 @@ import (
 
 // offgate.go is the LIVE driver for off-gate warp expansion.
 //
-// WHY IT IS A DRIVER AND NOT AN ENGINE. Every piece of off-gate expansion already existed and was
-// already tested — the target ranking (adapters/expansion.OffGateWarpTargetSelector), the
-// demand-to-buy bridge (ExplorerOffGateBridge, whose READ side the fleet autosizer's
-// ExplorerDemandProvider is already wired to in main.go), the warp dispatcher
-// (ExplorerWarpDispatcher over slice-A ExecuteWarpRoute), and the warp execution itself. What did
-// not exist was anything alive to drive them: all of it hangs off the RETIRED frontier expansion
-// coordinator, which refuses to start. The bridge is therefore permanently unwritten, so the
-// autosizer's explorer demand reads UNREADABLE and fails closed forever.
-//
-// So this file writes NO ranking, NO bridge and NO dispatch. It re-uses those verbatim — including
-// their types, so there is exactly one definition of an off-gate target in the codebase — and
-// supplies the one missing thing: a trigger derived from the live sensing tick, and the calls that
-// carry it to machinery that was already built.
+// IT IS A DRIVER, NOT AN ENGINE: it writes NO ranking, NO bridge and NO dispatch. The target
+// ranking (adapters/expansion.OffGateWarpTargetSelector), the demand-to-buy bridge
+// (ExplorerOffGateBridge, whose READ side the fleet autosizer's ExplorerDemandProvider is wired
+// to), the warp dispatcher (ExplorerWarpDispatcher) and the warp execution all live elsewhere and
+// are re-used verbatim, types included, so there is exactly one definition of an off-gate target in
+// the codebase. What this file supplies is the trigger and the calls that carry it.
 //
 // THE TRIGGER. Off-gate demand fires only when the gate-reachable frontier is exhausted: there is
-// charting work outstanding and NOT ONE of it is within MaxWalkRings of a system we hold. That is
-// the sensing-engine analogue of the retired coordinator's "gate-reachable virgin set exhausted"
-// trigger, and it is strictly better in one respect: it is DERIVED FRESH from the ledger every tick
-// (RULINGS #2) rather than debounced through a cross-tick empty-queue streak, so a restart cannot
-// lose it and a stale streak cannot fire it.
+// charting work outstanding and NOT ONE of it is within MaxWalkRings of a system we hold. It is
+// DERIVED FRESH from the ledger every tick (RULINGS #2) rather than debounced through a cross-tick
+// streak, so a restart cannot lose it and a stale streak cannot fire it.
 //
 // GATE ALWAYS WINS. A single gate-reachable target suppresses off-gate demand entirely. Warp is the
-// expensive fallback — a 769k hull and a multi-system flight against a probe that walks a gate — so
-// it must never be the default while a cheap ring remains. This is the property most worth guarding,
-// and it is the one the fixtures below are built to be able to fail.
+// expensive fallback — a heavy hull and a multi-system flight against a probe that walks a gate —
+// so it must never be the default while a cheap ring remains.
 //
 // IT SPENDS NOTHING. This driver raises a demand SIGNAL; the fleet autosizer owns the purchase and
-// applies every money guard unchanged — the hard cap of 1, the price ceiling, and the big-ticket
-// 25%-of-treasury rule that legitimately refuses at today's treasury. There is deliberately no
-// second path to the treasury from here, exactly as expansion's seed requests have none.
+// applies every money guard — the hard cap of 1, the price ceiling, and the big-ticket
+// 25%-of-treasury rule. There is deliberately no second path to the treasury from here, exactly as
+// expansion's seed requests have none.
 
 // OffGateSelector ranks gate-unreachable systems and picks the best warp target.
 //
-// The signature is the RETIRED coordinator's port verbatim, so
-// adapters/expansion.OffGateWarpTargetSelector satisfies it with no shim and no second ranking. Its
-// scoring — exploration value against warp fuel from the nearest gate-connected system, bounded by
-// warp range, with a symbol tiebreak for stability — is used exactly as written.
+// adapters/expansion.OffGateWarpTargetSelector satisfies this signature with no shim and no second
+// ranking. Its scoring — exploration value against warp fuel from the nearest gate-connected
+// system, bounded by warp range, with a symbol tiebreak for stability — is used as written.
 type OffGateSelector interface {
 	SelectTarget(ctx context.Context, playerID int, params OffGateSelectionParams) (OffGateTarget, bool, error)
 }
@@ -55,9 +44,8 @@ type OffGateSelector interface {
 //
 // IT IS WRITTEN ON EVERY TICK, including the no-demand ticks, and that is load-bearing rather than
 // tidy. The bridge reads UNREADABLE until its first write for a player, and the autosizer fails
-// CLOSED on unreadable — so a driver that only wrote when demand fired would leave the buy side
-// permanently blind on a fleet that never triggers, which is indistinguishable from the retirement
-// this file exists to undo.
+// CLOSED on unreadable, so a driver that only wrote when demand fired would leave the buy side
+// permanently blind on a fleet that never triggers.
 type OffGateDemandSink interface {
 	EmitOffGateDemand(playerID int, signal OffGateDemandSignal)
 }
@@ -71,12 +59,11 @@ type ExplorerFinder interface {
 // ExplorerDispatcher warps an explorer to an off-gate target.
 // adapters/expansion.ExplorerWarpDispatcher satisfies it.
 //
-// IT MUST NOT BLOCK, and the existing adapter does not: it resolves the arrival waypoint FIRST and
-// fails closed if the target system's waypoints are unknown, then runs the warp itself on a
-// background goroutine, so an unreachable destination never buys a wasted flight and a multi-minute
-// warp never holds the tick open. Both properties mirror RouteAcross, and both belong to the
-// ADAPTER rather than to this interface — a replacement must be checked for them, never assumed
-// from its name.
+// IT MUST NOT BLOCK, and the adapter does not: it resolves the arrival waypoint FIRST and fails
+// closed if the target system's waypoints are unknown, then runs the warp itself on a background
+// goroutine, so an unreachable destination never buys a wasted flight and a multi-minute warp never
+// holds the tick open. Both properties belong to the ADAPTER rather than to this interface — a
+// replacement must be checked for them, never assumed from its name.
 type ExplorerDispatcher interface {
 	DispatchExplorer(ctx context.Context, playerID int, shipSymbol string, target OffGateTarget) error
 }
@@ -99,14 +86,13 @@ func (o OffGatePorts) wired() bool {
 // The ranking inputs handed to the off-gate selector.
 //
 // PLAIN CONSTANTS, deliberately not knobs. They pace an exploration choice, not an economic one —
-// the money decision is the autosizer's and is guarded there — and the retired coordinator's own
-// config carried them only because it had a config to carry them in. A knob nobody sets is another
-// arming step, which is the failure mode this whole file exists to undo.
+// the money decision is the autosizer's and is guarded there — and a knob nobody sets is one more
+// arming step.
 //
-// WarpRangeFuel is bounded by the SHIP_EXPLORER's fuel capacity of 800 (read live from the shipyard
-// API), so a target this admits is one the hull can actually reach on a full tank; the warp executor
-// tops off before departure and independently refuses a leg that would strand
-// (ErrWarpWouldStrand), so this bound is the cheap first filter rather than the safety one.
+// offGateWarpRangeFuel is bounded by the SHIP_EXPLORER's fuel capacity, so a target it admits is
+// one the hull can reach on a full tank. The warp executor tops off before departure and
+// independently refuses a leg that would strand (ErrWarpWouldStrand), so this bound is the cheap
+// first filter rather than the safety one.
 const (
 	offGateWarpRangeFuel = 800
 	offGateValueWeight   = 100
@@ -118,10 +104,10 @@ const (
 //
 // THE BRIDGE LATCHES, and that is the whole reason this exists. ExplorerOffGateBridge keeps the last
 // signal it was handed and answers the autosizer from it on every read, forever, until something
-// overwrites it. So a pause that merely SKIPPED the emit would leave a `Demanded: true` raised
-// moments earlier standing indefinitely — and the autosizer, reading it, would buy a 769k explorer
-// while the operator had just said stop spending. Not emitting is not the same as not demanding, and
-// the difference is a purchase.
+// overwrites it. A pause that merely SKIPPED the emit would leave a `Demanded: true` raised moments
+// earlier standing indefinitely, and the autosizer reading it would buy an explorer while the
+// operator had just said stop spending. Not emitting is not the same as not demanding, and the
+// difference is a purchase.
 //
 // So the pause retracts. It is the one write the paused half of the tick makes, it costs a map
 // assignment, and it moves strictly in the money-safe direction (RULINGS #4): a zero signal can only
@@ -129,8 +115,8 @@ const (
 //
 // GUARDED ON THE SINK ALONE, not on wired(). A retraction needs nothing but somewhere to write, and
 // requiring the selector, the finder and the dispatcher too would mean a partial wiring gap left a
-// latched demand standing — the exact failure this function prevents, reintroduced through the
-// nil-check. The other three are only needed to RAISE demand, which the pause never does.
+// latched demand standing — the exact failure this function prevents. The other three are only
+// needed to RAISE demand, which the pause never does.
 func retractOffGateDemand(p ExpandPorts, playerID int) {
 	if p.OffGate.Demand == nil {
 		return
@@ -139,11 +125,9 @@ func retractOffGateDemand(p ExpandPorts, playerID int) {
 }
 
 // advanceOffGate is the off-gate slice: one call from AdvanceExpansion, after the gate-based passes
-// have had their turn.
-//
-// gateReachable is whether ANY outstanding charting target is within gate reach this tick. When it
-// is, this emits NO demand and returns — the cheap frontier is still moving and warp must not
-// compete with it.
+// have had their turn. gateReachable is whether ANY outstanding charting target is within gate
+// reach this tick; when it is, this emits NO demand and returns — the cheap frontier is still
+// moving and warp must not compete with it.
 func advanceOffGate(
 	ctx context.Context,
 	p ExpandPorts,
@@ -204,11 +188,11 @@ func advanceOffGate(
 
 // dispatchExplorer warps the idle explorer, if the fleet has one, at the selected target.
 //
-// NOTHING HERE BUYS. Before the autosizer has bought an explorer there is simply no hull to find,
-// and that is the ordinary state — the demand signal above is what asks for one, under every money
-// guard the autosizer applies. An explorer already in transit is not idle, so it is never
-// re-dispatched mid-warp; when it arrives it is idle again and the next tick sends it to the next
-// off-gate target, which is what makes it advance rather than park.
+// NOTHING HERE BUYS. Before the autosizer has bought an explorer there is no hull to find, and that
+// is the ordinary state — the demand signal above is what asks for one, under every money guard the
+// autosizer applies. An explorer already in transit is not idle, so it is never re-dispatched
+// mid-warp; when it arrives the next tick sends it on, which is what makes it advance rather than
+// park.
 func dispatchExplorer(
 	ctx context.Context,
 	off OffGatePorts,
