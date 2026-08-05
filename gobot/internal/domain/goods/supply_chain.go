@@ -247,7 +247,18 @@ func IsMineableRawMaterial(good string) bool {
 }
 
 // GetRequiredInputs returns the list of inputs required to produce a good.
-// Returns empty slice if the good is a raw material.
+// Returns empty slice if the good has no entry in the recipe map.
+//
+// This is the literal reading of ExportToImportMap and says nothing about whether the good is
+// obtainable any other way. Every ore and crystal HAS an entry ({EXPLOSIVES}), so a non-empty
+// result does NOT mean "not raw" — see IsMineableRawMaterial for that question.
+//
+// NOT INTERCHANGEABLE WITH services.GateTopology.Inputs, which answers "what must I still source"
+// and returns nil for a curated mineable raw material where this returns its recipe. Swapping this
+// in for that one makes a recursive walk descend an ore into the cyclic part of the map
+// (IRON_ORE -> EXPLOSIVES -> LIQUID_HYDROGEN -> MACHINERY -> IRON -> IRON_ORE) and stop
+// terminating. The two also differ on empty-vs-nil. Both contracts are load-bearing where they
+// are; neither moves (sp-4irrr).
 func GetRequiredInputs(good string) []string {
 	inputs, exists := ExportToImportMap[good]
 	if !exists {

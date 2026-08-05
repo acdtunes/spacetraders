@@ -12,9 +12,18 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 )
 
-// A good with no recipe entry, or an entry with no inputs, is RAW: it terminates
-// recursion and must be bought rather than fabricated. This is the rule that
-// replaces the deleted fabricate depth cap — recursion is bounded by the DAG.
+// A good with no recipe entry, or an entry with no inputs, is RAW: it terminates recursion and
+// must be bought rather than fabricated. This is the SECOND half of the rule; the first half is
+// the curated goods.IsMineableRawMaterial list, covered against the real recipe map in
+// gate_topology_raw_termination_test.go.
+//
+// This fixture cannot exercise that half — it omits IRON_ORE, so IRON_ORE is raw here by absence
+// rather than by curation, and the case below stays green under either rule. That is precisely
+// why the curated half needs the real map to test it (sp-4irrr).
+//
+// NOTE: this comment previously claimed the rule "replaces the deleted fabricate depth cap —
+// recursion is bounded by the DAG". The recipe map is CYCLIC and the cap is NOT deleted. See
+// IsRaw's doc comment.
 func TestGateTopology_IsRaw(t *testing.T) {
 	chain := map[string][]string{
 		"FAB_MATS":           {"IRON", "QUARTZ_SAND"},

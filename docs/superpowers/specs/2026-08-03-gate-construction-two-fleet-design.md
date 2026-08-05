@@ -54,6 +54,13 @@ Recursion terminates at **raw goods**, which are bought from whatever exports th
 > Termination must come from `goods.IsMineableRawMaterial`, from the cap, or from both — decide
 > in phase 3's plan, not here. `visited` alone would let every ore chain recurse five levels into
 > EXPLOSIVES first.
+>
+> **RESOLVED (sp-4irrr build lane): all three.** `GateTopology.IsRaw` now answers
+> `IsMineableRawMaterial(good) || no-recipe`, which is the primary terminator and cuts the cycle
+> at IRON_ORE; a walk over the real map from both gate materials is pinned as terminating in
+> `gate_topology_raw_termination_test.go`. Phase 3 still carries `visited` AND the depth cap —
+> the curated list is hand-maintained and the recipe map is game data, so neither is a proof of
+> acyclicity. Nothing here re-opens the deletion.
 
 ### Delivery fleet — buys terminal output, hauls to gate
 

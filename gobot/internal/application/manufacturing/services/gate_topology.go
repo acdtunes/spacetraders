@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/andrescamacho/spacetraders-go/internal/domain/goods"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 )
 
@@ -25,7 +26,7 @@ var _ marketResolver = (*MarketLocator)(nil)
 //
 // Waypoint numbering is regenerated every era, so any symbol literal in this layer is a bug
 // that survives exactly until the next era rolls. Goods are the invariant (every era's gate
-// needs FAB_MATS and ADVANCED_CIRCUITRY, and the recipe DAG is a game constant); locations
+// needs FAB_MATS and ADVANCED_CIRCUITRY, and the recipe graph is a game constant); locations
 // are discovered from market import/export data at runtime.
 type GateTopology struct {
 	markets        marketResolver
@@ -36,10 +37,42 @@ func NewGateTopology(markets marketResolver, supplyChainMap map[string][]string)
 	return &GateTopology{markets: markets, supplyChainMap: supplyChainMap}
 }
 
-// IsRaw reports whether good has no recipe and must therefore be bought rather than
-// fabricated. This is the recursion terminator: the recipe DAG bottoms out at raw goods,
-// which is why no artificial depth cap is needed to bound the walk.
+// IsRaw reports whether good must be bought or mined rather than fabricated.
+//
+// THE RECIPE MAP IS CYCLIC, NOT A DAG. It closes at least this loop:
+//
+//	IRON_ORE -> EXPLOSIVES -> LIQUID_HYDROGEN -> MACHINERY -> IRON -> IRON_ORE
+//
+// and both gate materials feed into it (FAB_MATS={IRON,QUARTZ_SAND}; ADVANCED_CIRCUITRY reaches
+// SILICON_CRYSTALS through ELECTRONICS/MICROPROCESSORS). staticSupplyChainDepth in
+// run_construction_coordinator_budget.go has documented this correctly all along.
+//
+// "Has no recipe" is therefore NOT "is raw", and this method used to conflate them. Every ore and
+// crystal in the game HAS a recipe entry — they are all {EXPLOSIVES} — so !hasRecipe called none
+// of the actual raw materials raw, IRON_ORE included. That is the literal good that stranded a
+// hauler at 80/80 in sp-b27a2. goods.IsMineableRawMaterial is the domain's curated answer to the
+// question this method is actually asking, and shouldBuyGood in supply_chain_resolver.go already
+// needed its own correction on top of hasRecipe for the same reason ("SILICON_CRYSTALS has a
+// recipe (needs EXPLOSIVES)").
+//
+// The no-recipe half is KEPT rather than replaced by the curated list: a good absent from the map
+// entirely is still raw. Dropping it would make every unknown or newly-added good look fabricable,
+// which is the opposite failure.
+//
+// The curated list is package-level and deliberately not injected alongside supplyChainMap. Which
+// goods are minable is a game constant, not per-instance config; a second seam would only let a
+// caller construct a topology whose two halves disagree.
+//
+// TERMINATION. This predicate is what actually bottoms out the recursion, and it is NOT sufficient
+// on its own: it cuts the loop above at IRON_ORE, but the map is data that ships with the game and
+// the curated list is hand-maintained, so neither is a proof of acyclicity. A recursive walk built
+// on this seam MUST still carry cycle detection, and THE FABRICATE DEPTH CAP MUST NOT BE DELETED
+// ON THE ARGUMENT THAT THE RECIPE GRAPH IS AN ACYCLIC DAG (sp-4irrr) — that argument is false, and
+// fabricate_depth.go's cap is doing real work, not acting as a redundant backstop.
 func (t *GateTopology) IsRaw(good string) bool {
+	if goods.IsMineableRawMaterial(good) {
+		return true
+	}
 	inputs, ok := t.supplyChainMap[good]
 	return !ok || len(inputs) == 0
 }
@@ -53,6 +86,22 @@ func (t *GateTopology) IsRaw(good string) bool {
 //
 // Raw goods keep returning a nil slice, not an empty one: IsRaw(g) is true exactly when
 // Inputs(g) is nil, and the recursion in later phases depends on that biconditional.
+//
+// NOT INTERCHANGEABLE WITH goods.GetRequiredInputs. The two answer different questions and are
+// kept deliberately distinct; substituting one for the other is a silent behaviour change, not a
+// refactor. They differ on BOTH axes:
+//
+//   - Shape: this returns nil for a raw good, GetRequiredInputs returns []string{}. Both of its
+//     idioms at every call site today are len()==0 and range, which are blind to the difference —
+//     so a swap would go unnoticed until something compared against nil.
+//   - CONTENT, which is the sharper hazard. Since sp-4irrr this method treats a curated mineable
+//     raw material as raw, so Inputs("IRON_ORE") is nil while GetRequiredInputs("IRON_ORE") is
+//     still {"EXPLOSIVES"}. A walk that swapped in GetRequiredInputs would descend an ore into the
+//     recipe cycle and stop terminating.
+//
+// GetRequiredInputs is the honest reading of the raw map and is correct for its four callers,
+// which ask "what does this recipe list" — a fabricate-eligibility question. This method answers
+// "what must I still source", which is the recursion's question. Neither contract moves.
 func (t *GateTopology) Inputs(good string) []string {
 	if t.IsRaw(good) {
 		return nil
