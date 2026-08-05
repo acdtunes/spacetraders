@@ -133,6 +133,30 @@ func (e *RouteExecutor) refuelShip(
 ) error {
 	logger := common.LoggerFromContext(ctx)
 
+	// sp-l7zha: a tank that is already at capacity has nothing to buy, so the
+	// whole dock/refuel/orbit trio is skipped before it reaches the API. The
+	// incident hull read 600/600 locally (and an impossible 729/600 live) and
+	// still docked, called refuel, ate a transient 500, retried, and rerouted
+	// 144 units across the system in DRIFT for fuel it did not need. Placed
+	// alongside the no-fuel-station skip below because it is the same shape of
+	// precondition: a refuel that cannot accomplish anything is not attempted.
+	//
+	// This deliberately reads the LOCAL tank, which is the same signal
+	// hasSufficientFuelForFirstLeg and the routing engine already plan against;
+	// it introduces no new trust. A zero-capacity hull (a probe) satisfies 0>=0
+	// and skips, which is correct - it can hold no fuel at all.
+	if fuel := ship.Fuel(); fuel != nil && fuel.Current >= fuel.Capacity {
+		logger.Log("INFO", "Ship already at fuel capacity - skipping refuel", map[string]interface{}{
+			"ship_symbol":   ship.ShipSymbol(),
+			"action":        "refuel_skipped",
+			"waypoint":      ship.CurrentLocation().Symbol,
+			"reason":        "tank_full",
+			"fuel_current":  fuel.Current,
+			"fuel_capacity": fuel.Capacity,
+		})
+		return nil
+	}
+
 	// GRACEFUL DEGRADATION: Skip refuel if current location has no fuel station
 	// This handles stale waypoint cache data or routing service errors
 	if !ship.CurrentLocation().HasFuel {

@@ -17,16 +17,32 @@ import (
 // the RETRY-AT-THE-SAME-WAYPOINT leg only; once exhausted, refuelShipWithRetryCore
 // hands off to refuelAtAlternateStop rather than retrying the same failing waypoint
 // indefinitely.
+//
+// The budget is WALL CLOCK, not attempts (sp-l7zha). It was three attempts, and
+// because each backoff doubled, that bounded the wait at roughly five minutes
+// while naming a number that says nothing about time — retuning the backoff base
+// would have silently moved the real budget. Escalating is enormously more
+// expensive than waiting: on the staging incident the alternate-stop reroute cost
+// a 41-minute DRIFT crawl and blocked the whole serial contract pipeline behind
+// it, against a 500 that clears on its own. So the loop keeps probing until the
+// elapsed budget is genuinely spent, and the backoff interval is capped so the
+// tail of that budget stays a series of probes rather than one long sleep.
 const (
-	// DefaultRefuelMaxAttempts is the number of refuel attempts made at the
-	// original waypoint before rerouting to an alternate fuel stop.
-	DefaultRefuelMaxAttempts = 3
+	// DefaultRefuelRetryBudget is the total wall-clock time a RETRYABLE refuel
+	// failure is retried at the original waypoint before rerouting to an
+	// alternate fuel stop.
+	DefaultRefuelRetryBudget = 10 * time.Minute
 
-	// DefaultRefuelBackoffBase is the base backoff duration between refuel
-	// attempts, doubling after each failed attempt (attempt 1 waits
-	// 1xBase, attempt 2 waits 2xBase; attempt 3 exhausts the budget with no
-	// further wait before rerouting).
+	// DefaultRefuelBackoffBase is the first backoff duration between refuel
+	// attempts. It doubles after each failed attempt until it reaches
+	// DefaultRefuelBackoffMax.
 	DefaultRefuelBackoffBase = 2 * time.Second
+
+	// DefaultRefuelBackoffMax caps a single backoff interval. Unbounded
+	// doubling from the 2s base passes four minutes by the eighth interval,
+	// which would re-probe a transient 500 only a handful of times across the
+	// whole budget and leave recovery to luck.
+	DefaultRefuelBackoffMax = 60 * time.Second
 )
 
 // ErrRefuelUnrecoverable is returned when a refuel step cannot complete even
@@ -40,13 +56,14 @@ type ErrRefuelUnrecoverable struct {
 	ShipSymbol string
 	Waypoint   string
 	Attempts   int
+	Elapsed    time.Duration
 	Cause      error
 }
 
 func (e *ErrRefuelUnrecoverable) Error() string {
 	return fmt.Sprintf(
-		"refuel unrecoverable for %s at %s after %d attempt(s), alternate-stop reroute also failed: %v",
-		e.ShipSymbol, e.Waypoint, e.Attempts, e.Cause,
+		"refuel unrecoverable for %s at %s after %d attempt(s) over %s, alternate-stop reroute also failed: %v",
+		e.ShipSymbol, e.Waypoint, e.Attempts, e.Elapsed, e.Cause,
 	)
 }
 
@@ -93,13 +110,20 @@ func (e *RouteExecutor) refuelShipWithRetry(
 	playerID shared.PlayerID,
 	returnToOrbit bool,
 ) error {
-	return e.refuelShipWithRetryCore(ctx, ship, playerID, DefaultRefuelMaxAttempts, DefaultRefuelBackoffBase, returnToOrbit)
+	return e.refuelShipWithRetryCore(ctx, ship, playerID, DefaultRefuelRetryBudget, DefaultRefuelBackoffBase, returnToOrbit)
 }
 
-// refuelShipWithRetryCore is refuelShipWithRetry's configurable core. Tests
-// can inject a smaller maxAttempts to keep fixtures short; backoffBase does
-// not need to be shrunk for tests since e.clock is expected to be a
-// shared.MockClock whose Sleep advances time instantly without blocking.
+// refuelShipWithRetryCore is refuelShipWithRetry's configurable core. Tests can
+// inject a smaller budget to keep fixtures short; neither budget nor backoffBase
+// needs shrinking for tests that wire a shared.MockClock, whose Sleep advances
+// time instantly without blocking.
+//
+// budget is the total wall-clock time a RETRYABLE failure keeps being retried at
+// the ORIGINAL waypoint. It is measured from e.clock, so the loop always makes at
+// least one more attempt once the budget has fully elapsed rather than stopping
+// short of it — the guarantee callers actually need is a MINIMUM time spent
+// waiting out a transient upstream failure, since the escalation below is far more
+// expensive than the wait.
 //
 // returnToOrbit is threaded straight to refuelShip: the same-waypoint retry
 // loop honours the caller's stay-docked choice. The alternate-stop reroute
@@ -111,15 +135,19 @@ func (e *RouteExecutor) refuelShipWithRetryCore(
 	ctx context.Context,
 	ship *domainNavigation.Ship,
 	playerID shared.PlayerID,
-	maxAttempts int,
+	budget time.Duration,
 	backoffBase time.Duration,
 	returnToOrbit bool,
 ) error {
 	logger := common.LoggerFromContext(ctx)
 	origin := ship.CurrentLocation()
+	start := e.clock.Now()
 
 	var lastErr error
-	for attempt := 1; attempt <= maxAttempts; attempt++ {
+	attempt := 0
+	backoff := capRefuelBackoff(backoffBase)
+	for {
+		attempt++
 		err := e.refuelShip(ctx, ship, playerID, returnToOrbit)
 		if err == nil {
 			return nil
@@ -137,27 +165,51 @@ func (e *RouteExecutor) refuelShipWithRetryCore(
 			return err
 		}
 
+		// A cancelled context means the caller is being torn down. Sleeping out
+		// the rest of a ten-minute budget would hold the hull for the whole of
+		// it, so surface the refuel failure now instead — and never spend the
+		// reroute's navigate on a dying container.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			logger.Log("WARNING", "Refuel retry budget abandoned - context cancelled", map[string]interface{}{
+				"ship_symbol": ship.ShipSymbol(),
+				"action":      "refuel_retry_cancelled",
+				"waypoint":    origin.Symbol,
+				"attempt":     attempt,
+				"elapsed":     e.clock.Now().Sub(start).String(),
+				"error":       err.Error(),
+			})
+			return err
+		}
+
+		elapsed := e.clock.Now().Sub(start)
+		if elapsed >= budget {
+			break
+		}
+
 		logger.Log("WARNING", "Transient refuel failure, retrying with backoff", map[string]interface{}{
 			"ship_symbol":  ship.ShipSymbol(),
 			"action":       "refuel_retry",
 			"waypoint":     origin.Symbol,
 			"attempt":      attempt,
-			"max_attempts": maxAttempts,
+			"elapsed":      elapsed.String(),
+			"retry_budget": budget.String(),
+			"backoff":      backoff.String(),
 			"error":        err.Error(),
 		})
 
-		if attempt < maxAttempts {
-			backoff := backoffBase * time.Duration(int64(1)<<uint(attempt-1))
-			e.clock.Sleep(backoff)
-		}
+		e.clock.Sleep(backoff)
+		backoff = nextRefuelBackoff(backoff)
 	}
 
-	logger.Log("ERROR", "Refuel retries exhausted at waypoint, attempting alternate fuel stop", map[string]interface{}{
-		"ship_symbol": ship.ShipSymbol(),
-		"action":      "refuel_retries_exhausted",
-		"waypoint":    origin.Symbol,
-		"attempts":    maxAttempts,
-		"error":       lastErr.Error(),
+	elapsed := e.clock.Now().Sub(start)
+	logger.Log("ERROR", "Refuel retry budget exhausted at waypoint, attempting alternate fuel stop", map[string]interface{}{
+		"ship_symbol":  ship.ShipSymbol(),
+		"action":       "refuel_retries_exhausted",
+		"waypoint":     origin.Symbol,
+		"attempts":     attempt,
+		"elapsed":      elapsed.String(),
+		"retry_budget": budget.String(),
+		"error":        lastErr.Error(),
 	})
 
 	if rerouteErr := e.refuelAtAlternateStop(ctx, ship, playerID, origin); rerouteErr != nil {
@@ -170,12 +222,30 @@ func (e *RouteExecutor) refuelShipWithRetryCore(
 		return &ErrRefuelUnrecoverable{
 			ShipSymbol: ship.ShipSymbol(),
 			Waypoint:   origin.Symbol,
-			Attempts:   maxAttempts,
+			Attempts:   attempt,
+			Elapsed:    elapsed,
 			Cause:      lastErr,
 		}
 	}
 
 	return nil
+}
+
+// nextRefuelBackoff doubles the interval up to DefaultRefuelBackoffMax. Growth is
+// computed from the PREVIOUS interval rather than from the attempt number, so it
+// cannot overflow on a long budget the way a 1<<attempt shift does (the <= 0 arm
+// catches a wrap should the base ever be set absurdly high).
+func nextRefuelBackoff(current time.Duration) time.Duration {
+	return capRefuelBackoff(current * 2)
+}
+
+// capRefuelBackoff holds a single backoff interval at DefaultRefuelBackoffMax so
+// the invariant covers the FIRST interval too, not only the doubled ones.
+func capRefuelBackoff(d time.Duration) time.Duration {
+	if d > DefaultRefuelBackoffMax || d <= 0 {
+		return DefaultRefuelBackoffMax
+	}
+	return d
 }
 
 // refuelAtAlternateStop reroutes ship to the nearest alternate fuel-capable

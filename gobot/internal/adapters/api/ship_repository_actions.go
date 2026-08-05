@@ -144,6 +144,19 @@ func (r *ShipRepository) Refuel(ctx context.Context, ship *navigation.Ship, play
 		return nil, fmt.Errorf("failed to find player: %w", err)
 	}
 
+	// sp-l7zha: never ask the pump for more than the tank can hold. A metered
+	// request past the headroom is narrowed to it, and one against a tank with no
+	// headroom left is not sent at all - buying zero units costs an API call and
+	// a transaction to accomplish nothing, and it is one of the ways a hull ends
+	// up in a refuel-retry storm over fuel it does not need.
+	units, skip := clampRefuelUnits(ship, units)
+	if skip {
+		return &navigation.RefuelResult{
+			FuelCurrent:  ship.Fuel().Current,
+			FuelCapacity: ship.Fuel().Capacity,
+		}, nil
+	}
+
 	// Call API to refuel ship
 	refuelResult, err := r.apiClient.RefuelShip(ctx, ship.ShipSymbol(), player.Token, units)
 	if err != nil {
@@ -165,14 +178,63 @@ func (r *ShipRepository) Refuel(ctx context.Context, ship *navigation.Ship, play
 	return refuelResult, nil
 }
 
+// clampRefuelUnits narrows a metered refuel request to what the tank can still
+// take, and reports whether the request should be dropped entirely.
+//
+// Only an EXPLICIT unit count is touched. nil means "fill the tank" - the whole
+// fleet's refuel path sends nil, and the API tops up to capacity and no further -
+// so rewriting nil into a number would hand every fleet refuel over to whatever
+// the local row happened to believe about the tank. It is left alone.
+//
+// The clamp only ever NARROWS a request (RULINGS #4: a money guard fails closed
+// and is never weakened). A tank whose fuel state is unknown is passed through
+// unchanged rather than treated as full: refusing to refuel on missing
+// information strands a hull, which is far worse than one redundant request, and
+// "we have not looked" is not evidence that there is no headroom.
+func clampRefuelUnits(ship *navigation.Ship, units *int) (clamped *int, skip bool) {
+	fuel := ship.Fuel()
+	if units == nil || fuel == nil {
+		return units, false
+	}
+
+	headroom := fuel.Capacity - fuel.Current
+	if headroom <= 0 {
+		log.Printf("WARNING [refuel_units_clamped] ship=%s requested_units=%d fuel=%d/%d: tank has no headroom, skipping the refuel call entirely",
+			ship.ShipSymbol(), *units, fuel.Current, fuel.Capacity)
+		return nil, true
+	}
+	if *units > headroom {
+		log.Printf("WARNING [refuel_units_clamped] ship=%s requested_units=%d clamped_units=%d fuel=%d/%d: a refuel was requested for more units than the tank can take",
+			ship.ShipSymbol(), *units, headroom, fuel.Current, fuel.Capacity)
+		return &headroom, false
+	}
+	return units, false
+}
+
 // adoptRefuelledFuel folds the post-refuel tank into the ship. How much fuel a
 // refuel actually lands is the API's to decide - market supply and its 100-unit
 // blocks both bound it - so the response is authoritative over the requested fill,
 // the same way Navigate and Warp adopt their in-band fuel. A response carrying no
 // fuel state (mock/older API) falls back to what was asked for.
+//
+// sp-l7zha: the API has been observed reporting an IMPOSSIBLE tank right after a
+// refuel - 729/600, 726/600, 613/600 on three separate hulls. The clamp to
+// capacity itself is not new (shared.ReconstructFuel has always applied it, which
+// is why those rows read 600/600 locally while the API read 729/600) but it was
+// SILENT, so an impossible tank left no trace anywhere an operator would look
+// while the hull it happened to went on to burn 41 minutes on a refuel it did not
+// need. The clamp is now applied HERE, explicitly, and said out loud: local, so it
+// cannot be undone by a change to a distant value object, and visible, so the
+// anomaly is greppable.
 func adoptRefuelledFuel(ship *navigation.Ship, result *navigation.RefuelResult, units *int) error {
 	if result.FuelCapacity > 0 {
-		return ship.UpdateFuelFromAPI(result.FuelCurrent, result.FuelCapacity)
+		current := result.FuelCurrent
+		if current > result.FuelCapacity {
+			log.Printf("WARNING [fuel_over_capacity] ship=%s api_fuel_current=%d api_fuel_capacity=%d clamped_to=%d: the refuel API reported more fuel than the tank can hold; the impossible value is clamped and never persisted",
+				ship.ShipSymbol(), result.FuelCurrent, result.FuelCapacity, result.FuelCapacity)
+			current = result.FuelCapacity
+		}
+		return ship.UpdateFuelFromAPI(current, result.FuelCapacity)
 	}
 	if units != nil {
 		return ship.Refuel(*units)

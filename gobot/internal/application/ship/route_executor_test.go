@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/mediator"
 	"github.com/andrescamacho/spacetraders-go/internal/application/ship/types"
@@ -67,6 +68,34 @@ type recordingMediator struct {
 	// - only the real handler does that - so a location-keyed queue would not
 	// observe a simulated reroute anyway.
 	refuelErrors []error
+
+	// refuelAlwaysErr, when non-nil, fails EVERY RefuelShipCommand with it -
+	// an UNBOUNDED failure source. sp-l7zha's retry budget is bounded by
+	// elapsed time rather than attempt count, so a finite refuelErrors queue
+	// can no longer saturate it: the retry loop would simply outlast the queue
+	// and succeed, and every assertion about exhaustion would pass vacuously.
+	refuelAlwaysErr error
+
+	// refuelFailsUntilReroute narrows refuelAlwaysErr to the ORIGIN waypoint:
+	// refuels fail until the first NavigateDirectCommand is sent and succeed
+	// after it. That models a broken origin fuel station plus a healthy
+	// alternate, which the location-blind queue above cannot express (see the
+	// refuelErrors note). Ignored unless refuelAlwaysErr is set.
+	refuelFailsUntilReroute bool
+
+	// clock, when set, stamps refuelTimes/navigateTimes as commands arrive so a
+	// test can assert WHEN a step happened, not just that it happened. The
+	// executor shares this MockClock, whose Sleep advances it instantly.
+	clock         *shared.MockClock
+	refuelTimes   []time.Time
+	navigateTimes []time.Time
+}
+
+// stamp records the current mock time into dst when a clock is wired.
+func (m *recordingMediator) stamp(dst *[]time.Time) {
+	if m.clock != nil {
+		*dst = append(*dst, m.clock.Now())
+	}
 }
 
 func (m *recordingMediator) Send(_ context.Context, request mediator.Request) (mediator.Response, error) {
@@ -78,6 +107,10 @@ func (m *recordingMediator) Send(_ context.Context, request mediator.Request) (m
 	case *types.DockShipCommand:
 		return &types.DockShipResponse{Status: "docked"}, nil
 	case *types.RefuelShipCommand:
+		m.stamp(&m.refuelTimes)
+		if m.refuelAlwaysErr != nil && (!m.refuelFailsUntilReroute || len(m.navigateCommands()) == 0) {
+			return nil, m.refuelAlwaysErr
+		}
 		if len(m.refuelErrors) > 0 {
 			err := m.refuelErrors[0]
 			m.refuelErrors = m.refuelErrors[1:]
@@ -88,6 +121,7 @@ func (m *recordingMediator) Send(_ context.Context, request mediator.Request) (m
 	case *types.SetFlightModeCommand:
 		return &types.SetFlightModeResponse{Status: "set", Mode: cmd.Mode}, nil
 	case *types.NavigateDirectCommand:
+		m.stamp(&m.navigateTimes)
 		mode := flightModeFromName(cmd.FlightMode)
 		distance := m.distByDest[cmd.Destination]
 		cost := mode.FuelCost(distance)
@@ -133,6 +167,29 @@ func (m *recordingMediator) refuelAttempts() int {
 		}
 	}
 	return count
+}
+
+// lastIndexOfRefuel and firstIndexOfNavigate locate commands in send order so a
+// test can assert that the refuel which finally succeeded happened AFTER the
+// alternate-stop reroute. Both return -1 when absent, which makes a missing
+// command fail the ordering comparison rather than silently satisfy it.
+func (m *recordingMediator) lastIndexOfRefuel() int {
+	idx := -1
+	for i, c := range m.commands {
+		if _, ok := c.(*types.RefuelShipCommand); ok {
+			idx = i
+		}
+	}
+	return idx
+}
+
+func (m *recordingMediator) firstIndexOfNavigate() int {
+	for i, c := range m.commands {
+		if _, ok := c.(*types.NavigateDirectCommand); ok {
+			return i
+		}
+	}
+	return -1
 }
 
 // flightModeFromName maps the executor's mode name (FlightMode.Name()) back to
@@ -466,11 +523,13 @@ func TestRefuelShipWithRetry_RetriesExhaustedReroutesToAlternateFuelStop(t *test
 		distByDest: map[string]float64{
 			alt.Symbol: 30,
 		},
-		refuelErrors: []error{
-			fmt.Errorf("max retries exceeded: server error (500)"),
-			fmt.Errorf("max retries exceeded: server error (500)"),
-			fmt.Errorf("max retries exceeded: server error (500)"),
-		},
+		// The origin's fuel station is broken for as long as the ship is there
+		// and the alternate works. Since sp-l7zha the retry budget is bounded by
+		// elapsed time, so a finite error queue would simply be outlasted and
+		// the refuel would succeed at the ORIGIN, never exercising the reroute
+		// this test exists to pin.
+		refuelAlwaysErr:         fmt.Errorf("max retries exceeded: server error (500)"),
+		refuelFailsUntilReroute: true,
 	}
 	waypointRepo := &fakeWaypointRepo{
 		bySystemTrait: map[string][]*shared.Waypoint{
@@ -500,8 +559,18 @@ func TestRefuelShipWithRetry_RetriesExhaustedReroutesToAlternateFuelStop(t *test
 		t.Fatalf("expected the last-resort rescue to crawl to the alternate in DRIFT, got %s", navCmds[0].FlightMode)
 	}
 
-	if got := fake.refuelAttempts(); got != 4 {
-		t.Fatalf("expected 4 refuel attempts (3 exhausted at origin + 1 success at the alternate), got %d", got)
+	// The refuel that finally succeeded must be the one AFTER the reroute. An
+	// attempt COUNT can no longer express that (the elapsed-time budget makes
+	// the number of origin attempts a function of the backoff schedule), and
+	// ordering is the stronger statement anyway: it pins that the ship was
+	// fuelled at the alternate, not at the origin that kept failing.
+	navigateIdx, lastRefuelIdx := fake.firstIndexOfNavigate(), fake.lastIndexOfRefuel()
+	if navigateIdx < 0 || lastRefuelIdx < navigateIdx {
+		t.Fatalf("the successful refuel (command %d) did not follow the reroute navigate (command %d): the ship was never fuelled at the alternate",
+			lastRefuelIdx, navigateIdx)
+	}
+	if got := fake.refuelAttempts(); got < 2 {
+		t.Fatalf("expected the origin attempts plus one at the alternate, got %d refuels in total", got)
 	}
 }
 
@@ -530,11 +599,10 @@ func TestRefuelShipWithRetry_BothRetryAndRerouteExhaustedReturnsParkableError(t 
 	fake := &recordingMediator{
 		fuel:     50,
 		capacity: 400,
-		refuelErrors: []error{
-			fmt.Errorf("max retries exceeded: server error (500)"),
-			fmt.Errorf("max retries exceeded: server error (500)"),
-			fmt.Errorf("max retries exceeded: server error (500)"),
-		},
+		// Unbounded: the elapsed-time budget (sp-l7zha) outlasts any finite
+		// error queue, so exhaustion can only be reached against a failure
+		// source that never runs out.
+		refuelAlwaysErr: fmt.Errorf("max retries exceeded: server error (500)"),
 	}
 	waypointRepo := &fakeWaypointRepo{
 		bySystemTrait: map[string][]*shared.Waypoint{
@@ -559,16 +627,11 @@ func TestRefuelShipWithRetry_BothRetryAndRerouteExhaustedReturnsParkableError(t 
 	if unrecoverable.Waypoint != origin.Symbol {
 		t.Errorf("expected Waypoint %s, got %s", origin.Symbol, unrecoverable.Waypoint)
 	}
-	if unrecoverable.Attempts != DefaultRefuelMaxAttempts {
-		t.Errorf("expected Attempts %d, got %d", DefaultRefuelMaxAttempts, unrecoverable.Attempts)
+	if unrecoverable.Attempts != fake.refuelAttempts() {
+		t.Errorf("expected Attempts to report the %d refuels actually sent, got %d", fake.refuelAttempts(), unrecoverable.Attempts)
 	}
 	if unrecoverable.Cause == nil || !strings.Contains(unrecoverable.Cause.Error(), "max retries exceeded") {
 		t.Errorf("expected Cause to preserve the last transient refuel error, got: %v", unrecoverable.Cause)
-	}
-
-	if got := fake.refuelAttempts(); got != DefaultRefuelMaxAttempts {
-		t.Fatalf("expected exactly %d refuel attempts (all at origin; no fuel-capable alternate to retry at), got %d",
-			DefaultRefuelMaxAttempts, got)
 	}
 	if len(fake.navigateCommands()) != 0 {
 		t.Fatalf("expected no reroute navigation since no fuel-capable alternate exists, got %d navigate commands", len(fake.navigateCommands()))

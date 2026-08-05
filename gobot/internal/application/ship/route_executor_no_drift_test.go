@@ -53,8 +53,13 @@ func TestExecuteRoute_LegTooExpensiveForCruiseRefuelsOrFails(t *testing.T) {
 		{
 			// A leg costing 200 at CRUISE against a 100-unit tank is unflyable no
 			// matter how much fuel is bought: the planner owes a refuel stop. Saying
-			// so beats accepting the DRIFT the plan asked for. Both the departure
-			// top-off and the affordability backstop try the pump first.
+			// so beats accepting the DRIFT the plan asked for.
+			//
+			// ONE refuel call, not two. The departure top-off fills 95->100; the
+			// affordability backstop then asks for a refuel the tank cannot take
+			// and is skipped at the fullness precondition (sp-l7zha) instead of
+			// spending a second API call on a purchase of zero units. The outcome
+			// is unchanged - still a loud failure, still zero legs flown.
 			name:            "a planned DRIFT leg longer than the tank fails loudly rather than crawling",
 			plannedMode:     shared.FlightModeDrift,
 			distance:        200,
@@ -62,7 +67,7 @@ func TestExecuteRoute_LegTooExpensiveForCruiseRefuelsOrFails(t *testing.T) {
 			shipCapacity:    100,
 			originHasFuel:   true,
 			wantErr:         "insufficient fuel to depart",
-			wantRefuelCalls: 2,
+			wantRefuelCalls: 1,
 			wantLegModes:    nil,
 		},
 	}

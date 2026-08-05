@@ -20,9 +20,18 @@ import (
 type refuelFakeAPIClient struct {
 	domainPorts.APIClient
 	result *navigation.RefuelResult
+
+	// calls counts RefuelShip invocations and gotUnits records the units
+	// argument of each, so a test can assert what actually reached the wire -
+	// including that nothing did (sp-l7zha acceptance #4: a request must never
+	// ask for more units than the tank can take).
+	calls    int
+	gotUnits []*int
 }
 
-func (f *refuelFakeAPIClient) RefuelShip(_ context.Context, _, _ string, _ *int) (*navigation.RefuelResult, error) {
+func (f *refuelFakeAPIClient) RefuelShip(_ context.Context, _, _ string, units *int) (*navigation.RefuelResult, error) {
+	f.calls++
+	f.gotUnits = append(f.gotUnits, units)
 	return f.result, nil
 }
 
