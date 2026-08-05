@@ -87,3 +87,6 @@ logs/
 # are unaffected.
 /issues.jsonl
 staging/
+
+# Local scratch: DB snapshots, one-off dumps. Never committed.
+scratchpad/
