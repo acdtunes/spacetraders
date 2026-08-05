@@ -420,7 +420,7 @@ func (e *ProductionExecutor) buyInputTranche(
 	if parked {
 		return nil, true, nil
 	}
-	defer e.releaseSpendReservation(ctx, reservationID)
+	defer e.releaseSpendReservation(ctx, playerID, reservationID)
 
 	common.LoggerFromContext(ctx).Log("INFO", fmt.Sprintf("Purchasing %d units of %s (cargo space: %d, trade_volume: %d, acquired so far: %d)", purchaseCmd.Units, fill.good, fill.availableSpace(), fill.source.TradeVolume, fill.acquired), nil)
 

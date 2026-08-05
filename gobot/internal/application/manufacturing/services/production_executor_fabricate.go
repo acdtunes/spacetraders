@@ -567,7 +567,7 @@ func (e *ProductionExecutor) purchaseFabricatedOutput(
 	// Same dock-retry guard as the raw-buy path: a transient "must be docked" re-docks and retries
 	// rather than crashing the container. The reservation is released on BOTH paths.
 	response, err := e.purchaseWithDockRetry(ctx, purchaseCmd)
-	e.releaseSpendReservation(ctx, reservationID)
+	e.releaseSpendReservation(ctx, playerID.Value(), reservationID)
 	if err != nil {
 		return 0, 0, fmt.Errorf("failed to purchase fabricated output: %w", err)
 	}

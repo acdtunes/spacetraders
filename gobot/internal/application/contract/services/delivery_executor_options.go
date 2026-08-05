@@ -50,3 +50,24 @@ func WithSourceBuyFloor() DeliveryExecutorOption {
 		e.enforceSourceBuyFloor = true
 	}
 }
+
+// WithConcurrentSpendCap wires the CROSS-OPERATION concurrent spend cap onto the contract
+// source-buy (sp-ps2oc acceptance 4).
+//
+// WithSourceBuyFloor above is a PER-BUY guard: it reads live treasury and sizes this lot
+// against the reserve. It cannot see a sibling's spend that has not committed yet, and a
+// contract hauler does not buy alone — construction_supply, contract and tour all draw on ONE
+// treasury (in the incident window, PURCHASE_CARGO totalled -761,919 against SELL_CARGO
+// +326,938 with no arbitration between them). Capping construction against itself would leave
+// a contract buy free to race the same float.
+//
+// The ledger passed here must be THE SAME one the construction executor holds. Two ledgers are
+// two budgets, and the aggregate breach simply reappears one level up.
+//
+// A nil ledger is a no-op, so callers may forward optional wiring unconditionally and every
+// existing test constructing an executor without it is byte-identical.
+func WithConcurrentSpendCap(ledger ConcurrentSpendLedger) DeliveryExecutorOption {
+	return func(e *DeliveryExecutor) {
+		e.spendLedger = ledger
+	}
+}

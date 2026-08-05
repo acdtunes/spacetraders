@@ -50,6 +50,26 @@ type DeliveryExecutor struct {
 	// caller/test is byte-identical; production wires it so a source-buy can never
 	// silently land treasury above 0 but under the immutable reserve.
 	enforceSourceBuyFloor bool
+
+	// spendLedger is the CROSS-OPERATION concurrent spend cap (sp-ps2oc). The floor above is
+	// per-buy and cannot see a sibling's uncommitted spend; this serialises the contract
+	// source-buy against construction_supply and every other spender on the same treasury.
+	// nil disables it — the optional-port contract every existing test relies on — and the
+	// daemon wires the SAME ledger instance it gives the construction executor.
+	spendLedger ConcurrentSpendLedger
+}
+
+// ConcurrentSpendLedger is the contract side's view of the shared spend cap. Declared here,
+// at the consumer, so this package takes no dependency on the manufacturing package that
+// declares the identical port; *persistence.SpendReservationLedgerGORM satisfies both.
+//
+// Reserve READS THE BUDGET ITSELF through readBudget rather than accepting a pre-read balance:
+// a balance read before the call and a SUM taken during it can describe different instants,
+// and a sibling that commits and releases in between falls into neither. See the
+// implementation for the full argument.
+type ConcurrentSpendLedger interface {
+	Reserve(ctx context.Context, playerID int, containerID string, projectedCost int, readBudget func(context.Context) (credits int64, reserveFloor int, err error)) (reservationID string, ok bool, err error)
+	Release(ctx context.Context, playerID int, reservationID string) error
 }
 
 // NewDeliveryExecutor creates a new delivery executor service

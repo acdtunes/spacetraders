@@ -19,6 +19,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
+	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
+
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
@@ -68,17 +71,25 @@ type recordingSpendLedger struct {
 	err        error
 }
 
-func (l *recordingSpendLedger) Reserve(_ context.Context, _ int, _ string, _, liveCredits, reserveFloor int) (string, bool, error) {
+// Reserve resolves readBudget and records what it produced. The balance is no longer passed
+// in — the real ledger reads it inside its own critical section (sp-ps2oc) — so the figure this
+// test is about now arrives through the callback. Invoking it is mandatory, not incidental: a
+// fake that skipped it would leave the cap's whole budget resolution unexercised.
+func (l *recordingSpendLedger) Reserve(ctx context.Context, _ int, _ string, _ int, readBudget func(context.Context) (int64, int, error)) (string, bool, error) {
 	l.calls++
-	l.gotCredits = liveCredits
+	credits, reserveFloor, err := readBudget(ctx)
+	l.gotCredits = int(credits)
 	l.gotReserve = reserveFloor
+	if err != nil {
+		return "", false, err
+	}
 	if l.err != nil {
 		return "", false, l.err
 	}
 	return "reservation-1", l.ok, nil
 }
 
-func (l *recordingSpendLedger) Release(_ context.Context, _ string) error { return nil }
+func (l *recordingSpendLedger) Release(_ context.Context, _ int, _ string) error { return nil }
 
 func (l *recordingSpendLedger) ExpireStale(_ context.Context, _ time.Duration) (int, error) {
 	return 0, nil
@@ -216,8 +227,17 @@ func TestFactoryConcurrentSpendCap_ReadsTheInjectedTreasuryAndMakesNoAPICall(t *
 	}
 }
 
-// RULINGS #4 at the cap: an unreadable treasury PARKS, and the ledger is never consulted —
-// a cap that reserved against a balance nobody read would be worse than no cap at all.
+// RULINGS #4 at the cap: an unreadable treasury PARKS and NO RESERVATION IS TAKEN — a cap that
+// reserved against a balance nobody read would be worse than no cap at all.
+//
+// The balance read moved INSIDE Reserve (sp-ps2oc): reading it out here and passing a value in
+// let a sibling commit and release in the gap, landing its spend in neither the snapshot nor
+// the SUM. So the ledger is now legitimately entered on this path — what must never happen is
+// that it PERSISTS a reservation. This test therefore asserts the outcome (no reservation, buy
+// parked, no usable balance ever handed over) rather than the old proxy of "zero Reserve
+// calls", which described where the read lived rather than what the guard guarantees.
+// TestFactoryConcurrentSpendCap_TreasuryErrorPersistsNoReservation below pins the same claim
+// against the REAL ledger, where "no reservation" is a row count and cannot be faked.
 func TestFactoryConcurrentSpendCap_TreasuryErrorParksAndNeverReservesBlind(t *testing.T) {
 	ledger := &recordingSpendLedger{ok: true}
 	e := &ProductionExecutor{
@@ -234,8 +254,40 @@ func TestFactoryConcurrentSpendCap_TreasuryErrorParksAndNeverReservesBlind(t *te
 	if resID != "" {
 		t.Fatalf("a parked buy must hold no reservation, got %q", resID)
 	}
-	if ledger.calls != 0 {
-		t.Fatalf("the cap must never reserve against an unread balance, got %d Reserve calls", ledger.calls)
+	// The cap must never obtain a usable balance from a failed read. A guard that fell back to
+	// zero, or to the API client's 999,999,999, would look identical to a successful park here
+	// without this assertion — and the second of those would wave every buy through.
+	if ledger.gotCredits != 0 {
+		t.Fatalf("a failed treasury read must yield NO balance to reserve against, got %d", ledger.gotCredits)
+	}
+}
+
+// The same claim where it cannot be faked: against the REAL ledger, an unreadable treasury
+// must leave ZERO rows behind. A reservation persisted on this path would hold budget that no
+// release ever frees (the caller parked and holds no id), wedging every other spender until
+// the staleness sweep — a guard turning itself into the outage it exists to prevent.
+func TestFactoryConcurrentSpendCap_TreasuryErrorPersistsNoReservation(t *testing.T) {
+	db, err := database.NewTestConnection()
+	if err != nil {
+		t.Fatalf("test db: %v", err)
+	}
+	e := &ProductionExecutor{
+		apiClient:   &countingAPIClient{credits: 999_999_999},
+		treasury:    &routingFakeTreasury{err: errors.New("ledger stale and live read failed")},
+		spendLedger: persistence.NewSpendReservationLedger(db),
+	}
+
+	resID, parked := e.reserveConcurrentSpendOrPark(treasuryRoutingCtx(), 7, 100, "X1-TEST-MARKET", "IRON")
+
+	if !parked || resID != "" {
+		t.Fatalf("an unreadable treasury must park with no reservation, got parked=%v id=%q", parked, resID)
+	}
+	var rows int64
+	if err := db.Model(&persistence.SpendReservationModel{}).Count(&rows).Error; err != nil {
+		t.Fatalf("count reservations: %v", err)
+	}
+	if rows != 0 {
+		t.Fatalf("a blind-read park must persist NO reservation, found %d row(s) holding budget nobody will release", rows)
 	}
 }
 

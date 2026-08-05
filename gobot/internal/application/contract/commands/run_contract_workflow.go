@@ -84,6 +84,17 @@ func WithWithdrawalRecording(recorder storage.WithdrawalRecorder, clock shared.C
 	}
 }
 
+// WithConcurrentSpendCap wires the CROSS-OPERATION concurrent spend cap onto the contract
+// source-buy (sp-ps2oc acceptance 4), so a contract buy and a construction_supply buy
+// serialise against the ONE treasury they share instead of each clearing a per-buy floor and
+// breaching it together. The ledger must be the SAME instance the construction executor holds.
+// A nil ledger is a no-op, so callers may forward the wiring unconditionally.
+func WithConcurrentSpendCap(ledger contractServices.ConcurrentSpendLedger) RunWorkflowOption {
+	return func(c *runWorkflowConfig) {
+		c.deliveryOpts = append(c.deliveryOpts, contractServices.WithConcurrentSpendCap(ledger))
+	}
+}
+
 // NewRunWorkflowHandler creates a new contract workflow handler
 func NewRunWorkflowHandler(
 	mediator common.Mediator,

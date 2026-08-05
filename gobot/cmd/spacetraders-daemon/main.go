@@ -953,8 +953,25 @@ func run(cfg *config.Config) error {
 	// reader (separate process, wake gate not a money guard).
 	ledgerTreasury := grpc.NewLedgerTreasuryReader(db, apiClient)
 
+	// sp-ps2oc: THE CROSS-OPERATION CONCURRENT SPEND CAP. One ledger, shared by every operation
+	// that draws on the treasury — the construction executor below and the contract source-buy
+	// further down. It must be ONE instance: two ledgers are two budgets, and the aggregate
+	// breach reappears one level up.
+	//
+	// This wiring is the sp-ps2oc fix. sp-w3he built the cap and wired it onto
+	// factoryCoordinatorHandler (4ee47ef0); sp-hoj8u retired the goods-factory operation and
+	// deleted that handler (712b6f66), taking the ONLY production call to SetSpendLedger with
+	// it. The guard, its interface, its repository and all of its tests survived — only the
+	// wiring died, so reserveConcurrentSpendOrPark returned at its nil-ledger fail-open branch
+	// on every gate buy. Three construction_supply buys then landed inside 68ms, each clearing
+	// the per-buy floor and together taking treasury 75k BELOW the reserve, which deadlocked
+	// every income path at once. spend_ledger_wiring_test.go pins this call so an unrelated
+	// refactor cannot silently delete it again.
+	concurrentSpendCap := persistence.NewSpendReservationLedger(db)
+
 	constructionExecutor := goodsServices.NewProductionExecutor(med, shipRepo, marketRepoAdapter, goodsMarketLocator, shared.NewRealClock(), apiClient)
 	constructionExecutor.SetConstructionRepo(constructionSiteRepo)
+	constructionExecutor.SetSpendLedger(concurrentSpendCap)
 	// BOTH factory money guards (the per-buy spend floor and the cross-container
 	// concurrent-spend cap) read treasury through the shared ledger-backed reader instead of
 	// calling Get Agent before every input tranche. Unconditional — no config key, no arming.
@@ -1709,7 +1726,13 @@ func run(cfg *config.Config) error {
 	// RealClock. Additive/fail-open — a record error never fails the draw.
 	contractWorkflowHandler := contractCmd.NewRunWorkflowHandler(med, shipRepo, contractRepo, nil,
 		contractCmd.WithInventorySourcing(contractInventoryFinder, storageCoordinator, apiClient),
-		contractCmd.WithWithdrawalRecording(persistence.NewWithdrawalEventRepository(db), nil))
+		contractCmd.WithWithdrawalRecording(persistence.NewWithdrawalEventRepository(db), nil),
+		// The SAME cap the construction executor holds (sp-ps2oc acceptance 4): construction
+		// and contract draw on one treasury, so a contract source-buy must serialise against
+		// an in-flight construction_supply buy, not merely against other contract buys. Each
+		// operation still checks that one in-flight total against ITS OWN floor, preserving
+		// the deliberate contract-exclusive 50k-150k band (sp-q8bon).
+		contractCmd.WithConcurrentSpendCap(concurrentSpendCap))
 	if err := mediator.RegisterHandler[*contractCmd.RunWorkflowCommand](med, contractWorkflowHandler); err != nil {
 		return fmt.Errorf("failed to register ContractWorkflow handler: %w", err)
 	}

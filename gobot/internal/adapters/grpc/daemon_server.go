@@ -458,6 +458,16 @@ func (s *DaemonServer) registerMetricsCollectors(getContainers func() map[string
 	s.manufacturingMetricsCollector = mfgCollector
 	metrics.SetGlobalManufacturingCollector(mfgCollector)
 
+	// Aggregate-headroom denials on the shared cross-operation spend cap (sp-ps2oc). A buy
+	// refused for its OWN cost is already legible in the coordinator log; one refused because
+	// the COMBINED in-flight spend would breach was previously recoverable only by noticing
+	// that several PURCHASE_CARGO rows shared a balance_after.
+	spendCapCollector, err := registerCollector(metrics.NewSpendCapMetricsCollector(), "spend cap metrics collector")
+	if err != nil {
+		return err
+	}
+	metrics.SetGlobalSpendCapCollector(spendCapCollector)
+
 	absorptionCollector, err := registerCollector(metrics.NewAbsorptionMetricsCollector(), "absorption metrics collector")
 	if err != nil {
 		return err

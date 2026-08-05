@@ -27,10 +27,25 @@ type fakeSpendLedger struct {
 	reserveID    string
 	reserveCalls int
 	released     []string
+	// observed* capture what readBudget resolved, so a test can pin the floor the cap enforced.
+	observedCredits int64
+	observedFloor   int
 }
 
-func (f *fakeSpendLedger) Reserve(_ context.Context, _ int, _ string, _, _, _ int) (string, bool, error) {
+// Reserve INVOKES readBudget, deliberately. The real ledger reads the balance inside its own
+// critical section (sp-ps2oc), and a fake that ignored the callback would let a caller ship a
+// broken or panicking budget resolver — including one that never consults the capital budget —
+// with every test in this package still green. observedFloor records what it resolved so a
+// test can assert the floor the cap actually enforced.
+func (f *fakeSpendLedger) Reserve(ctx context.Context, _ int, _ string, _ int, readBudget func(context.Context) (int64, int, error)) (string, bool, error) {
 	f.reserveCalls++
+	if readBudget != nil {
+		credits, floor, err := readBudget(ctx)
+		f.observedCredits, f.observedFloor = credits, floor
+		if err != nil {
+			return "", false, err
+		}
+	}
 	if f.reserveErr != nil {
 		return "", false, f.reserveErr
 	}
@@ -40,7 +55,7 @@ func (f *fakeSpendLedger) Reserve(_ context.Context, _ int, _ string, _, _, _ in
 	return f.reserveID, true, nil
 }
 
-func (f *fakeSpendLedger) Release(_ context.Context, id string) error {
+func (f *fakeSpendLedger) Release(_ context.Context, _ int, id string) error {
 	f.released = append(f.released, id)
 	return nil
 }

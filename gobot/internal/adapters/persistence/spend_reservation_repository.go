@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -33,16 +34,26 @@ const spendAdvisoryNamespace = 0x53504e44 // "SPND"
 // a legitimate cap breach distinct from a real database error.
 var errSpendReservationBreach = errors.New("spend reservation would breach working-capital reserve")
 
-// SpendReservationLedgerGORM is the DB-backed cross-container concurrent factory-input
-// spend cap. All factory containers share one database, so a reservation ledger
-// there is the only place a HARD cap can live: the per-buy floor checks live
-// treasury per container, but N containers can each pass that independent check inside the
-// check->buy window and collectively dip below the reserve. This ledger closes that race by
-// making "record my intent, then verify total in-flight exposure still clears the reserve"
-// a single serialized atomic step.
+// SpendReservationLedgerGORM is the DB-backed CROSS-OPERATION concurrent spend cap. Every
+// spender shares one database, so a reservation ledger there is the only place a HARD cap can
+// live: a per-buy floor checks live treasury per caller, but N callers can each pass that
+// independent check inside the check->buy window and collectively dip below the reserve. This
+// ledger closes that race by making "record my intent, then verify total in-flight exposure
+// still clears the reserve" a single serialized atomic step.
+//
+// It is deliberately NOT scoped to a container. Reservations sum per PLAYER and the advisory
+// lock is keyed per PLAYER, so buys from one container serialise against each other exactly as
+// buys from N containers do, and a construction buy serialises against a contract buy. That
+// matters because the operations it caps do not partition: construction_supply, contract and
+// tour all draw on ONE treasury. containerID is best-effort ATTRIBUTION for logs and nothing
+// more (sp-ps2oc, whose three racing buys all came from a single construction container).
 type SpendReservationLedgerGORM struct {
 	db          *gorm.DB
 	staleWindow time.Duration
+
+	// playerLocks serialises the balance-read + reserve pair per player WITHIN this process,
+	// and is held by Release too. See Reserve for why the advisory lock alone is not enough.
+	playerLocks sync.Map // playerID int -> *sync.Mutex
 }
 
 // NewSpendReservationLedger creates a GORM-backed spend reservation ledger with the
@@ -51,26 +62,70 @@ func NewSpendReservationLedger(db *gorm.DB) *SpendReservationLedgerGORM {
 	return &SpendReservationLedgerGORM{db: db, staleWindow: defaultSpendReservationStaleWindow}
 }
 
+// lockPlayer serialises this player's balance-read + reserve critical section against every
+// other spender in this process, and returns the unlock func.
+func (r *SpendReservationLedgerGORM) lockPlayer(playerID int) func() {
+	actual, _ := r.playerLocks.LoadOrStore(playerID, &sync.Mutex{})
+	mu := actual.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
+}
+
 // Reserve atomically records a spend intent of projectedCost for containerID and reports
-// whether the reserve still holds: liveCredits − SUM(all active reservations for this
-// player, INCLUDING the one just inserted) ≥ reserveFloor.
+// whether the reserve still holds: the balance − SUM(all active reservations for this player,
+// INCLUDING the one just inserted) ≥ reserveFloor.
 //
-// liveCredits is read by the caller (a live GetAgent) BEFORE this call — the transaction
-// here never makes an API call, so the DB is never held open across the network.
+// THE BALANCE IS READ HERE, THROUGH readCredits, NOT PASSED IN. That is the sp-ps2oc fix and
+// the reason this takes a callback rather than an int.
 //
-// On ok==true the returned reservationID identifies the row the caller must Release once
-// the buy completes. On ok==false the reservation is rolled back (not persisted) and the
-// caller must park the buy. The insert-then-sum critical section is serialized per player
-// (a Postgres advisory lock; SQLite serializes writers globally) so no interleaving of two
-// concurrent factory buys can let both pass a check they would jointly fail.
+// A pre-read balance is unsound however well the insert-then-sum is serialized, because the
+// two halves of the check can describe different instants. A sibling that commits its buy AND
+// releases its reservation between a caller's read and its Reserve is in NEITHER half: not in
+// the caller's stale snapshot (taken before the commit) and not in the SUM (its row is gone).
+// The headroom is then counted twice and both buys proceed. Measured on the real ledger before
+// the fix, three concurrent buys of 99,000 against a 412,000 treasury and a 150,000 floor
+// breached in roughly one run in six — a money guard that holds only probabilistically, which
+// RULINGS #4 does not permit.
+//
+// Reading under the per-player process lock closes it: while the lock is held no sibling in
+// this process can release (Release takes the same lock), so every sibling spend is either
+// still reserved — and therefore in the SUM — or already committed and therefore in the fresh
+// balance. Nothing falls between the two.
+//
+// The read happens inside the LOCK but OUTSIDE the transaction, deliberately: the production
+// reader is ledger-backed but falls back to a live API call when its newest row is stale, and
+// the DB must never be held open across the network.
+//
+// RESIDUAL, stated exactly: the process lock does not span processes. Two daemons sharing one
+// database could still interleave a read against a sibling's release. Today there is exactly
+// one daemon — every coordinator runs as a container inside it — so this is a note for whoever
+// changes that, not a live hole. The advisory lock below is what makes the insert-then-sum
+// itself atomic across processes.
+//
+// On ok==true the returned reservationID identifies the row the caller must Release once the
+// buy completes. On ok==false the reservation is rolled back (not persisted) and the caller
+// must park the buy. A readCredits error is returned as an error, never as a zero balance:
+// every caller reads that as PARK (RULINGS #4).
 func (r *SpendReservationLedgerGORM) Reserve(
 	ctx context.Context,
 	playerID int,
 	containerID string,
 	projectedCost int,
-	liveCredits int,
-	reserveFloor int,
+	readBudget func(context.Context) (int64, int, error),
 ) (reservationID string, ok bool, err error) {
+	if readBudget == nil {
+		return "", false, fmt.Errorf("spend reservation: no budget source given for player %d", playerID)
+	}
+
+	unlock := r.lockPlayer(playerID)
+	defer unlock()
+
+	credits, reserveFloor, err := readBudget(ctx)
+	if err != nil {
+		return "", false, fmt.Errorf("read budget for spend reservation: %w", err)
+	}
+	liveCredits := int(credits)
+
 	reservationID = uuid.NewString()
 
 	txErr := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -129,10 +184,18 @@ func (r *SpendReservationLedgerGORM) Reserve(
 
 // Release consumes a reservation once its buy completes (success or failure). Deleting a
 // missing row is not an error — a staleness sweep may already have reclaimed it.
-func (r *SpendReservationLedgerGORM) Release(ctx context.Context, reservationID string) error {
+//
+// It takes the same per-player lock Reserve holds. That is not bookkeeping hygiene, it is half
+// the correctness argument: a release that landed while a sibling was between its balance read
+// and its insert would erase this buy from the SUM without it yet appearing in that sibling's
+// balance, which is exactly the double-counted headroom described on Reserve. The lock is held
+// only for the delete — never across the buy itself, which happens between Reserve and here.
+func (r *SpendReservationLedgerGORM) Release(ctx context.Context, playerID int, reservationID string) error {
 	if reservationID == "" {
 		return nil
 	}
+	unlock := r.lockPlayer(playerID)
+	defer unlock()
 	if err := r.db.WithContext(ctx).
 		Where("id = ?", reservationID).
 		Delete(&SpendReservationModel{}).Error; err != nil {

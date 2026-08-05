@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
@@ -80,19 +81,39 @@ func (e *ProductionExecutor) budgetedReserveFloor(ctx context.Context, playerID,
 	return int(common.BudgetedSpendFloor(int64(floor), deployable, constructionBudget))
 }
 
-// SpendReservationLedger is the cross-container concurrent factory-input spend cap
-// (sp-w3he). The per-buy floor checks live treasury per container, but N factory
-// containers can each pass that independent check inside the check->buy window and
-// collectively dip below the reserve. This ledger closes that race using shared DB state:
-// a factory records its spend intent and, in one serialized atomic step, verifies live
-// treasury minus the SUM of all active in-flight reservations still clears the reserve.
+// SpendReservationLedger is the CROSS-OPERATION concurrent spend cap (sp-w3he, extended by
+// sp-ps2oc). The per-buy floor checks live treasury per caller, but N callers can each pass
+// that independent check inside the check->buy window and collectively dip below the reserve.
+// This ledger closes that race using shared DB state: a spender records its intent and, in one
+// serialized atomic step, verifies the balance minus the SUM of all active in-flight
+// reservations still clears the reserve.
 //
-// Reserve reports ok==false when the combined spend would breach (caller PARKS) and rolls
-// the reservation back. On ok==true the caller Releases the returned id after the buy.
+// IT SUMS PER PLAYER, NOT PER CONTAINER. sp-w3he was built when the only concurrent buyers
+// were N goods-factory containers, and the containerID parameter reads like a scope — it is
+// not one. Reservations sum per player and the DB advisory lock is keyed per player, so buys
+// from a SINGLE container serialise against each other exactly as buys from N containers do,
+// and a construction buy serialises against a contract buy. containerID is best-effort
+// attribution for logs. This is why sp-ps2oc — three racing buys from one construction
+// container — was always within this cap's reach; it simply was not wired to production.
+//
+// Reserve READS THE BUDGET ITSELF, through readBudget, rather than accepting a pre-read
+// balance. A balance read before the call can describe a different instant than the SUM: a
+// sibling that commits and releases in between appears in neither, and the headroom is counted
+// twice. Passing the read in as a callback lets the implementation take it inside its own
+// critical section, which is the only place the two halves can be made to agree.
+//
+// readBudget returns the balance AND the floor that balance is judged against, together,
+// because the construction floor is DERIVED from the balance (the capital budget raises the
+// flat reserve by trade's share of deployable capital). Returning them separately would let
+// the check and the floor be sized from two different treasury figures.
+//
+// Reserve reports ok==false when the combined spend would breach (caller PARKS) and rolls the
+// reservation back. On ok==true the caller Releases the returned id after the buy. A
+// readBudget error surfaces as err, never as a zero balance — callers PARK on it (RULINGS #4).
 // ExpireStale reclaims reservations a dead container never released.
 type SpendReservationLedger interface {
-	Reserve(ctx context.Context, playerID int, containerID string, projectedCost, liveCredits, reserveFloor int) (reservationID string, ok bool, err error)
-	Release(ctx context.Context, reservationID string) error
+	Reserve(ctx context.Context, playerID int, containerID string, projectedCost int, readBudget func(context.Context) (credits int64, reserveFloor int, err error)) (reservationID string, ok bool, err error)
+	Release(ctx context.Context, playerID int, reservationID string) error
 	ExpireStale(ctx context.Context, maxAge time.Duration) (int, error)
 }
 
@@ -247,31 +268,40 @@ func (e *ProductionExecutor) reserveConcurrentSpendOrPark(ctx context.Context, p
 		return "", false
 	}
 
-	credits, err := e.treasuryCredits(ctx, playerID)
-	if err != nil {
-		logger.Log("WARNING", fmt.Sprintf("Could not read treasury for factory concurrent-spend-cap check — parking input buy (fail-closed): %v", err), map[string]interface{}{
-			"error": err.Error(),
-		})
-		return "", true
-	}
-	treasury := int(credits)
-
-	// Same floor as the per-buy check: the concurrent cap must serialize against the SAME
-	// reserve the per-container floor enforces, or the two guards would disagree on where the
-	// line is (sp-agzj/sp-05glh). That reserve is now the BUDGETED floor (sp-ftqgp) — the flat
-	// non-contract base raised by trade's reserved share — resolved against this call's own
-	// treasury read, so a construction buy cannot slip past the budget by taking the ledger path.
-	reserve := e.budgetedReserveFloor(ctx, playerID, treasury)
-
-	// Container id attributes the reservation to the owning factory (already threaded into
+	// Container id attributes the reservation to the owning container (already threaded into
 	// ctx by the coordinator, sp-9aoc's operation context). Best-effort: the staleness sweep
 	// is time-based, so a missing id never affects correctness, only log/debug attribution.
+	// It is NOT a scope — the ledger sums per player, which is why the gate fleet's four hulls
+	// inside ONE construction container still serialise against each other (sp-ps2oc).
 	containerID := "factory-unknown"
 	if opCtx := shared.OperationContextFromContext(ctx); opCtx != nil && opCtx.ContainerID != "" {
 		containerID = opCtx.ContainerID
 	}
 
-	resID, ok, err := e.spendLedger.Reserve(ctx, playerID, containerID, projectedCost, treasury, reserve)
+	// The treasury read and the floor it is judged against are BOTH taken inside the ledger's
+	// own critical section (sp-ps2oc). Reading them out here and passing values in is the bug:
+	// a sibling that commits its buy and releases its reservation in between lands in neither
+	// the snapshot nor the SUM, and its spend is silently un-counted. observed* capture what
+	// the callback saw so the park log can name the real numbers.
+	var observedTreasury, observedReserve int
+	readBudget := func(ctx context.Context) (int64, int, error) {
+		credits, err := e.treasuryCredits(ctx, playerID)
+		if err != nil {
+			return 0, 0, err
+		}
+		treasury := int(credits)
+		// Same floor as the per-buy check: the concurrent cap must serialize against the SAME
+		// reserve the per-buy floor enforces, or the two guards would disagree on where the
+		// line is (sp-agzj/sp-05glh). That reserve is the BUDGETED floor (sp-ftqgp) — the flat
+		// non-contract base raised by trade's reserved share — resolved against THIS read, so a
+		// construction buy cannot slip past the budget by taking the ledger path.
+		reserve := e.budgetedReserveFloor(ctx, playerID, treasury)
+		observedTreasury, observedReserve = treasury, reserve
+		return credits, reserve, nil
+	}
+
+	resID, ok, err := e.spendLedger.Reserve(ctx, playerID, containerID, projectedCost, readBudget)
+	treasury, reserve := observedTreasury, observedReserve
 	if err != nil {
 		logger.Log("WARNING", fmt.Sprintf("Factory concurrent-spend-cap ledger error — parking input buy (fail-closed): %v", err), map[string]interface{}{
 			"error": err.Error(),
@@ -279,10 +309,15 @@ func (e *ProductionExecutor) reserveConcurrentSpendOrPark(ctx context.Context, p
 		return "", true
 	}
 	if !ok {
+		// AGGREGATE denial, counted (sp-ps2oc acceptance 5). A per-buy park is visible in the
+		// coordinator's own logs; an aggregate one was only ever recoverable by reading the
+		// transaction ledger and noticing that three buys shared a balance_after. The counter
+		// separates the two so "concurrent spend is contending" is a graph, not an excavation.
+		metrics.RecordAggregateSpendDenial("construction_supply")
 		// Numbers in the MESSAGE: the container log renderer drops the metadata map,
 		// so the cause — combined in-flight factory spend breaching the reserve — must be legible
 		// in the text or an operator never sees why this factory parked.
-		logger.Log("WARNING", fmt.Sprintf("Parked input purchase of %s at %s — cross-container concurrent spend cap: treasury %d minus in-flight factory reservations would breach the working-capital reserve %d (this buy %d)", good, market, treasury, reserve, projectedCost), map[string]interface{}{
+		logger.Log("WARNING", fmt.Sprintf("Parked input purchase of %s at %s — cross-operation concurrent spend cap: treasury %d minus in-flight reservations would breach the working-capital reserve %d (this buy %d)", good, market, treasury, reserve, projectedCost), map[string]interface{}{
 			"good":           good,
 			"market":         market,
 			"projected_cost": projectedCost,
@@ -300,11 +335,11 @@ func (e *ProductionExecutor) reserveConcurrentSpendOrPark(ctx context.Context, p
 // releaseSpendReservation consumes a spend reservation after its buy completes (success or
 // failure). A failed release is logged, never surfaced: the reservation simply leaks until
 // the staleness sweep reclaims it, so cleanup can never fail an otherwise-successful buy.
-func (e *ProductionExecutor) releaseSpendReservation(ctx context.Context, reservationID string) {
+func (e *ProductionExecutor) releaseSpendReservation(ctx context.Context, playerID int, reservationID string) {
 	if e.spendLedger == nil || reservationID == "" {
 		return
 	}
-	if err := e.spendLedger.Release(ctx, reservationID); err != nil {
+	if err := e.spendLedger.Release(ctx, playerID, reservationID); err != nil {
 		common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf("Failed to release factory spend reservation %s (staleness sweep will reclaim it): %v", reservationID, err), map[string]interface{}{
 			"reservation_id": reservationID,
 			"error":          err.Error(),

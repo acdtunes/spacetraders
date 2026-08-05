@@ -237,6 +237,26 @@ func (e *DeliveryExecutor) executeSinglePurchaseTrip(
 		PlayerID:   playerID,
 	}
 
+	// CROSS-OPERATION concurrent spend cap (sp-ps2oc), taken HERE — immediately before the buy
+	// and after the flight — rather than beside the per-buy floor above.
+	//
+	// The floor is sized before the navigate, deliberately (it decides whether the trip is
+	// worth flying). A reservation taken there would be held across a multi-minute flight and
+	// would wedge the shared budget for every other spender; taken here it lives for the
+	// duration of one purchase. That placement is also what acceptance criterion 2 asks for:
+	// the reservation is taken BEFORE the API call and released whether it succeeds or fails.
+	reservationID, capParked := e.reserveConcurrentSpendOrPark(ctx, playerID, unitsThisTrip*projectedUnitAsk, tradeSymbol, cheapestMarket)
+	if capParked {
+		// The existing park-not-crash path: the coordinator resumes this next tick, by which
+		// time the sibling spend that crowded it out has completed and released.
+		return nil, 0, false, false, &ErrInsufficientCredits{
+			ShipSymbol:     shipSymbol,
+			TradeSymbol:    tradeSymbol,
+			UnitsAttempted: unitsThisTrip,
+		}
+	}
+	defer e.releaseSpendReservation(ctx, playerID, reservationID)
+
 	purchaseResp, err := e.mediator.Send(ctx, purchaseCmd)
 	if err != nil {
 		if IsInsufficientCreditsError(err) {

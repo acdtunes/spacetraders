@@ -48,7 +48,7 @@ func TestSpendReservationLedger_ReserveWithinReserve_Proceeds(t *testing.T) {
 	ledger, db := setupSpendLedger(t)
 	ctx := context.Background()
 
-	resID, ok, err := ledger.Reserve(ctx, 1, "ctr-A", testAffordableCost, testLiveCredits, testReserveFloor)
+	resID, ok, err := ledger.Reserve(ctx, 1, "ctr-A", testAffordableCost, budgetOf(testLiveCredits, testReserveFloor))
 	require.NoError(t, err)
 	require.True(t, ok, "a buy that clears the reserve must proceed")
 	require.NotEmpty(t, resID)
@@ -62,12 +62,12 @@ func TestSpendReservationLedger_SequentialCombinedBreach_SecondParksAndRollsBack
 	ledger, db := setupSpendLedger(t)
 	ctx := context.Background()
 
-	resA, okA, err := ledger.Reserve(ctx, 1, "ctr-A", testAffordableCost, testLiveCredits, testReserveFloor)
+	resA, okA, err := ledger.Reserve(ctx, 1, "ctr-A", testAffordableCost, budgetOf(testLiveCredits, testReserveFloor))
 	require.NoError(t, err)
 	require.True(t, okA)
 	require.NotEmpty(t, resA)
 
-	resB, okB, err := ledger.Reserve(ctx, 1, "ctr-B", testAffordableCost, testLiveCredits, testReserveFloor)
+	resB, okB, err := ledger.Reserve(ctx, 1, "ctr-B", testAffordableCost, budgetOf(testLiveCredits, testReserveFloor))
 	require.NoError(t, err, "a cap breach is a park, not an error")
 	require.False(t, okB, "the second buy's combined spend breaches the reserve — it must park")
 	require.Empty(t, resB)
@@ -93,7 +93,7 @@ func TestSpendReservationLedger_ConcurrentCombinedBreach_ExactlyOneProceeds(t *t
 		go func(n int) {
 			defer wg.Done()
 			<-start // release both goroutines together to maximize contention
-			_, ok, err := ledger.Reserve(ctx, 1, "ctr", testAffordableCost, testLiveCredits, testReserveFloor)
+			_, ok, err := ledger.Reserve(ctx, 1, "ctr", testAffordableCost, budgetOf(testLiveCredits, testReserveFloor))
 			require.NoError(t, err)
 			if ok {
 				mu.Lock()
@@ -115,17 +115,17 @@ func TestSpendReservationLedger_ReleaseFreesBudget(t *testing.T) {
 	ledger, db := setupSpendLedger(t)
 	ctx := context.Background()
 
-	resA, okA, err := ledger.Reserve(ctx, 1, "ctr-A", testAffordableCost, testLiveCredits, testReserveFloor)
+	resA, okA, err := ledger.Reserve(ctx, 1, "ctr-A", testAffordableCost, budgetOf(testLiveCredits, testReserveFloor))
 	require.NoError(t, err)
 	require.True(t, okA)
 
-	_, okB, err := ledger.Reserve(ctx, 1, "ctr-B", testAffordableCost, testLiveCredits, testReserveFloor)
+	_, okB, err := ledger.Reserve(ctx, 1, "ctr-B", testAffordableCost, budgetOf(testLiveCredits, testReserveFloor))
 	require.NoError(t, err)
 	require.False(t, okB, "B breaches while A is in flight")
 
-	require.NoError(t, ledger.Release(ctx, resA))
+	require.NoError(t, ledger.Release(ctx, 1, resA))
 
-	_, okB2, err := ledger.Reserve(ctx, 1, "ctr-B", testAffordableCost, testLiveCredits, testReserveFloor)
+	_, okB2, err := ledger.Reserve(ctx, 1, "ctr-B", testAffordableCost, budgetOf(testLiveCredits, testReserveFloor))
 	require.NoError(t, err)
 	require.True(t, okB2, "with A released, B's spend clears the reserve and must proceed")
 	require.Equal(t, int64(1), countReservations(t, db), "only B's reservation remains after A released")
@@ -135,8 +135,8 @@ func TestSpendReservationLedger_ReleaseFreesBudget(t *testing.T) {
 // no-op, not an error — release must never fail an otherwise-successful buy.
 func TestSpendReservationLedger_ReleaseMissingIsNoOp(t *testing.T) {
 	ledger, _ := setupSpendLedger(t)
-	require.NoError(t, ledger.Release(context.Background(), "does-not-exist"))
-	require.NoError(t, ledger.Release(context.Background(), ""))
+	require.NoError(t, ledger.Release(context.Background(), 1, "does-not-exist"))
+	require.NoError(t, ledger.Release(context.Background(), 1, ""))
 }
 
 // Acceptance #3a: the staleness sweep removes reservations older than the window.
@@ -171,7 +171,7 @@ func TestSpendReservationLedger_StaleReservationDoesNotWedgeBudget(t *testing.T)
 		ProjectedCost: 20000, CreatedAt: time.Now().Add(-10 * time.Minute),
 	}).Error)
 
-	_, ok, err := ledger.Reserve(ctx, 1, "ctr-live", testAffordableCost, testLiveCredits, testReserveFloor)
+	_, ok, err := ledger.Reserve(ctx, 1, "ctr-live", testAffordableCost, budgetOf(testLiveCredits, testReserveFloor))
 	require.NoError(t, err)
 	require.True(t, ok, "the live buy must proceed once the dead container's stale hold is swept")
 	require.Equal(t, int64(1), countReservations(t, db), "the stale hold is gone, only the live reservation remains")
@@ -183,12 +183,74 @@ func TestSpendReservationLedger_ScopedPerPlayer(t *testing.T) {
 	ctx := context.Background()
 
 	// Player 1 reserves right up to the edge (a big buy that alone clears).
-	_, ok1, err := ledger.Reserve(ctx, 1, "ctr-A", 9000, testLiveCredits, testReserveFloor)
+	_, ok1, err := ledger.Reserve(ctx, 1, "ctr-A", 9000, budgetOf(testLiveCredits, testReserveFloor))
 	require.NoError(t, err)
 	require.True(t, ok1)
 
 	// Player 2's buy must not see player 1's reservation in its sum.
-	_, ok2, err := ledger.Reserve(ctx, 2, "ctr-B", 9000, testLiveCredits, testReserveFloor)
+	_, ok2, err := ledger.Reserve(ctx, 2, "ctr-B", 9000, budgetOf(testLiveCredits, testReserveFloor))
 	require.NoError(t, err)
 	require.True(t, ok2, "player 2's cap must ignore player 1's reservations")
+}
+
+// budgetOf is the readBudget callback the ledger now takes instead of a pre-read balance.
+// Reserve invokes it inside its own per-player critical section; see the repository for why a
+// balance read before the call and a SUM taken during it cannot be trusted to agree (sp-ps2oc).
+func budgetOf(credits, floor int) func(context.Context) (int64, int, error) {
+	return func(context.Context) (int64, int, error) { return int64(credits), floor, nil }
+}
+
+// RELEASE IS EXCLUDED FROM A RESERVE IN PROGRESS (sp-ps2oc).
+//
+// Half the cap's soundness argument lives in Release, not Reserve. Reserve reads the balance
+// and then sums the reservations; if a sibling could RELEASE between those two steps, its
+// spend would be absent from the SUM (row deleted) and absent from the balance (read before
+// its commit) — the headroom counted twice, which is the aggregate breach this bead is about.
+//
+// The window is a single DB round-trip wide, so a concurrency test cannot be relied on to hit
+// it: removing the lock from Release survived 20 racing runs of the aggregate test. This pins
+// the PROPERTY instead of hoping to catch its violation — a Release issued while a Reserve
+// holds the critical section must not complete until that Reserve does.
+func TestSpendReservationLedger_ReleaseIsExcludedFromAReserveInProgress(t *testing.T) {
+	ledger, _ := setupSpendLedger(t)
+	ctx := context.Background()
+
+	resA, ok, err := ledger.Reserve(ctx, 1, "ctr-A", testAffordableCost, budgetOf(testLiveCredits, testReserveFloor))
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	var (
+		mu     sync.Mutex
+		order  []string
+		inside = make(chan struct{})
+		hold   = make(chan struct{})
+		wg     sync.WaitGroup
+	)
+	note := func(s string) { mu.Lock(); order = append(order, s); mu.Unlock() }
+
+	// A Reserve that parks inside its critical section, holding it open.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_, _, _ = ledger.Reserve(ctx, 1, "ctr-B", testAffordableCost, func(context.Context) (int64, int, error) {
+			close(inside)
+			<-hold
+			return testLiveCredits, testReserveFloor, nil
+		})
+		note("reserve-done")
+	}()
+
+	<-inside
+	wg.Add(1)
+	go func() { defer wg.Done(); _ = ledger.Release(ctx, 1, resA); note("release-done") }()
+
+	// A generous window for the release to land IF it is not excluded. No transaction is open
+	// during readBudget, so nothing but the per-player lock can hold the DELETE back — without
+	// that lock the release completes here and the order below inverts.
+	time.Sleep(50 * time.Millisecond)
+	close(hold)
+	wg.Wait()
+
+	require.Equal(t, []string{"reserve-done", "release-done"}, order,
+		"a Release must not land inside another spender's reserve critical section: its row would vanish from the SUM while its spend is still absent from the balance that Reserve read, and the same headroom would be granted twice")
 }
