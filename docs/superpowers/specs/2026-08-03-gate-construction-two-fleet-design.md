@@ -304,7 +304,14 @@ immediately; stopping after two leaves one of each rather than two of the same.
 
 ### Reallocation on pause
 
-When delivery pauses, its workers move to the factory role; when it unpauses, they move back.
+When delivery pauses, its workers move to the factory role; when it unpauses, they move back **to
+the D/F/F/D baseline mix** — not "all factory hulls become delivery hulls".
+
+> **CORRECTION (2026-08-04, from the phase 3 drafting pass).** "They move back" read literally is a
+> fleet-killer. It returns the two hulls the purchase order *bought* as factory hulls, emptying the
+> factory fleet — which is what starved the terminal factory and tripped the pause in the first
+> place. The result oscillates. Unpause restores the **baseline mix**, returning only the hulls
+> that were borrowed.
 
 **This makes the pause a self-shortening feedback loop.** Delivery pauses because a terminal
 factory is low → those hulls go feed that factory → it produces faster → supply recovers sooner →
@@ -317,8 +324,19 @@ buyable; moving workers then would starve delivery of capacity it can still use.
 
 **Reallocation needs its own thrash guard.** A hull mid-haul must finish its leg before
 reassignment, and a minimum dwell in a role prevents oscillation at the supply boundary — the same
-chatter problem the buy/resume hysteresis solves, one level up. Existing `worker_rebalancer`
-constraints apply (`ferry_cooldown_secs`, `max_concurrent_ferries`).
+chatter problem the buy/resume hysteresis solves, one level up.
+
+> **CORRECTION (2026-08-04, from the phase 3 drafting pass).** An earlier draft said "existing
+> `worker_rebalancer` constraints apply (`ferry_cooldown_secs`, `max_concurrent_ferries`)".
+> **That infrastructure does not exist**, on three independent grounds, all verified in `main`:
+>
+> 1. `resolveWorkerRebalancerConfig` is referenced by two comments and **is not a function**.
+> 2. `workerRebalancerConfig` is a field written onto `DaemonServer` and **read by nothing**.
+> 3. Even if it ran, it governs the *undedicated* ferry pool, and `ship_pool_manager.go:94`
+>    skips every hull with a `dedicated_fleet` tag — which is every gate hull, by construction.
+>
+> The reallocation must therefore **declare its own** thrash guard rather than inherit one. Phase
+> 3 does so, and states why in the plan.
 
 ## Testing
 
@@ -330,7 +348,7 @@ constraints apply (`ferry_cooldown_secs`, `max_concurrent_ferries`).
 - **Mixed fill:** a hull with one material paused fills entirely with the other; a hull with both
   eligible fills to capacity across both; fill never exceeds remaining bill.
 - **Feed routing:** a good is never dispatched to a waypoint that does not import it (sp-b27a2).
-- **Money floor:** both roles refuse to spend below the 50k floor (fail-closed).
+- **Money floor:** both roles refuse to spend below the enforced working-capital floor, fail-closed. On the manufacturing spend path that is `common.NonContractWorkingCapitalFloor` (**150k**), NOT the 50k `ImmutableReserveFloor` base — see the Money Guards correction above.
 - **Knob liveness:** a `construction override --buy-floor/--resume-floor` write takes effect on the
   next tick with no restart, **and survives a daemon restart** — the pattern-B clobber this design
   explicitly avoids must be pinned by a test, not just by a comment.
