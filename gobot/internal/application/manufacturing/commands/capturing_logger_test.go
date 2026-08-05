@@ -1,6 +1,9 @@
 package commands
 
-import "sync"
+import (
+	"strings"
+	"sync"
+)
 
 // capturedLogEntry records one logged line for assertions.
 type capturedLogEntry struct {
@@ -42,4 +45,20 @@ func (l *capturingLogger) snapshot() []capturedLogEntry {
 	out := make([]capturedLogEntry, len(l.entries))
 	copy(out, l.entries)
 	return out
+}
+
+// joined is THE log-stream rendering for assertions: level and message only, exactly what the
+// container renderer prints. A decision that reported itself solely in a metadata map is invisible
+// here, which is the point.
+//
+// One copy, on the logger itself, because there were four — a fixture method, a free function, and
+// two inline `joined := ""` loops in two files. Four renderings of the same thing is four places
+// for an assertion to be written against a shape the others do not produce.
+func (l *capturingLogger) joined() string {
+	entries := l.snapshot()
+	lines := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		lines = append(lines, entry.level+" "+entry.message)
+	}
+	return strings.Join(lines, "\n")
 }

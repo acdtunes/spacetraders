@@ -109,6 +109,15 @@ func TestRoleFleetTags_ListsExactlyTheTwoRoleTags(t *testing.T) {
 	if len(tags) != 2 {
 		t.Fatalf("RoleFleetTags() = %v, want exactly the two role tags", tags)
 	}
+	// TIE THE LITERAL TO THE MAP. RoleFleetTags is HAND-WRITTEN while roleTags is the single source
+	// of truth, and nothing in the tree connected the two. A third entry in the map changes
+	// ParseFleetTag, FleetTag and the coordinator's routing switch — and every exhaustiveness test
+	// that drives RoleFleetTags(), including the one whose header names "a third role added to
+	// gate.roleTags" as its regression, would keep passing without ever seeing it. Discovery also
+	// uses RoleFleetTags(), so such a role would be tagged, undiscovered, and silently idle.
+	if len(tags) != len(roleTags) {
+		t.Fatalf("RoleFleetTags() lists %d tag(s) but roleTags holds %d; a role in the map and not in this literal is invisible to discovery and to every test that drives it", len(tags), len(roleTags))
+	}
 	seen := map[string]bool{}
 	for _, tag := range tags {
 		if tag == LegacyFleetTag {
@@ -116,6 +125,11 @@ func TestRoleFleetTags_ListsExactlyTheTwoRoleTags(t *testing.T) {
 		}
 		if seen[tag] {
 			t.Fatalf("RoleFleetTags() = %v contains a duplicate; discovery would claim-check the same pool twice", tags)
+		}
+		// Equal counts alone would still admit a literal listing two tags the map does not hold.
+		// ParseFleetTag searches roleTags by value, so this is the membership half of the bijection.
+		if _, ok := ParseFleetTag(tag); !ok {
+			t.Fatalf("RoleFleetTags() lists %q, which is not a value in roleTags — discovery would scan a pool no role can ever be claimed under", tag)
 		}
 		seen[tag] = true
 	}

@@ -269,10 +269,10 @@ func TestGatePolicyPackage_ContainsNoWaypointLiterals(t *testing.T) {
 			t.Fatalf("%s references an X1- prefixed symbol", file)
 		}
 	}
-	if len(scanned) < 3 {
-		t.Fatalf("guard scanned %d source file(s) %v; the gate policy package has at least 3 — a sweep that reads nothing proves nothing", len(scanned), scanned)
+	if len(scanned) < 5 {
+		t.Fatalf("guard scanned %d source file(s) %v; the gate policy package has at least 5 — a sweep that reads nothing proves nothing", len(scanned), scanned)
 	}
-	for _, required := range []string{"role.go", "buy_policy.go", "fill.go"} {
+	for _, required := range []string{"role.go", "buy_policy.go", "fill.go", "feed.go", "reallocation.go"} {
 		if !scanned[required] {
 			t.Fatalf("guard did not scan %s; the sweep must cover every policy source", required)
 		}

@@ -999,8 +999,32 @@ func run(cfg *config.Config) error {
 	// buys there with every money guard unchanged. The handler holds ONE buy policy for the process,
 	// so the supply-anchored pause hysteresis survives across legs. Optional collaborator: unwired,
 	// the drain behaves exactly as before.
+	// ONE topology object serves BOTH fleets. It is a stateless pair of immutable fields over the
+	// SHARED goodsMarketLocator, so a second instance could not diverge — but binding it to a name
+	// keeps the composition root honest about the two fleets reading one map, and the two setters
+	// take DIFFERENT views of it (GateTopologyResolver asks only where a good is exported;
+	// GateFactoryTopology also answers the recipe seam).
+	gateTopology := goodsServices.NewGateTopology(goodsMarketLocator, goods.ExportToImportMap)
 	constructionCoordinatorHandler.SetGateDelivery(
-		goodsServices.NewGateTopology(goodsMarketLocator, goods.ExportToImportMap),
+		gateTopology,
+		constructionExecutor,
+	)
+	// The gate FACTORY fleet — ARMED. Wired unconditionally, alongside the delivery fleet: no flag,
+	// no config key, no arm seam. The nil-guard inside SetGateFactory is the drain's
+	// optional-collaborator pattern for its own fixtures, and this call is what makes that
+	// distinction true rather than merely claimed.
+	//
+	// The SAME topology answers the recipe seam the recursive feed walk needs (IsRaw/Inputs — never
+	// goods.GetRequiredInputs, which returns a recipe for every ore and would send the walk into the
+	// cyclic part of the map), and the SAME executor both performs the pinned input buy through the
+	// one shared tranche loop and feeds the factory by selling into its import listing. One spend
+	// primitive, one set of money guards, for both fleets.
+	//
+	// This call also arms the pause-driven role reallocation: reallocateGateRoles returns before
+	// doing anything unless BOTH legs are wired on this one handler.
+	constructionCoordinatorHandler.SetGateFactory(
+		gateTopology,
+		constructionExecutor,
 		constructionExecutor,
 	)
 	if err := mediator.RegisterHandler[*goodsCmd.RunConstructionCoordinatorCommand](med, constructionCoordinatorHandler); err != nil {

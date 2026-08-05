@@ -238,6 +238,19 @@ type countingGateBuyer struct {
 	bought map[string]int
 	seen   int
 	err    error
+	// acquireZero models the money/price guards stopping the fill: the buy is ATTEMPTED and returns
+	// a zero-quantity result, which is the shape fillFromSource produces when spendFloorBreached or
+	// the price ceiling trips. Deliberately distinct from err, which is a failed CALL — a caller
+	// that conflates the two cannot honour a refusal differently from an outage.
+	acquireZero bool
+}
+
+// resultFor is the acquisition this buyer reports for a requested lot.
+func (b *countingGateBuyer) resultFor(units int) *mfgServices.ProductionResult {
+	if b.acquireZero {
+		return &mfgServices.ProductionResult{QuantityAcquired: 0}
+	}
+	return &mfgServices.ProductionResult{QuantityAcquired: units}
 }
 
 func (b *countingGateBuyer) BuyAtTerminalFactory(_ context.Context, _ *navigation.Ship, good string, source *mfgServices.MarketLocatorResult, units int, _ string, _ int, _ *shared.OperationContext) (*mfgServices.ProductionResult, error) {
@@ -253,8 +266,13 @@ func (b *countingGateBuyer) BuyAtTerminalFactory(_ context.Context, _ *navigatio
 	if b.bought == nil {
 		b.bought = make(map[string]int)
 	}
-	b.bought[good] += units
-	return &mfgServices.ProductionResult{QuantityAcquired: units}, nil
+	// goods() means what was ACQUIRED; calls() means what was ATTEMPTED. Keeping them separate is
+	// what lets a test tell "the guards refused the fill" from "the leg never tried to buy".
+	result := b.resultFor(units)
+	if result.QuantityAcquired > 0 {
+		b.bought[good] += result.QuantityAcquired
+	}
+	return result, nil
 }
 
 func (b *countingGateBuyer) calls() int {
@@ -337,17 +355,9 @@ func (f *gateLegFixture) ctx() context.Context {
 	return common.WithLogger(context.Background(), f.logger)
 }
 
-// logLines is the joined log stream — level and message only, exactly what the container renderer
-// prints. A decision that reported itself only in a metadata map is invisible here, which is the
-// point.
-func (f *gateLegFixture) logLines() string {
-	entries := f.logger.snapshot()
-	lines := make([]string, 0, len(entries))
-	for _, entry := range entries {
-		lines = append(lines, entry.level+" "+entry.message)
-	}
-	return strings.Join(lines, "\n")
-}
+// logLines is this fixture's log stream, rendered the one way every assertion in the package
+// renders it (capturingLogger.joined).
+func (f *gateLegFixture) logLines() string { return f.logger.joined() }
 
 // deliveries is the goods this leg actually unloaded at the construction site, read off the
 // producer terminal both the flush and the buy loop go through.
@@ -1082,10 +1092,7 @@ func TestConstructionDrain_DoesNotDispatchAHullWedgedAtAFullHold(t *testing.T) {
 	if got := shipRepo.claimCount(); got != 0 {
 		t.Fatalf("a hull with a full hold of material nobody needs was claimed %d time(s); it can neither deliver nor buy, so it consumes a dispatch slot every tick forever", got)
 	}
-	joined := ""
-	for _, entry := range logger.snapshot() {
-		joined += entry.level + " " + entry.message + "\n"
-	}
+	joined := logger.joined()
 	if !strings.Contains(joined, "TORWIND-9") || !strings.Contains(joined, "FULL hold") {
 		t.Fatalf("the wedged hull was dropped from the pool SILENTLY — an undiagnosable missing hauler is the exact invisibility this phase removes:\n%s", joined)
 	}
@@ -1310,7 +1317,18 @@ func TestSupplyTask_RoutesOnlyDeliveryRoleLotsToTheGateLeg(t *testing.T) {
 // The delivery leg resolves every location through GateTopology at runtime. A waypoint
 // literal here would pin the fleet to one era's map and then quietly send hulls nowhere.
 func TestGateDeliveryLeg_ContainsNoWaypointLiterals(t *testing.T) {
-	const file = "run_construction_coordinator_gate_delivery.go"
+	assertNoWaypointLiterals(t, "run_construction_coordinator_gate_delivery.go", "deliverGateLeg")
+}
+
+// assertNoWaypointLiterals is the era-invariance source sweep, over one file, proving it read that
+// file by requiring a symbol only that file defines.
+//
+// Extracted so the FACTORY leg's own file is swept by the SAME calibrated pattern rather than a
+// second copy free to drift. The gate package's sweep (fill_test.go) cannot be reused: it globs
+// *.go RELATIVE TO ITS OWN PACKAGE DIR, so it covers only internal/domain/manufacturing/gate/ and
+// nothing in this package (sp-q7p9e).
+func assertNoWaypointLiterals(t *testing.T, file, mustContain string) {
+	t.Helper()
 	waypointLiteral := regexp.MustCompile(`"[A-Z]\d+-[A-Z0-9]+-[A-Z0-9]+"`)
 
 	// Four shapes, not one. A regression that TIGHTENS the pattern still matches X1-KP23-F46,
@@ -1338,8 +1356,8 @@ func TestGateDeliveryLeg_ContainsNoWaypointLiterals(t *testing.T) {
 	}
 	// Prove the sweep read the leg itself. An emptied or renamed file would otherwise pass
 	// this guard forever while scanning nothing.
-	if !strings.Contains(string(src), "deliverGateLeg") {
-		t.Fatalf("%s does not contain deliverGateLeg; the guard is reading the wrong file and would pass vacuously", file)
+	if !strings.Contains(string(src), mustContain) {
+		t.Fatalf("%s does not contain %s; the guard is reading the wrong file and would pass vacuously", file, mustContain)
 	}
 	if found := waypointLiteral.FindAllString(string(src), -1); len(found) > 0 {
 		t.Fatalf("%s contains hardcoded waypoint symbols %v — the terminal factory is resolved by EXPORT role, per era", file, found)

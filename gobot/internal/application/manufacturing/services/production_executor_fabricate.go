@@ -138,7 +138,7 @@ func (e *ProductionExecutor) fabricateGood(ctx context.Context, run fabricationR
 	}
 
 	// The factory IMPORTS the inputs, so delivering them is a sell.
-	deliveryRevenue := e.deliverInputs(ctx, updatedShip, playerIDValue)
+	deliveryRevenue, _ := e.deliverInputs(ctx, updatedShip, playerIDValue)
 	totalCost -= deliveryRevenue
 
 	logger.Log("INFO", "Delivered inputs to factory", map[string]interface{}{
@@ -190,11 +190,29 @@ func (e *ProductionExecutor) gateTopology() *GateTopology {
 // The subject is run.haulingInputs — the goods this run actually acquired for the factory — not
 // the good's recipe. See haulingInputs for why the distinction matters.
 //
-// There is no fallback to another waypoint on refusal. Substituting one is precisely how cargo
-// ends up somewhere that cannot accept it, which is the incident this guard exists to prevent.
+// The guard itself lives in feedDestinationRefusedFor, which the gate FACTORY leg shares. This
+// method is now only the fabricate path's binding of run -> input list.
 func (e *ProductionExecutor) feedDestinationRefused(
 	ctx context.Context,
 	run fabricationRun,
+	factoryWaypoint string,
+	playerID shared.PlayerID,
+) bool {
+	return e.feedDestinationRefusedFor(ctx, run.haulingInputs(), factoryWaypoint, playerID)
+}
+
+// feedDestinationRefusedFor is the sp-b27a2 guard itself, over an explicit input list.
+//
+// TWO callers share this ONE copy, and that sharing is the whole point: the fabricate path passes
+// run.haulingInputs(), the gate FACTORY leg passes the inputs it bought for a feed step. A second
+// copy would be free to drift, and the failure mode of a drifted copy is a hull at 80/80 with
+// cargo it can neither deliver nor dump.
+//
+// There is no fallback to another waypoint on refusal. Substituting one is precisely how cargo
+// ends up somewhere that cannot accept it, which is the incident this guard exists to prevent.
+func (e *ProductionExecutor) feedDestinationRefusedFor(
+	ctx context.Context,
+	inputs []string,
 	factoryWaypoint string,
 	playerID shared.PlayerID,
 ) bool {
@@ -206,17 +224,17 @@ func (e *ProductionExecutor) feedDestinationRefused(
 		destination = nil
 	}
 
-	refusal := e.gateTopology().ValidateFeedDestination(destination, factoryWaypoint, run.haulingInputs())
+	refusal := e.gateTopology().ValidateFeedDestination(destination, factoryWaypoint, inputs)
 	if refusal == nil {
 		return false
 	}
 
 	// Cause in the MESSAGE: the container-log renderer drops metadata.
 	common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf(
-		"Refusing to haul %s inputs to %s: %v — the hull would arrive with cargo it can neither deliver nor dump (sp-b27a2)",
-		run.node.Good, factoryWaypoint, refusal,
+		"Refusing to haul %v to %s: %v — the hull would arrive with cargo it can neither deliver nor dump (sp-b27a2)",
+		inputs, factoryWaypoint, refusal,
 	), map[string]interface{}{
-		"good": run.node.Good, "factory": factoryWaypoint,
+		"inputs": inputs, "factory": factoryWaypoint,
 		"action": "feed_refused", "reason": "destination_cannot_accept_inputs",
 		"error": refusal.Error(),
 	})

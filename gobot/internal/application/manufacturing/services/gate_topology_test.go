@@ -440,12 +440,13 @@ func TestGateTopology_ValidateFeedDestinationRejectsAnInputTheDestinationOnlyExp
 	}
 }
 
-// FAIL CLOSED on an unreadable listing, and note this is the OPPOSITE of what marketBuys answers
-// for the same nil (it returns true). The two are not inconsistent, they are priced differently:
-// marketBuys governs a SELL that has already arrived, where withholding costs a delivery and
-// spends nothing, so a data gap should not stall it. This governs a NAVIGATE that has not
-// happened, where guessing wrong strands a loaded hull at the far end of a system with cargo it
-// can neither deliver nor dump. Refusing here costs one skipped pass and the run retries.
+// FAIL CLOSED on an unreadable listing. This USED to be the opposite of what marketBuys answered
+// for the same nil (it returned true, on the reasoning that a SELL which has already arrived
+// spends nothing, so a data gap should not stall it, whereas this guards a NAVIGATE that has not
+// happened and strands a loaded hull if it guesses wrong). sp-kdsrh closed that divergence: the
+// arrival side fails closed as well, since an unreadable listing is exactly when an EXPORT cannot
+// be told from an IMPORT, and offering a factory its own product is what the filter is for. Both
+// sides refuse now. Refusing here still costs one skipped pass and the run retries.
 func TestGateTopology_ValidateFeedDestinationRefusesAnUnreadableListing(t *testing.T) {
 	topo := NewGateTopology(nil, map[string][]string{"FAB_MATS": {"IRON", "QUARTZ_SAND"}})
 

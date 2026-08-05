@@ -49,24 +49,50 @@ type gateDelivery struct {
 
 func (g *gateDelivery) enabled() bool { return g != nil && g.topology != nil && g.buyer != nil }
 
-// runsGateLeg is THE routing condition: will a lot with this claim identity actually run the
-// delivery leg?
+// gateLegRole is THE routing predicate: which gate leg (if any) will a lot with this claim
+// identity actually run?
 //
-// It exists as one function because it has two callers that must never disagree — supplyTask, which
-// routes to the leg, and the dispatch planner, which declines a hull on the strength of what that
-// leg can do. When those two drifted apart the result was D2: the decline was made about a leg the
-// hull was not going to run, and a recoverable hull became permanently invisible. Phase 3 gives
-// RoleFactory its behaviour and will touch the routing; a widening there now widens both, instead
-// of silently making the decline broader than the routing.
+// It exists as ONE function because it has two callers that must never disagree — supplyTask,
+// which routes to a leg, and the dispatch planner, which declines a hull on the strength of what
+// that leg can do. When those drifted apart the result was D2: the decline was made about a leg
+// the hull was not going to run, and a recoverable hull became permanently invisible.
 //
-// It takes the resolved IDENTITY rather than the hull deliberately. The dispatch planner resolves it
-// from the live hull (claimIdentityFor) because that is where the lot's identity is minted; the
+// IT RETURNS THE ROLE, NOT A BOOLEAN, and that shape is load-bearing. The two callers ask
+// DIFFERENT questions of the same fact:
+//
+//   - routing asks WHICH leg, and there are now two;
+//   - the decline asks IS THIS THE DELIVERY ROLE, because wedgedAtFullHold ("full hold, nothing
+//     aboard is a material whose bill is still open") is only sound for the delivery leg, whose
+//     entire repertoire is flush-then-buy.
+//
+// A boolean widened to cover both roles would decline EVERY laden factory hull — their holds are
+// full of fabrication inputs like IRON_ORE, which are never bill materials — and the factory fleet
+// would never run once. Returning the role lets the decline stay exactly as narrow as it was while
+// routing widens, with one function still shared, so a phase-4 widening touches one place.
+//
+// Each role's leg is gated on ITS OWN collaborators. With a role's leg unwired, a hull carrying
+// that tag takes the shared fabricate path and recovers there like any other, so the decline is
+// never made about a leg that is not going to run. That is the optional-collaborator pattern the
+// drain already uses, NOT a feature flag: main.go wires both unconditionally.
+//
+// It takes the resolved IDENTITY rather than the hull deliberately. The dispatch planner resolves
+// it from the live hull (claimIdentityFor) because that is where the lot's identity is minted; the
 // worker must use the lot's FROZEN claimIdentity, because it runs long after the planning tick and
 // claims under that exact value. Re-deriving from the hull inside the worker would let routing
 // disagree with what was actually claimed — the hazard constructionLot.claimIdentity exists to
 // prevent.
-func (h *RunConstructionCoordinatorHandler) runsGateLeg(claimIdentity string) bool {
-	return h.gate.enabled() && claimIdentity == gate.DeliveryFleetTag
+//
+// The zero Role is RoleDelivery, so the boolean is the ONLY safe discriminator for "no role": a
+// caller that reads the role without checking ok reads a legacy hull as a delivery hull.
+func (h *RunConstructionCoordinatorHandler) gateLegRole(claimIdentity string) (gate.Role, bool) {
+	role, ok := gate.ParseFleetTag(claimIdentity)
+	if !ok {
+		return 0, false // legacy, foreign, or undedicated: no role, no gate leg
+	}
+	if role == gate.RoleFactory {
+		return role, h.factory.enabled()
+	}
+	return role, h.gate.enabled()
 }
 
 // policyFor returns the buy policy for the floors CURRENTLY on the pipeline row, rebuilding it
@@ -90,6 +116,74 @@ func (h *RunConstructionCoordinatorHandler) SetGateDelivery(topology GateTopolog
 		return
 	}
 	h.gate = &gateDelivery{topology: topology, buyer: buyer}
+}
+
+// GateFactoryTopology is the FACTORY role's view of the era's topology: where a good is exported
+// (which doubles as the RAW SOURCE role — a raw good is bought from whatever exports it, and the
+// two roles differ in the caller's intent, not in the resolution) plus the recipe seam.
+// *services.GateTopology satisfies it.
+//
+// IsRaw/Inputs are GateTopology's, NEVER goods.IsRawMaterial/goods.GetRequiredInputs. The pairs
+// diverge in CONTENT since sp-4irrr: Inputs("IRON_ORE") is nil while GetRequiredInputs is
+// {"EXPLOSIVES"}, so a swap would descend an ore into
+// IRON_ORE -> EXPLOSIVES -> LIQUID_HYDROGEN -> MACHINERY -> IRON -> IRON_ORE and stop terminating.
+type GateFactoryTopology interface {
+	TerminalFactory(ctx context.Context, good, systemSymbol string, playerID int) (*mfgServices.MarketLocatorResult, error)
+	IsRaw(good string) bool
+	Inputs(good string) []string
+}
+
+// GateFeeder delivers a hull's inputs INTO a pinned factory.
+// *services.ProductionExecutor satisfies it via FeedFactory.
+type GateFeeder interface {
+	FeedFactory(ctx context.Context, ship *navigation.Ship, destination *mfgServices.MarketLocatorResult, inputs []string, playerID int, opContext *shared.OperationContext) (*mfgServices.FeedResult, error)
+}
+
+// Compile-time enforcement of the four conformance claims above, following the same guard
+// gate_topology.go puts on its own marketResolver seam. Without these lines each "satisfies it"
+// comment is an unchecked assertion: a signature change on either concrete type would silently
+// make it false, and nothing would fail until the composition root tried to wire the two together.
+//
+// That was not hypothetical for the FACTORY pair. Until main.go wired SetGateFactory, no call site
+// anywhere passed a *GateTopology as a GateFactoryTopology or a *ProductionExecutor as a
+// GateFeeder — the handler's own tests use fixtures — so the compiler checked neither claim. These
+// assertions move the check into the package that DECLARES the seam, where a break names the
+// interface rather than surfacing as a type error a thousand lines into main.
+var (
+	_ GateTopologyResolver = (*mfgServices.GateTopology)(nil)
+	_ GateFactoryTopology  = (*mfgServices.GateTopology)(nil)
+	_ GateBuyer            = (*mfgServices.ProductionExecutor)(nil)
+	_ GateFeeder           = (*mfgServices.ProductionExecutor)(nil)
+)
+
+// gateFactory is the drain's FACTORY-fleet collaborator set.
+//
+// It carries its own buyer rather than reaching into gateDelivery's, so the two roles are
+// independently wireable and neither's absence nil-panics the other. In production both are the
+// SAME *ProductionExecutor — which is the point: one spend primitive, one set of money guards.
+type gateFactory struct {
+	topology GateFactoryTopology
+	buyer    GateBuyer
+	feeder   GateFeeder
+}
+
+func (g *gateFactory) enabled() bool {
+	return g != nil && g.topology != nil && g.buyer != nil && g.feeder != nil
+}
+
+// SetGateFactory wires the factory fleet: phase 1's role-based topology (which also answers the
+// recipe seam the feed walk needs), phase 2's pinned terminal-factory buy, and the feed terminal.
+//
+// OPTIONAL, following SetGateDelivery/SetTreeResolver — a nil in any argument leaves the feeding
+// leg unwired and a factory-tagged hull keeps taking the shared path, so every existing
+// coordinator test is unchanged. This is NOT a feature flag: the wiring task wires it
+// unconditionally in main.go, so it ships ARMED. It is the same optional-collaborator pattern the
+// drain already uses to keep its own fixtures buildable.
+func (h *RunConstructionCoordinatorHandler) SetGateFactory(topology GateFactoryTopology, buyer GateBuyer, feeder GateFeeder) {
+	if topology == nil || buyer == nil || feeder == nil {
+		return
+	}
+	h.factory = &gateFactory{topology: topology, buyer: buyer, feeder: feeder}
 }
 
 // gateMaterial is one gate material WITH its live market quote. The quote is carried, not

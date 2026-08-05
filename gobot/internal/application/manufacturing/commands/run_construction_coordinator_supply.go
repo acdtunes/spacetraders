@@ -11,6 +11,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	mfgServices "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/services"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing/gate"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
@@ -37,12 +38,34 @@ func (h *RunConstructionCoordinatorHandler) supplyTask(ctx context.Context, cmd 
 		return false
 	}
 
-	// A DELIVERY-role hull buys terminal-factory output and hauls it to the gate. It never
-	// fabricates and never walks the recipe graph, so it takes its own leg rather than the shared
-	// source-then-deliver path. The condition lives in runsGateLeg because the dispatch planner
-	// declines hulls on the strength of what this leg can do and must never disagree with it.
-	if h.runsGateLeg(lot.claimIdentity) {
-		return h.deliverGateLeg(ctx, cmd, systemSymbol, lot, playerID)
+	// A ROLE-TAGGED gate hull takes its role's own leg rather than the shared source-then-deliver
+	// path. A DELIVERY hull buys terminal-factory output and hauls it to the gate; a FACTORY hull
+	// feeds INPUTS into the factories that export those materials and never touches their output.
+	// The condition lives in gateLegRole because the dispatch planner declines hulls on the
+	// strength of what these legs can do and must never disagree with this routing.
+	//
+	// A SWITCH WITH A LOUD DEFAULT, not an if/else, and the default is the point. gate.Role is an
+	// int enum and Go checks no switch for exhaustiveness, so an `else` here would silently hand a
+	// THIRD role to the delivery leg — while dispatchableByHold, which asks `role != RoleDelivery`,
+	// silently exempted the same hull from the wedged-hull decline. Two silent, opposite readings
+	// of one new role, with no compiler help and no failing test. The default converts that into a
+	// line an operator cannot miss.
+	//
+	// It falls through to the SHARED path rather than refusing the lot: the shared path is the
+	// universal fallback every unroled hull already takes, so a mis-configured role still does
+	// useful work instead of stranding an EXECUTING task. Unreachable today — ParseFleetTag only
+	// ever yields the two roles — and deliberately kept as the alarm for the day it is not.
+	if role, ok := h.gateLegRole(lot.claimIdentity); ok {
+		switch role {
+		case gate.RoleFactory:
+			return h.feedGateLeg(ctx, cmd, systemSymbol, lot, playerID)
+		case gate.RoleDelivery:
+			return h.deliverGateLeg(ctx, cmd, systemSymbol, lot, playerID)
+		default:
+			common.LoggerFromContext(ctx).Log("ERROR", fmt.Sprintf("Gate role %q (%s) has no leg of its own, so %s is falling back to the shared source-then-deliver path. A role added to gate.roleTags MUST get a case here AND a decision in dispatchableByHold's wedged-hull decline — neither is checked by the compiler", lot.claimIdentity, role, lot.ship.ShipSymbol()), map[string]interface{}{
+				"ship": lot.ship.ShipSymbol(), "claim_identity": lot.claimIdentity, "role": role.String(),
+			})
+		}
 	}
 
 	leg := &supplyLeg{lot: lot, ship: lot.ship}

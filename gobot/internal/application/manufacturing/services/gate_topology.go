@@ -200,12 +200,19 @@ func (t *GateTopology) FeedTarget(
 //
 // The predicate is marketBuys — the same one deliverInputs applies on arrival. Sharing it is the
 // point: a divergence would be its own stranding, approving a navigate that the delivery step then
-// refuses. Its nil handling is deliberately NOT shared. marketBuys answers true for an unreadable
-// listing because it governs a sell that has already arrived, where withholding costs a delivery
-// and spends nothing. This governs a navigate that has not happened yet, where guessing wrong
-// strands a loaded hull at the far end of a system; refusing costs one skipped pass and the run
-// retries. Carrying nothing is not a guess either way — there is no cargo to strand, so an empty
-// input list is accepted before the listing is consulted at all.
+// refuses.
+//
+// The nil handling is now shared too, and used not to be. marketBuys answered TRUE for an
+// unreadable listing, on the reasoning that it governs a sell that has already arrived, where
+// withholding costs a delivery and spends nothing — while this guard governs a navigate that has
+// not happened, where guessing wrong strands a loaded hull at the far end of a system. sp-kdsrh
+// closed that divergence: the arrival-side read fails closed as well, because "no basis to judge"
+// is not a reason to offer a factory its own EXPORT, which is the one thing the filter exists to
+// withhold. Both sides now refuse on an unreadable listing; the two rationales differ, the answer
+// no longer does. The nil check below is kept for its NAMED error, which the log needs.
+//
+// Carrying nothing is not a guess either way — there is no cargo to strand, so an empty input list
+// is accepted before the listing is consulted at all.
 //
 // Returns an error naming the first offending good, so the refusal is diagnosable from the log
 // alone rather than requiring a code read.

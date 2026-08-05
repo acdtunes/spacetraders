@@ -283,16 +283,42 @@ func (h *RunConstructionCoordinatorHandler) dispatchableByHold(ctx context.Conte
 	logger := common.LoggerFromContext(ctx)
 	usable := make([]*navigation.Ship, 0, len(ships))
 	for _, ship := range ships {
-		// THE SAME FUNCTION supplyTask routes on. The decline is only sound for a hull that will
-		// actually run the gate leg: with the collaborator unwired, a delivery-tagged hull takes the
-		// shared fabricate path and recovers there like any other. Sharing runsGateLeg makes that
-		// agreement structural instead of a comment two files apart — the divergence that produced D2.
-		if !h.runsGateLeg(h.claimIdentityFor(cmd, ship)) || !wedgedAtFullHold(ship, budget) {
+		// THE SAME FUNCTION supplyTask routes on — but the decline asks only about the DELIVERY
+		// role. The decline is sound only for a hull that will actually run a leg that CANNOT
+		// recover from a full hold: with the collaborator unwired, a role-tagged hull takes the
+		// shared fabricate path and recovers there like any other, which is what the ok half covers.
+		//
+		// wedgedAtFullHold ("full hold, nothing aboard is a material whose bill is still open") is
+		// sound only for the delivery leg, whose repertoire is flush-then-buy. A FACTORY hull's hold
+		// is full of fabrication INPUTS, which are never bill materials, so the predicate is true for
+		// every laden one — declining on it would make the entire factory fleet permanently
+		// invisible. Its leg recovers that hull by a route the predicate cannot see: FeedFactory
+		// SELLS the inputs into the factory's import listing.
+		//
+		// WHAT IS SHARED IS THE ROLE DERIVATION, NOT THE DISPATCH TABLE, and the difference matters.
+		// gateLegRole guarantees both sides read the same ROLE off the same identity — which is why
+		// the shared thing is the role and not a yes/no: a boolean could only have widened both
+		// together, and widening this one is the fleet-killer above.
+		//
+		// It does NOT guarantee the two act on that role consistently. Both branch non-
+		// exhaustively on a Go int enum: supplyTask routes, and this line exempts anything that is
+		// not the delivery role. Add a third role to gate.roleTags and it lands in BOTH fall-through
+		// arms at once, with no compiler help. supplyTask's switch has a loud default for exactly
+		// that; a new role still needs a deliberate decision HERE, and nothing but this comment
+		// will ask for it. wedgedAtFullHold's soundness is per-role, so the honest default for an
+		// unknown role is the exemption it already gets — the decline is the dangerous direction.
+		role, hasGateRole := h.gateLegRole(h.claimIdentityFor(cmd, ship))
+		if !hasGateRole || role != gate.RoleDelivery || !wedgedAtFullHold(ship, budget) {
 			usable = append(usable, ship)
 			continue
 		}
-		logger.Log("WARNING", fmt.Sprintf("Construction drain: gate-delivery hull %s has a FULL hold and carries nothing any ready material still needs — its leg can neither deliver nor buy, so it is not dispatched this tick. Its cargo must be sold or transferred before it can work again", ship.ShipSymbol()), map[string]interface{}{
-			"ship": ship.ShipSymbol(), "action": "skip_wedged_full_hold",
+		// NAME THE RECOVERY THAT EXISTS. This line used to end "its cargo must be sold or transferred
+		// before it can work again", which sent an operator to intervene by hand on a state the system
+		// recovers on its own for the commonest cargo. Which of the two cases this is, is decided
+		// entirely by what is in the hold, so the hold is rendered rather than left to metadata (the
+		// container log renderer drops metadata maps).
+		logger.Log("WARNING", fmt.Sprintf("Construction drain: gate-delivery hull %s has a FULL hold (%s) and carries nothing any ready material still needs — its leg can neither deliver nor buy, so it is not dispatched this tick. If that cargo is factory feedstock the next delivery PAUSE borrows the hull into the factory role, whose from-hold feed unloads it and spends nothing; cargo NO factory in this chain imports — typically a gate material whose bill has since closed, which a terminal factory will not buy back — has no automatic route out and must be sold or transferred", ship.ShipSymbol(), describeHold(ship)), map[string]interface{}{
+			"ship": ship.ShipSymbol(), "hold": describeHold(ship), "action": "skip_wedged_full_hold",
 		})
 	}
 	return usable

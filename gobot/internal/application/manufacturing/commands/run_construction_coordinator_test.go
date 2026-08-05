@@ -124,6 +124,18 @@ type persistedTask struct {
 	deferred   bool
 }
 
+// statusOf is the terminal status the drain persisted for task id, "" when it persisted none —
+// which is exactly what a leg that skipped the completion machinery leaves behind.
+//
+// It reads the EXISTING updated recorder rather than adding a parallel one. Note that recorder is
+// a MAP keyed by task ID, so there is no "last persisted task" to ask for: a caller must name the
+// task it staged.
+func (r *drainStubTaskRepo) statusOf(id string) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return string(r.updated[id])
+}
+
 // snapshot returns how the task looked at its last persist, under lock.
 func (r *drainStubTaskRepo) snapshot(id string) (persistedTask, bool) {
 	r.mu.Lock()
@@ -209,9 +221,42 @@ type drainFakeShipRepo struct {
 	claimErr    error
 	byContainer map[string][]*navigation.Ship
 	resyncs     []string // sp-6zkg: hull symbols the drain forced a server resync on (SyncShipFromAPI)
+	assigned    []fleetAssignment
+	assignErr   error
 }
 
 type drainClaim struct{ symbol, containerID, operation string }
+
+// fleetAssignment is one AssignFleet write — the SINGLE write path for dedicated_fleet
+// (RULINGS #3). Recording it at the port boundary is how a test proves the reallocator writes
+// through it and not through a general ship save, which preserveDedicatedFleetTag would revert.
+type fleetAssignment struct{ ship, fleet string }
+
+// AssignFleet records the re-tag AND applies it to the stored hull. The struct embeds the
+// interface, so without this stub any reallocation would PANIC rather than be observed.
+//
+// Applying it is not decoration. The real repository writes dedicated_fleet and invalidates the
+// ship-list cache, so a hull re-tagged early in a tick is read back with its NEW tag by that same
+// tick's discovery — which is the whole reason the reallocation runs before selectHaulers. A fake
+// that only recorded would leave the stored hull on its old tag, and then claimIdentityFor would
+// mint the OLD identity while the DB row carried the new one: production rejects that claim
+// (ClaimShip authorizes only when tag == operation) and the hull silently never works, but the
+// fake would sail through it green.
+func (r *drainFakeShipRepo) AssignFleet(_ context.Context, shipSymbol, fleet string, _ shared.PlayerID) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.assignErr != nil {
+		return r.assignErr
+	}
+	r.assigned = append(r.assigned, fleetAssignment{ship: shipSymbol, fleet: fleet})
+	for _, s := range r.ships {
+		if s.ShipSymbol() == shipSymbol {
+			s.SetDedicatedFleet(fleet)
+			break
+		}
+	}
+	return nil
+}
 
 func newDrainShipRepo(ships ...*navigation.Ship) *drainFakeShipRepo {
 	return &drainFakeShipRepo{ships: ships, byContainer: make(map[string][]*navigation.Ship)}

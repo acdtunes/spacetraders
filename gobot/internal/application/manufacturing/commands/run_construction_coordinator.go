@@ -176,6 +176,28 @@ type RunConstructionCoordinatorHandler struct {
 	// survive across legs (that state IS the hysteresis). Wired by SetGateDelivery; nil leaves the
 	// delivery leg off and the drain byte-identical to before.
 	gate *gateDelivery
+	// factory is the FACTORY-fleet collaborator set: the recursive feed walk's topology seam, the
+	// shared pinned buy, and the feed terminal. Wired by SetGateFactory; nil leaves the feeding
+	// leg off and the drain byte-identical to before.
+	factory *gateFactory
+	// roleMu guards roleSince, the reallocator's DWELL LEDGER: hull -> when THIS PROCESS last
+	// changed its role.
+	//
+	// IT MUST LIVE HERE, ON THE HANDLER, AND NOT INSIDE A TICK. gate.Worker.LastMovedByUs is the
+	// one field of a Worker that is NOT derivable from a single read of the ship row, so a tick
+	// that rebuilds its Workers from the DB leaves it zero forever: every hull reads "never moved
+	// by us", the dwell guard never fires, and hulls churn roles every tick. That failure is
+	// invisible from the planner's side and it does not look like a stall — an inert dwell produces
+	// MORE role changes, so the fleet looks BUSY. The alarm is gate.ReallocationPlan.DwellRecords,
+	// which LogLine renders as "dwell records N/M": a steady "dwell records 0/N" means this ledger
+	// is not being kept.
+	//
+	// It is deliberately IN-MEMORY and per-process, following the pause state's precedent: a
+	// restart re-derives, an unrecorded hull is immediately eligible, and the worst case is one
+	// extra role change that spends nothing. Persisting it would add a write to the tick for a
+	// guard whose only job is to damp oscillation over minutes.
+	roleMu    sync.Mutex
+	roleSince map[string]time.Time
 	// siteSource reads the LIVE construction site so each tick can reconcile the pipeline's delivered
 	// counters against the server. Wired by SetConstructionSiteSource; left nil the drain
 	// logs that reconciliation is OFF every tick rather than silently trusting a cache that only ever
@@ -348,6 +370,17 @@ func (h *RunConstructionCoordinatorHandler) drainOnce(ctx context.Context, cmd *
 	}
 
 	playerID := shared.MustNewPlayerID(cmd.PlayerID)
+
+	// Re-role gate hulls BEFORE hauler discovery, so a re-tag is visible to THIS tick: AssignFleet
+	// invalidates the ship-list cache and claimIdentityFor reads the live tag, so a hull adopted
+	// here is discovered under its new pool and claimed under its new identity in the same tick.
+	// It moves only idle, unheld hulls and spends nothing.
+	//
+	// It takes the RESOLVED systemSymbol, not cmd.SystemSymbol: an unset launch symbol would
+	// otherwise disable the in-system scoping entirely and let this drain re-role a gate hull
+	// parked in a system it cannot reach.
+	h.reallocateGateRoles(ctx, systemSymbol, tasks, playerID)
+
 	// Discover the drain's OWN dedicated fleet FIRST, then supplement with opportunistic idle
 	// hulls (see selectHaulers).
 	idleShips, err := h.selectHaulers(ctx, cmd, playerID, systemSymbol)

@@ -307,24 +307,56 @@ func (e *ProductionExecutor) redockFromAPI(
 // Nothing sellable is a no-op, not an error: it is indistinguishable from docking with
 // an empty hold, which this step has always accepted, and the production poll
 // downstream carries its own bounds. Because every per-good failure is absorbed this
-// way, the step has no failure mode of its own and returns revenue only. The operation
+// way, the step has no failure mode of its own and returns no error. The operation
 // context rides on ctx (stamped by ProduceGood).
+//
+// It reports both the revenue and the UNITS delivered. Units is what the gate FACTORY leg records
+// against a starved factory: "sold something" and "sold 60 IRON" are different facts to an
+// operator, and only the second one says whether the feed is keeping up.
+//
+// Units is summed from the SELL RESPONSE, never from the units offered. A market whose trade
+// volume is below the offered lot fills it partially, and booking the offered figure would report
+// a fed factory that is still starving — the "reported complete while nothing moved" class this
+// codebase keeps rediscovering.
 func (e *ProductionExecutor) deliverInputs(
 	ctx context.Context,
 	ship *navigation.Ship,
 	playerID shared.PlayerID,
-) int {
+) (revenue, units int) {
 	logger := common.LoggerFromContext(ctx)
 	totalRevenue := 0
+	totalUnits := 0
 	deliveredGoods := 0
 
 	// The market the sell will actually transact against is the one the hull is docked
 	// at, so the eligibility read is anchored to the ship's own location — the same
 	// waypoint the cargo handler resolves its trade volume from.
 	waypointSymbol := ship.CurrentLocation().Symbol
-	var listings *market.Market
-	if data, err := e.marketRepo.GetMarketData(ctx, waypointSymbol, playerID.Value()); err == nil {
-		listings = data
+	listings, err := e.marketRepo.GetMarketData(ctx, waypointSymbol, playerID.Value())
+	if err != nil || listings == nil {
+		// FAIL CLOSED ON AN UNREADABLE ARRIVAL LISTING (sp-kdsrh). This read is the SECOND of two,
+		// at a different time from the first, and only this one can fail this way: the sp-b27a2
+		// DEPARTURE guard (feedDestinationRefusedFor -> ValidateFeedDestination) already refuses to
+		// fly to a destination whose listing will not read, and BOTH callers of this function run
+		// it. So arriving with an unreadable listing is not a cold market — it is a TRANSIENT
+		// failure in the window between departure and arrival. Narrow, but not unreachable.
+		//
+		// Offering nothing is the safe answer precisely because the filter below is the only thing
+		// standing between the hold and the market's EXPORT bid. Withhold and the cargo rides one
+		// more cycle and the next read decides; guess and a hull carrying the factory's OWN product
+		// dumps it into that factory's export bid, laddering it down against us — the resale-sink
+		// divergence the predicate exists to prevent. The costs are not symmetric, so the tie does
+		// not go to the delivery.
+		//
+		// It is a NO-OP, not an error, exactly like a wholly-unsellable hold: the caller tolerates
+		// a zero delivery (the fabricate path runs the factory on its own stock, the gate factory
+		// leg defers and the next leg retries), and a full hull re-entering that leg now delivers
+		// what it carries rather than parking (sp-2scwt).
+		logger.Log("WARNING", fmt.Sprintf("Delivered nothing at %s: its market listing would not read on arrival, so there is no basis to judge what this market takes — holding the whole hold aboard rather than offering it blind, and retrying next cycle: %v", waypointSymbol, err), map[string]interface{}{
+			"ship": ship.ShipSymbol(), "waypoint": waypointSymbol,
+			"action": "delivery_withheld", "reason": "listing_unreadable",
+		})
+		return 0, 0
 	}
 
 	for _, item := range ship.Cargo().Inventory {
@@ -360,6 +392,7 @@ func (e *ProductionExecutor) deliverInputs(
 		}
 
 		totalRevenue += response.TotalRevenue
+		totalUnits += response.UnitsSold
 		deliveredGoods++
 
 		logger.Log("INFO", fmt.Sprintf("Delivered input: %d units of %s (revenue: %d credits)", response.UnitsSold, item.Symbol, response.TotalRevenue), map[string]interface{}{
@@ -375,7 +408,7 @@ func (e *ProductionExecutor) deliverInputs(
 		})
 	}
 
-	return totalRevenue
+	return totalRevenue, totalUnits
 }
 
 // marketBuys reports whether the market described by listings will take good off a
@@ -385,12 +418,25 @@ func (e *ProductionExecutor) deliverInputs(
 // that is the resale-sink divergence SellFabricatedOutputAtSink exists to prevent, so
 // a factory's own output is never dumped back at the factory.
 //
-// Unreadable listings answer true: with nothing to read there is no basis to withhold
-// a delivery, a sell spends nothing, and the caller tolerates the refusal if the market
-// does reject it. Withholding on a stale row would stall a fabrication over a data gap.
+// A nil listing answers FALSE. This is a DEFENSIVE FALLBACK, NOT A LIVE GUARD, and the difference
+// matters to anyone auditing it: both callers reach the same answer before ever getting here —
+// ValidateFeedDestination refuses a nil destination with a named error, and deliverInputs withholds
+// the whole hold on an unreadable arrival read (sp-kdsrh). So this branch is UNREACHABLE TODAY. It
+// is kept, rather than deleted, because deleting it means a future caller that forgets the check
+// silently fails OPEN again — which is the exact defect sp-kdsrh closed.
+//
+// A MUTATION PROBE ON THIS LINE SURVIVES BY DESIGN. Flipping it back to `true` kills no test,
+// because deliverInputs' early return means the nil never arrives. That surviving mutant is not a
+// coverage hole and must not be "fixed" by weakening the caller to reach it; the behaviour is
+// pinned at deliverInputs, where it is live. (Recorded as probe M9b, sp-kdsrh.)
+//
+// It previously answered true, on the reasoning that a sell spends nothing and withholding over a
+// data gap would stall a fabrication. What that missed is that the filter's other job is to
+// withhold — an EXPORT listing is the market's own bid, and dumping into it ladders that bid down
+// against us. Nothing to read is not a reason to do the one thing the filter exists to prevent.
 func marketBuys(listings *market.Market, good string) bool {
 	if listings == nil {
-		return true
+		return false
 	}
 	tradeGood := listings.FindGood(good)
 	if tradeGood == nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -45,6 +46,10 @@ const (
 type diMarketRepo struct {
 	market.MarketRepository
 	extraGoods []market.TradeGood // additional listings for this factory
+	// readErr makes every listing read fail, modelling the transient gap between the sp-b27a2
+	// DEPARTURE guard (which refuses an unreadable destination outright) and the ARRIVAL re-read
+	// inside deliverInputs. Zero value reads normally, so no existing fixture changes.
+	readErr error
 }
 
 func (r *diMarketRepo) FindAllMarketsInSystem(ctx context.Context, systemSymbol string, playerID int) ([]string, error) {
@@ -56,6 +61,9 @@ func (r *diMarketRepo) FindBestMarketBuying(ctx context.Context, goodSymbol, sys
 }
 
 func (r *diMarketRepo) GetMarketData(ctx context.Context, waypointSymbol string, playerID int) (*market.Market, error) {
+	if r.readErr != nil {
+		return nil, r.readErr
+	}
 	if waypointSymbol != diFactoryWP {
 		return nil, nil
 	}
@@ -319,5 +327,91 @@ func TestProduceGood_ListedGoodRefusedByAPI_IsToleratedNotFatal(t *testing.T) {
 	}
 	if got := heldUnits(repo, diPoison); got != 20 {
 		t.Fatalf("the refused good must stay aboard, got %d units", got)
+	}
+}
+
+// ---------------------------------------------------------------------------------------------
+// sp-kdsrh — THE ARRIVAL-TIME RE-READ FAILED OPEN
+// ---------------------------------------------------------------------------------------------
+//
+// There are TWO market reads at TWO different times. The sp-b27a2 DEPARTURE guard refuses to fly
+// to a destination whose listing is unreadable. deliverInputs then RE-READS on arrival and, on
+// error, held a nil listing — for which marketBuys answered TRUE for every good. The per-item
+// filter stopped filtering and the WHOLE HOLD was offered unfiltered, including the factory's own
+// EXPORT, which is the one thing that filter exists to withhold.
+//
+// The case is not unreachable, only NARROWED: it is the transient window between a listing that
+// read at departure and one that will not read on arrival.
+//
+// Driven by calling deliverInputs DIRECTLY. Going through ProduceGood cannot reach it — the
+// departure guard reads the same repository, so a repo that fails the arrival read also refuses
+// the trip, and the hull never arrives to be tested.
+
+// THE FIX. Nothing readable means nothing offered.
+func TestDeliverInputs_AnUnreadableListingOnArrivalOffersNothing(t *testing.T) {
+	executor, repo, mediator := newDeliverInputsExecutor(t,
+		&diMarketRepo{readErr: fmt.Errorf("market row unavailable")},
+		[]*shared.CargoItem{mustCargoItem(diInput, 20), mustCargoItem(diOutput, 12)}, nil)
+
+	logger := &dwellCapturingLogger{}
+	ctx := shared.WithConstructionSupply(common.WithLogger(context.Background(), logger))
+	revenue, units := executor.deliverInputs(ctx, repo.buildShip(), shared.MustNewPlayerID(1))
+
+	// BEHAVIOUR FIRST: what was OFFERED, not what was reported afterwards.
+	if got := mediator.sellAttemptsFor(diOutput); got != 0 {
+		t.Fatalf("the factory's OWN EXPORT was offered %d time(s) against a listing that would not read; selling into its own export bid ladders that bid down against us, and an unreadable row is precisely when we cannot tell an export from an import", got)
+	}
+	if got := mediator.sellAttemptsFor(diInput); got != 0 {
+		t.Fatalf("offered %s %d time(s) with no listing to judge it by. The departure guard already refused unreadable destinations, so this is a transient failure: the hold rides on and the next cycle re-reads", diInput, got)
+	}
+	if revenue != 0 || units != 0 {
+		t.Fatalf("reported revenue %d / units %d having offered nothing — a caller that books this figure reports a fed factory that is still starving", revenue, units)
+	}
+	if got := heldUnits(repo, diInput); got != 20 {
+		t.Fatalf("the cargo must stay aboard for the retry, got %d units of %s", got, diInput)
+	}
+
+	// THE REASON MUST BE IN THE LOG, and it must be THIS reason. The per-item line the loop would
+	// otherwise emit says "this market does not buy it" — which is a claim we cannot make about a
+	// listing that would not read, and it sends the next operator looking for a trade-listing
+	// problem instead of a market-data one. Withholding is only safe if it is also diagnosable.
+	// The ABSENT half scans EVERY level, not just WARNING. The misleading per-item line is logged
+	// at INFO (dock.go, "this market does not buy it"), so a WARNING-only scan could never match it
+	// and this assertion would be dead — it would pass against an implementation that emitted the
+	// line for every good aboard.
+	for _, entry := range logger.entries {
+		if strings.Contains(entry.message, "does not buy it") {
+			t.Fatalf("the log blames the market's LISTING for withholding cargo whose listing never read (%s %q); that sends the next operator after a trade-listing problem instead of a market-data one", entry.level, entry.message)
+		}
+	}
+	var said string
+	for _, entry := range logger.entriesWithLevel("WARNING") {
+		if strings.Contains(entry.message, "would not read") {
+			said = entry.message
+		}
+	}
+	if said == "" {
+		t.Fatalf("nothing in the log says the listing was unreadable, so this withholding is indistinguishable from a market that genuinely takes none of the hold:\n%+v", logger.entries)
+	}
+}
+
+// THE REFERENCE FRAME for the test above, and it is not optional. "Zero sell attempts" is equally
+// satisfied by a rig that never reaches the filter at all — a wrong ship, an empty hold, a docked
+// state that never resolves. Same direct call, same hold, readable listing: the import IS offered
+// and the export is still withheld.
+func TestDeliverInputs_AReadableListingStillOffersTheImportedInput(t *testing.T) {
+	executor, repo, mediator := newDeliverInputsExecutor(t, &diMarketRepo{},
+		[]*shared.CargoItem{mustCargoItem(diInput, 20), mustCargoItem(diOutput, 12)}, nil)
+
+	revenue, units := executor.deliverInputs(deliverInputsCtx(), repo.buildShip(), shared.MustNewPlayerID(1))
+
+	if got := mediator.sellsOf(diInput); got != 20 {
+		t.Fatalf("the imported input must be delivered in full when the listing reads: got %d units", got)
+	}
+	if got := mediator.sellAttemptsFor(diOutput); got != 0 {
+		t.Fatalf("the factory's own export must still be withheld when the listing DOES read: %d attempt(s)", got)
+	}
+	if units != 20 || revenue != 20*diSellBid {
+		t.Fatalf("revenue/units = %d/%d, want %d/20 — summed from the sell responses", revenue, units, 20*diSellBid)
 	}
 }
