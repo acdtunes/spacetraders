@@ -97,6 +97,21 @@ func (m *creditsParkFakeMediator) Send(_ context.Context, request common.Request
 			IsProfitable:           true,
 			PurchaseCost:           100188,
 			CheapestMarketWaypoint: "X1-TEST-M1",
+			// MarketPrices must carry a POSITIVE ask (sp-gef01). This fixture used to omit
+			// the map entirely, which no production evaluation can do: buildMarketPricesMap
+			// writes an entry for every unfulfilled delivery, and the domain's
+			// calculatePurchaseCost comma-ok checks that same map and errors the whole
+			// evaluation on an absent key — so a result carrying a 100,188 PurchaseCost and
+			// no per-unit ask was unreachable state. The source-buy floor now refuses an
+			// unpriced lot outright, which would park this run BEFORE the API call and
+			// silently retire the reactive-4600 path this test exists to pin.
+			//
+			// 800 keeps the original behaviour exactly — one FULL 40-unit lot (the hull holds
+			// 40 of the 80 units remaining), because 85,517 − 40×800 = 53,517 stays above the
+			// 50k reserve. Anything above ~887 would trip the partial-lot shrink and change
+			// what this test drives. PurchaseCost stays at the incident's recorded 100,188:
+			// it is what credits_needed reports, and it is read independently of the ask.
+			MarketPrices: map[string]int{"ALUMINUM": 800},
 		}, nil
 
 	case *shipNav.NavigateRouteCommand:

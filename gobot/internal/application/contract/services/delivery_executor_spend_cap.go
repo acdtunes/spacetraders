@@ -47,9 +47,18 @@ func (e *DeliveryExecutor) reserveConcurrentSpendOrPark(
 	if e.spendLedger == nil {
 		return "", false
 	}
-	// A zero/unknown projected cost has no basis to reserve against. The per-buy floor treats
-	// an unpriced lot the same way (it cannot size a partial without a unit price), and
-	// reserving 0 would record an intent that constrains nobody while still taking a row.
+	// A zero/unknown projected cost has no basis to reserve against: reserving 0 would record
+	// an intent that constrains nobody while still taking a row.
+	//
+	// This early return is NOT the unpriced-buy hole (sp-gef01) and must not be inverted into
+	// a park. Returning "no reservation, proceed" would be a fail-OPEN if an unpriced lot could
+	// still reach the purchase below — but it cannot: affordableSourceBuyLot now REFUSES a
+	// non-positive unit price outright, upstream of here, and it is armed unconditionally in
+	// production (run_contract_workflow.go). So by the time a buy reaches this call its cost is
+	// positive, and this branch is a defensive contract for a caller that has nothing to spend
+	// rather than a guard being asked to judge a real one. Parking here instead would give the
+	// WRONG diagnosis for that caller (a cap denial for a buy no cap ever refused) while the
+	// actual refusal — and its reason — belongs to the floor.
 	if projectedCost <= 0 {
 		return "", false
 	}

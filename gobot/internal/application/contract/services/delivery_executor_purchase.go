@@ -66,18 +66,50 @@ func (e *DeliveryExecutor) lookupLiveCredits(ctx context.Context, playerID share
 // Returns (units, held):
 //   - guard unarmed (WithSourceBuyFloor not wired) → (unitsWanted, false): the
 //     optional-guard contract every existing caller/test relies on, byte-identical
+//   - unpriced lot (unitPrice ≤ 0) → (0, true): fails CLOSED, see sp-gef01 below
 //   - treasury unreadable → (0, true): fails CLOSED — a guard whose job is keeping
 //     treasury above the reserve must never let a buy through blind
 //   - full lot clears the floor → (unitsWanted, false), byte-identical
 //   - full lot breaches but ≥ MinPartialSourceBuyUnits are affordable →
 //     (floor((treasury−reserve)/unitPrice), false)
-//   - anything smaller (or no positive unit price to size a lot with) → (0, true):
-//     PARK (not crash), resuming when treasury recovers, as before
+//   - anything smaller → (0, true): PARK (not crash), resuming when treasury
+//     recovers, as before
 func (e *DeliveryExecutor) affordableSourceBuyLot(ctx context.Context, playerID shared.PlayerID, unitsWanted, unitPrice int) (int, bool) {
 	if !e.enforceSourceBuyFloor {
 		return unitsWanted, false
 	}
 	logger := common.LoggerFromContext(ctx)
+
+	// UNPRICED LOT — FAIL CLOSED (sp-gef01). A non-positive unit price is not a cheap
+	// lot, it is an UNKNOWN one, and both money guards downstream reason in COST:
+	//
+	//   - this floor computes fullCost = unitsWanted × 0 = 0, and treasury minus 0 is
+	//     always above the reserve, so it waves the FULL UNSHRUNK lot through; then
+	//   - reserveConcurrentSpendOrPark returns early on projectedCost ≤ 0, so no
+	//     reservation is taken either.
+	//
+	// The buy would then execute at REAL prices with both armed guards blind — a money
+	// guard failing OPEN on missing data, the inverse of RULINGS #4. Refusing is the only
+	// answer available here: a lot nobody can price cannot be sized against the floor
+	// (that is why the partial-lot arithmetic below already requires unitPrice > 0), and
+	// reserving 0 would record an intent that constrains nobody.
+	//
+	// This cannot wedge sourcing. It is strictly narrower than the park that already
+	// happens when no market sells the good at all: an unscanned or aged-out good never
+	// reaches this guard, because PlanDeliverySourcing errors and the profitability
+	// evaluation fails upstream. Only a market row quoting a non-positive ask lands here,
+	// and UpsertMarketData rewrites that waypoint's whole price set on the next scan,
+	// while the coordinator re-projects the parked delivery each pass.
+	if unitPrice <= 0 {
+		logger.Log("WARNING", fmt.Sprintf(
+			"Contract source-buy of %d units has no positive unit price to project a cost from — parking the buy (fail-closed, sp-gef01). An unpriced lot would clear the working-capital reserve floor and the aggregate spend cap at a projected cost of 0 while charging the real amount; resumes when the market is re-priced",
+			unitsWanted), map[string]interface{}{
+			"action": "source_buy_floor_park", "reason": "unpriced_lot",
+			"units_wanted": unitsWanted, "unit_price": unitPrice,
+		})
+		return 0, true
+	}
+
 	treasury := e.lookupLiveCredits(ctx, playerID)
 	if treasury < 0 {
 		logger.Log("WARNING", "Contract source-buy: live treasury unreadable for the working-capital reserve check — parking the buy (fail-closed)", map[string]interface{}{
