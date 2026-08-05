@@ -261,9 +261,9 @@ func TestHomeShipHandler_AlreadyAtItsSlot_NoOp(t *testing.T) {
 
 // The complement of the rule above: "already home" means AT MY SLOT, not at ANY standby
 // station. With a 2-hull roster both slots survive the priority truncation; TORWIND-4 owns B2
-// (symbol-zip of [TORWIND-4,TORWIND-9] onto [B2,C3]) and is parked on its PEER's slot C3, so it
-// must still relocate — otherwise a hull could squat a peer's slot forever and the design's
-// one-hull-per-park spread quietly collapses.
+// (symbol-sorted roster [TORWIND-4,TORWIND-9] zipped onto the PRIORITY-ordered slots [B2,C3])
+// and is parked on its PEER's slot C3, so it must still relocate — otherwise a hull could squat a
+// peer's slot forever and the design's one-hull-per-park spread quietly collapses.
 func TestHomeShipHandler_AtAPeersSlot_StillRelocatesToItsOwn(t *testing.T) {
 	ship := newHomeTestShip(t, "TORWIND-4", "X1-TEST-C3", 100, 0)
 	near := homeTestWaypoint(t, "X1-TEST-B2", 10, 0)
@@ -279,7 +279,7 @@ func TestHomeShipHandler_AtAPeersSlot_StillRelocatesToItsOwn(t *testing.T) {
 		ShipSymbol:      "TORWIND-4",
 		PlayerID:        shared.MustNewPlayerID(1),
 		FleetShips:      []string{"TORWIND-4", "TORWIND-9"},
-		StandbyStations: []string{"X1-TEST-C3", "X1-TEST-B2"},
+		StandbyStations: []string{"X1-TEST-B2", "X1-TEST-C3"}, // PLACEMENT PRIORITY: B2 first
 	})
 	if err != nil {
 		t.Fatalf("Handle: %v", err)
@@ -296,10 +296,11 @@ func TestHomeShipHandler_AtAPeersSlot_StillRelocatesToItsOwn(t *testing.T) {
 	}
 }
 
-// FIXED PLACEMENT: each hull homes to ITS OWN slot — the symbol-zip of the roster onto the
-// slots — ignoring occupancy. TORWIND-4 (roster index 0) owns the first slot B2 and homes there even
-// though a peer sits at B2 (the old occupancy balancer would have sent it to the "emptier" C3). The slot
-// set order is irrelevant (symbol-zipped), so [C3, B2] resolves identically.
+// FIXED PLACEMENT: each hull homes to ITS OWN slot — the symbol-sorted roster zipped onto the
+// PRIORITY-ordered slots — ignoring occupancy. TORWIND-4 (roster index 0) owns the first priority
+// slot B2 and homes there even though a peer sits at B2 (the old occupancy balancer would have
+// sent it to the "emptier" C3). The slot list is the caller's placement priority and is honoured
+// as given, never re-sorted (sp-lkuh9), so B2 must be listed first for TORWIND-4 to own it.
 func TestHomeShipHandler_HomesToItsOwnFixedSlot(t *testing.T) {
 	ship := newHomeTestShip(t, "TORWIND-4", "X1-TEST-A1", 0, 0)
 	peer := newHomeTestShip(t, "TORWIND-5", "X1-TEST-B2", 10, 0) // sitting at TORWIND-4's slot
@@ -315,7 +316,7 @@ func TestHomeShipHandler_HomesToItsOwnFixedSlot(t *testing.T) {
 	resp, err := handler.Handle(context.Background(), &HomeShipCommand{
 		ShipSymbol:      "TORWIND-4",
 		PlayerID:        shared.MustNewPlayerID(1),
-		StandbyStations: []string{"X1-TEST-C3", "X1-TEST-B2"}, // order-independent (symbol-zipped)
+		StandbyStations: []string{"X1-TEST-B2", "X1-TEST-C3"}, // PLACEMENT PRIORITY: B2 first
 		FleetShips:      []string{"TORWIND-4", "TORWIND-5"},
 	})
 	if err != nil {
