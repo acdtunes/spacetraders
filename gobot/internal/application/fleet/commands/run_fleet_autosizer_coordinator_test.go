@@ -44,42 +44,57 @@ func newHandlerWith(providers ...ClassDemandProvider) *RunFleetAutosizerCoordina
 // Disabled=false) boots ACTIVE — every enabled class provider is evaluated.
 func TestReconcile_LiveByDefault_EvaluatesProviders(t *testing.T) {
 	light := &fakeDemandProvider{class: HullClassLight, demand: ClassDemand{Demand: 5, Current: 2, Readable: true}}
-	heavy := &fakeDemandProvider{class: HullClassHeavy, demand: ClassDemand{Demand: 3, Current: 3, Readable: true}}
-	h := newHandlerWith(light, heavy)
+	h := newHandlerWith(light)
 
 	res, err := h.reconcileOnce(context.Background(), &RunFleetAutosizerCoordinatorCommand{PlayerID: 42, ContainerID: "c1"})
 	if err != nil {
 		t.Fatalf("reconcileOnce error: %v", err)
 	}
-	if light.calls != 1 || heavy.calls != 1 {
-		t.Fatalf("expected both providers evaluated once, got light=%d heavy=%d", light.calls, heavy.calls)
+	if light.calls != 1 {
+		t.Fatalf("expected the live provider evaluated once, got %d", light.calls)
 	}
 	if light.lastP != 42 {
 		t.Fatalf("expected playerID threaded to provider, got %d", light.lastP)
 	}
-	if res.ClassesEvaluated != 2 {
-		t.Fatalf("expected 2 classes evaluated, got %d", res.ClassesEvaluated)
+	if res.ClassesEvaluated != 1 {
+		t.Fatalf("expected 1 class evaluated, got %d", res.ClassesEvaluated)
 	}
 	if res.ShortfallClasses != 1 {
 		t.Fatalf("expected 1 class with shortfall (lights 5>2), got %d", res.ShortfallClasses)
 	}
 }
 
-// A provider infra error must not abort the whole tick — the other classes still size.
+// EXACTLY ONE HEAVY BUYER. The growth coordinator owns trade capacity; the autosizer must not
+// evaluate the heavy class at all while both are deployed, or two coordinators would each judge
+// affordability against one treasury without seeing the other's spend.
+func TestReconcile_HeavyClassIsDisabled(t *testing.T) {
+	heavy := &fakeDemandProvider{class: HullClassHeavy, demand: ClassDemand{Demand: 9, Current: 0, Readable: true}}
+	h := newHandlerWith(heavy)
+	if _, err := h.reconcileOnce(context.Background(), &RunFleetAutosizerCoordinatorCommand{ContainerID: "c1"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if heavy.calls != 0 {
+		t.Fatalf("the autosizer must not evaluate heavy demand, got %d calls", heavy.calls)
+	}
+}
+
+// A provider infra error must not abort the whole tick — the loop is over PROVIDERS, so a healthy
+// sibling still sizes. Both are of the one class this coordinator still sizes; a disabled class
+// never reaches the provider at all and so could not express this.
 func TestReconcile_ProviderError_DoesNotAbortTick(t *testing.T) {
 	broken := &fakeDemandProvider{class: HullClassLight, err: errors.New("db down")}
-	heavy := &fakeDemandProvider{class: HullClassHeavy, demand: ClassDemand{Demand: 4, Current: 1, Readable: true}}
-	h := newHandlerWith(broken, heavy)
+	healthy := &fakeDemandProvider{class: HullClassLight, demand: ClassDemand{Demand: 4, Current: 1, Readable: true}}
+	h := newHandlerWith(broken, healthy)
 
 	res, err := h.reconcileOnce(context.Background(), &RunFleetAutosizerCoordinatorCommand{ContainerID: "c1"})
 	if err != nil {
 		t.Fatalf("a single provider error must not fail the tick, got %v", err)
 	}
-	if heavy.calls != 1 {
-		t.Fatalf("the healthy provider must still be evaluated after a sibling errored, got %d", heavy.calls)
+	if healthy.calls != 1 {
+		t.Fatalf("the healthy provider must still be evaluated after a sibling errored, got %d", healthy.calls)
 	}
 	if res.ClassesEvaluated != 1 {
-		t.Fatalf("expected 1 class evaluated (heavy; light errored), got %d", res.ClassesEvaluated)
+		t.Fatalf("expected 1 class evaluated (the healthy provider; the other errored), got %d", res.ClassesEvaluated)
 	}
 }
 

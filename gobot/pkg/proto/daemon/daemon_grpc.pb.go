@@ -38,6 +38,7 @@ const (
 	DaemonService_ScoutPostCoordinator_FullMethodName          = "/daemon.DaemonService/ScoutPostCoordinator"
 	DaemonService_TradeFleetCoordinator_FullMethodName         = "/daemon.DaemonService/TradeFleetCoordinator"
 	DaemonService_FleetAutosizerCoordinator_FullMethodName     = "/daemon.DaemonService/FleetAutosizerCoordinator"
+	DaemonService_FleetGrowthCoordinator_FullMethodName        = "/daemon.DaemonService/FleetGrowthCoordinator"
 	DaemonService_LongHaulArbCoordinator_FullMethodName        = "/daemon.DaemonService/LongHaulArbCoordinator"
 	DaemonService_BootstrapCoordinator_FullMethodName          = "/daemon.DaemonService/BootstrapCoordinator"
 	DaemonService_CapacityReconcilerCoordinator_FullMethodName = "/daemon.DaemonService/CapacityReconcilerCoordinator"
@@ -159,6 +160,10 @@ type DaemonServiceClient interface {
 	// the hull pool to demand and auto-buys hulls (lights to factory demand, heavies to trade
 	// demand) behind the full fail-closed money-guard stack. LIVE BY DEFAULT once launched.
 	FleetAutosizerCoordinator(ctx context.Context, in *FleetAutosizerCoordinatorRequest, opts ...grpc.CallOption) (*FleetAutosizerCoordinatorResponse, error)
+	// FleetGrowthCoordinator starts the standing fleet-growth coordinator: the fleet's only heavy
+	// buyer. Each tick it derives the heavy/probe wave and buys at most one heavy behind the full
+	// fail-closed money-guard stack. LIVE BY DEFAULT once launched.
+	FleetGrowthCoordinator(ctx context.Context, in *FleetGrowthCoordinatorRequest, opts ...grpc.CallOption) (*FleetGrowthCoordinatorResponse, error)
 	// LongHaulArbCoordinator starts the standing long-haul arb fleet coordinator (sp-mepj): the
 	// out-of-horizon single-good arb engine. Each tick it launches a per-hull worker on every idle
 	// long-haul-tagged hull. ARMED on deploy but INERT until an operator tags a hull with
@@ -524,6 +529,16 @@ func (c *daemonServiceClient) FleetAutosizerCoordinator(ctx context.Context, in 
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(FleetAutosizerCoordinatorResponse)
 	err := c.cc.Invoke(ctx, DaemonService_FleetAutosizerCoordinator_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) FleetGrowthCoordinator(ctx context.Context, in *FleetGrowthCoordinatorRequest, opts ...grpc.CallOption) (*FleetGrowthCoordinatorResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(FleetGrowthCoordinatorResponse)
+	err := c.cc.Invoke(ctx, DaemonService_FleetGrowthCoordinator_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1162,6 +1177,10 @@ type DaemonServiceServer interface {
 	// the hull pool to demand and auto-buys hulls (lights to factory demand, heavies to trade
 	// demand) behind the full fail-closed money-guard stack. LIVE BY DEFAULT once launched.
 	FleetAutosizerCoordinator(context.Context, *FleetAutosizerCoordinatorRequest) (*FleetAutosizerCoordinatorResponse, error)
+	// FleetGrowthCoordinator starts the standing fleet-growth coordinator: the fleet's only heavy
+	// buyer. Each tick it derives the heavy/probe wave and buys at most one heavy behind the full
+	// fail-closed money-guard stack. LIVE BY DEFAULT once launched.
+	FleetGrowthCoordinator(context.Context, *FleetGrowthCoordinatorRequest) (*FleetGrowthCoordinatorResponse, error)
 	// LongHaulArbCoordinator starts the standing long-haul arb fleet coordinator (sp-mepj): the
 	// out-of-horizon single-good arb engine. Each tick it launches a per-hull worker on every idle
 	// long-haul-tagged hull. ARMED on deploy but INERT until an operator tags a hull with
@@ -1399,6 +1418,9 @@ func (UnimplementedDaemonServiceServer) TradeFleetCoordinator(context.Context, *
 }
 func (UnimplementedDaemonServiceServer) FleetAutosizerCoordinator(context.Context, *FleetAutosizerCoordinatorRequest) (*FleetAutosizerCoordinatorResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method FleetAutosizerCoordinator not implemented")
+}
+func (UnimplementedDaemonServiceServer) FleetGrowthCoordinator(context.Context, *FleetGrowthCoordinatorRequest) (*FleetGrowthCoordinatorResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method FleetGrowthCoordinator not implemented")
 }
 func (UnimplementedDaemonServiceServer) LongHaulArbCoordinator(context.Context, *LongHaulArbCoordinatorRequest) (*LongHaulArbCoordinatorResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method LongHaulArbCoordinator not implemented")
@@ -1930,6 +1952,24 @@ func _DaemonService_FleetAutosizerCoordinator_Handler(srv interface{}, ctx conte
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(DaemonServiceServer).FleetAutosizerCoordinator(ctx, req.(*FleetAutosizerCoordinatorRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_FleetGrowthCoordinator_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(FleetGrowthCoordinatorRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).FleetGrowthCoordinator(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_FleetGrowthCoordinator_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).FleetGrowthCoordinator(ctx, req.(*FleetGrowthCoordinatorRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -3042,6 +3082,10 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "FleetAutosizerCoordinator",
 			Handler:    _DaemonService_FleetAutosizerCoordinator_Handler,
+		},
+		{
+			MethodName: "FleetGrowthCoordinator",
+			Handler:    _DaemonService_FleetGrowthCoordinator_Handler,
 		},
 		{
 			MethodName: "LongHaulArbCoordinator",

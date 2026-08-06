@@ -160,15 +160,26 @@ func TestAutosizerReportsBlockedOnUnreadableDemand(t *testing.T) {
 	}
 }
 
-// Classes stall INDEPENDENTLY: a blocked heavy must not be closed out by a healthy light, and the
-// escalation must name the class that is actually stuck.
-func TestAutosizerScopesTheStallVerdictPerClass(t *testing.T) {
-	blockedLight := lightShortfall()
-	satisfiedHeavy := &fakeDemandProvider{class: HullClassHeavy, demand: ClassDemand{Demand: 2, Current: 2, Readable: true}}
-	h, obs := blockedHandler(blockedLight, satisfiedHeavy)
+// TWO COORDINATORS WATCHING TWO CLASSES STALL INDEPENDENTLY. The key carries the coordinator as
+// well as the class, so a blocked light in the autosizer is never closed out by an idle heavy in
+// the growth coordinator — and neither can inherit the other's streak, which matters precisely
+// because both now run against one fleet.
+func TestStallVerdictsAreScopedPerCoordinatorAndClass(t *testing.T) {
+	obs := &recordingStallObserver{}
 
-	if _, err := h.reconcileOnce(context.Background(), &RunFleetAutosizerCoordinatorCommand{PlayerID: 5, ContainerID: "c1"}); err != nil {
-		t.Fatalf("reconcileOnce error: %v", err)
+	sizer, _ := blockedHandler(lightShortfall())
+	// One observer for BOTH coordinators, which is the whole subject: if the key did not carry the
+	// coordinator, these two would be writing into the same streak.
+	sizer.SetStallObserver(obs)
+	if _, err := sizer.reconcileOnce(context.Background(), &RunFleetAutosizerCoordinatorCommand{PlayerID: 5, ContainerID: "c1"}); err != nil {
+		t.Fatalf("autosizer reconcileOnce error: %v", err)
+	}
+
+	// A PROBE wave: the growth coordinator has nothing outstanding this tick, which is IDLE.
+	growth := newGrowthHandlerWith(t, growthFixture{lanes: &fakeLanes{count: 0, readable: true}})
+	growth.SetStallObserver(obs)
+	if _, err := growth.reconcileOnce(context.Background(), growthCmd()); err != nil {
+		t.Fatalf("growth reconcileOnce error: %v", err)
 	}
 
 	light := obs.forScope(string(HullClassLight))
@@ -177,7 +188,10 @@ func TestAutosizerScopesTheStallVerdictPerClass(t *testing.T) {
 		t.Fatalf("the blocked light class must report BLOCKED, got %+v", light)
 	}
 	if len(heavy) != 1 || heavy[0].Outcome != health.StallIdle {
-		t.Fatalf("the satisfied heavy class must report IDLE, got %+v", heavy)
+		t.Fatalf("the paused heavy class must report IDLE, got %+v", heavy)
+	}
+	if obs.keys[0].Coordinator != autosizerStallCoordinator || obs.keys[1].Coordinator != growthStallCoordinator {
+		t.Fatalf("the two coordinators must not share a stall key, got %q and %q", obs.keys[0].Coordinator, obs.keys[1].Coordinator)
 	}
 }
 

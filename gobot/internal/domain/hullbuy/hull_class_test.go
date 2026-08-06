@@ -1,6 +1,10 @@
 package hullbuy
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
+)
 
 // The class→dedicated-fleet mapping is the exclusivity contract: a bought hull is stamped for its
 // fleet in the same breath so no other coordinator poaches it before it reaches its role.
@@ -63,5 +67,19 @@ func TestHullClass_SymbolsAreStable(t *testing.T) {
 func TestHeavyBuyerContainers_DeclaresAnOwner(t *testing.T) {
 	if len(HeavyBuyerContainers()) == 0 {
 		t.Fatal("no container type declares heavy buying — the heavy reservation resolves to nothing fleet-wide")
+	}
+}
+
+// EXACTLY ONE declared heavy buyer. Two would let the cap resolve off whichever container id sorts
+// first rather than off the coordinator that actually spends, so the withholder and the spender
+// could save toward different ceilings. When heavy buying changes hands this list is REPLACED, not
+// appended to.
+func TestHeavyBuyerContainers_DeclaresExactlyOneOwner(t *testing.T) {
+	got := HeavyBuyerContainers()
+	if len(got) != 1 {
+		t.Fatalf("expected exactly one declared heavy buyer, got %v", got)
+	}
+	if got[0] != container.ContainerTypeFleetGrowth {
+		t.Fatalf("the declared owner must be the coordinator that buys heavies, got %q", got[0])
 	}
 }

@@ -144,6 +144,26 @@ func (s *daemonServiceImpl) FleetAutosizerCoordinator(ctx context.Context, req *
 	return &pb.FleetAutosizerCoordinatorResponse{ContainerId: containerID, Status: "RUNNING"}, nil
 }
 
+// FleetGrowthCoordinator starts the standing fleet-growth coordinator: the fleet's only heavy buyer.
+func (s *daemonServiceImpl) FleetGrowthCoordinator(ctx context.Context, req *pb.FleetGrowthCoordinatorRequest) (*pb.FleetGrowthCoordinatorResponse, error) {
+	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, req.AgentSymbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve player: %w", err)
+	}
+
+	agentSymbol := ""
+	if req.AgentSymbol != nil {
+		agentSymbol = *req.AgentSymbol
+	}
+
+	containerID, err := s.daemon.FleetGrowthCoordinator(ctx, playerID, agentSymbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to start fleet growth coordinator: %w", err)
+	}
+
+	return &pb.FleetGrowthCoordinatorResponse{ContainerId: containerID, Status: "RUNNING"}, nil
+}
+
 // LongHaulArbCoordinator starts the standing long-haul arb fleet coordinator (sp-mepj): the
 // out-of-horizon arb engine that launches a per-hull worker on every idle long-haul-tagged hull.
 // Identity-only launch; idempotent on its own container type.

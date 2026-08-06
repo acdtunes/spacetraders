@@ -8,21 +8,23 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/health"
 )
 
-// fleet_autosizer_stall.go turns each class's tick into the three-way verdict the escalation
-// layer consumes (internal/application/health/stall.go): PROGRESS, IDLE, or BLOCKED(reason).
+// This file turns each class's tick into the three-way verdict the escalation layer consumes
+// (internal/application/health/stall.go): PROGRESS, IDLE, or BLOCKED(reason).
 //
-// The autosizer is the coordinator this lane was written for. Measured live on agent TORWIND:
-// eighteen consecutive failed heavy purchases, three whole ticks that accomplished nothing, and
-// a heavy decision BLOCKED on four guards every single tick — for HOURS, with nothing raised.
-// The guard stack was doing its job perfectly; the problem is that a refusal and a rest look
-// identical from outside.
+// It exists because a guard stack doing its job perfectly and a coordinator with nothing to do look
+// identical from outside: a buyer can refuse every tick for hours, correctly, and raise nothing.
+// The verdict is what separates a refusal from a rest.
 //
-// The verdict is reported ONCE PER CLASS PER TICK, from the reconcile loop, because the streak
-// IS the tick count: a second report inflates it and a skipped one stalls it.
+// It is reported ONCE PER CLASS PER TICK, from the reconcile loop, because the streak IS the tick
+// count: a second report inflates it and a skipped one stalls it.
 
-// autosizerStallCoordinator names this coordinator in the stall key, metric labels and event
-// payload. A stable identifier, never a formatted string.
-const autosizerStallCoordinator = "fleet_autosizer"
+// The coordinator names carried in the stall key, metric labels and event payload. Stable
+// identifiers, never formatted strings: a renamed one silently starts a fresh streak and closes
+// out whatever the old name was escalating.
+const (
+	autosizerStallCoordinator = "fleet_autosizer"
+	growthStallCoordinator    = "fleet_growth"
+)
 
 const (
 	// stallReasonDemandError is an infra fault reading one class's demand. The tick survives it
@@ -66,18 +68,27 @@ func classStallVerdict(d ClassDemand, demandErr error, bought, unmetNoBuy bool, 
 	return health.TickBlocked(stallReasonUnattributedNoBuy, fmt.Sprintf("shortfall %d unmet and no hull bought", d.Shortfall()))
 }
 
-// observeClassStall reports one class's verdict to the escalator, keyed per container AND per
-// class so a blocked heavy is never closed out by a healthy light.
-func (h *RunFleetAutosizerCoordinatorHandler) observeClassStall(ctx context.Context, cmd *RunFleetAutosizerCoordinatorCommand, class HullClass, outcome health.TickOutcome) {
-	if h.stall == nil {
+// observeClassStallOn reports one class's verdict to the escalator, keyed per COORDINATOR, per
+// container AND per class — so a blocked heavy is never closed out by a healthy light, and two
+// coordinators watching the same class never share one streak.
+func observeClassStallOn(ctx context.Context, stall health.StallObserver, coordinator, containerID string, playerID int, class HullClass, outcome health.TickOutcome) {
+	if stall == nil {
 		return
 	}
-	h.stall.Observe(ctx, health.StallKey{
-		Coordinator: autosizerStallCoordinator,
-		ContainerID: cmd.ContainerID,
+	stall.Observe(ctx, health.StallKey{
+		Coordinator: coordinator,
+		ContainerID: containerID,
 		Scope:       string(class),
-		PlayerID:    cmd.PlayerID,
+		PlayerID:    playerID,
 	}, outcome)
+}
+
+func (h *RunFleetAutosizerCoordinatorHandler) observeClassStall(ctx context.Context, cmd *RunFleetAutosizerCoordinatorCommand, class HullClass, outcome health.TickOutcome) {
+	observeClassStallOn(ctx, h.stall, autosizerStallCoordinator, cmd.ContainerID, cmd.PlayerID, class, outcome)
+}
+
+func (h *RunFleetGrowthCoordinatorHandler) observeClassStall(ctx context.Context, containerID string, playerID int, class HullClass, outcome health.TickOutcome) {
+	observeClassStallOn(ctx, h.stall, growthStallCoordinator, containerID, playerID, class, outcome)
 }
 
 // --- the first-failing-guard tap ---

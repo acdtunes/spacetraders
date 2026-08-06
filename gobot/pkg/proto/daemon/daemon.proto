@@ -82,6 +82,11 @@ service DaemonService {
   // demand) behind the full fail-closed money-guard stack. LIVE BY DEFAULT once launched.
   rpc FleetAutosizerCoordinator(FleetAutosizerCoordinatorRequest) returns (FleetAutosizerCoordinatorResponse);
 
+  // FleetGrowthCoordinator starts the standing fleet-growth coordinator: the fleet's only heavy
+  // buyer. Each tick it derives the heavy/probe wave and buys at most one heavy behind the full
+  // fail-closed money-guard stack. LIVE BY DEFAULT once launched.
+  rpc FleetGrowthCoordinator(FleetGrowthCoordinatorRequest) returns (FleetGrowthCoordinatorResponse);
+
   // LongHaulArbCoordinator starts the standing long-haul arb fleet coordinator (sp-mepj): the
   // out-of-horizon single-good arb engine. Each tick it launches a per-hull worker on every idle
   // long-haul-tagged hull. ARMED on deploy but INERT until an operator tags a hull with
@@ -736,6 +741,20 @@ message FleetAutosizerCoordinatorRequest {
 }
 
 message FleetAutosizerCoordinatorResponse {
+  string container_id = 1;
+  string status = 2;
+}
+
+// FleetGrowthCoordinatorRequest starts the standing fleet-growth coordinator. Identity only:
+// the tick cadence and the price/guard bounds are the coordinator's own documented defaults,
+// and the three operator levers (growth_enabled, heavy_cap, growth_runway_milli_hours) are
+// live-tunable, so there is nothing to name here but the player/agent.
+message FleetGrowthCoordinatorRequest {
+  int32 player_id = 1;
+  optional string agent_symbol = 2;
+}
+
+message FleetGrowthCoordinatorResponse {
   string container_id = 1;
   string status = 2;
 }

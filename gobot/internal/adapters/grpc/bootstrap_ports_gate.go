@@ -58,31 +58,40 @@ func containerTypeRunning(ctx context.Context, repo *persistence.ContainerReposi
 	return id != "", err
 }
 
-// matchesAnyContainerType reports whether containerType equals any of the given types.
-func matchesAnyContainerType(containerType string, types []container.ContainerType) bool {
-	for _, t := range types {
-		if containerType == string(t) {
-			return true
-		}
-	}
-	return false
-}
-
 // firstContainerIDOfType returns the ID of the first RUNNING-or-PENDING container matching any given type
 // (for the adoption bounce, which stops that container so the daemon re-adopts it), or "" if none.
+//
+// IT READS BOTH LIVE STATUSES IN ONE QUERY, and that is load-bearing rather than tidy. This used to
+// query RUNNING and then PENDING separately, which let a container that started between the two
+// queries hide from both — no longer PENDING, not yet RUNNING. A launch is precisely when a row
+// makes that transition, and every once-only launch guard in the daemon is this function, so the
+// gap was a window in which a second single-instance coordinator started. The -race suite caught it
+// on the fleet-growth guard: two heavy buyers, one treasury.
+//
+// RUNNING is still preferred over PENDING, with the lowest id breaking a tie, so the choice is
+// deterministic instead of depending on the order the database happens to return rows in.
 func firstContainerIDOfType(ctx context.Context, repo *persistence.ContainerRepositoryGORM, playerID int, types ...container.ContainerType) (string, error) {
-	for _, st := range []string{string(container.ContainerStatusRunning), string(container.ContainerStatusPending)} {
-		summaries, err := repo.ListByStatusSimple(ctx, st, &playerID)
-		if err != nil {
-			return "", err
+	typeNames := make([]string, len(types))
+	for i, t := range types {
+		typeNames[i] = string(t)
+	}
+
+	summaries, err := repo.ListActiveByTypeSimple(ctx, playerID, typeNames...)
+	if err != nil {
+		return "", err
+	}
+
+	best, bestRank := "", 0
+	for _, s := range summaries {
+		rank := 1 // PENDING
+		if s.Status == string(container.ContainerStatusRunning) {
+			rank = 2
 		}
-		for _, s := range summaries {
-			if matchesAnyContainerType(s.ContainerType, types) {
-				return s.ID, nil
-			}
+		if rank > bestRank || (rank == bestRank && s.ID < best) {
+			best, bestRank = s.ID, rank
 		}
 	}
-	return "", nil
+	return best, nil
 }
 
 // contractScalerTargetFor returns the contract auto-scaler's live ACHIEVABLE fleet target for the player
@@ -436,7 +445,7 @@ func (a *bootstrapGateWorkerAcquirer) BuyForConstruction(ctx context.Context, pl
 	return bought, nil
 }
 
-// --- HandoffLauncher: launch the standing coordinators at COMPLETE (autosizer + siting + rebalancer) ---
+// --- HandoffLauncher: launch the standing coordinators at COMPLETE (autosizer + fleet growth) ---
 
 type bootstrapHandoffLauncher struct{ server *DaemonServer }
 
@@ -486,9 +495,20 @@ func (h *bootstrapHandoffLauncher) LaunchTradeFleetCoordinator(ctx context.Conte
 	return err
 }
 
-// LaunchStandingCoordinators has nothing left to launch: it is retained returning nil so the
-// bootstrap GATE hand-off's control flow and port contract are unchanged. The fleet-autosizer
-// hand-off runs through its own dedicated launcher.
+// LaunchStandingCoordinators launches the standing fleet-growth coordinator — the fleet's ONLY heavy
+// buyer, and the publisher of the wave the probe drain reads. IT MUST BE LAUNCHED, NOT MERELY
+// LAUNCHABLE: the heavy cap and the reservation built on it resolve off whichever container DECLARES
+// itself the buyer, so a deployment that never starts this one has no declared owner at all — no
+// heavy is ever bought and the undeclared-buyer warning fires every tick. It rides the STANDING half
+// of the hand-off because that half runs on both paths, the ordinary one and the one taken when the
+// autosizer was launched early, so growth comes up whichever way the fleet reached the mature
+// economy. It launches nothing else.
+//
+// Idempotent, but the once-only guarantee is NOT here: it lives inside FleetGrowthCoordinator, which
+// this and the `workflow fleet-growth` RPC both reach. A copy of the check on this side would leave
+// the RPC unguarded — an operator running the verb twice, or once against an already-handed-off
+// fleet, would start a second buyer bidding against the first over one treasury.
 func (h *bootstrapHandoffLauncher) LaunchStandingCoordinators(ctx context.Context, playerID int, agentSymbol string) error {
-	return nil
+	_, err := h.server.FleetGrowthCoordinator(ctx, playerID, agentSymbol)
+	return err
 }

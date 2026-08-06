@@ -238,45 +238,6 @@ func (f *slippingPurchaser) BuyAndDedicate(_ context.Context, order BuyOrder) (B
 	return BuyResult{ShipSymbol: "SHIP-" + order.ShipType, Price: order.ExpectedPrice + f.slippage, Dedicated: true}, nil
 }
 
-// The premium is observed on a HEAVY purchase and binds on the EXECUTED price, not the quote: it is
-// only an honest measure of presence-lag cost if it reflects what actually left the treasury.
-//
-// The quote and the execution are deliberately DIFFERENT numbers here. With the shared
-// recordingPurchaser (which echoes the quote back) this assertion held for `res.Price` and
-// `req.Price` alike — it could not fail, and its comment claimed a property nothing tested.
-func TestReconcile_HeavyPremiumBindsOnTheExecutedPriceNotTheQuote(t *testing.T) {
-	h, _, metrics, _ := armedForHeavy(heavyProvider(6, 2))
-	purchaser := &slippingPurchaser{slippage: heavyExecutionSlippage}
-	h.SetPurchaser(purchaser)
-
-	if _, err := h.reconcileOnce(context.Background(), heavyCmd()); err != nil {
-		t.Fatalf("reconcileOnce error: %v", err)
-	}
-	if len(purchaser.orders) != 1 {
-		t.Fatalf("expected one heavy buy, got %d", len(purchaser.orders))
-	}
-	if len(metrics.pricePremiums) != 1 {
-		t.Fatalf("expected one price-premium observation for a heavy buy, got %d", len(metrics.pricePremiums))
-	}
-
-	quoted := purchaser.orders[0].ExpectedPrice
-	executed := quoted + heavyExecutionSlippage
-	// The fixture must DISCRIMINATE. If these ever coincide the assertion below passes on the quote
-	// and the execution alike, and this test silently stops pinning anything — the exact defect it
-	// replaced.
-	if executed == quoted {
-		t.Fatalf("fixture is not discriminating: quote and execution are both %d, so this test cannot tell them apart", quoted)
-	}
-
-	paid, cheapest := metrics.pricePremiums[0][0], metrics.pricePremiums[0][1]
-	if paid != executed {
-		t.Fatalf("premium observed against %d, want the EXECUTED price %d and NOT the %d quote — the premium must measure what left the treasury", paid, executed, quoted)
-	}
-	if cheapest != 1_400_000 {
-		t.Fatalf("premium basis %d, want the cheapest known ask 1400000", cheapest)
-	}
-}
-
 // A LIGHT purchase must not emit a heavy premium — the series would otherwise measure the wrong
 // hull class and the presence-lag reading would be meaningless.
 func TestReconcile_LightPurchaseObservesNoHeavyPremium(t *testing.T) {

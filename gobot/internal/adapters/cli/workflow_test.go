@@ -56,6 +56,23 @@ func TestWorkflowBatchContractRequiresShipFlag(t *testing.T) {
 	require.Contains(t, err.Error(), "--ship flag is required")
 }
 
+// THE OPERATOR'S LAUNCH VERB FOR THE FLEET'S ONLY HEAVY BUYER. Registration is the whole surface:
+// the coordinator is not boot-standing, so without this verb the only way to start it is the
+// unattended bootstrap hand-off — and a fleet past that hand-off has no way back at all.
+func TestWorkflowFleetGrowthCommandIsRegistered(t *testing.T) {
+	require.NotNil(t, findWorkflowSubcommand("fleet-growth"),
+		"fleet-growth subcommand should be registered under `workflow` — it is the only hand-launch for the fleet's heavy buyer")
+}
+
+// It takes NO flags: every lever is live-tunable, so a launch flag would be a second source for a
+// value the tune path overrides on the next tick.
+func TestWorkflowFleetGrowthTakesNoLaunchFlags(t *testing.T) {
+	cmd := newWorkflowFleetGrowthCommand()
+
+	require.False(t, cmd.Flags().HasFlags(),
+		"fleet-growth is an identity-only launch: its knobs are live-tunable, and a launch flag would be a second source for one value")
+}
+
 // The shipyard-backfill launch verb (the start path for the shipyard-backfill engine) must be
 // registered under `workflow` so an operator can start the sweep of the charted-but-unscanned
 // shipyard systems.

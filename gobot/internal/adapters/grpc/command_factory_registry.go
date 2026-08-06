@@ -163,6 +163,10 @@ func containerSpecList() []ContainerSpec {
 		// trade_fleet/siting it loops forever inside one Handle(), so it is NOT a
 		// CoordinatorOwnsIterations type; the container-level budget (-1) is irrelevant.
 		{CommandType: "fleet_autosizer", build: buildFleetAutosizerCommand},
+		// fleet_growth: the standing fleet-growth coordinator — the fleet's ONLY heavy buyer, and
+		// one of the two readers of the heavy/probe wave. Like fleet_autosizer/siting it loops
+		// forever inside one Handle(), so it is NOT a CoordinatorOwnsIterations type.
+		{CommandType: "fleet_growth", build: buildFleetGrowthCommand},
 		// contract_scaler: the standing dedicated contract auto-scaler. Like fleet_autosizer/siting it
 		// loops forever inside one Handle(), so it is NOT a CoordinatorOwnsIterations type; the
 		// container-level budget (-1) is irrelevant. Registering it here is what makes an ARMED-launch or
@@ -265,7 +269,14 @@ func (s *DaemonServer) buildCommandForType(commandType string, config map[string
 	if commandType == "fleet_autosizer" {
 		s.resolveFleetAutosizerConfig(config)
 	}
-	// sp-3nbe: same live-config discipline for the captain bootstrap coordinator. Its [bootstrap]
+	// The growth coordinator's launch keys are CLEARED on every build — creation and recovery
+	// alike — so each build starts from the coordinator's own documented defaults and no persisted
+	// copy can shadow them. Its operator surface is the three LIVE bare knobs, which this does not
+	// touch.
+	if commandType == "fleet_growth" {
+		s.resolveFleetGrowthConfig(config)
+	}
+	// Same live-config discipline for the captain bootstrap coordinator. Its [bootstrap]
 	// knobs are cleared and re-injected from the boot-loaded config.yaml on every build — creation
 	// and recovery alike — so a config edit + restart retunes a recovered coordinator and no
 	// persisted copy can shadow the live value (the sp-ts82 pattern).

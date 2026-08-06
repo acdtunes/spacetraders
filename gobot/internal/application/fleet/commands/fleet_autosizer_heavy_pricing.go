@@ -302,10 +302,28 @@ func (h *RunFleetAutosizerCoordinatorHandler) runHeavyPricingErrand(
 	cfg autosizerRunConfig,
 	in tickInputs,
 ) {
+	heavyPricingErrandTick(ctx, cmd.ContainerID, cmd.PlayerID,
+		in.heaviesOwned, in.heaviesOwnedOK, cfg.HeavyCap, h.heavyYardCatalog, h.heavyErrand)
+}
+
+// heavyPricingErrandTick is the errand's tick step, and it takes FACTS rather than a coordinator.
+// The errand belongs to the fleet's heavy buying, not to whichever coordinator currently owns that
+// — and a second copy for a second driver is exactly how one of them would quietly stop honouring
+// the one-hull-at-a-time bound or the standing-owner rule.
+func heavyPricingErrandTick(
+	ctx context.Context,
+	containerID string,
+	playerID int,
+	heaviesOwned int,
+	heaviesOwnedOK bool,
+	heavyCap int,
+	catalog HeavyYardCatalogReader,
+	port HeavyPricingErrandPort,
+) {
 	// UNWIRED IS THE ONE SILENT PATH, and deliberately: the composition root already announces it
 	// once at boot with a loud WARNING naming the missing capability, and a per-tick line for a
 	// feature that is permanently absent buys nothing an operator can act on.
-	if h.heavyYardCatalog == nil || h.heavyErrand == nil {
+	if catalog == nil || port == nil {
 		return
 	}
 	logger := common.LoggerFromContext(ctx)
@@ -314,47 +332,47 @@ func (h *RunFleetAutosizerCoordinatorHandler) runHeavyPricingErrand(
 	// the direction that never moves a hull on a signal we cannot see. Both shapes are NAMED
 	// rather than returned quietly: "at the cap" is success and "the census is blind" is a
 	// degraded read, and an operator would act on them differently.
-	if !in.heaviesOwnedOK {
-		h.logPricingErrandDecline(ctx, cmd, pricingErrandCensusBlind, nil, nil)
+	if !heaviesOwnedOK {
+		logPricingErrandDecline(ctx, containerID, pricingErrandCensusBlind, nil, nil)
 		return
 	}
-	if in.heaviesOwned >= cfg.HeavyCap {
-		h.logPricingErrandDecline(ctx, cmd, pricingErrandAtHeavyCap, nil, nil)
+	if heaviesOwned >= heavyCap {
+		logPricingErrandDecline(ctx, containerID, pricingErrandAtHeavyCap, nil, nil)
 		return
 	}
 
-	yards, err := h.heavyYardCatalog.KnownHeavyYards(ctx, cmd.PlayerID)
+	yards, err := catalog.KnownHeavyYards(ctx, playerID)
 	if err != nil {
-		logger.Log("WARN", fmt.Sprintf("Autosizer heavy pricing errand: the known-heavy-yard catalogue is unreadable (%v) — no hull sent this tick, so an unpriced heavy yard stays unpriced and no reservation can form", err), map[string]interface{}{
-			"action": "autosizer_heavy_pricing_catalogue_unreadable", "container_id": cmd.ContainerID,
+		logger.Log("WARN", fmt.Sprintf("Heavy pricing errand: the known-heavy-yard catalogue is unreadable (%v) — no hull sent this tick, so an unpriced heavy yard stays unpriced and no reservation can form", err), map[string]interface{}{
+			"action": "autosizer_heavy_pricing_catalogue_unreadable", "container_id": containerID,
 		})
 		return
 	}
 
-	hulls, err := h.heavyErrand.ErrandHulls(ctx, cmd.PlayerID)
+	hulls, err := port.ErrandHulls(ctx, playerID)
 	if err != nil {
-		logger.Log("WARN", fmt.Sprintf("Autosizer heavy pricing errand: the fleet is unreadable (%v) — no hull sent this tick", err), map[string]interface{}{
-			"action": "autosizer_heavy_pricing_fleet_unreadable", "container_id": cmd.ContainerID,
+		logger.Log("WARN", fmt.Sprintf("Heavy pricing errand: the fleet is unreadable (%v) — no hull sent this tick", err), map[string]interface{}{
+			"action": "autosizer_heavy_pricing_fleet_unreadable", "container_id": containerID,
 		})
 		return
 	}
 
 	errand, decline := planHeavyPricingErrand(yards, hulls)
 	if decline != pricingErrandDispatch {
-		h.logPricingErrandDecline(ctx, cmd, decline, yards, hulls)
+		logPricingErrandDecline(ctx, containerID, decline, yards, hulls)
 		return
 	}
 
-	if err := h.heavyErrand.SendToYard(ctx, cmd.PlayerID, errand.Ship, errand.Yard); err != nil {
-		logger.Log("WARN", fmt.Sprintf("Autosizer heavy pricing errand: sending %s to %s failed (%v) — retrying on a later tick", errand.Ship, errand.Yard, err), map[string]interface{}{
-			"action": "autosizer_heavy_pricing_dispatch_failed", "container_id": cmd.ContainerID,
+	if err := port.SendToYard(ctx, playerID, errand.Ship, errand.Yard); err != nil {
+		logger.Log("WARN", fmt.Sprintf("Heavy pricing errand: sending %s to %s failed (%v) — retrying on a later tick", errand.Ship, errand.Yard, err), map[string]interface{}{
+			"action": "autosizer_heavy_pricing_dispatch_failed", "container_id": containerID,
 			"ship": errand.Ship, "yard": errand.Yard,
 		})
 		return
 	}
 
-	logger.Log("INFO", fmt.Sprintf("Autosizer heavy pricing errand: sent %s to %s so the yard's presence-gated ask becomes readable — no buy this tick; the reservation forms once the price lands", errand.Ship, errand.Yard), map[string]interface{}{
-		"action": "autosizer_heavy_pricing_dispatched", "container_id": cmd.ContainerID,
+	logger.Log("INFO", fmt.Sprintf("Heavy pricing errand: sent %s to %s so the yard's presence-gated ask becomes readable — no buy this tick; the reservation forms once the price lands", errand.Ship, errand.Yard), map[string]interface{}{
+		"action": "autosizer_heavy_pricing_dispatched", "container_id": containerID,
 		"ship": errand.Ship, "yard": errand.Yard,
 	})
 }
@@ -409,9 +427,9 @@ func pricingErrandDeclineNarrative(reason pricingErrandDecline) string {
 // Every count is recomputed from the tick's own inputs rather than threaded out of the planner:
 // they are pure functions of data already in hand, and a decline path that carries state is a
 // decline path that can disagree with the decision it is describing.
-func (h *RunFleetAutosizerCoordinatorHandler) logPricingErrandDecline(
+func logPricingErrandDecline(
 	ctx context.Context,
-	cmd *RunFleetAutosizerCoordinatorCommand,
+	containerID string,
 	reason pricingErrandDecline,
 	yards []KnownHeavyYard,
 	hulls []PricingErrandHull,
@@ -425,13 +443,13 @@ func (h *RunFleetAutosizerCoordinatorHandler) logPricingErrandDecline(
 		nearest = unpriced[0].WaypointSymbol
 	}
 	common.LoggerFromContext(ctx).Log("INFO", fmt.Sprintf(
-		"Autosizer heavy pricing errand: NO HULL SENT this tick [%s] — %s "+
+		"Heavy pricing errand: NO HULL SENT this tick [%s] — %s "+
 			"(%d heavy yard(s) known, %d unpriced and in reach (nearest %s), %d unpriced but out of reach, "+
 			"%d errand(s) already in flight, spare-probe carrier available=%v)",
 		reason, pricingErrandDeclineNarrative(reason),
 		len(yards), len(unpriced), nearest, outOfReach, inFlight, haveCarrier),
 		map[string]interface{}{
-			"action": "autosizer_heavy_pricing_declined", "container_id": cmd.ContainerID,
+			"action": "autosizer_heavy_pricing_declined", "container_id": containerID,
 			"reason": string(reason), "known_yards": len(yards), "unpriced_yards": len(unpriced),
 			"unpriced_out_of_reach": outOfReach, "in_flight": inFlight, "carrier_available": haveCarrier,
 		})

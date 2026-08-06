@@ -455,9 +455,9 @@ func (h *RunBootstrapCoordinatorHandler) maybeBuyGateWorker(ctx context.Context,
 
 // actExpansion runs the terminal EXPANSION phase (formerly COMPLETE): the gate is built and
 // steady-state growth begins, so bootstrap hands the fleet off to the mature demand-driven economy and
-// exits (the standing coordinators — including the probe-buyer fleet, the Admiral's EXPANSION spender —
-// own all growth from here). The hand-off launches the fleet-autosizer (OFF the whole bootstrap run so
-// the two never bid against one treasury) and the other standing coordinators, exactly ONCE — guarded on
+// exits (the standing coordinators — including the fleet-growth coordinator, the EXPANSION spender that
+// owns every heavy buy — own all growth from here). The hand-off launches the fleet-autosizer (OFF the
+// whole bootstrap run so the two never bid against one treasury) and fleet growth, exactly ONCE — guarded on
 // obs.AutosizerRunning, so a restart post-gate re-observes the autosizer running and skips straight to
 // exit (terminal idempotency, spec §Architecture).
 //
@@ -617,8 +617,9 @@ func selectConstructionHullsForTrade(obs Observation) []string {
 // ensureTradeFleetCoordinator makes the standing trade-fleet coordinator RUNNING at EXPANSION, so the
 // hulls the redirect hands over are actually worked instead of pinned to an unmanaged fleet.
 //
-// Nothing else guarantees this at EXPANSION. LaunchStandingCoordinators is a no-op since the factory
-// retirement; ContainerTypeTradeFleetCoordinator is NOT a member of
+// Nothing else guarantees this at EXPANSION. LaunchStandingCoordinators starts the fleet-growth
+// coordinator and nothing else, so it never reaches the trade fleet;
+// ContainerTypeTradeFleetCoordinator is NOT a member of
 // bootStandingCoordinatorTypes, so it has no unconditional boot launch; and the only other caller of
 // LaunchTradeFleetCoordinator is the INCOME-phase trade-seed, which a MATURE fleet restarting into a
 // built world never reaches — it derives EXPANSION on its first tick. That fleet would otherwise
@@ -790,10 +791,11 @@ func blockerOrNone(blocker string) string {
 
 // ensureStandingHandoff finishes the EXPANSION hand-off for the case where the fleet autosizer was
 // launched EARLY (armed cold-start scaling) and is therefore already running — so launchHandoff's
-// autosizer-gated path is skipped, but its SECOND half (the standing coordinators: siting +
-// worker-rebalancer) still has to run. It reports whether the standing coordinators are confirmed up
-// (launched this tick or already running). Idempotent at the adapter (each launch skips when the
-// coordinator is already RUNNING/PENDING), dry-run-safe, and nil-safe. On success it sets
+// autosizer-gated path is skipped, but its SECOND half still has to run: the standing fleet-growth
+// coordinator, which is the fleet's ONLY heavy buyer and the container the heavy cap is declared
+// against. It reports whether that coordinator is confirmed up
+// (launched this tick or already running). Idempotent at the adapter (the launch returns the live
+// coordinator when one is already RUNNING/PENDING), dry-run-safe, and nil-safe. On success it sets
 // res.HandoffLaunched so the caller's terminal-exit check passes and the EXPANSION line fires; on a
 // blocked/failed launch it sets a blocker and returns false so the caller HOLDS (never exits
 // half-handed-off). Mirrors launchHandoff's standing-coordinator portion.
@@ -801,7 +803,7 @@ func (h *RunBootstrapCoordinatorHandler) ensureStandingHandoff(ctx context.Conte
 	logger := common.LoggerFromContext(ctx)
 
 	if cfg.DryRun {
-		logger.Log("INFO", "Bootstrap DRY-RUN: the autosizer was launched early — WOULD launch the standing coordinators (siting + worker-rebalancer) to finish the hand-off (took no action)", map[string]interface{}{
+		logger.Log("INFO", "Bootstrap DRY-RUN: the autosizer was launched early — WOULD launch the standing fleet-growth coordinator, the fleet's only heavy buyer, to finish the hand-off (took no action)", map[string]interface{}{
 			"action":       "bootstrap_would_finish_handoff",
 			"container_id": cmd.ContainerID,
 		})
@@ -809,7 +811,7 @@ func (h *RunBootstrapCoordinatorHandler) ensureStandingHandoff(ctx context.Conte
 	}
 	if h.handoff == nil {
 		res.Blocker = "no_handoff_launcher"
-		logger.Log("WARN", "Bootstrap EXPANSION (autosizer launched early) but no hand-off launcher wired — cannot launch the standing coordinators (holding, not exiting)", map[string]interface{}{
+		logger.Log("WARN", "Bootstrap EXPANSION (autosizer launched early) but no hand-off launcher wired — cannot launch the standing fleet-growth coordinator, so the fleet has no heavy buyer (holding, not exiting)", map[string]interface{}{
 			"action":       "bootstrap_complete_blocked",
 			"container_id": cmd.ContainerID,
 			"blocker":      "no_handoff_launcher",
@@ -818,28 +820,29 @@ func (h *RunBootstrapCoordinatorHandler) ensureStandingHandoff(ctx context.Conte
 	}
 	if err := h.handoff.LaunchStandingCoordinators(ctx, cmd.PlayerID, cmd.AgentSymbol); err != nil {
 		res.Blocker = "standing_launch_error"
-		logger.Log("ERROR", fmt.Sprintf("Bootstrap hand-off (autosizer already launched early) failed to launch the standing coordinators: %v", err), map[string]interface{}{
+		logger.Log("ERROR", fmt.Sprintf("Bootstrap hand-off (autosizer already launched early) failed to launch the standing fleet-growth coordinator — the fleet still has no heavy buyer: %v", err), map[string]interface{}{
 			"action":       "bootstrap_standing_launch_error",
 			"container_id": cmd.ContainerID,
 		})
 		return false
 	}
 	res.HandoffLaunched = true
-	logger.Log("INFO", "Bootstrap finished the hand-off — the fleet autosizer was launched early (cold-start scaling, sp-sjvv), and now the standing coordinators (siting + worker-rebalancer) are launched too; the mature demand-driven economy is fully live", map[string]interface{}{
+	logger.Log("INFO", "Bootstrap finished the hand-off — the fleet autosizer was launched early (cold-start scaling), and the standing fleet-growth coordinator is now running too: the fleet's only heavy buyer has started, and the mature demand-driven economy is fully live", map[string]interface{}{
 		"action":       "bootstrap_handoff_launched",
 		"container_id": cmd.ContainerID,
 	})
 	return true
 }
 
-// launchHandoff launches the standing coordinators — the fleet-autosizer plus the rest — turning fleet
-// scaling over to demand. Both launches must succeed to record the hand-off; a failure sets a blocker and
-// leaves it for next tick (idempotent at the adapter, guarded on obs.AutosizerRunning by the caller).
+// launchHandoff launches the ordinary EXPANSION hand-off — the fleet-autosizer, then the standing
+// fleet-growth coordinator (the fleet's only heavy buyer) — turning fleet growth over to demand. Both
+// launches must succeed to record the hand-off; a failure sets a blocker and leaves it for next tick
+// (idempotent at the adapter, guarded on obs.AutosizerRunning by the caller).
 func (h *RunBootstrapCoordinatorHandler) launchHandoff(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, res *reconcileResult) {
 	logger := common.LoggerFromContext(ctx)
 
 	if cfg.DryRun {
-		logger.Log("INFO", "Bootstrap DRY-RUN: WOULD launch the fleet-autosizer + standing coordinators as the EXPANSION hand-off (took no action)", map[string]interface{}{
+		logger.Log("INFO", "Bootstrap DRY-RUN: WOULD launch the fleet-autosizer + the standing fleet-growth coordinator (the fleet's only heavy buyer) as the EXPANSION hand-off (took no action)", map[string]interface{}{
 			"action":       "bootstrap_would_handoff",
 			"container_id": cmd.ContainerID,
 		})
@@ -864,14 +867,14 @@ func (h *RunBootstrapCoordinatorHandler) launchHandoff(ctx context.Context, cmd 
 	}
 	if err := h.handoff.LaunchStandingCoordinators(ctx, cmd.PlayerID, cmd.AgentSymbol); err != nil {
 		res.Blocker = "standing_launch_error"
-		logger.Log("ERROR", fmt.Sprintf("Bootstrap hand-off launched the autosizer but failed to launch the standing coordinators: %v", err), map[string]interface{}{
+		logger.Log("ERROR", fmt.Sprintf("Bootstrap hand-off launched the autosizer but failed to launch the standing fleet-growth coordinator — the fleet still has no heavy buyer: %v", err), map[string]interface{}{
 			"action":       "bootstrap_standing_launch_error",
 			"container_id": cmd.ContainerID,
 		})
 		return
 	}
 	res.HandoffLaunched = true
-	logger.Log("INFO", "Bootstrap launched the fleet-autosizer + standing coordinators — the hand-off to the mature demand-driven economy (the autosizer now owns all fleet scaling)", map[string]interface{}{
+	logger.Log("INFO", "Bootstrap launched the fleet-autosizer + the standing fleet-growth coordinator — the hand-off to the mature demand-driven economy: the fleet's only heavy buyer has started, and growth is demand-driven from here", map[string]interface{}{
 		"action":       "bootstrap_handoff_launched",
 		"container_id": cmd.ContainerID,
 	})

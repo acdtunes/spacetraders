@@ -99,6 +99,22 @@ func (c *DaemonClient) FleetAutosizerCoordinator(ctx context.Context, playerID i
 	return resp.ContainerId, nil
 }
 
+// FleetGrowthCoordinator starts the standing fleet-growth coordinator: the fleet's only heavy buyer.
+// Identity-only launch — the three operator levers are live-tunable, so nothing else is named here.
+func (c *DaemonClient) FleetGrowthCoordinator(ctx context.Context, playerID int, agentSymbol string) (string, error) {
+	req := &pb.FleetGrowthCoordinatorRequest{
+		PlayerId: int32(playerID),
+	}
+	if agentSymbol != "" {
+		req.AgentSymbol = &agentSymbol
+	}
+	resp, err := c.client.FleetGrowthCoordinator(ctx, req)
+	if err != nil {
+		return "", fmt.Errorf(grpcCallFailed, err)
+	}
+	return resp.ContainerId, nil
+}
+
 // LongHaulArbCoordinator starts the standing long-haul arb fleet coordinator (sp-mepj): the
 // out-of-horizon single-good arb engine that launches a per-hull worker on every idle
 // long-haul-tagged hull. Identity-only launch; ARMED on deploy but inert until an operator tags

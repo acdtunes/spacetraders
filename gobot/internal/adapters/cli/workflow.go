@@ -33,6 +33,7 @@ Examples:
 	cmd.AddCommand(newWorkflowTourRunCommand())
 	cmd.AddCommand(newWorkflowTradeFleetCoordinatorCommand())
 	cmd.AddCommand(newWorkflowFleetAutosizerCommand())
+	cmd.AddCommand(newWorkflowFleetGrowthCommand())
 	cmd.AddCommand(newWorkflowLongHaulCoordinatorCommand())
 	cmd.AddCommand(newWorkflowShipyardBackfillCommand())
 	cmd.AddCommand(newWorkflowAutoOutfitCommand())

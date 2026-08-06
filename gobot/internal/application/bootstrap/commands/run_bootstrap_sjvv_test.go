@@ -111,7 +111,7 @@ func TestBootstrap_EarlyAutosizer_InColdStart_Launches(t *testing.T) {
 		t.Fatalf("cold start + autosizer down: must launch the autosizer early once (autosizer_launches=%d early=%v)", ho.autosizer, res.AutosizerLaunchedEarly)
 	}
 	if ho.standing != 0 {
-		t.Fatalf("the EARLY launch must NOT launch the standing coordinators (siting/rebalancer) — that is the EXPANSION hand-off's job, got standing=%d", ho.standing)
+		t.Fatalf("the EARLY launch must NOT launch the standing fleet-growth coordinator — that is the EXPANSION hand-off's job, got standing=%d", ho.standing)
 	}
 }
 
@@ -152,9 +152,9 @@ func TestBootstrap_EarlyAutosizer_NotLaunchedDuringGate(t *testing.T) {
 // --- EXPANSION hand-off collision: an early-launched autosizer must still get the standing coordinators ---
 
 // EXPANSION + autosizer already running (launched early): the autosizer is NOT relaunched, but the standing
-// coordinators (siting + rebalancer) — which the early launch did NOT start — ARE launched, and bootstrap
-// exits. This is the collision fix: the EXPANSION hand-off's autosizer-gated path is skipped, so its second
-// half must still run.
+// fleet-growth coordinator — the fleet's only heavy buyer, which the early launch did NOT start — IS
+// launched, and bootstrap exits. This is the collision fix: the EXPANSION hand-off's autosizer-gated path
+// is skipped, so its second half must still run.
 func TestBootstrap_Expansion_EarlyLaunched_LaunchesStandingCoordinators(t *testing.T) {
 	obs := gateObs()
 	obs.ConstructionComplete = true // derives EXPANSION
@@ -170,7 +170,7 @@ func TestBootstrap_Expansion_EarlyLaunched_LaunchesStandingCoordinators(t *testi
 		t.Fatalf("the autosizer was already launched early — it must NOT be relaunched at EXPANSION, got autosizer=%d", ho.autosizer)
 	}
 	if ho.standing != 1 {
-		t.Fatalf("the standing coordinators (siting + rebalancer) MUST be launched at EXPANSION even when the autosizer was launched early, got standing=%d", ho.standing)
+		t.Fatalf("the standing fleet-growth coordinator MUST be launched at EXPANSION even when the autosizer was launched early, got standing=%d", ho.standing)
 	}
 	if !res.HandoffLaunched || !res.Done {
 		t.Fatalf("EXPANSION must finish the hand-off and exit, got HandoffLaunched=%v Done=%v", res.HandoffLaunched, res.Done)

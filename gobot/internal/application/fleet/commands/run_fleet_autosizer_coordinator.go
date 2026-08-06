@@ -285,15 +285,22 @@ func (h *RunFleetAutosizerCoordinatorHandler) coordinatorState(containerID strin
 	return st
 }
 
-// classDisabled reports whether a class is frozen by config. Lights and heavies are LIVE BY
-// DEFAULT and unconditionally run; every other class is unknown here and never acts.
+// classDisabled reports whether a class is frozen by config. The LIGHT class is the only one this
+// coordinator still sizes.
+//
+// THE HEAVY CLASS IS DISABLED HERE: the fleet-growth coordinator owns trade capacity, and two
+// coordinators buying into one pool against one treasury would each judge affordability without
+// seeing the other's spend. It is disabled in the same change that gives the growth coordinator its
+// heavy buy path and moves the cap declaration to it, because any gap between those leaves either
+// two heavy buyers or none.
+//
+// HullClassContractDelivery falls to the same arm — never sized here, the dedicated scaler owns it.
+// "unknown class: never act".
 func (c autosizerRunConfig) classDisabled(class HullClass) bool {
 	switch class {
-	case HullClassLight, HullClassHeavy:
+	case HullClassLight:
 		return false
 	default:
-		// HullClassContractDelivery falls here — never sized by the autosizer (the dedicated scaler
-		// owns it). "unknown class: never act".
 		return true
 	}
 }

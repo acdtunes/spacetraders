@@ -52,6 +52,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/system/gategraph"
 	systemQuery "github.com/andrescamacho/spacetraders-go/internal/application/system/queries"
 	tradeRouteCmd "github.com/andrescamacho/spacetraders-go/internal/application/trading/commands"
+	tradingQueries "github.com/andrescamacho/spacetraders-go/internal/application/trading/queries"
 	tradingSvc "github.com/andrescamacho/spacetraders-go/internal/application/trading/services"
 	watchkeeper "github.com/andrescamacho/spacetraders-go/internal/captain"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
@@ -1201,6 +1202,26 @@ func run(cfg *config.Config) error {
 	)
 	if err := mediator.RegisterHandler[*fleetCmd.RunFleetAutosizerCoordinatorCommand](med, fleetAutosizerHandler); err != nil {
 		return fmt.Errorf("failed to register FleetAutosizerCoordinator handler: %w", err)
+	}
+
+	// THE SHARED CAPACITY-SHORT SIGNAL. ONE instance, two consumers: the fleet-growth coordinator
+	// (which SPENDS on it) and the sensing wave gate (which PAUSES on it). Two readers of one
+	// quantity is how the spender and the withholder end up disagreeing about whether the fleet is
+	// capacity-short. Constructed here, at the composition root, precisely so a second one is
+	// conspicuous.
+	unservedLaneReader := tradingQueries.NewUnservedLaneReader(shipRepo, tradingQueries.NewProfitableLaneReader(marketRepo))
+
+	// The fleet-growth coordinator: the fleet's ONLY heavy buyer. It reuses the autosizer's whole
+	// port set — treasury, API utilization, the shipyard price walk, the heavy census and target,
+	// the pricing errand, the buy+dedicate purchaser — and adds the three reads the wave and the
+	// working-capital term are derived from. The transaction repository serves BOTH ledger reads
+	// over the one shared trailing window: the demonstrated-capacity peak and the cargo outflow.
+	fleetGrowthHandler := grpc.NewFleetGrowthCoordinatorHandler(
+		daemonServer, apiClient, ledgerTreasury, shipRepo, med, waypointRepo, captainEventRepo,
+		reachableYardFinder, heavyTargetFinder, unservedLaneReader, transactionRepo,
+	)
+	if err := mediator.RegisterHandler[*fleetCmd.RunFleetGrowthCoordinatorCommand](med, fleetGrowthHandler); err != nil {
+		return fmt.Errorf("failed to register FleetGrowthCoordinator handler: %w", err)
 	}
 
 	// Dedicated contract auto-scaler: the standing coordinator that ramps a FIXED, EXCLUSIVE contract

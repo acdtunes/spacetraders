@@ -316,6 +316,52 @@ func (r *ContainerRepositoryGORM) HasActiveContainerOfType(
 	return count > 0, nil
 }
 
+// ListActiveByTypeSimple returns every RUNNING-or-PENDING container of the given types for one
+// player, in ONE query.
+//
+// THE SINGLE QUERY IS THE CONTRACT, NOT AN OPTIMISATION. Reading the two live statuses as two
+// separate queries leaves a row that transitions PENDING → RUNNING between them invisible to BOTH:
+// it is no longer PENDING when the second query runs, and was not yet RUNNING when the first one
+// did. Every once-only launch guard in the daemon is built on this read, and a launch is exactly
+// when a row makes that transition — so the gap is a window in which a second coordinator of a
+// single-instance type starts and, if it is a spender, bids against the first over one treasury.
+// One statement sees one snapshot and has no gap.
+//
+// PENDING counts as live for the same reason HasActiveContainerOfType counts it: a container about
+// to start is a spender about to spend. An empty type list matches nothing rather than everything.
+func (r *ContainerRepositoryGORM) ListActiveByTypeSimple(
+	ctx context.Context,
+	playerID int,
+	containerTypes ...string,
+) ([]ContainerSummary, error) {
+	if len(containerTypes) == 0 {
+		return nil, nil
+	}
+
+	var models []*ContainerModel
+	err := r.db.WithContext(ctx).
+		Where("player_id = ?", playerID).
+		Where("status IN ?", []string{
+			string(container.ContainerStatusRunning),
+			string(container.ContainerStatusPending),
+		}).
+		Where("container_type IN ?", containerTypes).
+		Find(&models).Error
+	if err != nil {
+		return nil, fmt.Errorf("failed to list active containers by type: %w", err)
+	}
+
+	result := make([]ContainerSummary, len(models))
+	for i, model := range models {
+		result[i] = ContainerSummary{
+			ID:            model.ID,
+			ContainerType: model.ContainerType,
+			Status:        model.Status,
+		}
+	}
+	return result, nil
+}
+
 // ListByStatusSimple returns simplified container info (for coordinators)
 func (r *ContainerRepositoryGORM) ListByStatusSimple(
 	ctx context.Context,

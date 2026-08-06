@@ -565,6 +565,12 @@ func (s *DaemonServer) registerMetricsCollectors(getContainers func() map[string
 	}
 	metrics.SetGlobalFleetAutosizerCollector(fleetAutosizerCollector)
 
+	fleetGrowthCollector, err := registerCollector(metrics.NewFleetGrowthMetricsCollector(), "fleet-growth metrics collector")
+	if err != nil {
+		return err
+	}
+	metrics.SetGlobalFleetGrowthCollector(fleetGrowthCollector)
+
 	bootstrapCollector, err := registerCollector(metrics.NewBootstrapMetricsCollector(), "bootstrap metrics collector")
 	if err != nil {
 		return err

@@ -96,12 +96,13 @@ const (
 	// it is NOT a CoordinatorOwnsIterations type.
 	ContainerTypeShipyardBackfillCoordinator ContainerType = "SHIPYARD_BACKFILL_COORDINATOR"
 	ContainerTypePurchase                    ContainerType = "PURCHASE"
-	// ContainerTypeFleetAutosizer is the standing fleet capacity autosizer: a
-	// per-player coordinator that loops forever inside one Handle() sizing the hull pool to
-	// demand and auto-buying hulls (lights to factory demand, heavies to trade demand) behind
-	// the full money-guard stack. Like the trade-fleet/siting coordinators it is NOT a
-	// CoordinatorOwnsIterations type.
+	// ContainerTypeFleetAutosizer is the standing fleet capacity autosizer: a per-player coordinator
+	// that loops forever inside one Handle() sizing the LIGHT hull pool to demand behind the full
+	// money-guard stack. Like the trade-fleet/siting coordinators it is NOT a CoordinatorOwnsIterations type.
 	ContainerTypeFleetAutosizer ContainerType = "FLEET_AUTOSIZER_COORDINATOR"
+	// ContainerTypeFleetGrowth is the standing fleet-growth coordinator and the fleet's ONLY heavy
+	// buyer: an infinite reconcile loop in one Handle(), NOT a CoordinatorOwnsIterations type.
+	ContainerTypeFleetGrowth ContainerType = "FLEET_GROWTH_COORDINATOR"
 	// ContainerTypeContractScaler is the standing dedicated contract auto-scaler: a per-player
 	// coordinator that loops forever inside one Handle() ramping a FIXED, EXCLUSIVE contract fleet to a
 	// live-tunable ceiling behind ONE money guard (the 200000-credit cushion). It resolves this era's

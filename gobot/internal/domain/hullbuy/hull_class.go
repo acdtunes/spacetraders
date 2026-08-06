@@ -71,6 +71,12 @@ const DefaultHeavyCap = 5
 // A coordinator that buys heavies and is missing here has no declared cap, so nothing is saved
 // toward its purchases. Declare it in the same change that gives it a heavy buy path. An EMPTY list
 // leaves the reservation resolving by knob alone, which is loud but not authoritative.
+//
+// WHEN HEAVY BUYING CHANGES HANDS THIS IS A REPLACEMENT, NEVER AN ADDITION. The cap read returns
+// the FIRST declared owner in RUNNING-then-id order, so two declared owners resolve the cap off
+// whichever container id happens to sort first — quite possibly one that no longer buys — and the
+// withholder would then save toward a ceiling the spender never consults. A coordinator that has
+// stopped buying heavies leaves this list in the same commit that stops it.
 func HeavyBuyerContainers() []container.ContainerType {
-	return []container.ContainerType{container.ContainerTypeFleetAutosizer}
+	return []container.ContainerType{container.ContainerTypeFleetGrowth}
 }
