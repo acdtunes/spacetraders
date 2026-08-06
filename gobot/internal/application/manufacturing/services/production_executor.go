@@ -100,10 +100,12 @@ type ProductionExecutor struct {
 	// daemon injects the shared reader via SetTreasuryReader at boot, with no config gate
 	// between. Wired or not, an unreadable treasury still PARKS the buy (fail closed).
 	treasury TreasuryReader
-	// priceHistory backs the input price ceiling (sp-iv65): the trailing-median-ask source a
-	// factory input buy is checked against before it dispatches. nil disables the ceiling — the
-	// same optional-port fail-OPEN contract as apiClient/spendLedger (tests wire nothing; the
-	// daemon wires the DB-backed price history repo via SetPriceHistoryReader).
+	// priceHistory backs the RESCUE-BUY validator (sp-iv65): the trailing-median-ask source a
+	// rescue source-buy is capped against before it dispatches. nil does NOT disable the check and
+	// is NOT the fail-OPEN contract apiClient/spendLedger have — this comment claimed both until
+	// sp-f5lki. A nil reader parks EVERY rescue buy (trailingMedianAsk returns ok=false, and
+	// rescueSource refuses on false), which is how it went unnoticed while unwired for a whole era:
+	// the park logs "no trailing median", indistinguishable from a market with no history.
 	priceHistory InputPriceHistoryReader
 	// constructionRepo backs the DeliverToConstructionSite terminal: the construction
 	// supply API a sourced hauler delivers gate materials through. nil leaves the terminal
@@ -114,7 +116,8 @@ type ProductionExecutor struct {
 	// workSensor backs the per-operation capital budget (sp-ftqgp): it answers whether the TRADE
 	// side is live, which is what sizes construction's share of deployable capital. nil disables
 	// the budget and leaves the flat reserve floor guarding alone — the SAME optional-port
-	// fail-OPEN contract as apiClient/spendLedger/priceHistory (the package's fixtures wire
+	// fail-OPEN contract as apiClient/spendLedger (NOT priceHistory, which fails closed — see
+	// its field above; the citation was wrong until sp-f5lki) (the package's fixtures wire
 	// nothing; the daemon wires the container-backed sensor unconditionally via
 	// SetCapitalWorkSensor, with no config gate between). A wired-but-erroring sensor does NOT
 	// fail open: see budgetedReserveFloor.

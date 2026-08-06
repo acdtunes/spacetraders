@@ -288,8 +288,13 @@ func (e *ProductionExecutor) perNodeSupplyFloor(ctx context.Context, good string
 
 // trailingMedianAsk returns the trailing-window median ASK (purchase_price — what WE PAY, sp-en5h7) for a good at a waypoint
 // from the price-history reader, or ok=false when the reader is unwired, errors, or has no
-// samples in the window. Extracted so the rescue cap and any history-based check share one
-// median source with identical fail-open (nil reader) / fail-closed (no samples) semantics.
+// samples in the window. Extracted so the rescue cap and any history-based check share one median
+// source.
+//
+// ALL THREE ok=false CASES FAIL CLOSED, IDENTICALLY. This comment used to claim "fail-open (nil
+// reader) / fail-closed (no samples)" semantics; that distinction never existed in the code — every
+// branch below returns (0, false) and the caller parks on all of them. sp-f5lki corrected it after
+// the nil-reader case turned out to be live in production for a whole era.
 func (e *ProductionExecutor) trailingMedianAsk(ctx context.Context, waypoint, good string) (int, bool) {
 	if e.priceHistory == nil {
 		return 0, false

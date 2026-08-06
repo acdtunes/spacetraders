@@ -988,6 +988,18 @@ func run(cfg *config.Config) error {
 	capitalWorkSensor := common.NewEngineCapitalWorkSensor(containerRepo).
 		WithConstructionDemand(goodsServices.NewConstructionDemandReader(constructionPipelineRepo))
 	constructionExecutor.SetCapitalWorkSensor(capitalWorkSensor)
+	// The rescue-buy validator's trailing-median source (sp-f5lki). It was NEVER WIRED: the repo
+	// was built at the top of this function and handed only to the market scanner, so
+	// trailingMedianAsk returned ok=false on every call and rescueSource parked EVERY rescue buy
+	// for the life of the process — while logging "no trailing median at %s", which reads as absent
+	// market data rather than an absent collaborator. Four sibling setters land on this same
+	// receiver in this same block; this one was skipped.
+	//
+	// It ARMS a guard rather than relaxing one: the rescue cap (ask <= multiplier x trailing
+	// median) can now actually be evaluated. A buy over the cap is still refused, and no samples in
+	// the window still parks (RULINGS #4) — what changes is that the guard reaches its judgement
+	// instead of failing closed on a missing reader. Pinned by executor_guard_wiring_test.go.
+	constructionExecutor.SetPriceHistoryReader(priceHistoryRepo)
 	// The activator is the SURVIVING SupplyMonitor: NO new
 	// activation logic. Built per-player because it bakes in the playerID; the poll-loop-only
 	// collaborators (factory tracker/state, sell distributor, storage, container reader, event

@@ -53,12 +53,21 @@ const (
 	inputPriceCeilingMinSamples = 1
 )
 
-// InputPriceHistoryReader supplies the trailing ask series the input price ceiling is
-// checked against (sp-iv65). Narrow by design — the ceiling needs only one good's history
-// at one waypoint over a window, not the full market.MarketPriceHistoryRepository. A nil
-// reader disables the ceiling: the optional-port fail-OPEN contract the package's test
-// fixtures rely on (they wire nothing), identical to apiClient/spendLedger. The daemon
-// wires the real DB-backed GormMarketPriceHistoryRepository via SetPriceHistoryReader.
+// InputPriceHistoryReader supplies the trailing ask series a rescue buy is validated against
+// (sp-iv65). Narrow by design — the check needs only one good's history at one waypoint over a
+// window, not the full market.MarketPriceHistoryRepository.
+//
+// A NIL READER FAILS CLOSED, NOT OPEN, and this comment said the opposite until sp-f5lki. There is
+// no fail-open branch anywhere on this path: trailingMedianAsk returns (0, false) for a nil reader
+// exactly as it does for no samples, and its ONLY caller (rescueSource) parks the buy on false.
+// Unwired, the effect is not "the ceiling is disabled" — it is "every rescue buy is refused
+// forever". The word was load-bearing: a reader who believed the fail-open claim could delete the
+// nil check expecting graceful degradation and get a nil dereference on the request path.
+//
+// Leaving it unset is the fixture path only. The daemon wires the DB-backed
+// GormMarketPriceHistoryRepository via SetPriceHistoryReader at main.go, pinned by
+// executor_guard_wiring_test.go — it was NOT wired for the whole of era 6, which is the defect
+// sp-f5lki fixed and the reason this file no longer asserts a wiring without a check behind it.
 type InputPriceHistoryReader interface {
 	GetPriceHistory(ctx context.Context, waypointSymbol, goodSymbol string, since time.Time, limit int) ([]*market.MarketPriceHistory, error)
 }

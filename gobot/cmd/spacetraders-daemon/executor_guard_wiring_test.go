@@ -52,6 +52,12 @@ var guardCollaborators = []guardCollaborator{
 			"(`e.apiClient == nil && e.treasury == nil`) and every input buy proceeds unchecked against the working-capital reserve",
 	},
 	{
+		setter: "SetPriceHistoryReader",
+		whenAbsent: "trailingMedianAsk returns ok=false on EVERY call (`if e.priceHistory == nil`) and rescueSource refuses on false, so every rescue source-buy parks permanently — " +
+			"while logging \"no trailing median at %s\", which reads as a market with no price history rather than a missing collaborator. " +
+			"This row is not hypothetical: the setter had ZERO production call sites for the whole of era 6 (sp-f5lki), and the three behavioural tests of the rescue path were green throughout because each wires its own reader",
+	},
+	{
 		setter: "SetCapitalWorkSensor",
 		whenAbsent: "budgetedReserveFloor silently drops back to the flat non-contract floor (`if e.workSensor == nil { return floor }`), so trade's reserved share of deployable capital is never added — " +
 			"construction and trade each conclude the other is idle and both size against the whole treasury, which is the aggregate breach the sensor exists to prevent",
