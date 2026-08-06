@@ -356,11 +356,20 @@ func (h *RunProbeSensingCoordinatorHandler) ReconcileOnce(ctx context.Context, c
 	// EXPANSION GATE. Parked sensing buys hulls and sizes its footprint against
 	// the fleet's trading reach; before the home jump gate is built there is no
 	// such reach, and bootstrap owns probe provisioning. Checked FIRST so a
-	// pre-EXPANSION tick does nothing at all — no ledger read, no cutover, no buy.
+	// pre-EXPANSION tick spends nothing and moves nothing — no ledger read, no
+	// cutover, no buy.
 	if !h.expansionReached(ctx, cmd) {
+		// EXCEPT the free shipyard-catalogue sweep, which the gate does not cover in
+		// either direction. It flies no hull and spends no credit, so nothing the gate
+		// exists to withhold is at stake; and the yard map it builds is the ONLY route
+		// to identifying a heavy-hull counter, so a fleet that waited for the gate to
+		// start reading would enter EXPANSION blind at the start of every era.
+		h.sweepYardCatalogues(ctx, cmd)
 		// Correctly gated, not wedged: bootstrap owns probes before the home gate is built.
 		// Reported as IDLE so this stays silent for as many ticks as it takes, and so a stall
-		// streak from before the gate does not survive across the phase change.
+		// streak from before the gate does not survive across the phase change. The sweep
+		// above does not move that verdict: it is free discovery, not sensing work, and a
+		// tick that reads eight catalogues is still a tick that placed nothing.
 		h.observeStall(ctx, cmd, sensingStallCoordinator, health.TickIdle())
 		return nil
 	}
@@ -425,7 +434,14 @@ func (h *RunProbeSensingCoordinatorHandler) ReconcileOnce(ctx context.Context, c
 		failures = append(failures, serr)
 	}
 
-	// The free shipyard-catalogue sweep, run on EVERY tick and gated on nothing.
+	// The free shipyard-catalogue sweep, run on EVERY tick of EVERY phase.
+	//
+	// This is the EXPANSION call. A pre-EXPANSION tick makes its own from the
+	// early-return branch at the top of this function, because the sweep spends
+	// nothing and the phase gate has nothing to withhold from it — see the note
+	// there. The two calls are separate rather than one hoisted call precisely
+	// because THIS one's position between the screen and the drain is a contract
+	// (below) that the phase-gated branch cannot honour.
 	//
 	// It sits outside the screen sweep deliberately. Screening only ever revisits
 	// PENDING systems (an IN_SCOPE one is never re-screened, by design), so a yard
@@ -544,6 +560,60 @@ func (h *RunProbeSensingCoordinatorHandler) ReconcileOnce(ctx context.Context, c
 	h.observeStall(ctx, cmd, expansionStallCoordinator, expansionStallVerdict(expandRep, eerr))
 
 	return errors.Join(failures...)
+}
+
+// sweepYardCatalogues runs the free shipyard-catalogue sweep on a tick that does no
+// other sensing work — the pre-EXPANSION branch of ReconcileOnce.
+//
+// IT RETURNS NOTHING, and that is the contract rather than an omission. The pass
+// spends no credits and moves no hull, so nothing it can fail at is worth failing a
+// tick that is otherwise correctly idle: an unwired surface and an unreadable
+// frontier each log and return, and a single yard the API refuses is already handled
+// one layer down (ReadYardCatalogues skips it, counts it and names it).
+//
+// THE TWO PORTS ARE CHECKED INDIVIDUALLY, not through ports.wired(). That check
+// guards the tick that BUYS, and it requires the purchaser, the treasury and the
+// mover — none of which this pass is handed or could reach. Holding a free read
+// hostage to them would make this call silently inert on exactly the partially-wired
+// boot where the yard map matters most.
+func (h *RunProbeSensingCoordinatorHandler) sweepYardCatalogues(ctx context.Context, cmd *RunProbeSensingCoordinatorCommand) {
+	logger := common.LoggerFromContext(ctx)
+	playerID := cmd.PlayerID.Value()
+
+	ports, built := h.portsFor(playerID)
+	if !built || ports.YardCatalog == nil || ports.YardRead == nil {
+		logger.Log("WARNING", "The free shipyard-catalogue sweep is skipped: its two reads are not wired, so no shipyard catalogue can be learned before EXPANSION", map[string]interface{}{
+			"action":       "parked_sensing_yard_catalog_unwired",
+			"container_id": cmd.ContainerID,
+		})
+		return
+	}
+
+	rep, err := parkedsensing.ReadYardCatalogues(ctx, ports.yardCatalogPorts(), playerID)
+	if err != nil {
+		logger.Log("WARNING", fmt.Sprintf(
+			"The free shipyard-catalogue sweep could not enumerate its work list, so no catalogue is learned this tick: %v", err),
+			map[string]interface{}{
+				"action":       "parked_sensing_yard_catalog_sweep_failed",
+				"container_id": cmd.ContainerID,
+				"error":        err.Error(),
+			})
+		return
+	}
+
+	// EMITTED ON EVERY TICK, ZEROS INCLUDED. There is no cycle heartbeat on this
+	// path, so this line is the only evidence the sweep ran at all — and a backlog
+	// that has drained to nothing reads exactly like a sweep that never fired unless
+	// the zero is stated out loud.
+	logger.Log("INFO", fmt.Sprintf(
+		"Shipyard catalogue sweep (pre-EXPANSION): read %d of %d outstanding, %d failed",
+		rep.Read, rep.Outstanding, rep.Failed), map[string]interface{}{
+		"action":            "parked_sensing_yard_catalog_sweep",
+		"container_id":      cmd.ContainerID,
+		"yards_read":        rep.Read,
+		"yards_failed":      rep.Failed,
+		"yards_outstanding": rep.Outstanding,
+	})
 }
 
 // reclaimIdleProbes puts hulls we already own to work — adopt, dispatch, surge — before the
