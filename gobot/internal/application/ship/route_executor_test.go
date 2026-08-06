@@ -83,6 +83,13 @@ type recordingMediator struct {
 	// refuelErrors note). Ignored unless refuelAlwaysErr is set.
 	refuelFailsUntilReroute bool
 
+	// refuelFailsUntilTime models a TRANSIENT outage rather than a broken station: refuels fail
+	// while the mock clock is before this instant and succeed after it, wherever the ship is.
+	// The queue and the always-err flag cannot express that — one is location-blind and finite,
+	// the other never clears — and "the failure cleared while we were still waiting" is exactly
+	// the case the attempt at the end of the budget exists to catch. Requires clock.
+	refuelFailsUntilTime time.Time
+
 	// clock, when set, stamps refuelTimes/navigateTimes as commands arrive so a
 	// test can assert WHEN a step happened, not just that it happened. The
 	// executor shares this MockClock, whose Sleep advances it instantly.
@@ -110,6 +117,9 @@ func (m *recordingMediator) Send(_ context.Context, request mediator.Request) (m
 		m.stamp(&m.refuelTimes)
 		if m.refuelAlwaysErr != nil && (!m.refuelFailsUntilReroute || len(m.navigateCommands()) == 0) {
 			return nil, m.refuelAlwaysErr
+		}
+		if !m.refuelFailsUntilTime.IsZero() && m.clock != nil && m.clock.Now().Before(m.refuelFailsUntilTime) {
+			return nil, fmt.Errorf("max retries exceeded: server error (500)")
 		}
 		if len(m.refuelErrors) > 0 {
 			err := m.refuelErrors[0]

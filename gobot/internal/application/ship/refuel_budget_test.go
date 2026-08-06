@@ -415,3 +415,97 @@ func commandTypeNames(commands []mediator.Request) string {
 	}
 	return strings.Join(names, ", ")
 }
+
+// TestRefuelRetry_OriginRecoveredBeforeTheDetour_NoReroute pins the guarantee that makes the
+// detour a last resort rather than a reflex.
+//
+// The failure that spends the budget is transient by construction — the loop only reaches its
+// end for errors it classified retryable — and what it is about to commit to is the expensive
+// branch: a crawl across the system in DRIFT, which in the incident cost far more than the fuel
+// was worth. The loop therefore probes the original waypoint ONCE MORE after the budget has
+// fully elapsed, so a stop that came back while the hull was waiting is used instead of flown
+// away from.
+//
+// That behaviour already existed and nothing pinned it: shortening the loop so it stops without
+// that final probe leaves every other refuel test green.
+func TestRefuelRetry_OriginRecoveredBeforeTheDetour_NoReroute(t *testing.T) {
+	origin := mustWaypoint(t, "X1-KP46-I56", 0, 0)
+	origin.HasFuel = true
+	origin.Traits = []string{"MARKETPLACE"}
+	alt := mustWaypoint(t, "X1-KP46-K84", 30, 0)
+	alt.HasFuel = true
+	alt.Traits = []string{"MARKETPLACE"}
+
+	ship := newExecutorTestShip(t, 100, 400, origin)
+	start := time.Date(2026, 8, 5, 9, 28, 0, 0, time.UTC)
+	mockClock := &shared.MockClock{CurrentTime: start}
+
+	fake := &recordingMediator{
+		fuel:       100,
+		capacity:   400,
+		distByDest: map[string]float64{alt.Symbol: 30},
+		clock:      mockClock,
+		// The outage clears as the budget runs out — the shape the incident actually had.
+		refuelFailsUntilTime: start.Add(DefaultRefuelRetryBudget),
+	}
+	waypointRepo := &fakeWaypointRepo{
+		bySystemTrait: map[string][]*shared.Waypoint{
+			origin.SystemSymbol + "|MARKETPLACE": {origin, alt},
+		},
+	}
+	executor := NewRouteExecutor(nil, fake, mockClock, nil, nil, nil, waypointRepo, stubSubscriber{})
+
+	err := executor.refuelShipWithRetry(context.Background(), ship, shared.MustNewPlayerID(1), true)
+
+	if err != nil {
+		t.Fatalf("the original stop was serving again by the end of the budget, so the refuel must succeed there: %v", err)
+	}
+	// Calibration: a fixture whose refuels never failed would satisfy the no-reroute assertion
+	// below without the budget loop ever having run.
+	if got := fake.refuelAttempts(); got <= 3 {
+		t.Fatalf("only %d refuel attempt(s) — the fixture never spent the budget, so this proves nothing about what happens at the end of it", got)
+	}
+	if navs := len(fake.navigateTimes); navs != 0 {
+		t.Fatalf("the hull flew to an alternate fuel stop (%d navigate(s)) although the original waypoint was serving again — the detour is the expensive branch and must not be taken without one last look", navs)
+	}
+}
+
+// TestRefuelRetry_OriginStillDead_StillEscalates is the other half. The final probe is an extra
+// attempt before the detour, never a replacement for it: a hull that genuinely cannot refuel
+// where it stands must still be taken somewhere it can.
+func TestRefuelRetry_OriginStillDead_StillEscalates(t *testing.T) {
+	origin := mustWaypoint(t, "X1-KP46-I56", 0, 0)
+	origin.HasFuel = true
+	origin.Traits = []string{"MARKETPLACE"}
+	alt := mustWaypoint(t, "X1-KP46-K84", 30, 0)
+	alt.HasFuel = true
+	alt.Traits = []string{"MARKETPLACE"}
+
+	ship := newExecutorTestShip(t, 100, 400, origin)
+	start := time.Date(2026, 8, 5, 9, 28, 0, 0, time.UTC)
+	mockClock := &shared.MockClock{CurrentTime: start}
+
+	fake := &recordingMediator{
+		fuel:                    100,
+		capacity:                400,
+		distByDest:              map[string]float64{alt.Symbol: 30},
+		refuelAlwaysErr:         refuelIncidentSignature(),
+		refuelFailsUntilReroute: true, // the station is broken, not merely busy
+		clock:                   mockClock,
+	}
+	waypointRepo := &fakeWaypointRepo{
+		bySystemTrait: map[string][]*shared.Waypoint{
+			origin.SystemSymbol + "|MARKETPLACE": {origin, alt},
+		},
+	}
+	executor := NewRouteExecutor(nil, fake, mockClock, nil, nil, nil, waypointRepo, stubSubscriber{})
+
+	err := executor.refuelShipWithRetry(context.Background(), ship, shared.MustNewPlayerID(1), true)
+
+	if navs := len(fake.navigateTimes); navs != 1 {
+		t.Fatalf("a waypoint that stays dead must still send the hull to an alternate, got %d navigate(s)", navs)
+	}
+	if err != nil {
+		t.Fatalf("the alternate serves fine here, so the refuel must ultimately succeed: %v", err)
+	}
+}
