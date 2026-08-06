@@ -17,6 +17,7 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/application/system/gategraph"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/absorption"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
@@ -111,9 +112,18 @@ type RunLongHaulArbHandler struct {
 	legs       directedLegExecutor
 	reposition hullRepositioner
 	treasury   longHaulTreasuryReader
-	// absorptionHeadroom is the worker's live sink-depth consult (VolumeCap minus others'
-	// in-flight PLANNED units) reused from the absorption ledger; nil → unbounded by absorption.
-	absorptionHeadroom func(lane trading.ArbitrageLane) int
+	// absorptionLedger is the worker's live sink-depth consult: each lane's headroom is its
+	// VolumeCap minus what OTHER engines already hold in flight against the same sink. nil →
+	// unbounded by absorption (the pre-sp-kw2em behaviour, kept for tests that drive the worker
+	// without a ledger).
+	absorptionLedger longHaulAbsorptionReader
+}
+
+// longHaulAbsorptionReader is the one method the worker needs from the absorption ledger,
+// declared here at the consumer so this package depends on the read rather than the whole
+// ledger surface. *persistence.AbsorptionLedgerGORM satisfies it.
+type longHaulAbsorptionReader interface {
+	Outstanding(ctx context.Context, playerID int) (map[absorption.LaneKey]absorption.KeyOccupancy, error)
 }
 
 // NewRunLongHaulArbHandler wires the worker with its reused-component ports.
@@ -121,9 +131,63 @@ func NewRunLongHaulArbHandler(loader shipLoader, discoverer laneDiscoverer, legs
 	return &RunLongHaulArbHandler{loader: loader, discoverer: discoverer, legs: legs, reposition: reposition, treasury: treasury}
 }
 
-// SetAbsorptionHeadroom wires the live sink-depth consult (reused absorption ledger). Optional.
-func (h *RunLongHaulArbHandler) SetAbsorptionHeadroom(f func(lane trading.ArbitrageLane) int) {
-	h.absorptionHeadroom = f
+// SetAbsorptionLedger wires the live sink-depth consult (sp-kw2em). It replaces
+// SetAbsorptionHeadroom, which took a per-lane func and had ZERO call sites for its whole
+// lifetime — so the clamp it fed was never once applied. Three things were wrong with that
+// signature and all three are why it was never wired: it carried no context (so the fail-closed
+// warning every sibling consult emits had nowhere to go), no player id, and it was invoked once
+// per ranked candidate inside selectHauls, which would have meant a database round trip per lane
+// per episode. This takes the ledger itself and reads it ONCE per episode, matching the
+// trade-route, tour and idle-arb consults.
+func (h *RunLongHaulArbHandler) SetAbsorptionLedger(ledger longHaulAbsorptionReader) {
+	h.absorptionLedger = ledger
+}
+
+// absorptionHeadroomFn returns the per-lane headroom consult for ONE episode, from a single
+// batched ledger read.
+//
+// The headroom is VolumeCap minus what other engines already hold in flight against the same
+// sink. It only ever REDUCES the sized buy — achievableUnits folds it in with a min — so this
+// can make a buy smaller or leave it unchanged, never larger (RULINGS #4).
+//
+// Note what it does and does not bound. OptimalUnits is already clamped to VolumeCap upstream,
+// so for a hull trading alone this consult is a no-op by construction. What it catches is the
+// case VolumeCap cannot see: several engines dumping into the SAME sink at the same time, where
+// each one's buy looks individually within depth and their sum is not.
+//
+// FAIL-CLOSED on an unreadable ledger: every lane sizes to zero and the episode trades nothing.
+// That matches the idle-arb and trade-route consults, and it is the only safe direction for a
+// guard whose job is bounding a spend — a consult that cannot read must not wave the buy through.
+//
+// A nil ledger returns nil, which selectHauls reads as "not consulted" (headroom -1) and leaves
+// sizing exactly as it was before this was wired.
+func (h *RunLongHaulArbHandler) absorptionHeadroomFn(ctx context.Context, playerID int) func(lane trading.ArbitrageLane) int {
+	if h.absorptionLedger == nil {
+		return nil
+	}
+
+	pools, err := h.absorptionLedger.Outstanding(ctx, playerID)
+	if err != nil {
+		common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf(
+			"Long-haul absorption consult: ledger read failed, sizing every lane to zero this episode (fail-closed): %v", err), map[string]interface{}{
+			"action": "longhaul_absorption_unreadable",
+		})
+		return func(trading.ArbitrageLane) int { return 0 }
+	}
+
+	return func(lane trading.ArbitrageLane) int {
+		occ := pools[absorption.LaneKey{Waypoint: lane.DestWaypoint, Good: lane.Good, Side: absorption.SideSell}]
+		// A live recovery shadow on the sink means an earlier dump is still being absorbed.
+		// Zero headroom, matching the trade-route consult's outright block on the same signal.
+		if occ.RecoveringResidual > 0 {
+			return 0
+		}
+		remaining := lane.VolumeCap - occ.PlannedUnits
+		if remaining < 0 {
+			return 0
+		}
+		return remaining
+	}
 }
 
 // Handle runs continuous episodes until the context is cancelled (Iterations=-1) or the
@@ -193,7 +257,7 @@ func (h *RunLongHaulArbHandler) runEpisode(ctx context.Context, cmd *RunLongHaul
 	if err != nil {
 		return false, fmt.Errorf("long-haul discovery failed: %w", err)
 	}
-	hauls := selectHauls(ranked, hull.AvailableCargoSpace(), envelope, h.absorptionHeadroom)
+	hauls := selectHauls(ranked, hull.AvailableCargoSpace(), envelope, h.absorptionHeadroomFn(ctx, cmd.PlayerID))
 	if len(hauls) == 0 {
 		logger.Log("INFO", fmt.Sprintf("Long-haul %s: no lane clears the floor+envelope this scan — idling", cmd.ShipSymbol), map[string]interface{}{
 			"action": "longhaul_no_lane", "ship_symbol": cmd.ShipSymbol,
@@ -298,7 +362,7 @@ func (h *RunLongHaulArbHandler) runBackhaul(ctx context.Context, cmd *RunLongHau
 	// fallback (sp-e059j): a gate-UNROUTABLE near-source is skipped for the next candidate rather
 	// than deadheading on the first one — the backhaul is opportunistic, so an unreachable top
 	// pick must not forfeit a reachable second. Best-effort throughout: any failure just deadheads.
-	for _, haul := range selectHauls(nearSource, hull.AvailableCargoSpace(), envelope, h.absorptionHeadroom) {
+	for _, haul := range selectHauls(nearSource, hull.AvailableCargoSpace(), envelope, h.absorptionHeadroomFn(ctx, cmd.PlayerID)) {
 		lane, units := haul.lane, haul.units
 		if err := h.reposition.RepositionToWaypoint(ctx, cmd.ShipSymbol, lane.Lane.SourceWaypoint, cmd.PlayerID); err != nil {
 			if errors.Is(err, gategraph.ErrUnroutable) {

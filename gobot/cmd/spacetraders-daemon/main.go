@@ -1559,6 +1559,13 @@ func run(cfg *config.Config) error {
 		longHaulMinSpreadFloor,
 		longHaulMarginalFloorCredits,
 	)
+	// Arm the long-haul sink-depth consult (sp-kw2em). Its predecessor setter had ZERO call
+	// sites for its entire lifetime, so the clamp was consumed, unit-tested, and never once
+	// applied to a real buy. absorptionLedger is the SAME instance every other engine consults,
+	// so long-haul now sees their in-flight units against a shared sink instead of sizing as
+	// though it were the only trader on the lane.
+	longHaulWorkerHandler.SetAbsorptionLedger(absorptionLedger)
+
 	if err := mediator.RegisterHandler[*tradeRouteCmd.RunLongHaulArbCommand](med, longHaulWorkerHandler); err != nil {
 		return fmt.Errorf("failed to register LongHaulArb worker handler: %w", err)
 	}
