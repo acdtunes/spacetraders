@@ -218,10 +218,33 @@ func TestConcurrentConstructionSupplyBuys_CannotBreachReserveInAggregate(t *test
 
 	// The cap must have ACTED, not merely been present. Without this a harness whose buyers
 	// never actually contended would satisfy the assertion above for the wrong reason.
-	require.Equal(t, 1, out.parked,
-		"exactly one of the %d buyers must be parked by the aggregate cap (two fit under the reserve, the third does not), got %d parked", aggBuyers, out.parked)
-	require.Equal(t, 2*aggBuyCost, out.totalSpent,
-		"the two buys that fit under the reserve must both complete — the cap must stop the breaching buy, not the whole fleet")
+	//
+	// HOW MANY PARK IS NOT FIXED, AND PINNING IT TO ONE ASSERTS SOMETHING THE GUARD NEVER
+	// PROMISED. A buy commits before its reservation is released — deliberately, so a spend is
+	// never in neither ledger — which leaves a window where it is in BOTH: subtracted once from
+	// the live treasury it just reduced, and again as its own still-open reservation. A sibling
+	// evaluating inside that window sees the same spend twice and refuses on headroom that has
+	// really already returned. That is the overlap the no-gap ordering costs, and it is the safe
+	// direction: double-counting can only ever refuse a buy, never admit one.
+	//
+	// So the count depends on where the goroutines happen to land, and only its BOUNDS are the
+	// guard's actual contract. Both ends are load-bearing:
+	//   - none parked would mean every buyer got through. When completion implies spend that is
+	//     the breach itself and the criterion above sees it first, but the two can come apart —
+	//     a run where nothing is actually spent leaves treasury looking healthy while the cap
+	//     has plainly not acted, and only this bound catches that.
+	//   - all parked would mean the cap stalled the fleet instead of stopping the buy that
+	//     breached — it would satisfy the reserve trivially, by spending nothing at all.
+	require.GreaterOrEqual(t, out.parked, 1,
+		"the aggregate cap never acted: all %d buyers completed, so treasury sits above the reserve by luck of timing rather than because anything stopped the breaching buy", aggBuyers)
+	require.Less(t, out.parked, aggBuyers,
+		"the cap parked ALL %d buyers — it must stop the buy that breaches the reserve, not the whole fleet; a guard that refuses everything satisfies the reserve by spending nothing", aggBuyers)
+
+	// Spend has to agree with the count actually observed, which is what keeps the range above
+	// from being a licence for the two to drift apart.
+	require.Equal(t, (aggBuyers-out.parked)*aggBuyCost, out.totalSpent,
+		"%d of %d buyers parked, so exactly %d buys should have completed (%d credits), but treasury records %d spent",
+		out.parked, aggBuyers, aggBuyers-out.parked, (aggBuyers-out.parked)*aggBuyCost, out.totalSpent)
 }
 
 // THE PROOF THAT THE TEST ABOVE CAN FAIL. The same harness, same race, cap unwired — the
