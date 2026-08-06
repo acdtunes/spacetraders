@@ -95,6 +95,7 @@ func (h *RunConstructionCoordinatorHandler) reallocateGateRoles(
 		"have_delivery": plan.HaveDelivery, "have_factory": plan.HaveFactory, "unroled": plan.Unroled,
 		"dwell_records": plan.DwellRecords,
 	})
+	h.reportDeliveryIdleTransition(ctx, paused, plan.WantDelivery)
 
 	for _, move := range plan.Moves {
 		if err := h.shipRepo.AssignFleet(ctx, move.Ship, move.To.FleetTag(), playerID); err != nil {
@@ -275,4 +276,52 @@ func (h *RunConstructionCoordinatorHandler) stampRoleChange(ship string) {
 		h.roleSince = make(map[string]time.Time)
 	}
 	h.roleSince[ship] = h.clock.Now()
+}
+
+// reportDeliveryIdleTransition names the CAUSAL LINK the incident of 2026-08-06 left to be
+// inferred: the drain is dispatching nothing BECAUSE the delivery fleet is paused down to zero
+// hulls (sp-5vv65).
+//
+// For six hours the gate sat flat at 85% and the only evidence was two unrelated counters — a
+// `(0 task(s) promoted to READY)` line nobody watches, and a 60x drop in log volume — plus a roles
+// line reporting `want 0D/4F` that reads as routine. Nothing anywhere said the first was CAUSED by
+// the last. The engine was healthy the whole time and looked dead.
+//
+// ON TRANSITION ONLY, and that bound is not cosmetic. Later that same day the delivery fleet was
+// paused on all 59 ticks of an hour whose cadence was perfectly normal, so a per-tick line would
+// have produced 59 identical rows in a healthy hour and taught its reader to scroll past exactly
+// the wording that mattered during the outage.
+//
+// IT COVERS THE ROLE-ALLOCATION CASE ONLY. sp-vrnjx already reports the material-level cause —
+// "supply X has been BELOW the Y buy floor for N, so buying is correctly withheld" — and two
+// messages narrating one condition is worse than one. This one answers the different question that
+// went unanswered: why the DRAIN as a whole has no work, which is a statement about the fleet's
+// role split rather than about any single material.
+//
+// It reports and never acts. The pause is correct behaviour — during this outage it rested the
+// market and recovered the IRON ask 63% — so the defect was never the pause, only that its
+// consequence for the drain was invisible.
+func (h *RunConstructionCoordinatorHandler) reportDeliveryIdleTransition(ctx context.Context, paused bool, wantDelivery int) {
+	// The reportable state is specifically "paused AND no delivery hull is wanted". A pause that
+	// still wants delivery hulls is not the drain-idle shape and must not raise this.
+	idle := paused && wantDelivery == 0
+
+	h.idleMu.Lock()
+	changed := idle != h.idleReported
+	h.idleReported = idle
+	h.idleMu.Unlock()
+	if !changed {
+		return
+	}
+
+	logger := common.LoggerFromContext(ctx)
+	if idle {
+		logger.Log("WARNING", "Gate delivery is PAUSED and no delivery hull is wanted, so the construction drain will dispatch NOTHING until it lifts — a quiet drain and a falling log volume from here on are this pause, not a wedged engine. The pause itself is correct; it rests a depleted market", map[string]interface{}{
+			"action": "gate_drain_idle_because_delivery_paused", "want_delivery": wantDelivery,
+		})
+		return
+	}
+	logger.Log("INFO", "Gate delivery is no longer paused down to zero hulls — the construction drain can dispatch again", map[string]interface{}{
+		"action": "gate_drain_idle_cleared", "want_delivery": wantDelivery,
+	})
 }

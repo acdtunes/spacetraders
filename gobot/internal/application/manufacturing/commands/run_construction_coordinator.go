@@ -208,6 +208,15 @@ type RunConstructionCoordinatorHandler struct {
 	stallMu   sync.Mutex
 	stallSeen map[string]materialObservation
 
+	// idleMu guards idleReported, the "why is the drain quiet" edge detector (sp-5vv65).
+	//
+	// It stores the LAST REPORTED state, not a timestamp, because the line it gates is emitted on
+	// TRANSITION only. At 10:00 on the incident day the delivery fleet was paused on all 59 ticks of
+	// a perfectly healthy hour — a per-tick line there is 59 identical rows and becomes the noise it
+	// exists to cut through.
+	idleMu       sync.Mutex
+	idleReported bool
+
 	roleMu    sync.Mutex
 	roleSince map[string]time.Time
 	// siteSource reads the LIVE construction site so each tick can reconcile the pipeline's delivered
