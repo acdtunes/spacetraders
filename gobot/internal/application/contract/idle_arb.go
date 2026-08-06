@@ -349,6 +349,7 @@ func (d *IdleArbDispatcher) DispatchOnce(ctx context.Context) int {
 			MinMargin:  idleArbMinMargin(d.cfg, lane.MarginPerUnit),
 			PlayerID:   d.playerID.Value(),
 			Operation:  d.fleet,
+			MaxUnits:   lane.MaxUnits,
 			// Arm the arb run's per-tranche sell floor with the SAME
 			// 80%-of-quote knob the buy-side live-verify uses (cfg.MarginVerifyFraction).
 			SellFloorFraction: d.cfg.MarginVerifyFraction,

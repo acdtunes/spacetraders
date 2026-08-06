@@ -200,6 +200,9 @@ type IdleArbSpec struct {
 	MinMargin  int
 	PlayerID   int
 	Operation  string // claim identity, e.g. "contract"
+	// MaxUnits is the leg's sink-depth ceiling, sized against SellFloorFraction below.
+	// 0 reads as UNCAPPED in the run, so an unreadable sink is refused a lane instead.
+	MaxUnits int
 	// SellFloorFraction arms the arb run's per-tranche sell floor: each sell
 	// tranche aborts the remainder when the LIVE bid falls below this fraction
 	// of the quoted bid. It reuses the SAME 80% knob the buy-side live-verify uses

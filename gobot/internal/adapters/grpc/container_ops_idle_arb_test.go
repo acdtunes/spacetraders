@@ -2,6 +2,7 @@ package grpc
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -137,4 +138,40 @@ func TestLaunchIdleArb_ClaimRefusedAfterRowPersisted_TerminalizesOrphanRow(t *te
 	require.Equal(t, "active", shipModel.AssignmentStatus)
 	require.NotNil(t, shipModel.ContainerID)
 	require.Equal(t, "rival-holder", *shipModel.ContainerID)
+}
+
+// The dispatcher's sink-depth ceiling must reach the arb run, and it reaches it only
+// through the persisted launch config — the same map a restart rebuild reconstructs the
+// command from (RULINGS #2). A ceiling that stops at the spec is a ceiling the buy never
+// sees: the run reads max_units as "uncapped" at zero and sizes to the hull's hold.
+func TestLaunchIdleArb_CarriesTheSinkDepthCapIntoTheLaunchConfig(t *testing.T) {
+	s, db, playerID := idleArbFKServer(t)
+	insertIdleContractHull(t, db, "TORWIND-9", playerID)
+
+	containerID, err := s.LaunchIdleArb(context.Background(), appContract.IdleArbSpec{
+		ShipSymbol: "TORWIND-9",
+		Good:       "FUEL",
+		BuyAt:      "X1-HUB-A",
+		SellAt:     "X1-HUB-B",
+		MaxSpend:   100000,
+		MaxUnits:   26,
+		MinMargin:  1,
+		PlayerID:   playerID,
+		Operation:  "contract",
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, containerID)
+	if runner := s.registeredRunner(containerID); runner != nil {
+		defer runner.cancelFunc()
+	}
+
+	var containerModel persistence.ContainerModel
+	require.NoError(t, db.First(&containerModel, "id = ?", containerID).Error)
+
+	var config map[string]interface{}
+	require.NoError(t, json.Unmarshal([]byte(containerModel.Config), &config))
+	maxUnits, ok := config["max_units"]
+	require.True(t, ok, "the launch config must carry the dispatcher's units cap")
+	require.EqualValues(t, 26, maxUnits,
+		"the persisted units cap must be the dispatcher's sink-depth ceiling, not an uncapped 0")
 }

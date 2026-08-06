@@ -57,12 +57,15 @@ func (s *DaemonServer) LaunchIdleArb(ctx context.Context, spec appContract.IdleA
 	containerID := utils.GenerateContainerID("idle-arb", spec.ShipSymbol)
 
 	config := map[string]interface{}{
-		"ship_symbol":             spec.ShipSymbol,
-		"good":                    spec.Good,
-		"buy_at":                  spec.BuyAt,
-		"sell_at":                 spec.SellAt,
-		"container_id":            containerID,
-		"max_units":               0, // hold-capped by the run itself
+		"ship_symbol":  spec.ShipSymbol,
+		"good":         spec.Good,
+		"buy_at":       spec.BuyAt,
+		"sell_at":      spec.SellAt,
+		"container_id": containerID,
+		// The dispatcher's sink-depth ceiling. The run takes the tightest of hold
+		// space, this and max-spend, so it only ever reduces the buy. Persisted so a
+		// restart rebuild resumes under the same ceiling (RULINGS #2).
+		"max_units":               spec.MaxUnits,
 		"max_spend":               spec.MaxSpend,
 		"min_margin":              spec.MinMargin,
 		"working_capital_reserve": 0, // 0 → the run's non-tunable default floor

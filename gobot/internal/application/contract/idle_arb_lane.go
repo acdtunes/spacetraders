@@ -10,6 +10,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
 )
 
 // IdleArbLane is a scored hub-local lane candidate.
@@ -20,6 +21,7 @@ type IdleArbLane struct {
 	Distance      float64
 	SourceAsk     int
 	DestBid       int
+	MaxUnits      int // sink-depth ceiling; always positive on a returned lane
 }
 
 // isBlacklisted reports whether good is on the configured excluded list.
@@ -214,6 +216,10 @@ func quoteHubLane(hull *navigation.Ship, hubGood market.TradeGood, destGood *mar
 	if margin < cfg.MinMarginPerUnit {
 		return nil, 0, 0, false
 	}
+	depthCap, bounded := trading.MaxUnitsWithinSellFloor(destGood.TradeVolume(), cfg.MarginVerifyFraction, trading.DefaultSellImpactCoefficient)
+	if bounded && depthCap <= 0 {
+		return nil, 0, 0, false
+	}
 	units := hull.AvailableCargoSpace()
 	if affordable := cfg.MaxSpendPerLeg / ask; affordable < units {
 		units = affordable
@@ -221,6 +227,11 @@ func quoteHubLane(hull *navigation.Ship, hubGood market.TradeGood, destGood *mar
 	if units <= 0 {
 		return nil, 0, 0, false
 	}
+	if !bounded {
+		depthCap = units // no expressible bound: a mis-set knob must not stop the fleet trading
+	}
+	// units stays the FULL carryable quantity — it is also the absorption consult's lot,
+	// and shrinking that would make the consult block less often.
 	return &IdleArbLane{
 		Good:          hubGood.Symbol(),
 		SellAt:        sellAt,
@@ -228,5 +239,6 @@ func quoteHubLane(hull *navigation.Ship, hubGood market.TradeGood, destGood *mar
 		Distance:      distance,
 		SourceAsk:     ask,
 		DestBid:       bid,
+		MaxUnits:      depthCap,
 	}, margin * units, units, true
 }
