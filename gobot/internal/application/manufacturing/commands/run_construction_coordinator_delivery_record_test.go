@@ -79,7 +79,7 @@ func TestWatchGateProgress_AnUnmetMaterialReceivingUnitsIsNotStalled(t *testing.
 		t.Fatal("completeSupply reported no completion")
 	}
 
-	stalls := f.handler.watchGateProgress(f.ctx(), pipeline, time.Now().UTC())
+	stalls := f.handler.watchGateProgress(f.ctx(), pipeline, 1, time.Now().UTC())
 
 	for _, v := range stalls {
 		if v.Good == lot.task.Good() {
@@ -98,8 +98,13 @@ func TestWatchGateProgress_AGenuinelyStalledMaterialStillReports(t *testing.T) {
 		t.Fatalf("reading the fixture pipeline: %v", err)
 	}
 
-	// No completeSupply call: nothing has ever been delivered, and the window opened long ago.
-	stalls := f.handler.watchGateProgress(f.ctx(), pipeline, time.Now().UTC().Add(48*time.Hour))
+	// TWO TICKS ARE REQUIRED, and that is the sp-zx0tu semantics rather than a weakening: the
+	// watchdog now measures the REMAINING count's movement, so a single observation has nothing to
+	// compare against and deliberately reports nothing (a cold start must never read as a stall).
+	// The stall is the requirement failing to move BETWEEN ticks.
+	now := time.Now().UTC()
+	f.handler.watchGateProgress(f.ctx(), pipeline, 1, now)
+	stalls := f.handler.watchGateProgress(f.ctx(), pipeline, 1, now.Add(48*time.Hour))
 
 	if len(stalls) == 0 {
 		t.Fatal("no stall reported for a pipeline that has delivered nothing in 48 hours — fixing the false alarm must not silence the true one")

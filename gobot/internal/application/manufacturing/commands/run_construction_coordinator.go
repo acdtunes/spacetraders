@@ -196,6 +196,18 @@ type RunConstructionCoordinatorHandler struct {
 	// restart re-derives, an unrecorded hull is immediately eligible, and the worst case is one
 	// extra role change that spends nothing. Persisting it would add a write to the tick for a
 	// guard whose only job is to damp oscillation over minutes.
+	// stallMu guards stallSeen, the progress watchdog's LAST-OBSERVED REMAINING ledger (sp-zx0tu).
+	//
+	// IT IS IN-MEMORY AND PER-PROCESS, following the buy-policy pause state and the reallocator's
+	// dwell ledger. A restart re-seeds it, and the FIRST tick after a restart deliberately reports
+	// nothing rather than guessing — see watchGateProgress. The cost of that is real and is stated
+	// there: a restart loop faster than the stall threshold can hide a stall. It is accepted because
+	// the alternative was persisting a (remaining, observed_at) snapshot, which needs a schema
+	// change, and the manufacturing models are NOT in the startup AutoMigrate list — a new column
+	// would ship a model the live table never got.
+	stallMu   sync.Mutex
+	stallSeen map[string]materialObservation
+
 	roleMu    sync.Mutex
 	roleSince map[string]time.Time
 	// siteSource reads the LIVE construction site so each tick can reconcile the pipeline's delivered

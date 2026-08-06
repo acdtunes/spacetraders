@@ -8,6 +8,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing/gate"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
 // watchGateProgress escalates when an ACTIVE pipeline's unmet material has received no delivered
@@ -41,6 +42,7 @@ import (
 func (h *RunConstructionCoordinatorHandler) watchGateProgress(
 	ctx context.Context,
 	pipeline *manufacturing.ManufacturingPipeline,
+	playerID int,
 	now time.Time,
 ) []gate.StallVerdict {
 	if pipeline == nil || h.taskRepo == nil {
@@ -57,48 +59,28 @@ func (h *RunConstructionCoordinatorHandler) watchGateProgress(
 		return nil
 	}
 
-	// THE PERSISTED CLOCK (criterion 6). Last-delivery times come from COMPLETED task rows, which
-	// outlive the process, so a daemon that restarted a second ago computes the same duration as one
-	// that has been up for hours. A restart LOOP therefore cannot hide a stall — the sp-20eyn shape,
-	// where 34,279 restarts looked like recovery. There is no in-memory clock to reset because there
-	// is no in-memory clock at all.
-	lastDelivery := make(map[string]time.Time, len(completed))
-	deliveredInWindow := make(map[string]int, len(completed))
-	windowOpened := now.Add(-gate.StallThreshold)
-	earliest := now
-	for _, task := range completed {
-		if task == nil || task.ActualQuantity() <= 0 {
-			continue // a completed task that moved nothing is not a delivery
-		}
-		at := task.CompletedAt()
-		if at == nil {
-			continue
-		}
-		if at.After(lastDelivery[task.Good()]) {
-			lastDelivery[task.Good()] = *at
-		}
-		if at.After(windowOpened) {
-			deliveredInWindow[task.Good()] += task.ActualQuantity()
-		}
-		if at.Before(earliest) {
-			earliest = *at
-		}
-	}
+	// THE SIGNAL IS THE MATERIAL'S OWN REMAINING COUNT, NOT TASK BOOKKEEPING (sp-zx0tu).
+	//
+	// This used to key "did units arrive" on completed tasks' actual_quantity. That was wrong twice
+	// over: the field was dead (sp-1f0ex fixed the write), and even repaired it only sees deliveries
+	// that finish through completeSupply. The delivery that exposed this landed 28 units and
+	// completed NO task, so the repaired write never fired and the alarm kept climbing.
+	//
+	// The authoritative figure was already in hand and already being printed: the live remaining
+	// requirement, re-read from the pipeline every tick. Across that delivery the watchdog's own
+	// ERROR line went "still needs 165" -> "still needs 137" while claiming zero units received. A
+	// falling remaining count IS a delivery, whatever path moved the cargo and whatever bookkeeping
+	// did or did not happen — which is exactly the "regardless of why" property this watchdog is
+	// supposed to have.
+	//
+	// completed is still read, but only so an unreadable task history keeps its own honest log line
+	// above; nothing below depends on it.
+	_ = completed
 
-	// measuredFrom is the earliest instant this pipeline can be spoken for. A material that has
-	// NEVER been delivered is judged from the pipeline's start rather than from the epoch, so a
-	// young pipeline is not accused of stalling before it has had a chance to deliver anything.
-	measuredFrom := earliest
+	measuredFrom := now
 	if started := pipeline.StartedAt(); started != nil && started.Before(measuredFrom) {
 		measuredFrom = *started
 	}
-	// CreatedAt IS THE BACKSTOP, AND WITHOUT IT THE WATCHDOG FAILS QUIET (sp-1f0ex). StartedAt is a
-	// POINTER and is nil on a pipeline that never recorded a start, so a pipeline with no start
-	// stamp and no delivery history left measuredFrom at `now` — quiet == 0 — and could never be
-	// reported however long it sat. That is the wrong direction for an alarm: a watchdog that cannot
-	// fire is indistinguishable from a healthy system, which is the whole failure this bead family
-	// exists to end. CreatedAt is non-nil by construction and persisted, so it keeps the clock
-	// restart-proof for the same reason the task history does.
 	if created := pipeline.CreatedAt(); !created.IsZero() && created.Before(measuredFrom) {
 		measuredFrom = created
 	}
@@ -106,11 +88,14 @@ func (h *RunConstructionCoordinatorHandler) watchGateProgress(
 	observed := make([]gate.MaterialProgress, 0, len(pipeline.Materials()))
 	for _, material := range pipeline.Materials() {
 		good := material.TradeSymbol()
+		remaining := material.RemainingQuantity()
+		delivered, lastChanged := h.observeRemaining(pipeline.ID(), good, remaining, now)
 		observed = append(observed, gate.MaterialProgress{
 			Good:           good,
-			Remaining:      material.RemainingQuantity(),
-			UnitsDelivered: deliveredInWindow[good],
-			LastDeliveryAt: lastDelivery[good],
+			Remaining:      remaining,
+			UnitsDelivered: delivered,
+			LastDeliveryAt: lastChanged,
+			SourceSupply:   h.sourceSupplyFor(ctx, good, pipeline, playerID),
 		})
 	}
 
@@ -160,6 +145,86 @@ func (h *RunConstructionCoordinatorHandler) watchAllGateProgress(ctx context.Con
 		if pipeline == nil || pipeline.ConstructionSite() == "" {
 			continue // not a gate pipeline
 		}
-		h.watchGateProgress(ctx, pipeline, now)
+		h.watchGateProgress(ctx, pipeline, playerID, now)
 	}
+}
+
+// materialObservation is the last remaining count this process saw for one material, and when it
+// last CHANGED. Keyed per pipeline+material in the handler's stallSeen map.
+type materialObservation struct {
+	remaining   int
+	lastChanged time.Time
+}
+
+// observeRemaining records this tick's remaining count and reports what changed since the last one:
+// the units the requirement FELL by (0 when flat), and when it last moved.
+//
+// A FALLING REMAINING COUNT IS A DELIVERY, whatever path moved the cargo. That is the whole point of
+// re-sourcing here: the watchdog is supposed to detect the absence of progress "regardless of why",
+// and keying on task bookkeeping made it blind to any delivery that did not complete a task — which
+// is the delivery that exposed it.
+//
+// THE FIRST OBSERVATION REPORTS PROGRESS, NOT SILENCE (criterion 3). With no prior tick there is no
+// basis to claim anything has been quiet, and the honest answer is "no evidence of a stall" rather
+// than "stalled since the epoch". Returning `now` as the change time makes the elapsed quiet zero,
+// so the first tick after a daemon restart cannot raise an alarm from a missing memory.
+//
+// A RESTART LOOP CAN THEREFORE HIDE A STALL, and that is a real cost, stated rather than buried: a
+// process that bounces faster than gate.StallThreshold re-seeds this map every time and never
+// accumulates. The alternative was persisting the snapshot, which needs a schema change the
+// manufacturing models cannot take (they are absent from the startup AutoMigrate list). The
+// coordinator-liveness case is covered separately by detectStaleHeartbeats, which is what notices a
+// daemon that keeps restarting.
+//
+// A RISING remaining count (the site's bill grew, or a correction raised it) is NOT progress and is
+// deliberately not treated as one — but it does reset the baseline, so the next fall is measured
+// from the new figure rather than reported as a huge phantom delivery.
+func (h *RunConstructionCoordinatorHandler) observeRemaining(pipelineID, good string, remaining int, now time.Time) (delivered int, lastChanged time.Time) {
+	key := pipelineID + "|" + good
+
+	h.stallMu.Lock()
+	defer h.stallMu.Unlock()
+	if h.stallSeen == nil {
+		h.stallSeen = make(map[string]materialObservation)
+	}
+
+	prior, seen := h.stallSeen[key]
+	if !seen {
+		h.stallSeen[key] = materialObservation{remaining: remaining, lastChanged: now}
+		return 0, now // no prior tick: no basis to call anything quiet
+	}
+	if remaining < prior.remaining {
+		delivered = prior.remaining - remaining
+		h.stallSeen[key] = materialObservation{remaining: remaining, lastChanged: now}
+		return delivered, now
+	}
+	if remaining > prior.remaining {
+		// The bill grew. Not a delivery, but re-baseline so the next fall is not a phantom.
+		h.stallSeen[key] = materialObservation{remaining: remaining, lastChanged: prior.lastChanged}
+		return 0, prior.lastChanged
+	}
+	return 0, prior.lastChanged // flat: the quiet continues from when it last moved
+}
+
+// sourceSupplyFor reports the supply level at the material's source, purely so the escalation can
+// print it. It is NOT part of the stall decision.
+//
+// Best-effort by design: the ERROR line already renders an empty result as "unreadable", and a
+// watchdog must never fail to report a stall because a market lookup was unavailable. Before
+// sp-zx0tu this was never populated at all, so every escalation said "Source supply reads
+// unreadable" whether or not the market was readable — a field that always reads the same is one a
+// reader learns to skip.
+func (h *RunConstructionCoordinatorHandler) sourceSupplyFor(ctx context.Context, good string, pipeline *manufacturing.ManufacturingPipeline, playerID int) string {
+	if h.gate == nil || h.gate.topology == nil {
+		return ""
+	}
+	system := shared.ExtractSystemSymbol(pipeline.ConstructionSite())
+	if system == "" {
+		return ""
+	}
+	source, err := h.gate.topology.TerminalFactory(ctx, good, system, playerID)
+	if err != nil || source == nil {
+		return ""
+	}
+	return source.Supply
 }
