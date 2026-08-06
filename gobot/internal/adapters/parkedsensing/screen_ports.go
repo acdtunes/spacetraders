@@ -61,15 +61,15 @@ type waypointLister interface {
 	// this file's per-system cost rule. The free shipyard-catalogue pass is the only
 	// caller: its whole job is to find the yards no system-scoped read ever reaches,
 	// so it must ask about the map rather than about one system. It is bounded by
-	// the count of CHARTED yards in the OPEN era (1,219 measured live, against 1,772
-	// across all eras), which is a number that grows with what the fleet has explored
-	// and not with how often it ticks — and the set it feeds shrinks to nothing as
-	// the reads land.
+	// the count of CHARTED yards in the OPEN era, which grows with what the fleet
+	// has explored and not with how often it ticks — and the set it feeds shrinks to
+	// nothing as the reads land.
 	//
 	// ERA-SCOPED, and FAIL-CLOSED when the open era cannot be resolved. The
 	// repository's era-AGNOSTIC ListWithTrait is deliberately not used here; see
 	// OutstandingYards for why the distinction is the difference between a cheap
-	// local enumeration and ~290 API failures an hour.
+	// local enumeration and a stream of API failures against systems that no longer
+	// exist.
 	ListWithTraitInOpenEra(ctx context.Context, trait string) ([]*shared.Waypoint, error)
 }
 
@@ -112,7 +112,7 @@ func (p *WaypointCatalogPort) ListMarketWaypoints(ctx context.Context, system st
 			continue
 		}
 		// The charted-market enumeration is one of the two places the skip's premise
-		// can be refuted by live data (sp-erdz7): these rows carry real traits.
+		// can be refuted by live data: these rows carry real traits.
 		p.reportBarrenTypeHoldingTrait(ctx, waypoint, marketplaceTrait)
 		out = append(out, waypoint.Symbol)
 	}
@@ -123,10 +123,7 @@ func (p *WaypointCatalogPort) ListMarketWaypoints(ctx context.Context, system st
 // unchartedIn is the system's outstanding charting work: every waypoint still
 // carrying the UNCHARTED trait, in whatever order the store hands them back.
 //
-// THE SINGLE SOURCE FOR BOTH UNCHARTED READS. Today the two callers below could
-// each issue this query themselves and get identical rows, so this exists for
-// what it PREVENTS rather than for what it currently does.
-//
+// THE SINGLE SOURCE FOR BOTH UNCHARTED READS, and it exists for what it PREVENTS.
 // ListUnchartedCount is the charting tour's COMPLETION SIGNAL and
 // UnchartedWaypoints is its WORK LIST, and the engine treats them as two views
 // of one set: the screen writes the count to uncharted_count, verdictFor will
@@ -136,27 +133,21 @@ func (p *WaypointCatalogPort) ListMarketWaypoints(ctx context.Context, system st
 // system is then pinned PENDING forever, seedlessTargets keeps re-dispatching
 // probes to it, and because only IN_SCOPE/NO_WHITELIST systems propagate the
 // frontier, expansion stalls permanently behind the first system holding an
-// excluded waypoint.
+// excluded waypoint. Routing both reads through here means a filter lands in ONE
+// place and applies to both, so the two can never disagree about WHICH waypoints
+// are outstanding. They are free to disagree about order — and do.
 //
-// That is not hypothetical: it is the failure the rejected skip design would
-// have shipped. Routing both reads through here means a future filter lands in
-// ONE place and applies to both, so the two can never disagree about WHICH
-// waypoints are outstanding. They are free to disagree about order — and do.
+// THE BARREN-TYPE FILTER IS HERE PRECISELY BECAUSE THIS IS THE SHARED SOURCE.
+// Barren types are dropped from the outstanding set, so the COUNT and the WORK
+// LIST narrow together and stay two views of one set — which is what makes
+// completion still mean something. A system whose only remaining waypoints are
+// asteroids counts ZERO outstanding and reaches a terminal charted state instead
+// of being toured indefinitely to discover nothing. In UnchartedWaypoints alone
+// the same filter would leave that system out of stops while the count sat
+// non-zero forever: pinned PENDING, re-dispatched probes, frontier stalled.
 //
-// THAT FUTURE FILTER IS NOW HERE, AND IT IS HERE PRECISELY BECAUSE THIS IS THE
-// SHARED SOURCE (sp-erdz7). Barren types are dropped from the outstanding set,
-// so the COUNT and the WORK LIST narrow together and stay two views of one set —
-// which is what makes completion still mean something. A system whose only
-// remaining waypoints are asteroids now counts ZERO outstanding and reaches a
-// terminal charted state, instead of being toured for fifty hours to discover
-// nothing. Had the filter gone in UnchartedWaypoints alone, that same system
-// would have run out of stops while the count sat non-zero forever: pinned
-// PENDING, re-dispatched probes, frontier stalled behind it. The failure mode is
-// the reason this function exists, so the fix belongs in it and nowhere else.
-//
-// The saving is not marginal: 94.1% of the fleet's remaining charting work
-// (9,637 of 10,243 uncharted waypoints in era 6) is ASTEROID, against a census
-// of 0 markets and 0 shipyards in 114,838 charted asteroids across two universes.
+// Most of the fleet's remaining charting work is ASTEROID, a type charted in
+// bulk across two universes without one market or shipyard on it.
 func (p *WaypointCatalogPort) unchartedIn(ctx context.Context, system string) ([]*shared.Waypoint, error) {
 	waypoints, err := p.waypoints.ListBySystemWithTrait(ctx, system, unchartedTrait)
 	if err != nil {
@@ -172,21 +163,20 @@ func (p *WaypointCatalogPort) unchartedIn(ctx context.Context, system string) ([
 	return outstanding, nil
 }
 
-// reportBarrenTypeHoldingTrait is the SKIP'S OWN FALSIFIER (sp-erdz7).
+// reportBarrenTypeHoldingTrait is the SKIP'S OWN FALSIFIER.
 //
 // Skipping a type is a claim about evidence — "ASTEROID has never held a market
-// or a shipyard in 114,838 charted examples" — and a claim that nothing can
-// refute is not evidence, it is a blacklist. One counter-example refutes this
-// one, so the fleet is wired to notice it: every enumeration of a CHARTED market
-// or yard passes through here, and a barren-tier waypoint carrying either trait
-// is logged as an ERROR naming the waypoint.
+// or a shipyard in any charted example" — and a claim that nothing can refute is
+// not evidence, it is a blacklist. One counter-example refutes this one, so the
+// fleet is wired to notice it: every enumeration of a CHARTED market or yard
+// passes through here, and a barren-tier waypoint carrying either trait is
+// logged as an ERROR naming the waypoint.
 //
 // IT WORKS DESPITE THE SKIP, which is the part worth checking before trusting
 // it. The obvious objection is that we stop charting asteroids and therefore
 // stop learning about them — but this reads the traits of waypoints ALREADY
-// charted, of which there are 39,303 in the current era alone, and those rows
-// keep being synced whether or not we fly anywhere. A market appearing on any
-// one of them surfaces here without a single new flight.
+// charted, and those rows keep being synced whether or not we fly anywhere. A
+// market appearing on any one of them surfaces here without a single new flight.
 //
 // It is deliberately an ERROR and not a metric: this must never fire, and if it
 // does the correct response is a human reading the census again, not a counter
@@ -218,12 +208,10 @@ func (p *WaypointCatalogPort) ListUnchartedCount(ctx context.Context, system str
 // charting seed should visit them: SHIPYARD-BEARING TYPES FIRST, then
 // market-bearing ones, then the rest, alphabetically inside each tier.
 //
-// THE TOUR IS NO LONGER EXHAUSTIVE, AND THE COUNT MOVED WITH IT (sp-erdz7).
-// Barren types are dropped by unchartedIn, so asteroids appear in neither this
-// list nor ListUnchartedCount. What is preserved is the property that actually
-// mattered: the two remain views of ONE set, read from the same rows, so the
-// count still falls to zero exactly when the tour runs out of stops. Completion
-// is unchanged in meaning; only the set it is computed over is smaller.
+// THE TOUR IS NOT EXHAUSTIVE, AND THE COUNT MATCHES IT. Barren types are dropped
+// by unchartedIn, so asteroids appear in neither this list nor
+// ListUnchartedCount; the two remain views of ONE set, read from the same rows,
+// so the count falls to zero exactly when the tour runs out of stops.
 //
 // This function stays a pure ORDERING over whatever unchartedIn hands it. The
 // skip is deliberately NOT repeated here — a second copy of the predicate is
@@ -284,9 +272,8 @@ func (p *WaypointCatalogPort) UnchartedWaypoints(ctx context.Context, system str
 //
 // Source 2 is NOT conditional on source 1 being empty, and that is the whole
 // point. Whether one yard is priced is evidence about THAT yard and says nothing
-// about its neighbour: making the trait fallback conditional on any priced yard in
-// the system loses every not-yet-priced yard in it — 81 of 614 charted shipyards,
-// measured live.
+// about its neighbour: making the trait fallback conditional on any priced yard
+// in the system loses every not-yet-priced yard in it.
 //
 // Membership is decided per waypoint by appSensing.ProbeYardIsCandidate, the shared
 // probe-stock rule, so a yard priced and found probe-less is excluded here on the
@@ -361,33 +348,31 @@ func (p *WaypointCatalogPort) ListHeavyYards(ctx context.Context, system string)
 //     SELF-QUIESCING: a yard read once never appears here again, so the backlog drains
 //     and the pass then costs one query per tick and nothing else.
 //
-// ERA-SCOPED, on the row's OWN era stamp, and the reason is a measured production bleed
-// rather than tidiness.
+// ERA-SCOPED, on the row's OWN era stamp.
 //
 // Reading the era-AGNOSTIC trait set instead — on the reasoning that a shipyard is an
 // immutable physical fact so a prior-era row is still proof one is there, and that the
 // worst case after a reset is UNDER-reading, discovery latency and never a wrong buy —
-// gets the direction of error wrong. The first half is true; the second is not. `waypoints`
-// holds 1,772 SHIPYARD rows across 862 systems and only 1,219 across 587 carry the open
-// era's stamp, so an unscoped work list is mostly waypoints in universes that no
-// longer exist. The API does not merely decline those, it 404s their whole SYSTEM
-// ("System X1-AF2 not found"), and this pass burned ~290 such failures an hour for ten
-// hours, flat and not converging, with utilisation at 88% against an 85% ceiling.
-// Because the per-tick bound counts ATTEMPTS and not successes — correctly, so a
-// refusing API cannot become an unbounded retry storm — every dead-era yard consumes a
-// slot a live yard needs. A sweep built to find heavy shipyards spends most of its
-// budget on systems that are gone.
+// gets the direction of error wrong. The first half is true; the second is not.
+// `waypoints` is cumulative across resets: a row stamped by a closed era is never deleted,
+// so an unscoped work list carries waypoints in universes that no longer exist. The API
+// does not merely decline those, it 404s their whole SYSTEM — and that same 404 is why the
+// exclusion half can never clear them. Exclusion removes only what already holds a
+// shipyard_inventory row, and a waypoint whose system 404s can no longer earn one, so a
+// dead-era yard this pass never reached while its era was open is residue: the live half
+// of the backlog drains, that half is re-offered every tick forever. And because the
+// per-tick bound counts ATTEMPTS and not successes — correctly, so a refusing API cannot
+// become an unbounded retry storm — each residue row consumes a slot a live yard needs.
 //
-// WHY THE ROW'S era_id AND NOT LEDGER MEMBERSHIP. The alternative is to intersect
-// against sensing_systems for the player. It is neither sufficient nor free: measured
-// live, 11 dead-era-stamped yard waypoints sit in systems that ARE in this era's ledger,
-// so a ledger intersection admits exactly the class being removed, while one open-era
-// yard system is absent from the ledger, so it would also delete real frontier work.
-// Ledger membership is already used here, and correctly — as the frontier RANK below,
-// never as a gate. This pass exists to reach yards in systems the screen has not
-// reached, so promoting that rank to a gate would invert its purpose. era_id is stamped
-// by GormWaypointRepository.Add at write time and so records the one fact a caller about
-// to spend a call needs: which universe's API last confirmed this waypoint exists.
+// WHY THE ROW'S era_id AND NOT LEDGER MEMBERSHIP. Intersecting against sensing_systems
+// instead is neither sufficient nor free: dead-era-stamped yard waypoints sit in systems
+// that ARE in this era's ledger, so a ledger intersection admits exactly the class being
+// removed, while an open-era yard system absent from the ledger would have real frontier
+// work deleted. Ledger membership is already used here, and correctly — as the frontier
+// RANK below, never as a gate. This pass exists to reach yards in systems the screen has
+// not reached, so promoting that rank to a gate would invert its purpose. era_id is
+// stamped by GormWaypointRepository.Add at write time and so records the one fact a caller
+// about to spend a call needs: which universe's API last confirmed this waypoint exists.
 //
 // FAIL-CLOSED. An unresolvable open era refuses rather than falling back to unscoped,
 // because unscoped IS the bug. The pass above treats a failure to enumerate as fatal to
@@ -430,7 +415,7 @@ func (p *WaypointCatalogPort) OutstandingYards(ctx context.Context, playerID int
 			continue
 		}
 		// The charted-yard enumeration is the second refutation point for the charting
-		// skip (sp-erdz7); a barren-tier waypoint holding a SHIPYARD breaks the census.
+		// skip; a barren-tier waypoint holding a SHIPYARD breaks the census.
 		p.reportBarrenTypeHoldingTrait(ctx, yard, shipyardTrait)
 		system := yard.SystemSymbol
 		if system == "" {
@@ -484,7 +469,7 @@ func (p *WaypointCatalogPort) distinctColumnSet(ctx context.Context, playerID in
 //     "listed, but carried no priced listing at scan time", the drain's quote
 //     refuses such a yard for exactly that reason, and counting it would keep
 //     re-quoting a counter we already know cannot price the hull. That is the loop
-//     the memo exists to break, and it is preserved untouched.
+//     the memo exists to break.
 //   - a CATALOGUE-ONLY reading, taken with no hull anywhere: `shipTypes` came back
 //     and `ships` did not, so EVERY row is price 0 by construction. Reading an
 //     unpriced probe row as "sells no probe" here is simply false — the yard sells
@@ -497,15 +482,11 @@ func (p *WaypointCatalogPort) distinctColumnSet(ctx context.Context, playerID in
 //
 // The two are told apart by the reading itself, with no schema change and no
 // flag: a reading that priced ANYTHING is a priced reading. persistListings in
-// ship_ports.go already states this distinction as the intent ("the memo can tell
+// ship_ports.go states the same distinction as the intent ("the memo can tell
 // 'this yard does not sell probes' from 'this yard sells probes we could not
-// price', and only the first is a reason to stop asking") — it just had no way to
-// express it while every reading carried prices.
+// price', and only the first is a reason to stop asking").
 //
-// DIRECTION CHECK. Against the behaviour before the catalogue pass existed, this
-// LOOSENS nothing: a yard with no rows was already UNREAD and already a
-// candidate, and it stays one. What it does add is a genuine TIGHTENING — a
-// catalogue-only reading that lists no probe at all is now positive evidence the
+// A catalogue-only reading that lists no probe at all is positive evidence the
 // yard sells none, so the drain stops paying live quotes there.
 //
 // known=false when the waypoint has no rows at all, which the caller must read as
@@ -566,12 +547,10 @@ func (p *WaypointCatalogPort) LastListingScan(ctx context.Context, playerID int,
 }
 
 // ERA-SCOPED on BOTH halves of the union, and fail-closed when the open era cannot be
-// resolved. The trait half already was, through the repository's
-// ListBySystemWithTrait; the priced half read shipyard_inventory unscoped, so a
-// pre-reset row could put a yard from a dead universe at the head of the
-// cheapest-first ranking — the position the drain quotes from first. The whole file
-// now answers under one era rule: see OutstandingYards for the measured bleed that
-// made the alignment urgent and for why the row's own era stamp is the predicate.
+// resolved. Unscoped, a pre-reset row could put a yard from a dead universe at the head
+// of the cheapest-first ranking — the position the drain quotes from first. The whole
+// file answers under one era rule; see OutstandingYards for why the row's own era stamp
+// is the predicate.
 func (p *WaypointCatalogPort) ListProbeYards(ctx context.Context, system string) ([]string, error) {
 	eraPredicate, eraArgs, err := persistence.OpenEraScope(ctx, p.db)
 	if err != nil {
@@ -596,9 +575,8 @@ func (p *WaypointCatalogPort) ListProbeYards(ctx context.Context, system string)
 		return nil, fmt.Errorf("failed to list shipyards in %q: %w", system, err)
 	}
 	// A UNION, not an either/or. Falling back to traits only when the system holds
-	// NOT ONE probe row lets a single priced yard hide every unpriced one — 81 of
-	// 614 charted shipyards were lost that way, and a yard nothing can see is a
-	// counter we can never buy at.
+	// NOT ONE probe row lets a single priced yard hide every unpriced one, and a
+	// yard nothing can see is a counter we can never buy at.
 	universe := make([]string, 0, len(rows)+len(traitYards))
 	seen := make(map[string]bool, len(rows)+len(traitYards))
 	// Priced first, so the cheapest-first order the query already applied survives
@@ -615,11 +593,10 @@ func (p *WaypointCatalogPort) ListProbeYards(ctx context.Context, system string)
 	return p.probeStockCandidates(ctx, universe)
 }
 
-// chartedTraitYards is the fallback half of the candidate universe, in symbol order
-// as the fallback always returned them. UNCHARTED is not yet a yard — its traits
-// are a guess until someone charts it. The priced half is deliberately NOT
-// trait-filtered: a yard we have actually priced is evidenced by the reading
-// itself, and may have no waypoint row at all.
+// chartedTraitYards is the fallback half of the candidate universe, in symbol order.
+// UNCHARTED is not yet a yard — its traits are a guess until someone charts it. The
+// priced half is deliberately NOT trait-filtered: a yard we have actually priced is
+// evidenced by the reading itself, and may have no waypoint row at all.
 func chartedTraitYards(traitYards []*shared.Waypoint, seen map[string]bool) []string {
 	out := make([]string, 0, len(traitYards))
 	for _, waypoint := range traitYards {
@@ -759,11 +736,10 @@ func (p *HomeSystemPort) HomeSystem(ctx context.Context, playerID int) (string, 
 		return "", fmt.Errorf("failed to decode player %d metadata: %w", playerID, uerr)
 	}
 	// This failure surfaces four layers up as a sensing CUTOVER refusal, which aborts the entire
-	// reconcile — screen, reaper, adoption, drain, placements and expansion — every 30 seconds,
-	// and its visible symptom ("0 parked, screened 0, bought 0, expansion +0 discovered") looks
-	// like an idle engine rather than a broken one. Nothing else in that chain names the key,
-	// says which of the many things sensing reads is missing, or hints at how it gets populated,
-	// so this message must carry all three.
+	// reconcile — screen, reaper, adoption, drain, placements and expansion — on every tick, and
+	// its visible symptom reads as an idle engine rather than a broken one. Nothing else in that
+	// chain names the key, says which of the many things sensing reads is missing, or hints at
+	// how it gets populated, so this message must carry all three.
 	headquarters, ok := domainPlayer.HeadquartersFrom(metadata)
 	if !ok {
 		return "", fmt.Errorf(

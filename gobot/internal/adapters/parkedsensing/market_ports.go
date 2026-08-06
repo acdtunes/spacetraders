@@ -110,14 +110,10 @@ func (p *MarketGoodsPort) DepthRowsAt(ctx context.Context, playerID int, waypoin
 // running and reports no error — it just stops preferring the markets worth
 // watching.
 //
-// This mapping is CORRECT and was correct all along. It is also what DETECTED
-// sp-en5h7: the scanner had been persisting the two prices transposed since the
-// project's first era, so this port computed ask<bid at nearly every market and
-// RelativeSpread skipped the goods. An earlier version of this comment claimed
-// the resulting warning was "a symptom" and that this mapping was "the fix" —
-// that sent the next reader to the wrong file. The warning was the true signal
-// and the bug was in the WRITER (application/ship/market_scanner.go). Do not
-// re-explain a warning from here; check what the scanner persisted.
+// AN ask<bid WARNING IS A SIGNAL ABOUT THE WRITER, NOT ABOUT THIS MAPPING. Seen at
+// nearly every market it means the scanner (application/ship/market_scanner.go) is
+// persisting the two prices transposed. Check what the scanner wrote rather than
+// re-explaining the warning from here.
 func (p *MarketGoodsPort) MarketPrices(ctx context.Context, playerID int, waypoint string) ([]appSensing.GoodPrice, error) {
 	rows, err := p.rowsAt(ctx, playerID, waypoint)
 	if err != nil {
@@ -162,9 +158,9 @@ func NewRemoteMarketPort(client marketFetchAPI, tokens playerTokenReader) *Remot
 	return &RemoteMarketPort{client: client, tokens: tokens}
 }
 
-// SetScanBudget wires the fleet market-scan budget this port charges its reads to
-// (sp-ntgfj). Nil leaves the read unmetered, which is a test-only shape: the
-// composition root always wires it.
+// SetScanBudget wires the fleet market-scan budget this port charges its reads to.
+// Nil leaves the read unmetered, which is a test-only shape: the composition root
+// always wires it.
 func (p *RemoteMarketPort) SetScanBudget(b scanDebiter) {
 	if b == nil {
 		return

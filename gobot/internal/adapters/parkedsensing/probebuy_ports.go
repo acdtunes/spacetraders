@@ -199,9 +199,8 @@ func (p *ProbePurchasePort) Buy(ctx context.Context, playerID int, purchasingShi
 // owner MUST be the driving coordinator's real container id. ClaimShip's second
 // parameter is written to ships.container_id, which carries a foreign key to
 // containers(id) — a descriptive label has no row to reference and the database
-// refuses the write. Passing one is precisely the defect that kept this engine
-// from ever completing a purchase; the empty-owner guard below is what stops it
-// silently returning, in any form.
+// refuses the write, so no purchase can complete. The empty-owner guard below is
+// what stops that failing silently, in any form.
 func (p *ProbePurchasePort) claimBuyer(ctx context.Context, playerID shared.PlayerID, buyer, owner string) (func(), error) {
 	// Fail CLOSED, before any claim is attempted and before any money moves. An
 	// unnamed owner cannot own a claim, and there is no safe default to fall back

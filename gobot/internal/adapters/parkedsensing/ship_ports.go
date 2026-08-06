@@ -52,26 +52,21 @@ const (
 	//
 	// THERE IS DELIBERATELY NO COMPANION OWNER CONSTANT. The claim's OWNER is
 	// ships.container_id, which carries a foreign key to containers(id): only a
-	// real, live container id can be written there. This constant block used to
-	// carry `sensingBuyClaimOwner = "parked_sensing_buy"`, a descriptive label
-	// passed straight into ClaimShip's containerID parameter, and Postgres
-	// rejected every such claim with fk_ships_container (23503). The claim fails
-	// CLOSED, so the effect was total: this engine never completed a single probe
-	// purchase in its existence, and the fleet stopped discovering new systems.
-	// The owner now arrives per-call from the driving coordinator — see
-	// claimBuyer. Do not reintroduce a constant here.
+	// real, live container id can be written there, and a descriptive label is
+	// rejected by that key (fk_ships_container). The claim fails CLOSED, so a
+	// labelled owner stops this engine buying at all. The owner arrives per-call
+	// from the driving coordinator — see claimBuyer. Do not reintroduce a constant.
 	sensingBuyClaimReason = "parked_sensing_buy_complete"
 
 	// marketplaceTrait is the waypoint trait that makes a charted waypoint worth
 	// a market read.
 	marketplaceTrait = "MARKETPLACE"
 
-	// catalogPageSize is the page size for a waypoint-catalog sweep, and
-	// maxCatalogPages bounds how far it will walk. 20 is the API's own maximum;
-	// ten pages is 200 waypoints, several times the largest system observed, so
-	// exhausting the bound means the response shape has changed rather than that
-	// a real system is that big — which is why it is reported as an error rather
-	// than accepted as a truncated sweep.
+	// catalogPageSize is the page size for a waypoint-catalog sweep (the API's own
+	// maximum), and maxCatalogPages bounds how far it will walk. The bound sits far
+	// above any real system, so exhausting it means the response shape has changed
+	// rather than that a system is that big — which is why it is reported as an
+	// error rather than accepted as a truncated sweep.
 	catalogPageSize = 20
 	maxCatalogPages = 10
 

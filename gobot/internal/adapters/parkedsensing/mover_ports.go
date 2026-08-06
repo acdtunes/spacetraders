@@ -170,13 +170,10 @@ func (p *MoverPort) RouteAcross(ctx context.Context, playerID int, shipSymbol, f
 	}
 
 	// The step is named too, and not only for symmetry with the unroutable case
-	// above. A route that RESOLVES and then cannot be walked was the engine's one
-	// completely silent failure: the error propagated back through flyToSlot to
-	// dispatch, which held the slot for the next tick and logged nothing, so a hull
-	// could spend one placement attempt per tick indefinitely and produce no
-	// diagnostics at all. That is the state TORWIND-15F was found in — 22.5 hours
-	// BOUGHT with ZERO lines in the log naming it — and it is why the freeze had to
-	// be diagnosed from the database instead of from the logs.
+	// above. A route that RESOLVES and then cannot be walked is otherwise silent:
+	// the error propagates back through flyToSlot to dispatch, which holds the slot
+	// for the next tick, so an unnamed step lets a hull spend one placement attempt
+	// per tick indefinitely with nothing in the log to diagnose the freeze from.
 	//
 	// The two warnings are deliberately distinct actions. Unroutable means the
 	// stored graph names no way there and the fix is a gate re-probe; a refused
@@ -187,10 +184,8 @@ func (p *MoverPort) RouteAcross(ctx context.Context, playerID int, shipSymbol, f
 	// A COOLDOWN HOLD IS NEITHER, and it must not borrow this wording. The hold is
 	// the healthy case — the hull is waiting out a game timer nobody can shorten,
 	// stepThroughGate has already named it at INFO with its expiry, and no request
-	// was spent learning it. Reported here as a refusal it read as a WARNING in
-	// routing language, one per hull per tick: during the first EXPANSION run after
-	// gate completion those lines were the most visible thing in the sensing log
-	// and made a system that was working look blocked (sp-7e5j6).
+	// was spent learning it. Reported as a refusal it reads as a routing WARNING,
+	// one per hull per tick, and makes a working system look blocked.
 	if err := stepThroughGate(ctx, p.mediator, pid, shipSymbol, fromWaypoint, nextSystem); err != nil {
 		if heldForCooldown(err) {
 			return err
@@ -253,13 +248,10 @@ func stepThroughGate(
 	//
 	// THE RETRY WAS NEVER THE BUG; THE ATTEMPT WAS. A tick machine re-decides from
 	// scratch every tick, so a hull mid-cooldown is handed back to this same branch
-	// on every one of them: at a 262-second cooldown and the sensing tick's cadence
-	// that is ~30 jumps per hull per cooldown, each one a 409 code-4000 the API
-	// answers with the very expiry the ships row already holds. Measured live at
-	// 7-8 hulls a minute across three consecutive minutes, it was ~0.12 req/s —
-	// about a quarter of sensing's own pacer — spent re-learning a known fact,
-	// against a hard 2 req/s account ceiling several coordinators contend for
-	// (sp-7e5j6).
+	// on every one of them, each attempt a 409 code-4000 the API answers with the
+	// very expiry the ships row already holds — a steady share of the account's
+	// request budget spent re-learning a known fact, against a ceiling several
+	// coordinators contend for.
 	//
 	// So the cooldown is consulted FIRST, from the hull's own row, and a hull that
 	// cannot jump is HELD rather than asked. This is the trade watchdog's idiom

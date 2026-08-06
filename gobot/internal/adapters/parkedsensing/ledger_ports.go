@@ -126,17 +126,15 @@ func (p *LedgerPort) ParkedSlotViews(ctx context.Context, playerID int) ([]appSe
 			SpreadEWMA: m.SpreadEWMA,
 		}
 		// The rotation paces on the ATTEMPT clock and the staleness gauge reads the
-		// DATA clock, because a budget decline advances the first and not the second
-		// (sp-zml2u). Reading one column into both is exactly the collapse this fix
-		// removes.
+		// DATA clock, because a budget decline advances the first and not the second.
+		// Reading one column into both collapses the two.
 		//
 		// THE COALESCE IS THE MIGRATION. AutoMigrate adds last_scan_attempt_at as
 		// NULL on every existing row, and a NULL read as the zero time would declare
 		// the entire rotation due on the first tick after deploy — one full-speed
-		// sweep of every slot, which is the regression this whole change exists to
-		// avoid. Falling back to last_scan_at makes that first tick pace exactly as
-		// the last one did; the attempt clock takes over from the first turn each
-		// slot then takes.
+		// sweep of every slot. Falling back to last_scan_at makes that first tick
+		// pace as the last one did; the attempt clock takes over from the first turn
+		// each slot then takes.
 		if m.LastScanAttemptAt != nil {
 			view.LastScan = *m.LastScanAttemptAt
 		} else if m.LastScanAt != nil {
@@ -242,9 +240,9 @@ func (p *LedgerPort) MarkScanned(ctx context.Context, playerID int, waypoint, ki
 // the market-scan budget declined, so no market data was written.
 //
 // It writes the PACING clock only, leaving the freshness stamp where it was —
-// the two-clock split in sp-zml2u. Same concurrency argument as MarkScanned
-// above: last_scan_attempt_at has exactly one writer (this path) and no other
-// writer of sensing_slots names it.
+// the two-clock split. Same concurrency argument as MarkScanned above:
+// last_scan_attempt_at has exactly one writer (this path) and no other writer of
+// sensing_slots names it.
 func (p *LedgerPort) MarkScanAttempted(ctx context.Context, playerID int, waypoint, kind string, at time.Time) error {
 	return p.repo.MarkScanAttempted(ctx, playerID, waypoint, kind, at)
 }

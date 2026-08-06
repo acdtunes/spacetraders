@@ -1,7 +1,7 @@
 package parkedsensing
 
 // surge_ports.go is the sensing surge's ONE read: which charted systems the fleet
-// holds no price for (sp-zvywu Part 1).
+// holds no price for.
 //
 // It is a SET DIFFERENCE over two local tables and nothing else — no API call, no
 // per-system round trip:
@@ -12,9 +12,8 @@ package parkedsensing
 // is the same exception ListWithTraitInOpenEra already carries: the surge's whole job
 // is to find the systems no system-scoped read ever reaches, so it must ask about the
 // MAP rather than about one system. The cost is bounded by the count of charted
-// systems in the open era (1,183 measured live) — a number that grows with what the
-// fleet has explored, not with how often it ticks — and it is three grouped scalar
-// reads against a local database.
+// open-era systems — a number that grows with what the fleet has explored, not with
+// how often it ticks — and it is three grouped scalar reads against a local database.
 
 import (
 	"context"
@@ -54,31 +53,29 @@ func NewUnpricedPoolPort(db *gorm.DB) *UnpricedPoolPort {
 // openEraID + eraScopePredicate pair is deliberately NOT used: its nil path resolves
 // to `era_id IS NULL`, which still ANSWERS — from pre-backfill rows — and for a
 // reader whose output becomes flight plans and API calls that is the wrong direction.
-// sp-l0aqy is the measured bill for getting this exact call wrong on this exact
-// table: ~290 API failures an hour for ten hours while utilisation sat at 88%
-// against an 85% ceiling. So an unresolvable era REFUSES, and the surge reads the
-// refusal as "dispatch nothing this tick".
+// Getting this call wrong on this table bills in sustained API failures against systems
+// that no longer exist. So an unresolvable era REFUSES, and the surge reads the refusal
+// as "dispatch nothing this tick".
 //
-// market_data CARRIES NO ERA COLUMN, and it does not need one — but the reasoning has to
-// be stated rather than assumed, and it is NOT the reason this comment used to give. The
-// era transition does NOT truncate this table: `universe transition` goes through
-// TransitionEra, which deliberately preserves the prior era's rows; only the separately
-// --confirm-gated `universe close` truncates. Nothing may be built on "the cache is empty
-// after a rollover", because it is not.
+// market_data CARRIES NO ERA COLUMN, and it does not need one — but the reasoning has
+// to be stated rather than assumed. The era transition does NOT truncate this table:
+// `universe transition` goes through TransitionEra, which deliberately preserves the
+// prior era's rows; only the separately --confirm-gated `universe close` truncates.
+// Nothing may be built on "the cache is empty after a rollover", because it is not.
 //
 // What actually keeps it honest is TWO mechanisms, guarding different halves:
 //
 //	THE KEY     market_data's PRIMARY KEY is (player_id, waypoint_symbol, good_symbol), so a
-//	            dead era's row can never occupy the key a live scan needs (sp-hdr4p). That is
-//	            a guarantee about WRITES.
+//	            dead era's row can never occupy the key a live scan needs. That is a
+//	            guarantee about WRITES.
 //	THE FILTER  every read carries player_id = ?, applied BEFORE any ORDER BY / MIN / MAX /
 //	            DISTINCT ON — pricedSystems below included — so no ranked query can surface
 //	            another era's row. That is the guarantee about READS.
 //
-// THE KEY DOES NOT MAKE THE FILTER REDUNDANT, and that is the whole reason this paragraph
-// is here (sp-hrko6). Dropping `player_id = ?` as "already handled by the primary key"
-// would let a dead era's price win a ranked query and feed a spend decision. The key stops
-// two eras COLLIDING; it does nothing to stop one era READING the other's rows.
+// THE KEY DOES NOT MAKE THE FILTER REDUNDANT. Dropping `player_id = ?` as "already
+// handled by the primary key" would let a dead era's price win a ranked query and feed a
+// spend decision. The key stops two eras COLLIDING; it does nothing to stop one era
+// READING the other's rows.
 //
 // On top of both, the difference below is taken over the era-scoped CHARTED set, so a
 // priced system not charted in the open era never appears on either side — a stale priced
@@ -86,10 +83,9 @@ func NewUnpricedPoolPort(db *gorm.DB) *UnpricedPoolPort {
 //
 // A SYSTEM WITH NO CHARTED MARKETPLACE IS NOT IN THE POOL. It is charted and it is
 // unpriced, but no probe standing anywhere in it could ever produce a price, so
-// ranking it would only consume a dispatch slot a priceable system needed. That
-// narrows the 1,067 charted-but-unpriced systems to the actionable subset, and it is
-// what lets the surge treat every candidate it is handed as immediately dispatchable
-// without a follow-up read per system.
+// ranking it would only consume a dispatch slot a priceable system needed. Narrowing
+// the charted-but-unpriced set to the actionable subset lets the surge treat every
+// candidate it is handed as immediately dispatchable, with no follow-up read per system.
 //
 // UNCHARTED WAYPOINTS ARE EXCLUDED FROM THE MARKETPLACE SET, through the same
 // hasTrait check ListMarketWaypoints uses. A waypoint's traits are unknown until

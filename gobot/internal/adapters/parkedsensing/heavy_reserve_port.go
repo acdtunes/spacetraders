@@ -25,7 +25,7 @@ import (
 // HeavyReservePort resolves the ASK sensing is saving toward for the next heavy purchase, so probe
 // buying can stand down while a heavy accumulates and resume the moment it lands.
 //
-// IT RESOLVES THE TARGET, NOT THE HOLD (sp-zg71k). The credits actually withheld are
+// IT RESOLVES THE TARGET, NOT THE HOLD. The credits actually withheld are
 // common.HeavyReserveTarget.HoldAt(treasury), applied by the drain at the point the live balance
 // is known. The split is deliberate and load-bearing here: every read behind this port is a LOCAL
 // DB query, which is what lets DrainBuyQueue call it ahead of every network gate so a tick with
@@ -58,9 +58,9 @@ type heavyCensusCounter interface {
 // already has exactly one definition (common.HeavyReserve), and its price term now has exactly one
 // too, so the spender and the withholder cannot end up saving toward different yards.
 //
-// It is deliberately NOT "the cheapest priced yard" any more (sp-fwk8z). The buy targets the
-// NEAREST reachable yard; reserving the cheapest ask on the map under-reserves whenever the two
-// differ, and treasury then tops out below what we will actually be asked.
+// It is deliberately NOT "the cheapest priced yard". The buy targets the NEAREST reachable yard;
+// reserving the cheapest ask on the map under-reserves whenever the two differ, and treasury then
+// tops out below what we will actually be asked.
 type heavyYardPricer interface {
 	HeavyTarget(ctx context.Context, playerID int) (shipyardQueries.HeavyTarget, error)
 }
@@ -84,11 +84,11 @@ func NewHeavyReservePort(census heavyCensusCounter, yards heavyYardPricer, caps 
 // two. They matter together, not separately: they hit the same database and therefore fail in the
 // same window, so converting one and not the other would leave the divergence alive in half.
 //
-// THE CAP IS DIFFERENT, and deliberately so (sp-fwk8z). It is not a datum the reservation is
-// computed FROM so much as a bound it is computed WITHIN, and an unreadable bound has a
-// well-defined answer that an unreadable price does not: the documented default, which is exactly
-// what the autosizer itself falls back to when its own read of the same knob fails. See
-// resolveHeavyCap for why reading it as zero was a live divergence rather than a safe default.
+// THE CAP IS DIFFERENT, and deliberately so. It is not a datum the reservation is computed FROM
+// so much as a bound it is computed WITHIN, and an unreadable bound has a well-defined answer that
+// an unreadable price does not: the documented default, which is exactly what the autosizer itself
+// falls back to when its own read of the same knob fails. See resolveHeavyCap for why reading it as
+// zero diverges from the buyer rather than defaulting safely.
 //
 // It is the rule for three reasons:
 //
@@ -173,12 +173,11 @@ func warnBlindReserve(ctx context.Context, playerID int, input string, err error
 // abandoned reports that a read failed because the WORK WAS CALLED OFF, not because anything is
 // broken — the tick's context is done, or the read came back cancelled.
 //
-// THIS IS THE sp-fwk8z FALSE-ALARM FIX, and it is not cosmetic. Every occurrence of the live
-// "could not resolve the autosizer's heavy_cap (... context canceled)" warning landed within two
-// seconds of a whole-process shutdown, in the same millisecond as every other container's "Context
-// canceled, stopping container" — daemon restarts, roughly one an hour, never a healthy tick. On
-// such a tick nothing works and nothing is bought, so reserving zero is not merely harmless, it is
-// correct; the warning was pure noise.
+// A CANCELLED TICK IS A SHUTDOWN, NOT A FAULT. The "could not resolve the autosizer's heavy_cap
+// (... context canceled)" warning fires alongside every other container's "Context canceled,
+// stopping container" — a daemon restart, never a healthy tick. On such a tick nothing works and
+// nothing is bought, so reserving zero is not merely harmless, it is correct, and the warning
+// would be pure noise.
 //
 // Noise here is expensive in one specific way. This warning is the ONLY signal that distinguishes
 // "not saving because we are blind" from "not saving because there is nothing to save for", and a

@@ -127,8 +127,8 @@ func NewSeedCommandPort(
 // The jump itself needs no wait: it is instantaneous at the API, leaving only a
 // reactor cooldown, which gates the next JUMP rather than the navigate that
 // follows it. That cooldown is NOT re-learned from the API: stepThroughGate reads
-// it off the hull's own row and holds the hop without a call until it clears
-// (sp-7e5j6), so a cooling seed costs this walk nothing but a database read.
+// it off the hull's own row and holds the hop without a call until it clears, so a
+// cooling seed costs this walk nothing but a database read.
 func (p *SeedCommandPort) JumpTo(ctx context.Context, playerID int, shipSymbol, fromWaypoint, targetSystem string) error {
 	pid, err := shared.NewPlayerID(playerID)
 	if err != nil {
@@ -330,8 +330,8 @@ func orbitalSymbols(orbitals []map[string]string) []string {
 // The scan outcome is deliberately discarded. This path keeps no freshness
 // ledger — it is a seed reading the market under its feet on the way past — so a
 // budget decline is simply a read served from the store, with nothing anywhere
-// claiming otherwise. The scan pacer is the caller that must NOT discard it
-// (sp-zml2u); see ScanRunnerPort.Run.
+// claiming otherwise. The scan pacer is the caller that must NOT discard it; see
+// ScanRunnerPort.Run.
 func (p *SeedCommandPort) ReadMarketAt(ctx context.Context, playerID int, waypoint string) error {
 	pid, err := shared.NewPlayerID(playerID)
 	if err != nil {
