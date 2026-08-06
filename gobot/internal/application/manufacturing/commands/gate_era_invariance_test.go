@@ -1,6 +1,6 @@
 package commands
 
-// ERA INVARIANCE, EXTENDED TO THE LAYERS THAT ACTUALLY RESOLVE DESTINATIONS (sp-q7p9e).
+// ERA INVARIANCE, EXTENDED TO THE LAYERS THAT ACTUALLY RESOLVE DESTINATIONS.
 //
 // Waypoint and system symbols are regenerated every era. A literal in this layer works perfectly
 // on today's map and then silently sends hulls nowhere the moment the era rolls — which is why it

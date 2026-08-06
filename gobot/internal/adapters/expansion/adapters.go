@@ -704,9 +704,9 @@ func (p *ProbePurchaser) probePriceAt(ctx context.Context, playerID shared.Playe
 	return listing.PurchasePrice, true
 }
 
-// ---- ProbeBuyerPositioner (sp-255rz: break the "probe unpriceable" stall) --
+// ---- ProbeBuyerPositioner (break the "probe unpriceable" stall) --
 
-// ProbeBuyerPositioner breaks the "probe unpriceable" stall (sp-255rz). When the frontier
+// ProbeBuyerPositioner breaks the "probe unpriceable" stall. When the frontier
 // coordinator's QuoteProbe fails closed because no idle undedicated hull sits at a probe-selling
 // shipyard and no priced yard is reachable from the deep target, fleet growth halts forever once the
 // fleet drifts from yards. This relays an eligible hull to the nearest reachable SCANNED probe-yard

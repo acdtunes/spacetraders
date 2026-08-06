@@ -69,7 +69,7 @@ func eraPlacementProvider(waypoints []*shared.Waypoint) *contractStandbyPlacemen
 	}}
 }
 
-// THE END-TO-END ACCEPTANCE PROOF (sp-9suun) through the coordinator's driving port: REAL rows
+// THE END-TO-END ACCEPTANCE PROOF through the coordinator's driving port: REAL rows
 // from three eras with three different home systems and three different numberings all place
 // the SAME four physical anchors in the SAME placement order — (1) H-stack, (2) far sink,
 // (3) far source base, (4) E-stack — followed by the demand-ranked central fill up to the knee.

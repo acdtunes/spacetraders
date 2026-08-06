@@ -67,7 +67,7 @@ func NewGateTopology(markets marketResolver, supplyChainMap map[string][]string)
 // on its own: it cuts the loop above at IRON_ORE, but the map is data that ships with the game and
 // the curated list is hand-maintained, so neither is a proof of acyclicity. A recursive walk built
 // on this seam MUST still carry cycle detection, and THE FABRICATE DEPTH CAP MUST NOT BE DELETED
-// ON THE ARGUMENT THAT THE RECIPE GRAPH IS AN ACYCLIC DAG (sp-4irrr) — that argument is false, and
+// ON THE ARGUMENT THAT THE RECIPE GRAPH IS AN ACYCLIC DAG — that argument is false, and
 // fabricate_depth.go's cap is doing real work, not acting as a redundant backstop.
 func (t *GateTopology) IsRaw(good string) bool {
 	if goods.IsMineableRawMaterial(good) {

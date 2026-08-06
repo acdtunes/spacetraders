@@ -18,7 +18,7 @@ const (
 	era5NextEStackAnchor = "X1-KP23-G47" // the next-innermost planet+moon stack with no orbital station
 )
 
-// THE ACCEPTANCE PROOF (sp-9suun): the four standby anchors resolve identically across three
+// THE ACCEPTANCE PROOF: the four standby anchors resolve identically across three
 // eras with three DIFFERENT home systems and three DIFFERENT numberings, from durable charted
 // facts only (type + traits + geometry) — never a waypoint symbol. The far sink's suffix moves
 // J58→J59→J56 for one physical role; the H/E stacks renumber; the resolver does not care.

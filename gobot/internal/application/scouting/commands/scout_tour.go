@@ -160,7 +160,7 @@ type ScoutTourHandler struct {
 	mediator      common.Mediator
 	marketScanner *ship.MarketScanner
 	// shipyardScanner piggybacks a shipyard scan on the SAME market visit:
-	// (sp-42ow): no extra trips, no new tour legs. Nil-safe — a tour without
+	// No extra trips, no new tour legs. Nil-safe — a tour without
 	// one (tests, minimal wiring) simply skips shipyard scans.
 	shipyardScanner *ship.ShipyardScanner
 	clock           shared.Clock
@@ -490,7 +490,7 @@ func (h *ScoutTourHandler) performInitialScan(
 }
 
 // scanShipyardAlongside piggybacks a shipyard scan on the SAME market visit:
-// (sp-42ow): if the waypoint bears the SHIPYARD trait, its ship-type
+// If the waypoint bears the SHIPYARD trait, its ship-type
 // availability + prices are persisted to the shipyard-inventory store. No
 // extra trips, no new tour legs — the scout is already here. Strictly
 // non-fatal: a shipyard failure is logged and the tour proceeds (the market

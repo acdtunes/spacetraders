@@ -304,7 +304,7 @@ func TestTransition_Idempotent_SecondRunNoop(t *testing.T) {
 // to hold for the ACCOUNT, not just the DB. On the mint path the no-op decision sat
 // AFTER Register, so a re-run minted a fresh agent — consuming an irreversible account
 // slot — and then discarded it at the in-sync check. That waste was unreachable while
-// the mint itself always 422'd on the empty faction; fixing the mint (sp-dqbzm) exposes
+// the mint itself always 422'd on the empty faction; fixing the mint exposes
 // it, so every read-only, token-independent check now precedes the irreversible effect.
 func TestTransition_Idempotent_MintPathRerunDoesNotBurnAnAccountSlot(t *testing.T) {
 	deps, apiFake, store, def, capCfg, fleet := happyDeps()

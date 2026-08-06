@@ -5,7 +5,7 @@ import (
 	"sort"
 )
 
-// The ERA-INVARIANT STANDBY ANCHORS (sp-9suun).
+// The ERA-INVARIANT STANDBY ANCHORS.
 //
 // Idle contract hulls used to be parked only on the demand-ranked CENTRAL parks, because the
 // candidate set came from the inner band alone (isCentralSink caps candidates at

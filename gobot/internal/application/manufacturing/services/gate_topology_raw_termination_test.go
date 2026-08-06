@@ -7,7 +7,7 @@ import (
 )
 
 // These tests run against the REAL goods.ExportToImportMap, never a fixture. That is not a
-// stylistic preference — the defect this file pins (sp-4irrr) is a false claim ABOUT THAT DATA,
+// stylistic preference — the defect this file pins is a false claim ABOUT THAT DATA,
 // so a synthetic recipe map would prove nothing. Any fixture an author writes by hand to
 // "represent" the recipe graph will be acyclic, because acyclic is what people draw; the real
 // map is not, and the old IsRaw terminated only on maps that were.

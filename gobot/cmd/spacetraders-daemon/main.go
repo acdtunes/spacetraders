@@ -1731,7 +1731,7 @@ func run(cfg *config.Config) error {
 		// and contract draw on one treasury, so a contract source-buy must serialise against
 		// an in-flight construction_supply buy, not merely against other contract buys. Each
 		// operation still checks that one in-flight total against ITS OWN floor, preserving
-		// the deliberate contract-exclusive 50k-150k band (sp-q8bon).
+		// the deliberate contract-exclusive 50k-150k band.
 		contractCmd.WithConcurrentSpendCap(concurrentSpendCap))
 	if err := mediator.RegisterHandler[*contractCmd.RunWorkflowCommand](med, contractWorkflowHandler); err != nil {
 		return fmt.Errorf("failed to register ContractWorkflow handler: %w", err)

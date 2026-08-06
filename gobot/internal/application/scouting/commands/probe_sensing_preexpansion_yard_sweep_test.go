@@ -1,7 +1,7 @@
 package commands
 
 // probe_sensing_preexpansion_yard_sweep_test.go covers the FREE shipyard-catalogue
-// sweep on a tick the EXPANSION gate holds closed (sp-z7u71).
+// sweep on a tick the EXPANSION gate holds closed.
 //
 // THE TEST THAT WOULD HAVE CAUGHT IT, and the shape that would not have. The
 // sweep's own comment claimed it was "run on EVERY tick and gated on nothing",

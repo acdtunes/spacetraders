@@ -116,7 +116,7 @@ func (p FeedPlan) LogLine() string {
 // it is actually starved of, so a hull that runs one step per trip works the binding constraint
 // before anything deeper.
 //
-// TERMINATION IS THREE-FOLD AND NONE OF THE THREE IS REDUNDANT (sp-4irrr):
+// TERMINATION IS THREE-FOLD AND NONE OF THE THREE IS REDUNDANT:
 //
 //  1. recipes.IsRaw — the CURATED mineable-raw predicate. It records the raw stop, it orders ahead
 //     of the cap (see below), and it terminates a NON-CONFORMING seam. It is NOT what cuts the

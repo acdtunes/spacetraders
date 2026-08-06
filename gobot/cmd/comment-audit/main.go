@@ -95,7 +95,7 @@ func main() {
 	for _, v := range violations {
 		fmt.Fprintf(os.Stderr, "  %s\n", v)
 	}
-	fmt.Fprintln(os.Stderr, "\nSee PLAYBOOK §13 for the keep/cut rule. History belongs in docs/retrospectives/.")
+	fmt.Fprintln(os.Stderr, "\nSee ENGINEERING.md §6 for the keep/cut rule. History belongs in docs/retrospectives/.")
 	os.Exit(1)
 }
 

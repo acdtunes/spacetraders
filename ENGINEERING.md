@@ -131,8 +131,14 @@ A comment exists for the NEXT reader of the code, not to narrate your change to 
 - **NEVER add archaeological / historic / changelog prose.** No "previously we…", no "this
   was added because…", no dated narration, no "the old code did Y", no bead-ids in the
   source — neither as war-stories nor as bare `(sp-xxxx)` provenance tags. History lives in
-  git and beads; in the source it is noise the moment the PR merges. A bead-id may appear
-  only when load-bearing inside a live-constraint sentence — almost never.
+  git, beads, and `docs/retrospectives/`; in the source it is noise the moment the PR
+  merges. A bead-id may appear only when load-bearing inside a live-constraint sentence —
+  almost never.
+- **NEVER pin a measured number.** Hull counts, row counts, waypoint counts, prices,
+  timings, percentages, "measured live" — each is a measurement of a past era, and it rots
+  SILENTLY: no test fails when the map grows. Cut the number, not just refresh it; a
+  refreshed number is the same trap re-armed. Say why a bound EXISTS and what breaks
+  without it, never the arithmetic that picked it.
 - **Only add a short, focused WHY** the code itself cannot show: a non-obvious constraint,
   an ordering requirement, a guard's rationale, a real gotcha. One or two lines. If the code
   already says it, say nothing.
@@ -141,3 +147,34 @@ A comment exists for the NEXT reader of the code, not to narrate your change to 
 - The test before you write a comment: *does this help someone understand the code, or am I
   explaining my edit?* If it's the edit, it goes in the commit message or the bead, never
   the source.
+- **Cutting is a different act from writing — rewrite, never blank-delete.** Sweeping
+  existing comments, the operative test is *would this still be true and useful to a reader
+  who had never seen the previous version of this file?* When a block mixes a genuine
+  contract with incident history, keep the contract sentence in the present tense and drop
+  the story around it. Deleting a comment that documented a real invariant is the failure
+  mode that matters; "I could not tell" means keep it and rewrite it as a property.
+
+### 6a. The audit mechanism — a ratchet, not a bar
+
+Self-check from `gobot/` before the gate:
+
+```
+make comment-audit-check ONLY=<touched packages>   # fails if a package you touched got DENSER
+make comment-audit ARGS="-explain"                 # every archaeology marker, with file:line
+make comment-audit-baseline                        # re-record — only after a sweep LOWERS a package
+```
+
+A package inherited dense does not block a lane that merely touches it, but no lane may
+leave one denser than it found it. Re-recording the baseline to clear a regression is the
+one move that defeats the whole rule — re-record only to bank an improvement.
+
+`tools/commentclean` is not a shortcut for the rule above, and it is **already at fixpoint**.
+It strips BARE provenance tokens only — a trailing `(sp-xxxx)` removable without touching
+sentence structure — and proves AST-identity per file. Swept to fixpoint here, a module-wide
+`--dry-run` reported ~50 strippable tokens against ~2,800 deliberate skips: effectively
+every remaining bead-id comment line, held back because the id is grammatically load-bearing
+(`S-TOKEN-LITERAL` dominates). Removing those means rewriting the sentence, which is not an
+AST-preserving transform, so the tool refuses — that refusal is its safety guarantee, not a
+gap. Do not add rules to widen its coverage; that trades the one guarantee for nothing.
+Clearing the remaining sites is judgment-driven rewriting, package by package. There is no
+mechanical shortcut.

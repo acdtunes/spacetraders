@@ -334,7 +334,7 @@ func (e *ProductionExecutor) deliverInputs(
 	waypointSymbol := ship.CurrentLocation().Symbol
 	listings, err := e.marketRepo.GetMarketData(ctx, waypointSymbol, playerID.Value())
 	if err != nil || listings == nil {
-		// FAIL CLOSED ON AN UNREADABLE ARRIVAL LISTING (sp-kdsrh). This read is the SECOND of two,
+		// FAIL CLOSED ON AN UNREADABLE ARRIVAL LISTING. This read is the SECOND of two,
 		// at a different time from the first, and only this one can fail this way: the sp-b27a2
 		// DEPARTURE guard (feedDestinationRefusedFor -> ValidateFeedDestination) already refuses to
 		// fly to a destination whose listing will not read, and BOTH callers of this function run
@@ -351,7 +351,7 @@ func (e *ProductionExecutor) deliverInputs(
 		// It is a NO-OP, not an error, exactly like a wholly-unsellable hold: the caller tolerates
 		// a zero delivery (the fabricate path runs the factory on its own stock, the gate factory
 		// leg defers and the next leg retries), and a full hull re-entering that leg now delivers
-		// what it carries rather than parking (sp-2scwt).
+		// what it carries rather than parking.
 		logger.Log("WARNING", fmt.Sprintf("Delivered nothing at %s: its market listing would not read on arrival, so there is no basis to judge what this market takes — holding the whole hold aboard rather than offering it blind, and retrying next cycle: %v", waypointSymbol, err), map[string]interface{}{
 			"ship": ship.ShipSymbol(), "waypoint": waypointSymbol,
 			"action": "delivery_withheld", "reason": "listing_unreadable",
@@ -421,14 +421,14 @@ func (e *ProductionExecutor) deliverInputs(
 // A nil listing answers FALSE. This is a DEFENSIVE FALLBACK, NOT A LIVE GUARD, and the difference
 // matters to anyone auditing it: both callers reach the same answer before ever getting here —
 // ValidateFeedDestination refuses a nil destination with a named error, and deliverInputs withholds
-// the whole hold on an unreadable arrival read (sp-kdsrh). So this branch is UNREACHABLE TODAY. It
+// the whole hold on an unreadable arrival read. So this branch is UNREACHABLE TODAY. It
 // is kept, rather than deleted, because deleting it means a future caller that forgets the check
 // silently fails OPEN again — which is the exact defect sp-kdsrh closed.
 //
 // A MUTATION PROBE ON THIS LINE SURVIVES BY DESIGN. Flipping it back to `true` kills no test,
 // because deliverInputs' early return means the nil never arrives. That surviving mutant is not a
 // coverage hole and must not be "fixed" by weakening the caller to reach it; the behaviour is
-// pinned at deliverInputs, where it is live. (Recorded as probe M9b, sp-kdsrh.)
+// pinned at deliverInputs, where it is live. (Recorded as probe M9b.)
 //
 // It previously answered true, on the reasoning that a sell spends nothing and withholding over a
 // data gap would stall a fabrication. What that missed is that the filter's other job is to

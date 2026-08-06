@@ -11,7 +11,7 @@ import (
 //
 // This is deliberately a separate signal from a per-buy floor park, which every coordinator
 // already logs plainly. An aggregate denial was previously recoverable only by forensic ledger
-// archaeology: the sp-ps2oc drain was diagnosed by noticing that three PURCHASE_CARGO rows 68ms
+// archaeology: the drain was diagnosed by noticing that three PURCHASE_CARGO rows 68ms
 // apart recorded an IDENTICAL balance_after. Counting the denial makes "concurrent spend is
 // contending for the float" a graph — and, just as importantly, makes a cap that has silently
 // stopped being consulted visible as a series that flatlines rather than as nothing at all.

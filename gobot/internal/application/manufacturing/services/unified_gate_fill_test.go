@@ -12,7 +12,7 @@ import (
 // resale-sink (profit-factory) run both keep today's gates. This truth table pins that
 // contract.
 //
-// sp-k87tl: this table once had a fourth case pinning "toggle off + construction-site
+// This table once had a fourth case pinning "toggle off + construction-site
 // target is not a gate node". That case is gone because the toggle is gone — it had no
 // config key and no struct field, and its sole stamper passed a literal true next to the
 // target, so "toggle off" was never reachable in production. The three cases below are

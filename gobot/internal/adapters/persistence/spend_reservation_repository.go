@@ -46,7 +46,7 @@ var errSpendReservationBreach = errors.New("spend reservation would breach worki
 // buys from N containers do, and a construction buy serialises against a contract buy. That
 // matters because the operations it caps do not partition: construction_supply, contract and
 // tour all draw on ONE treasury. containerID is best-effort ATTRIBUTION for logs and nothing
-// more (sp-ps2oc, whose three racing buys all came from a single construction container).
+// more (whose three racing buys all came from a single construction container).
 type SpendReservationLedgerGORM struct {
 	db          *gorm.DB
 	staleWindow time.Duration

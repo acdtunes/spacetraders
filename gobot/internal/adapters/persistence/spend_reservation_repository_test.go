@@ -195,12 +195,12 @@ func TestSpendReservationLedger_ScopedPerPlayer(t *testing.T) {
 
 // budgetOf is the readBudget callback the ledger now takes instead of a pre-read balance.
 // Reserve invokes it inside its own per-player critical section; see the repository for why a
-// balance read before the call and a SUM taken during it cannot be trusted to agree (sp-ps2oc).
+// balance read before the call and a SUM taken during it cannot be trusted to agree.
 func budgetOf(credits, floor int) func(context.Context) (int64, int, error) {
 	return func(context.Context) (int64, int, error) { return int64(credits), floor, nil }
 }
 
-// RELEASE IS EXCLUDED FROM A RESERVE IN PROGRESS (sp-ps2oc).
+// RELEASE IS EXCLUDED FROM A RESERVE IN PROGRESS.
 //
 // Half the cap's soundness argument lives in Release, not Reserve. Reserve reads the balance
 // and then sums the reservations; if a sibling could RELEASE between those two steps, its

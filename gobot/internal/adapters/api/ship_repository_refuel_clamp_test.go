@@ -17,7 +17,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
 )
 
-// sp-l7zha: three hulls were observed carrying OVER-CAPACITY fuel as reported by
+// Three hulls were observed carrying OVER-CAPACITY fuel as reported by
 // the live API - 729/600, 726/600, 613/600 - all three immediately after a
 // refuel. ShipRepository.Refuel is the single funnel through which every refuel
 // (route executor, CLI `ship refuel --units`, and a rebuilt refuel_ship

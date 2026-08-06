@@ -269,7 +269,7 @@ func (e *DeliveryExecutor) executeSinglePurchaseTrip(
 		PlayerID:   playerID,
 	}
 
-	// CROSS-OPERATION concurrent spend cap (sp-ps2oc), taken HERE — immediately before the buy
+	// CROSS-OPERATION concurrent spend cap, taken HERE — immediately before the buy
 	// and after the flight — rather than beside the per-buy floor above.
 	//
 	// The floor is sized before the navigate, deliberately (it decides whether the trip is

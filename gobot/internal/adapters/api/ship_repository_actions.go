@@ -144,7 +144,7 @@ func (r *ShipRepository) Refuel(ctx context.Context, ship *navigation.Ship, play
 		return nil, fmt.Errorf("failed to find player: %w", err)
 	}
 
-	// sp-l7zha: never ask the pump for more than the tank can hold. A metered
+	// Never ask the pump for more than the tank can hold. A metered
 	// request past the headroom is narrowed to it, and one against a tank with no
 	// headroom left is not sent at all - buying zero units costs an API call and
 	// a transaction to accomplish nothing, and it is one of the ways a hull ends
@@ -217,7 +217,7 @@ func clampRefuelUnits(ship *navigation.Ship, units *int) (clamped *int, skip boo
 // the same way Navigate and Warp adopt their in-band fuel. A response carrying no
 // fuel state (mock/older API) falls back to what was asked for.
 //
-// sp-l7zha: the API has been observed reporting an IMPOSSIBLE tank right after a
+// The API has been observed reporting an IMPOSSIBLE tank right after a
 // refuel - 729/600, 726/600, 613/600 on three separate hulls. The clamp to
 // capacity itself is not new (shared.ReconstructFuel has always applied it, which
 // is why those rows read 600/600 locally while the API read 729/600) but it was

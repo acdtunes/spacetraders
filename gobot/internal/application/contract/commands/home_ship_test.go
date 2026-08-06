@@ -300,7 +300,7 @@ func TestHomeShipHandler_AtAPeersSlot_StillRelocatesToItsOwn(t *testing.T) {
 // PRIORITY-ordered slots — ignoring occupancy. TORWIND-4 (roster index 0) owns the first priority
 // slot B2 and homes there even though a peer sits at B2 (the old occupancy balancer would have
 // sent it to the "emptier" C3). The slot list is the caller's placement priority and is honoured
-// as given, never re-sorted (sp-lkuh9), so B2 must be listed first for TORWIND-4 to own it.
+// as given, never re-sorted, so B2 must be listed first for TORWIND-4 to own it.
 func TestHomeShipHandler_HomesToItsOwnFixedSlot(t *testing.T) {
 	ship := newHomeTestShip(t, "TORWIND-4", "X1-TEST-A1", 0, 0)
 	peer := newHomeTestShip(t, "TORWIND-5", "X1-TEST-B2", 10, 0) // sitting at TORWIND-4's slot

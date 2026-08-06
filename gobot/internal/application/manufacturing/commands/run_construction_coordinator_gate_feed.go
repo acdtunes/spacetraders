@@ -94,7 +94,7 @@ func (h *RunConstructionCoordinatorHandler) feedGateLeg(
 		capacity += cargo.Capacity - cargo.Units
 	}
 
-	// NO ROOM TO BUY MEANS DELIVER WHAT YOU ALREADY HAVE (sp-2scwt).
+	// NO ROOM TO BUY MEANS DELIVER WHAT YOU ALREADY HAVE.
 	//
 	// THIS LEG BUYS BEFORE IT FEEDS, so a zero-capacity short-circuit here does not merely skip a
 	// purchase — it skips FeedFactory too, and FeedFactory is the ONLY thing that empties a factory
@@ -192,7 +192,7 @@ func (h *RunConstructionCoordinatorHandler) feedGateLeg(
 }
 
 // feedGateLegFromHold runs the leg for a hull with NO FREE HOLD: it delivers what is already
-// aboard instead of standing the hull down (sp-2scwt).
+// aboard instead of standing the hull down.
 //
 // IT ISSUES NO PURCHASE, and that is a property of the path, not a happy accident of the current
 // call graph. Every unit it moves is already owned and already paid for, so there is no floor to

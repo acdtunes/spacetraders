@@ -164,7 +164,7 @@ func (f *centralFill) anchorOrCentral(anchor string) (string, bool) {
 // centralHub is where the warehouse + stocker are stationed: the highest-demand CENTRAL park
 // (symbol-stable on ties) — the central far-source-storage insight, never the far J sink. It is
 // deliberately independent of the delivery slot ORDER, so the era-invariant anchor ordering
-// (sp-9suun) repositions delivery hulls without moving the depot. "" when the era resolved no
+// repositions delivery hulls without moving the depot. "" when the era resolved no
 // central park; the warehouse bundle then has no home and is omitted.
 func centralHub(parks []string, demand map[string]float64) string {
 	ranked := rankParks(parks, demand)

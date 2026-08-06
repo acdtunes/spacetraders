@@ -59,7 +59,7 @@ func realRecipe() mapRecipe {
 // goods package" only constrains that file. Against a CONFORMING seam the walk's IsRaw check cannot
 // be shown to terminate anything (Inputs returns nil for a raw either way, so the cycle is
 // unreachable regardless); against this one it can, because reaching Inputs("IRON_ORE") at all
-// hands back {"EXPLOSIVES"} and opens the sp-4irrr loop.
+// hands back {"EXPLOSIVES"} and opens the loop.
 type leakyRecipe struct{}
 
 func (leakyRecipe) IsRaw(good string) bool {
@@ -143,7 +143,7 @@ func TestPlanFeed_FabMatsFeedsIronAndQuartzThenStopsAtTheOre(t *testing.T) {
 			t.Fatalf("PlanFeed(FAB_MATS) did not stop at the curated raw %s; stops = %+v", raw, plan.Stops)
 		}
 	}
-	// IRON_ORE's own recipe entry is {EXPLOSIVES}. Descending it is the sp-4irrr cycle
+	// IRON_ORE's own recipe entry is {EXPLOSIVES}. Descending it is the cycle
 	// (IRON_ORE -> EXPLOSIVES -> LIQUID_HYDROGEN -> MACHINERY -> IRON -> IRON_ORE).
 	for _, key := range stepKeys(plan) {
 		if strings.HasPrefix(key, "EXPLOSIVES->") {

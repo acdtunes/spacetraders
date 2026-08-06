@@ -91,7 +91,7 @@ func TestBuildPlan_WarehouseAndStockerAnchorAtCentralHub(t *testing.T) {
 // consume this SAME set (no drift). Demand is an input at arm ONLY.
 //
 // An era that resolved NO anchors (every durable predicate missed) is exactly this original
-// central-only ranking — the whole-set fail-open floor of the sp-9suun anchor ordering.
+// central-only ranking — the whole-set fail-open floor of the anchor ordering.
 func TestTopDeliverySlots_RanksDemandDescCappedAtKnee(t *testing.T) {
 	demand := map[string]float64{"P1": 1, "P2": 9, "P3": 5, "P4": 2}
 	got := TopDeliverySlots(EraRoles{CentralParks: []string{"P1", "P2", "P3", "P4"}}, demand)

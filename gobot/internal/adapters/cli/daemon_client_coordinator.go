@@ -154,7 +154,7 @@ func (c *DaemonClient) BootstrapCoordinator(ctx context.Context, playerID int, a
 }
 
 // FrontierExpansionCoordinatorParams carries the launch knobs for the frontier
-// expansion coordinator (sp-8w89). All are optional; a 0/false value uses the
+// expansion coordinator. All are optional; a 0/false value uses the
 // coordinator's documented default (RULINGS #5).
 type FrontierExpansionCoordinatorParams struct {
 	TickIntervalSecs int
@@ -163,7 +163,7 @@ type FrontierExpansionCoordinatorParams struct {
 	ExpansionMaxHops int
 }
 
-// FrontierExpansionCoordinator starts the standing frontier expansion coordinator (sp-8w89).
+// FrontierExpansionCoordinator starts the standing frontier expansion coordinator.
 func (c *DaemonClient) FrontierExpansionCoordinator(ctx context.Context, playerID int, agentSymbol string, p FrontierExpansionCoordinatorParams) (string, error) {
 	req := &pb.FrontierExpansionCoordinatorRequest{
 		PlayerId:         int32(playerID),

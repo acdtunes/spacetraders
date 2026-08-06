@@ -19,7 +19,7 @@ import (
 //
 // This fixture cannot exercise that half — it omits IRON_ORE, so IRON_ORE is raw here by absence
 // rather than by curation, and the case below stays green under either rule. That is precisely
-// why the curated half needs the real map to test it (sp-4irrr).
+// why the curated half needs the real map to test it.
 //
 // NOTE: this comment previously claimed the rule "replaces the deleted fabricate depth cap —
 // recursion is bounded by the DAG". The recipe map is CYCLIC and the cap is NOT deleted. See

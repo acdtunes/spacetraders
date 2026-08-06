@@ -15,9 +15,9 @@ package main
 //
 // The history, because it is the reason this file exists rather than a one-line fix:
 //
-//   - 4ee47ef0 (sp-w3he) wired the ledger onto factoryCoordinatorHandler — the GOODS-FACTORY
+//   - 4ee47ef0 wired the ledger onto factoryCoordinatorHandler — the GOODS-FACTORY
 //     coordinator, the only concurrent buyer at the time.
-//   - 712b6f66 (sp-hoj8u) retired the goods-factory operation and deleted that handler, and with
+//   - 712b6f66 retired the goods-factory operation and deleted that handler, and with
 //     it the ONE production call to SetSpendLedger. The guard, its interface, its repository and
 //     all of its tests survived; only the wiring died.
 //   - The surviving constructionExecutor never had it. It was given SetTreasuryReader and

@@ -51,7 +51,7 @@ type DeliveryExecutor struct {
 	// silently land treasury above 0 but under the immutable reserve.
 	enforceSourceBuyFloor bool
 
-	// spendLedger is the CROSS-OPERATION concurrent spend cap (sp-ps2oc). The floor above is
+	// spendLedger is the CROSS-OPERATION concurrent spend cap. The floor above is
 	// per-buy and cannot see a sibling's uncommitted spend; this serialises the contract
 	// source-buy against construction_supply and every other spender on the same treasury.
 	// nil disables it — the optional-port contract every existing test relies on — and the

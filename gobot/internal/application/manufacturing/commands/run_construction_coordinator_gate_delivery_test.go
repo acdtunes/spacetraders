@@ -1386,7 +1386,7 @@ func TestGateDeliveryLeg_ContainsNoWaypointLiterals(t *testing.T) {
 // Extracted so the FACTORY leg's own file is swept by the SAME calibrated pattern rather than a
 // second copy free to drift. The gate package's sweep (fill_test.go) cannot be reused: it globs
 // *.go RELATIVE TO ITS OWN PACKAGE DIR, so it covers only internal/domain/manufacturing/gate/ and
-// nothing in this package (sp-q7p9e).
+// nothing in this package.
 func assertNoWaypointLiterals(t *testing.T, file, mustContain string) {
 	t.Helper()
 	waypointLiteral := regexp.MustCompile(`"[A-Z]\d+-[A-Z0-9]+-[A-Z0-9]+"`)

@@ -55,7 +55,7 @@ func AssignedSlot(shipSymbol string, deliveryFleet []string, slots []string) (st
 // truncateToFleet drops the LOW-PRIORITY TAIL of the slot set when there are fewer hulls than
 // slots. The caller supplies the slots in PLACEMENT PRIORITY order — the era-invariant anchors
 // first, (1) H-stack, (2) far sink, (3) far source base, (4) E-stack, then the demand-ranked
-// central fill (sp-9suun) — so three hulls drop the 4th slot and two drop the 3rd and 4th.
+// central fill — so three hulls drop the 4th slot and two drop the 3rd and 4th.
 //
 // Without it a symbol-sorted slot set would keep the ALPHABETICALLY-first slots instead, which on
 // a real era silently strands the two highest-value anchors (era 5: four hulls over six slots

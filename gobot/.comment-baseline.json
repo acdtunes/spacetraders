@@ -13,9 +13,9 @@
       "markers": 0
     },
     "cmd/comment-audit": {
-      "ratio": 0.11735537190082644,
-      "comment": 71,
-      "total": 605,
+      "ratio": 0.12682926829268293,
+      "comment": 78,
+      "total": 615,
       "markers": 0
     },
     "cmd/era-close": {
@@ -40,7 +40,7 @@
       "ratio": 0.4191564147627416,
       "comment": 954,
       "total": 2276,
-      "markers": 72
+      "markers": 71
     },
     "cmd/watchkeeper": {
       "ratio": 0.211864406779661,
@@ -52,19 +52,19 @@
       "ratio": 0.20871487211872433,
       "comment": 1322,
       "total": 6334,
-      "markers": 11
+      "markers": 9
     },
     "internal/adapters/cli": {
       "ratio": 0.09711169235906283,
       "comment": 1745,
       "total": 17969,
-      "markers": 83
+      "markers": 78
     },
     "internal/adapters/expansion": {
       "ratio": 0.33302583025830257,
       "comment": 722,
       "total": 2168,
-      "markers": 15
+      "markers": 13
     },
     "internal/adapters/flowfeed": {
       "ratio": 0.3308270676691729,
@@ -82,13 +82,13 @@
       "ratio": 0.28157463094587204,
       "comment": 5665,
       "total": 20119,
-      "markers": 369
+      "markers": 368
     },
     "internal/adapters/metrics": {
       "ratio": 0.2571428571428571,
       "comment": 1413,
       "total": 5495,
-      "markers": 17
+      "markers": 16
     },
     "internal/adapters/parkedsensing": {
       "ratio": 0.4456726880560798,
@@ -100,7 +100,7 @@
       "ratio": 0.2362053085489408,
       "comment": 2821,
       "total": 11943,
-      "markers": 46
+      "markers": 45
     },
     "internal/adapters/routing": {
       "ratio": 0.10599721059972106,
@@ -172,7 +172,7 @@
       "ratio": 0.2223719676549865,
       "comment": 495,
       "total": 2226,
-      "markers": 33
+      "markers": 31
     },
     "internal/application/contract/types": {
       "ratio": 0.5714285714285714,
@@ -244,13 +244,13 @@
       "ratio": 0.35650396115512395,
       "comment": 1395,
       "total": 3913,
-      "markers": 17
+      "markers": 15
     },
     "internal/application/manufacturing/services": {
       "ratio": 0.27822804485400243,
       "comment": 2506,
       "total": 9007,
-      "markers": 122
+      "markers": 117
     },
     "internal/application/manufacturing/types": {
       "ratio": 0.6458333333333334,
@@ -265,10 +265,10 @@
       "markers": 0
     },
     "internal/application/parkedsensing": {
-      "ratio": 0.5328620346846349,
-      "comment": 4824,
-      "total": 9053,
-      "markers": 48
+      "ratio": 0.44544977707841593,
+      "comment": 3397,
+      "total": 7626,
+      "markers": 2
     },
     "internal/application/player": {
       "ratio": 0.4520547945205479,
@@ -298,7 +298,7 @@
       "ratio": 0.3650020721094074,
       "comment": 3523,
       "total": 9652,
-      "markers": 58
+      "markers": 56
     },
     "internal/application/scouting/queries": {
       "ratio": 0.1134020618556701,
@@ -466,7 +466,7 @@
       "ratio": 0.32254901960784316,
       "comment": 329,
       "total": 1020,
-      "markers": 14
+      "markers": 13
     },
     "internal/domain/contract/depot": {
       "ratio": 0.34151329243353784,
@@ -478,7 +478,7 @@
       "ratio": 0.34589502018842533,
       "comment": 257,
       "total": 743,
-      "markers": 4
+      "markers": 2
     },
     "internal/domain/daemon": {
       "ratio": 0.5061728395061729,
@@ -496,7 +496,7 @@
       "ratio": 0.23820224719101124,
       "comment": 106,
       "total": 445,
-      "markers": 1
+      "markers": 0
     },
     "internal/domain/ledger": {
       "ratio": 0.29430379746835444,
@@ -514,7 +514,7 @@
       "ratio": 0.42280701754385963,
       "comment": 482,
       "total": 1140,
-      "markers": 5
+      "markers": 4
     },
     "internal/domain/market": {
       "ratio": 0.21972318339100347,

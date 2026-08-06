@@ -1086,7 +1086,7 @@ func TestFeedGateLeg_ParksAFullHoldNoFactoryWillTakeAndNamesTheCargo(t *testing.
 // would pin the fleet to one era's map and then quietly send hulls nowhere.
 //
 // The gate package's own era-invariance sweep (fill_test.go) globs *.go RELATIVE TO ITS OWN
-// PACKAGE DIR, so it does NOT cover this package (sp-q7p9e). This is that guard, for this file.
+// PACKAGE DIR, so it does NOT cover this package. This is that guard, for this file.
 func TestGateFeedLeg_ContainsNoWaypointLiterals(t *testing.T) {
 	assertNoWaypointLiterals(t, "run_construction_coordinator_gate_feed.go", "feedGateLeg")
 }
@@ -1348,7 +1348,7 @@ func TestConstructionDrain_StillDispatchesAFactoryHullFullOfFabricationInputs(t 
 	}
 }
 
-// THE RECOVERY ITSELF, end to end through the drain (sp-2scwt). The sibling above pins that a full
+// THE RECOVERY ITSELF, end to end through the drain. The sibling above pins that a full
 // factory hull is DISPATCHED; this pins that being dispatched actually gets it EMPTIED, which is
 // the whole reason declining it would have been wrong.
 //

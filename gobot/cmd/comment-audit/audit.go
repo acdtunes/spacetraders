@@ -12,7 +12,7 @@ import (
 )
 
 // Marker is an archaeology pattern: prose whose truth depends on the history of
-// the file rather than on the code as it stands. See PLAYBOOK §13.
+// the file rather than on the code as it stands. See ENGINEERING.md §6.
 type Marker struct {
 	Name string
 	Re   *regexp.Regexp

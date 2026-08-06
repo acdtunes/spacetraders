@@ -380,7 +380,7 @@ fmt:
 	@go fmt ./...
 	@goimports -w .
 
-# Comment density census — the keep/cut rule lives in PLAYBOOK §13.
+# Comment density census — the keep/cut rule lives in ENGINEERING.md §6.
 COMMENT_BASELINE := .comment-baseline.json
 
 # Report comment ratio and archaeology markers per package.

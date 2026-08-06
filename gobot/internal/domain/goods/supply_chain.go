@@ -258,7 +258,7 @@ func IsMineableRawMaterial(good string) bool {
 // in for that one makes a recursive walk descend an ore into the cyclic part of the map
 // (IRON_ORE -> EXPLOSIVES -> LIQUID_HYDROGEN -> MACHINERY -> IRON -> IRON_ORE) and stop
 // terminating. The two also differ on empty-vs-nil. Both contracts are load-bearing where they
-// are; neither moves (sp-4irrr).
+// are; neither moves.
 func GetRequiredInputs(good string) []string {
 	inputs, exists := ExportToImportMap[good]
 	if !exists {

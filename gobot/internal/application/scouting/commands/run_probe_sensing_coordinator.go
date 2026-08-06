@@ -359,17 +359,12 @@ func (h *RunProbeSensingCoordinatorHandler) ReconcileOnce(ctx context.Context, c
 	// pre-EXPANSION tick spends nothing and moves nothing — no ledger read, no
 	// cutover, no buy.
 	if !h.expansionReached(ctx, cmd) {
-		// EXCEPT the free shipyard-catalogue sweep, which the gate does not cover in
-		// either direction. It flies no hull and spends no credit, so nothing the gate
-		// exists to withhold is at stake; and the yard map it builds is the ONLY route
-		// to identifying a heavy-hull counter, so a fleet that waited for the gate to
-		// start reading would enter EXPANSION blind at the start of every era.
+		// EXCEPT the free catalogue sweep: it flies no hull and spends no credit, so the
+		// gate has nothing to withhold from it.
 		h.sweepYardCatalogues(ctx, cmd)
 		// Correctly gated, not wedged: bootstrap owns probes before the home gate is built.
-		// Reported as IDLE so this stays silent for as many ticks as it takes, and so a stall
-		// streak from before the gate does not survive across the phase change. The sweep
-		// above does not move that verdict: it is free discovery, not sensing work, and a
-		// tick that reads eight catalogues is still a tick that placed nothing.
+		// Reported as IDLE — the free sweep above is discovery, not sensing work — so this
+		// stays silent for as long as it takes and no stall streak survives the phase change.
 		h.observeStall(ctx, cmd, sensingStallCoordinator, health.TickIdle())
 		return nil
 	}
@@ -434,25 +429,15 @@ func (h *RunProbeSensingCoordinatorHandler) ReconcileOnce(ctx context.Context, c
 		failures = append(failures, serr)
 	}
 
-	// The free shipyard-catalogue sweep, run on EVERY tick of EVERY phase.
+	// The free shipyard-catalogue sweep, run on EVERY tick of EVERY phase. The
+	// pre-EXPANSION branch makes its own call rather than hoisting this one, whose
+	// position is a contract in both directions: AFTER the screen, so a system charted
+	// this tick already has waypoint rows and its yards are enumerable now rather than
+	// next tick; BEFORE the drain, whose yard lookup reads the rows this pass writes.
 	//
-	// This is the EXPANSION call. A pre-EXPANSION tick makes its own from the
-	// early-return branch at the top of this function, because the sweep spends
-	// nothing and the phase gate has nothing to withhold from it — see the note
-	// there. The two calls are separate rather than one hoisted call precisely
-	// because THIS one's position between the screen and the drain is a contract
-	// (below) that the phase-gated branch cannot honour.
-	//
-	// It sits outside the screen sweep deliberately. Screening only ever revisits
-	// PENDING systems (an IN_SCOPE one is never re-screened, by design), so a yard
-	// in a system we have already judged would never be reached from there — and
-	// that is most of the map. This pass asks about yards, not systems, and its
-	// work list shrinks to nothing on its own as the reads land.
-	//
-	// AFTER the screen so a system charted by this tick's sweep already has its
-	// waypoint rows, and its yards are enumerable on this same tick rather than the
-	// next one. BEFORE the drain because the drain's yard lookup reads the very
-	// rows this pass writes.
+	// Outside the screen sweep deliberately: screening only ever revisits PENDING
+	// systems, so a yard in a system already judged — most of the map — is never
+	// reached from there.
 	yardRep, yerr := parkedsensing.ReadYardCatalogues(ctx, ports.yardCatalogPorts(), playerID)
 	if yerr != nil {
 		failures = append(failures, yerr)
@@ -563,19 +548,13 @@ func (h *RunProbeSensingCoordinatorHandler) ReconcileOnce(ctx context.Context, c
 }
 
 // sweepYardCatalogues runs the free shipyard-catalogue sweep on a tick that does no
-// other sensing work — the pre-EXPANSION branch of ReconcileOnce.
+// other sensing work — the pre-EXPANSION branch of ReconcileOnce. Failures are logged,
+// never returned: the pass spends nothing, so nothing it can fail at is worth failing a
+// tick that is otherwise correctly idle.
 //
-// IT RETURNS NOTHING, and that is the contract rather than an omission. The pass
-// spends no credits and moves no hull, so nothing it can fail at is worth failing a
-// tick that is otherwise correctly idle: an unwired surface and an unreadable
-// frontier each log and return, and a single yard the API refuses is already handled
-// one layer down (ReadYardCatalogues skips it, counts it and names it).
-//
-// THE TWO PORTS ARE CHECKED INDIVIDUALLY, not through ports.wired(). That check
-// guards the tick that BUYS, and it requires the purchaser, the treasury and the
-// mover — none of which this pass is handed or could reach. Holding a free read
-// hostage to them would make this call silently inert on exactly the partially-wired
-// boot where the yard map matters most.
+// THE TWO PORTS ARE CHECKED INDIVIDUALLY, not through ports.wired(), which also demands
+// the purchaser, treasury and mover this pass never touches — gating a free read on them
+// would make it inert on exactly the partially-wired boot where the yard map matters most.
 func (h *RunProbeSensingCoordinatorHandler) sweepYardCatalogues(ctx context.Context, cmd *RunProbeSensingCoordinatorCommand) {
 	logger := common.LoggerFromContext(ctx)
 	playerID := cmd.PlayerID.Value()
@@ -601,10 +580,8 @@ func (h *RunProbeSensingCoordinatorHandler) sweepYardCatalogues(ctx context.Cont
 		return
 	}
 
-	// EMITTED ON EVERY TICK, ZEROS INCLUDED. There is no cycle heartbeat on this
-	// path, so this line is the only evidence the sweep ran at all — and a backlog
-	// that has drained to nothing reads exactly like a sweep that never fired unless
-	// the zero is stated out loud.
+	// Emitted on every tick, ZEROS INCLUDED: there is no cycle heartbeat on this path,
+	// so this line is the only evidence the sweep ran at all.
 	logger.Log("INFO", fmt.Sprintf(
 		"Shipyard catalogue sweep (pre-EXPANSION): read %d of %d outstanding, %d failed",
 		rep.Read, rep.Outstanding, rep.Failed), map[string]interface{}{

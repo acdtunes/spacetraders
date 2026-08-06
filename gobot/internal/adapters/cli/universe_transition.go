@@ -101,7 +101,7 @@ func runUniverseTransition(ctx context.Context, deps transitionDeps, opts transi
 	}
 	apply := opts.confirm && !opts.dryRun
 
-	// Resolve --faction before anything else touches the API or the DB (sp-dqbzm).
+	// Resolve --faction before anything else touches the API or the DB.
 	// Doing it here rather than at the mint means a typo is refused on the PREVIEW
 	// too, so `--dry-run` can never promise a rollover that `--confirm` would then
 	// refuse. Normalising into the local copy of opts gives the mint, the preview and
@@ -131,7 +131,7 @@ func runUniverseTransition(ctx context.Context, deps transitionDeps, opts transi
 	//    agent — an irreversible account slot — and then discard it at the very next
 	//    check. That waste was unreachable while every mint 422'd on the empty faction;
 	//    making the mint work exposes it, so the order is now "every free check before
-	//    the irreversible one" (sp-dqbzm).
+	//    the irreversible one".
 	status, err := deps.api.GetServerStatus(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to get server status: %w", err)
