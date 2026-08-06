@@ -133,7 +133,13 @@ func (e *DeliveryExecutor) ProcessAllDeliveries(
 			"units_remaining": unitsRemaining,
 		})
 
-		if unitsRemaining == 0 {
+		// <= 0, not == 0: the server's count can exceed what it required (the 2026-08-05
+		// TORWIND contract read 94 against 47 after a crash-resumed double delivery), and an
+		// exact-equality skip lets an over-delivered good fall through into the delivery leg,
+		// which is where the ship read that wedged that agent lives. processSingleDelivery's
+		// own loop guard is already <= 0, so this only ever ADDS a skip — it can never turn a
+		// good with real work left into a skipped one (RULINGS #1).
+		if unitsRemaining <= 0 {
 			logger.Log("INFO", "Contract delivery already fulfilled", map[string]interface{}{
 				"ship_symbol":  shipSymbol,
 				"action":       "skip_delivery",

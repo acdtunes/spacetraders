@@ -19,8 +19,10 @@ func (r *ShipRepository) SyncAllFromAPI(ctx context.Context, playerID shared.Pla
 		return 0, fmt.Errorf("failed to get player: %w", err)
 	}
 
-	// Fetch all ships from API
-	shipsData, err := r.apiClient.ListShips(ctx, player.Token)
+	// Fetch all ships from API. readReport carries whether any hull came back
+	// unparseable — the fleet read survives one poisoned member now, so a
+	// successful call no longer implies a COMPLETE fleet.
+	shipsData, readReport, err := r.listFleetForSync(ctx, player.Token)
 	if err != nil {
 		return 0, fmt.Errorf("failed to list ships from API: %w", err)
 	}
@@ -74,14 +76,18 @@ func (r *ShipRepository) SyncAllFromAPI(ctx context.Context, playerID shared.Pla
 	//       rows are never revisited — they persist as ghosts. Any read that
 	//       aggregates by agent_symbol (not the exact live player_id) then unions
 	//       the live fleet with dead-era rows and reads a stale frame_symbol. ListShips is fully
-	//       paginated and returns error-or-complete, so a successful, non-empty
-	//       response IS the authoritative fleet: every ships row for this agent
+	//       paginated, so a successful, non-empty AND COMPLETE response IS the
+	//       authoritative fleet: every ships row for this agent
 	//       that is not one we just upserted under playerID is stale. At most one
 	//       player_id per agent_symbol can hold a live token at a time
 	//       (re-registration invalidates the old one), so deleting the agent's
 	//       other-era rows is safe. FK-safe: nothing references ships (assignment
 	//       data is denormalized into the row).
-	if err := r.reconcileFleetToLive(ctx, playerID, shipsData); err != nil {
+	//
+	//       Completeness is no longer implied by success: the read now drops hulls
+	//       it cannot deserialise rather than failing the whole fleet, so
+	//       readReport is passed in and a PARTIAL read prunes nothing.
+	if err := r.reconcileFleetToLive(ctx, playerID, shipsData, readReport); err != nil {
 		// Non-fatal: the upsert already persisted the live fleet correctly; a
 		// failed prune merely leaves ghosts for the next sync to clear, so it must
 		// not fail the whole sync. Logged loudly so a persistent failure surfaces.
@@ -132,6 +138,27 @@ func (r *ShipRepository) upsertShipModels(ctx context.Context, models []persiste
 	return nil
 }
 
+// fleetReadReporter is the fleet read that also reports what it could NOT read.
+// The domain port's ListShips cannot carry that — it is implemented by test
+// doubles throughout the tree — so the real client widens it here and the sync
+// takes the richer read whenever the client offers one, which in production is
+// always: *SpaceTradersClient implements it.
+type fleetReadReporter interface {
+	ListShipsWithReport(ctx context.Context, token string) ([]*navigation.ShipData, FleetReadReport, error)
+}
+
+// listFleetForSync reads the live fleet, preferring the reporting form so a
+// partial read stays visible to the prune below. A client that satisfies only
+// the port reports nothing unreadable — which is the truth for a double that
+// hands back a fixed slice, and matches the old behaviour exactly.
+func (r *ShipRepository) listFleetForSync(ctx context.Context, token string) ([]*navigation.ShipData, FleetReadReport, error) {
+	if reporter, ok := r.apiClient.(fleetReadReporter); ok {
+		return reporter.ListShipsWithReport(ctx, token)
+	}
+	ships, err := r.apiClient.ListShips(ctx, token)
+	return ships, FleetReadReport{}, err
+}
+
 // reconcileFleetToLive deletes every ships row belonging to playerID's agent
 // that is NOT part of the live fleet just synced under playerID — the durable
 // half of the reconcile (see the call-site comment for the full rationale).
@@ -140,8 +167,21 @@ func (r *ShipRepository) upsertShipModels(ctx context.Context, models []persiste
 // genuinely-live hull. Guarded to never prune on an empty live fleet: a live
 // agent always has >=1 ship, so an empty set signals a bad/partial fetch we
 // refuse to act on destructively.
-func (r *ShipRepository) reconcileFleetToLive(ctx context.Context, playerID shared.PlayerID, live []*navigation.ShipData) error {
+//
+// read is the same refusal generalised. The delete's entire justification is
+// that absence from the live list means SOLD; once the fleet read is allowed to
+// drop a hull it merely failed to parse, absence also means UNREADABLE, and
+// pruning would delete the row of the one hull already in trouble — TORWIND-5,
+// the hull the 24h outage was about. The guard lives here, next to the DELETE,
+// rather than at the call site, so no future caller can reach the destructive
+// statement without having answered the question.
+func (r *ShipRepository) reconcileFleetToLive(ctx context.Context, playerID shared.PlayerID, live []*navigation.ShipData, read FleetReadReport) error {
 	if len(live) == 0 {
+		return nil
+	}
+	if read.Partial() {
+		log.Printf("WARNING [fleet_prune_suppressed] player=%d unreadable=%d live_readable=%d: the live fleet read was PARTIAL, so stale-row pruning is skipped this pass rather than deleting a hull that only failed to parse",
+			playerID.Value(), len(read.Unreadable), len(live))
 		return nil
 	}
 	liveSymbols := make([]string, 0, len(live))

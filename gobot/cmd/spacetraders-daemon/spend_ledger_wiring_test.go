@@ -225,7 +225,7 @@ func f() {
 	constructionExecutor := NewProductionExecutor()
 	constructionExecutor.SetSpendLedger(spendCap)
 	h := goodsCmd.NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, constructionExecutor, activator, nil)
-	c := contractCmd.NewRunWorkflowHandler(med, shipRepo, contractRepo, nil, contractCmd.WithConcurrentSpendCap(spendCap))
+	c := contractCmd.NewRunWorkflowHandler(med, shipRepo, contractRepo, nil, nil, contractCmd.WithConcurrentSpendCap(spendCap))
 	_, _ = h, c
 }`
 	// The analyser agrees the correct shape is correct — otherwise every rejection below is
@@ -269,7 +269,7 @@ func f() {
 		const src = `package main
 func f() {
 	opt := contractCmd.WithConcurrentSpendCap(spendCap)
-	c := contractCmd.NewRunWorkflowHandler(med, shipRepo, contractRepo, nil)
+	c := contractCmd.NewRunWorkflowHandler(med, shipRepo, contractRepo, nil, nil)
 	_, _ = opt, c
 }`
 		w := analyseSpendCapWiring(t, "x.go", []byte(src))
@@ -282,7 +282,7 @@ func f() {
 func f() {
 	constructionExecutor.SetSpendLedger(constructionCap)
 	h := goodsCmd.NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, constructionExecutor, activator, nil)
-	c := contractCmd.NewRunWorkflowHandler(med, shipRepo, contractRepo, nil, contractCmd.WithConcurrentSpendCap(contractCap))
+	c := contractCmd.NewRunWorkflowHandler(med, shipRepo, contractRepo, nil, nil, contractCmd.WithConcurrentSpendCap(contractCap))
 	_, _ = h, c
 }`
 		w := analyseSpendCapWiring(t, "x.go", []byte(src))
@@ -294,7 +294,7 @@ func f() {
 		const src = `package main
 func f() {
 	constructionExecutor.SetSpendLedger(nil)
-	c := contractCmd.NewRunWorkflowHandler(med, shipRepo, contractRepo, nil, contractCmd.WithConcurrentSpendCap((*persistence.SpendReservationLedgerGORM)(nil)))
+	c := contractCmd.NewRunWorkflowHandler(med, shipRepo, contractRepo, nil, nil, contractCmd.WithConcurrentSpendCap((*persistence.SpendReservationLedgerGORM)(nil)))
 	_ = c
 }`
 		w := analyseSpendCapWiring(t, "x.go", []byte(src))

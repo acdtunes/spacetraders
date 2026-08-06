@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	appContract "github.com/andrescamacho/spacetraders-go/internal/application/contract"
 	contractServices "github.com/andrescamacho/spacetraders-go/internal/application/contract/services"
@@ -551,12 +552,14 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 		h.dispatchLiquidationForParked(ctx, cmd, parkedShips, requiredCargo, liquidationCooldown)
 
 		// Spawn-governor exclusion: drop hulls in post-instant-death backoff or
-		// quarantined for repeated instant worker deaths, so the coordinator
-		// spawns a worker on a HEALTHY hull instead of hot-respawning a poison
-		// one. A backoff'd hull re-enters selection when its interval expires; a
-		// quarantined one stays out for the rest of this run. Only when EVERY
-		// candidate is held does the coordinator park and wait (RULINGS #1: a
-		// deferral, never a skip).
+		// quarantined for repeated instant deaths / repeated identical failures,
+		// so the coordinator spawns a worker on a HEALTHY hull instead of
+		// hot-respawning a poison one. Both holds are TEMPORARY — a backoff'd hull
+		// re-enters selection when its interval expires, a quarantined one when its
+		// cooldown does (and is then re-probed with a single worker), so a hull
+		// fixed upstream returns to service unattended. Only when EVERY candidate
+		// is held does the coordinator park and wait (RULINGS #1: a deferral, never
+		// a skip).
 		spawnableShips, heldShips := gov.FilterEligible(claimableShips)
 		if len(spawnableShips) == 0 {
 			logger.Log("INFO", fmt.Sprintf(
@@ -696,19 +699,26 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 		logger.Log("INFO", fmt.Sprintf("Waiting for %s to complete contract...", selectedShip), nil)
 		select {
 		case event := <-workerCompletedCh:
-			// Feed the completion to the spawn governor FIRST: a worker that just
-			// died instantly extends this hull's backoff, and the Nth instant
-			// death within the window crosses it into quarantine. On that exact
-			// crossing, emit the ONE loud line + captain event; thereafter the
-			// hull is skipped for the rest of the run and the next pass selects a
+			// Feed the completion to the spawn governor FIRST, error text and all:
+			// a worker that died instantly extends this hull's backoff, and either
+			// the Nth instant death within the window OR the Nth consecutive
+			// IDENTICAL error (sp-20eyn — the TORWIND-5 signature, which every
+			// timing-shaped test misses because that worker took minutes to die)
+			// crosses the hull into an expiring quarantine. On that crossing emit
+			// the loud line + captain event + counter; thereafter the hull is
+			// skipped until its cooldown elapses and the next pass selects a
 			// healthy hull (RULINGS #1: the contract keeps being worked).
-			if outcome := gov.NoteCompletion(event.ShipSymbol, event.Success); outcome.JustQuarantined {
-				logger.Log("ERROR", hullQuarantineMessage(event.ShipSymbol, outcome.InstantDeaths), map[string]interface{}{
-					"action":         "hull_quarantined",
-					"ship_symbol":    event.ShipSymbol,
-					"instant_deaths": outcome.InstantDeaths,
+			if outcome := gov.NoteCompletion(event.ShipSymbol, event.Success, event.Error); outcome.JustQuarantined {
+				logger.Log("ERROR", hullQuarantineMessage(event.ShipSymbol, outcome), map[string]interface{}{
+					"action":           "hull_quarantined",
+					"ship_symbol":      event.ShipSymbol,
+					"cause":            outcome.Cause,
+					"instant_deaths":   outcome.InstantDeaths,
+					"identical_errors": outcome.IdenticalErrors,
+					"cooldown_seconds": outcome.Cooldown.Seconds(),
 				})
-				h.recordHullQuarantineEvent(ctx, cmd, event.ShipSymbol, outcome.InstantDeaths)
+				metrics.RecordHullQuarantine(outcome.Cause)
+				h.recordHullQuarantineEvent(ctx, cmd, event.ShipSymbol, outcome)
 			}
 			if recordWorkerCompletion(logger, event, fmt.Sprintf("Contract completed by %s", event.ShipSymbol)) {
 				result.ContractsCompleted++

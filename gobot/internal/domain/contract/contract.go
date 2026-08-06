@@ -138,6 +138,66 @@ func (c *Contract) MarkDeliveryTermsMet(tradeSymbol string) error {
 	return fmt.Errorf("trade symbol not in contract")
 }
 
+// ReconcileDeliveredFromServer RAISES each delivery's UnitsFulfilled to the count the GAME
+// SERVER reports, and returns whether anything moved. observed is keyed by trade symbol; a
+// good the server did not report is left alone.
+//
+// The local count is a CACHE of a number the server owns: it is written only after a deliver
+// the server has already accepted, so a worker that dies between the deliver landing and the
+// local write leaves it permanently BEHIND. That is the 2026-08-05 TORWIND double-delivery
+// exactly — the local row read 0/47 while the server read 94/47. It delivered 47, crashed
+// before recording, resumed from the stale view, and delivered 47 AGAIN.
+//
+// Raise-only, deliberately, for the same reason ConstructionMaterialTarget.ReconcileDelivered
+// is: a LOWER observed value cannot be told apart from a contract read that raced a delivery
+// landing between the read and this call, so lowering would erase units that really were
+// delivered and re-source them. Raise-only is also the fail-closed direction here (RULINGS #4)
+// — it can only ever REDUCE what we go on to buy and deliver, never increase it — and it makes
+// the operation monotonic and idempotent under any interleaving with DeliverCargo.
+//
+// The observed count is stored RAW, uncapped. The server reported 94 against a required 47;
+// clamping to 47 would erase the only surviving evidence that the over-delivery happened.
+// CanFulfill and every units-remaining computation compare with >= / <=, so an over-count
+// reads correctly as "done" everywhere it is consumed.
+func (c *Contract) ReconcileDeliveredFromServer(observed map[string]int) bool {
+	raised := false
+	for i := range c.terms.Deliveries {
+		serverUnits, reported := observed[c.terms.Deliveries[i].TradeSymbol]
+		if !reported || serverUnits <= c.terms.Deliveries[i].UnitsFulfilled {
+			continue
+		}
+		c.terms.Deliveries[i].UnitsFulfilled = serverUnits
+		raised = true
+	}
+	return raised
+}
+
+// MarkAcceptedFromServer records that the server considers this contract accepted, so a local
+// row that missed the accept write does not block a fulfil (Fulfill refuses an unaccepted
+// contract). Raise-only like the delivery counts above: it never un-accepts.
+func (c *Contract) MarkAcceptedFromServer() {
+	c.accepted = true
+}
+
+// MarkFulfilledFromServer records that the server has ALREADY fulfilled and paid this contract,
+// so the local row stops advertising it as active work. Without it, FindActiveContracts
+// (accepted AND NOT fulfilled) keeps handing a finished contract to every worker that asks, and
+// each one resumes work that can never complete.
+//
+// Every delivery is raised to its required count first: the server cannot have fulfilled a
+// contract whose deliveries it did not consider met, and the persistence layer replays Fulfill()
+// when loading the row — which fails its own CanFulfill guard on a row claiming fulfilled with
+// short deliveries, making the contract unreadable from that point on.
+func (c *Contract) MarkFulfilledFromServer() {
+	for i := range c.terms.Deliveries {
+		if c.terms.Deliveries[i].UnitsFulfilled < c.terms.Deliveries[i].UnitsRequired {
+			c.terms.Deliveries[i].UnitsFulfilled = c.terms.Deliveries[i].UnitsRequired
+		}
+	}
+	c.accepted = true
+	c.fulfilled = true
+}
+
 // CanFulfill checks if all deliveries are complete
 func (c *Contract) CanFulfill() bool {
 	for _, delivery := range c.terms.Deliveries {

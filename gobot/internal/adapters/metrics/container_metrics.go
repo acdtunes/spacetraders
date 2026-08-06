@@ -37,6 +37,10 @@ type ContainerMetricsCollector struct {
 	// Supervised daemon background component restarts
 	daemonComponentRestarts *prometheus.CounterVec
 
+	// hullQuarantines counts hulls the contract spawn governor took out of worker
+	// selection, by cause.
+	hullQuarantines *prometheus.CounterVec
+
 	// Ship metrics
 	shipsTotal      *prometheus.GaugeVec
 	shipStatusTotal *prometheus.GaugeVec
@@ -136,6 +140,18 @@ func NewContainerMetricsCollector(
 			"component",
 		),
 
+		// Contract spawn-governor hull quarantines (sp-20eyn). Labeled by CAUSE
+		// only — a fixed 2-value set whose two members have completely different
+		// remedies, so a dashboard can tell "hulls that cannot start work" from
+		// "hulls the API cannot read" without parsing logs. Deliberately NOT
+		// labeled by ship, matching shipVersionConflicts: the paired ERROR log and
+		// captain event carry the hull, and per-hull labels are unbounded.
+		hullQuarantines: newCounterVec(
+			"contract_hull_quarantine_total",
+			"Hulls removed from contract worker selection by the spawn governor, by cause",
+			"cause",
+		),
+
 		// Ship count by role/location
 		shipsTotal: newGaugeVec("ships_total", "Number of ships by role and location", "player_id", "role", "location"),
 
@@ -168,6 +184,7 @@ func (c *ContainerMetricsCollector) Register() error {
 		c.containerIterations,
 		c.containerExitTotal,
 		c.daemonComponentRestarts,
+		c.hullQuarantines,
 		c.shipsTotal,
 		c.shipStatusTotal,
 		c.shipVersionConflicts,
@@ -343,6 +360,18 @@ func (c *ContainerMetricsCollector) RecordDaemonComponentRestart(component strin
 	c.daemonComponentRestarts.WithLabelValues(component).Inc()
 }
 
+// RecordHullQuarantine implements HullQuarantineRecorder.
+// Nil-safe on BOTH receiver and field like RecordContainerExit and
+// RecordDaemonComponentRestart: this fires from the coordinator's
+// worker-completion path, which is already handling a failure, and a metrics
+// miss must never panic a failure path (RULINGS #4).
+func (c *ContainerMetricsCollector) RecordHullQuarantine(cause string) {
+	if c == nil || c.hullQuarantines == nil {
+		return
+	}
+	c.hullQuarantines.WithLabelValues(cause).Inc()
+}
+
 // globalCollector is the singleton container metrics collector
 // Set by SetGlobalCollector() when metrics are enabled
 var globalCollector MetricsRecorder
@@ -361,6 +390,14 @@ type MetricsRecorder interface {
 // existing MetricsRecorder implementations keep compiling.
 type ShipWriteConflictRecorder interface {
 	RecordShipVersionConflict()
+}
+
+// HullQuarantineRecorder is implemented by collectors that track contract
+// spawn-governor hull quarantines. Separate single-method interface, like
+// ShipWriteConflictRecorder and DaemonComponentRecorder, so existing
+// MetricsRecorder implementations and test fakes keep compiling.
+type HullQuarantineRecorder interface {
+	RecordHullQuarantine(cause string)
 }
 
 // SetGlobalCollector sets the global metrics collector
@@ -407,5 +444,18 @@ func RecordShipVersionConflict() {
 	}
 	if rec, ok := globalCollector.(ShipWriteConflictRecorder); ok {
 		rec.RecordShipVersionConflict()
+	}
+}
+
+// RecordHullQuarantine records one hull taken out of contract worker selection
+// by the spawn governor, keyed by cause. No-op when metrics are disabled or the
+// global collector doesn't implement the recorder, so a metrics miss never
+// touches the coordinator's completion path (RULINGS #4).
+func RecordHullQuarantine(cause string) {
+	if globalCollector == nil {
+		return
+	}
+	if rec, ok := globalCollector.(HullQuarantineRecorder); ok {
+		rec.RecordHullQuarantine(cause)
 	}
 }

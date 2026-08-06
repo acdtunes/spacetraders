@@ -105,7 +105,7 @@ func TestRunWorkflowHandler_Loop_RunsContractsContinuously(t *testing.T) {
 	}
 
 	// MockClock so the inter-contract pacing does not wall-wait.
-	handler := NewRunWorkflowHandler(mediator, nil, contractRepo, &shared.MockClock{})
+	handler := NewRunWorkflowHandler(mediator, nil, contractRepo, nil, &shared.MockClock{})
 
 	cmd := &RunWorkflowCommand{ShipSymbol: "TORWIND-1", PlayerID: shared.MustNewPlayerID(1), Loop: true}
 
@@ -135,7 +135,7 @@ func TestRunWorkflowHandler_SingleShot_RunsExactlyOneContract(t *testing.T) {
 		stopAfter:    1 << 30, // never triggers; loop=false never re-enters anyway
 	}
 
-	handler := NewRunWorkflowHandler(mediator, nil, contractRepo, &shared.MockClock{})
+	handler := NewRunWorkflowHandler(mediator, nil, contractRepo, nil, &shared.MockClock{})
 
 	cmd := &RunWorkflowCommand{ShipSymbol: "TORWIND-1", PlayerID: shared.MustNewPlayerID(1)} // Loop defaults false
 

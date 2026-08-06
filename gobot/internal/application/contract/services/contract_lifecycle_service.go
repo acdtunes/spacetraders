@@ -8,6 +8,7 @@ import (
 	contractQueries "github.com/andrescamacho/spacetraders-go/internal/application/contract/queries"
 	contractTypes "github.com/andrescamacho/spacetraders-go/internal/application/contract/types"
 	domainContract "github.com/andrescamacho/spacetraders-go/internal/domain/contract"
+	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
@@ -18,21 +19,147 @@ type AcceptContractCommand = contractTypes.AcceptContractCommand
 type AcceptContractResponse = contractTypes.AcceptContractResponse
 type FulfillContractCommand = contractTypes.FulfillContractCommand
 
+// ServerContractReader reads a contract's AUTHORITATIVE state straight from the game server.
+// Declared here, at the consumer, so this package depends on the one method it needs instead of
+// the whole APIClient surface; *api.SpaceTradersClient satisfies it.
+type ServerContractReader interface {
+	GetContract(ctx context.Context, contractID, token string) (*domainPorts.ContractData, error)
+}
+
 // ContractLifecycleService handles contract negotiation, acceptance, and fulfillment
 type ContractLifecycleService struct {
 	mediator     common.Mediator
 	contractRepo domainContract.ContractRepository
+	// serverContracts is the game server's view of a contract, used by ReconcileWithServer to
+	// heal a local row that lagged behind a delivery the server already accepted. Production
+	// passes the real API client positionally (see NewRunWorkflowHandler) — this is not an
+	// arming seam, it is nil only in unit tests that drive the lifecycle without an API.
+	serverContracts ServerContractReader
 }
 
 // NewContractLifecycleService creates a new contract lifecycle service
 func NewContractLifecycleService(
 	mediator common.Mediator,
 	contractRepo domainContract.ContractRepository,
+	serverContracts ServerContractReader,
 ) *ContractLifecycleService {
 	return &ContractLifecycleService{
-		mediator:     mediator,
-		contractRepo: contractRepo,
+		mediator:        mediator,
+		contractRepo:    contractRepo,
+		serverContracts: serverContracts,
 	}
+}
+
+// ReconcileWithServer folds the game server's authoritative contract state into the local
+// aggregate BEFORE any delivery is planned, and persists what it healed (sp-20eyn).
+//
+// The local delivery counts are a cache of numbers the server owns, written only after a
+// deliver the server already accepted. A worker that dies in between leaves the cache
+// permanently behind, and the next worker resumes from that stale view and delivers the same
+// load a second time — the 2026-08-05 TORWIND contract that read 0/47 locally while the server
+// read 94/47. Reading server truth here is what makes the delivery leg's own
+// "units remaining <= 0" guards trustworthy: without it they are evaluated against a number
+// that can only be too low, which is the direction that spends.
+//
+// FAIL-OPEN on a read failure, and deliberately so. This is a NEW guard, not a weakened one:
+// when the contracts endpoint cannot be read the workflow proceeds on exactly the local state it
+// uses today, so the change is add-only (RULINGS #4). Failing closed instead would park every
+// contract in the fleet on any transient contracts-endpoint hiccup — a strictly larger outage
+// than the one this fixes. The failure is logged at WARNING so a persistent blind spot surfaces
+// rather than silently degrading into the double-delivery this exists to prevent.
+func (s *ContractLifecycleService) ReconcileWithServer(
+	ctx context.Context,
+	c *domainContract.Contract,
+	playerID shared.PlayerID,
+) (*domainContract.Contract, error) {
+	logger := common.LoggerFromContext(ctx)
+
+	if s.serverContracts == nil {
+		return c, nil
+	}
+
+	token, err := common.PlayerTokenFromContext(ctx)
+	if err != nil {
+		s.logReconcileBlind(logger, c, "no player token in context", err)
+		return c, nil
+	}
+
+	data, err := s.serverContracts.GetContract(ctx, c.ContractID(), token)
+	if err != nil {
+		s.logReconcileBlind(logger, c, "contract read failed", err)
+		return c, nil
+	}
+
+	if data.Accepted {
+		c.MarkAcceptedFromServer()
+	}
+
+	if data.Fulfilled {
+		c.MarkFulfilledFromServer()
+		s.persistReconciled(ctx, logger, c)
+		return c, nil
+	}
+
+	observed := make(map[string]int, len(data.Terms.Deliveries))
+	for _, d := range data.Terms.Deliveries {
+		observed[d.TradeSymbol] = d.UnitsFulfilled
+		if d.UnitsFulfilled > d.UnitsRequired {
+			// The only place an over-delivery is ever visible. It means units were handed
+			// over that the contract will never pay for, so it is logged as loudly as the
+			// crash it used to hide behind.
+			logger.Log("ERROR", fmt.Sprintf(
+				"Contract %s OVER-DELIVERED on %s: the server holds %d units against %d required — %d units were delivered twice and will not be paid for (sp-20eyn)",
+				c.ContractID(), d.TradeSymbol, d.UnitsFulfilled, d.UnitsRequired, d.UnitsFulfilled-d.UnitsRequired),
+				map[string]interface{}{
+					"action":          "contract_over_delivered",
+					"contract_id":     c.ContractID(),
+					"trade_symbol":    d.TradeSymbol,
+					"units_fulfilled": d.UnitsFulfilled,
+					"units_required":  d.UnitsRequired,
+					"units_wasted":    d.UnitsFulfilled - d.UnitsRequired,
+				})
+		}
+	}
+
+	if !c.ReconcileDeliveredFromServer(observed) {
+		return c, nil
+	}
+
+	logger.Log("INFO", fmt.Sprintf(
+		"Contract %s reconciled to server truth before delivery planning; local delivery counts had lagged behind deliveries the server already accepted (sp-20eyn)",
+		c.ContractID()), map[string]interface{}{
+		"action":      "contract_server_reconcile",
+		"contract_id": c.ContractID(),
+		"can_fulfill": c.CanFulfill(),
+	})
+	s.persistReconciled(ctx, logger, c)
+
+	return c, nil
+}
+
+// persistReconciled writes the healed contract back so the next worker resumes from server
+// truth rather than re-reading the same stale row and re-deriving the same wrong plan. A write
+// failure is logged, never fatal: the in-memory aggregate this pass runs on is already correct,
+// so the workflow is strictly better off continuing than crashing.
+func (s *ContractLifecycleService) persistReconciled(ctx context.Context, logger common.ContainerLogger, c *domainContract.Contract) {
+	if err := s.contractRepo.Add(ctx, c); err != nil {
+		logger.Log("WARNING", "Failed to persist server-reconciled contract; this pass still runs on server truth", map[string]interface{}{
+			"action":      "contract_server_reconcile_persist_failed",
+			"contract_id": c.ContractID(),
+			"error":       err.Error(),
+		})
+	}
+}
+
+func (s *ContractLifecycleService) logReconcileBlind(logger common.ContainerLogger, c *domainContract.Contract, reason string, err error) {
+	logger.Log("WARNING", fmt.Sprintf(
+		"Cannot reconcile contract %s against the server (%s); proceeding on local delivery counts, which can only be behind — a re-delivery is possible this pass (sp-20eyn)",
+		c.ContractID(), reason), map[string]interface{}{
+		"action":      "contract_server_reconcile_blind",
+		"contract_id": c.ContractID(),
+		"reason":      reason,
+		"error":       err.Error(),
+	})
 }
 
 // FindOrNegotiateContract checks for existing active contracts or negotiates a new one

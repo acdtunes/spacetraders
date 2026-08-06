@@ -1724,7 +1724,12 @@ func run(cfg *config.Config) error {
 	// warehouse ROI (buffer hit-rate, served-from-buffer, contract-leg-avoided) is
 	// measurable. The GORM recorder persists to warehouse_withdrawals; nil clock =
 	// RealClock. Additive/fail-open — a record error never fails the draw.
-	contractWorkflowHandler := contractCmd.NewRunWorkflowHandler(med, shipRepo, contractRepo, nil,
+	// apiClient is the server-truth contract reader (sp-20eyn): every workflow pass reconciles
+	// the local delivery counts against GET /my/contracts/{id} before planning anything, so a
+	// row that lagged behind a delivery the server already accepted cannot drive a second
+	// delivery of the same load — and a contract already delivered in full is fulfilled instead
+	// of dispatching a hull at it.
+	contractWorkflowHandler := contractCmd.NewRunWorkflowHandler(med, shipRepo, contractRepo, apiClient, nil,
 		contractCmd.WithInventorySourcing(contractInventoryFinder, storageCoordinator, apiClient),
 		contractCmd.WithWithdrawalRecording(persistence.NewWithdrawalEventRepository(db), nil),
 		// The SAME cap the construction executor holds (sp-ps2oc acceptance 4): construction

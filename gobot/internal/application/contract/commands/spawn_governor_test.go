@@ -2,6 +2,7 @@ package commands
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -18,10 +19,11 @@ func TestSpawnGovernor_InstantDeath_HoldsHullForEscalatingBackoff(t *testing.T) 
 	clock := &shared.MockClock{CurrentTime: time.Now()}
 	gov := newSpawnGovernor(clock)
 
-	// Death #1: spawn, die 1s later (instant), backoff = schedule[0].
+	// Death #1: spawn, die 1s later (instant), backoff = schedule[0]. Distinct
+	// error texts throughout so ONLY the timing-shaped breaker is under test.
 	gov.NoteSpawn("TORWIND-24")
 	clock.Advance(1 * time.Second)
-	out := gov.NoteCompletion("TORWIND-24", false)
+	out := gov.NoteCompletion("TORWIND-24", false, "boom 1")
 	if !out.InstantDeath || out.InstantDeaths != 1 || out.Quarantined {
 		t.Fatalf("first instant death: got %+v, want InstantDeath=true InstantDeaths=1 Quarantined=false", out)
 	}
@@ -44,7 +46,7 @@ func TestSpawnGovernor_InstantDeath_HoldsHullForEscalatingBackoff(t *testing.T) 
 	// waits the backoff".
 	gov.NoteSpawn("TORWIND-24")
 	clock.Advance(1 * time.Second)
-	out = gov.NoteCompletion("TORWIND-24", false)
+	out = gov.NoteCompletion("TORWIND-24", false, "boom 2")
 	if out.InstantDeaths != 2 || out.Quarantined {
 		t.Fatalf("second instant death: got %+v, want InstantDeaths=2 Quarantined=false", out)
 	}
@@ -58,9 +60,16 @@ func TestSpawnGovernor_InstantDeath_HoldsHullForEscalatingBackoff(t *testing.T) 
 	}
 }
 
-// After N instant deaths within the window the hull is quarantined: skipped for
-// the rest of the run, the crossing reported exactly once (JustQuarantined), and
-// a healthy hull alongside it still proceeds - the contract keeps being worked.
+// After N instant deaths within the window the hull is quarantined: held out of
+// selection for the WHOLE cooldown, the crossing reported exactly once
+// (JustQuarantined) and tagged with the instant-death cause, and a healthy hull
+// alongside it still proceeds - the contract keeps being worked.
+//
+// sp-20eyn: this used to assert the hull was ineligible "for the rest of the
+// run". That is no longer true and deliberately so - quarantine is now an
+// expiring circuit breaker, not a blacklist. The assertion below is the
+// STRONGER form of what was pinned: held for the entire cooldown, not merely
+// held at the instant of the crossing.
 func TestSpawnGovernor_NInstantDeaths_QuarantinesHullAndSparesHealthy(t *testing.T) {
 	clock := &shared.MockClock{CurrentTime: time.Now()}
 	gov := newSpawnGovernor(clock)
@@ -69,7 +78,8 @@ func TestSpawnGovernor_NInstantDeaths_QuarantinesHullAndSparesHealthy(t *testing
 	for i := 0; i < spawnQuarantineThreshold; i++ {
 		gov.NoteSpawn("TORWIND-24")
 		clock.Advance(1 * time.Second)
-		last = gov.NoteCompletion("TORWIND-24", false)
+		// Distinct error text per death so ONLY the timing-shaped breaker can trip.
+		last = gov.NoteCompletion("TORWIND-24", false, fmt.Sprintf("boom %d", i))
 		// Advance past whatever backoff was set so the next spawn is allowed.
 		clock.Advance(spawnBackoffSchedule[len(spawnBackoffSchedule)-1])
 	}
@@ -80,8 +90,19 @@ func TestSpawnGovernor_NInstantDeaths_QuarantinesHullAndSparesHealthy(t *testing
 	if last.InstantDeaths != spawnQuarantineThreshold {
 		t.Fatalf("expected InstantDeaths=%d at the quarantine crossing, got %d", spawnQuarantineThreshold, last.InstantDeaths)
 	}
+	if last.Cause != quarantineCauseInstantDeath {
+		t.Fatalf("expected cause %q at an instant-death crossing, got %q", quarantineCauseInstantDeath, last.Cause)
+	}
 	if !gov.Quarantined("TORWIND-24") || gov.Eligible("TORWIND-24") {
-		t.Fatalf("a quarantined hull must be permanently ineligible for the rest of the run")
+		t.Fatalf("a quarantined hull must be ineligible while its cooldown runs")
+	}
+	// Held for the FULL cooldown, right up to the last instant before expiry. The
+	// loop above already burned one backoff interval since the crossing, so only
+	// the remainder is advanced here.
+	sinceCrossing := spawnBackoffSchedule[len(spawnBackoffSchedule)-1]
+	clock.Advance(spawnQuarantineCooldownSchedule[0] - sinceCrossing - time.Second)
+	if !gov.Quarantined("TORWIND-24") || gov.Eligible("TORWIND-24") {
+		t.Fatalf("the hull must stay quarantined for the entire cooldown, not just at the crossing")
 	}
 
 	// The next selection pass over [poison, healthy] must surface the healthy
@@ -105,14 +126,16 @@ func TestSpawnGovernor_Quarantine_ReportedOnlyOnce(t *testing.T) {
 	for i := 0; i < spawnQuarantineThreshold; i++ {
 		gov.NoteSpawn("TORWIND-24")
 		clock.Advance(1 * time.Second)
-		gov.NoteCompletion("TORWIND-24", false)
+		gov.NoteCompletion("TORWIND-24", false, fmt.Sprintf("boom %d", i))
 		clock.Advance(spawnBackoffSchedule[len(spawnBackoffSchedule)-1])
 	}
 
-	// One more instant death on the already-quarantined hull.
+	// One more instant death on the already-quarantined hull, WELL inside the
+	// cooldown (so this is a repeat death, not the post-cooldown re-probe, which
+	// has its own re-quarantine edge - see the re-probe test below).
 	gov.NoteSpawn("TORWIND-24")
 	clock.Advance(1 * time.Second)
-	out := gov.NoteCompletion("TORWIND-24", false)
+	out := gov.NoteCompletion("TORWIND-24", false, "boom again")
 	if out.JustQuarantined {
 		t.Fatalf("quarantine must be edge-triggered - a repeat death must not re-report JustQuarantined, got %+v", out)
 	}
@@ -130,12 +153,12 @@ func TestSpawnGovernor_Success_ClearsStreakAndBackoff(t *testing.T) {
 
 	gov.NoteSpawn("TORWIND-29")
 	clock.Advance(1 * time.Second)
-	gov.NoteCompletion("TORWIND-29", false) // one instant death → backoff
-	clock.Advance(spawnBackoffSchedule[0])  // let it become eligible
+	gov.NoteCompletion("TORWIND-29", false, "boom") // one instant death → backoff
+	clock.Advance(spawnBackoffSchedule[0])          // let it become eligible
 
 	gov.NoteSpawn("TORWIND-29")
 	clock.Advance(1 * time.Second)
-	out := gov.NoteCompletion("TORWIND-29", true) // success clears everything
+	out := gov.NoteCompletion("TORWIND-29", true, "") // success clears everything
 	if out.InstantDeath || out.Quarantined {
 		t.Fatalf("a success must report neither an instant death nor quarantine, got %+v", out)
 	}
@@ -147,9 +170,14 @@ func TestSpawnGovernor_Success_ClearsStreakAndBackoff(t *testing.T) {
 	// not carry over), so the hull is nowhere near quarantine.
 	gov.NoteSpawn("TORWIND-29")
 	clock.Advance(1 * time.Second)
-	out = gov.NoteCompletion("TORWIND-29", false)
+	out = gov.NoteCompletion("TORWIND-29", false, "boom")
 	if out.InstantDeaths != 1 || out.Quarantined {
 		t.Fatalf("a success must reset the streak so the next instant death starts at 1, got %+v", out)
+	}
+	// The identical-error streak resets on the SAME success, so the identical
+	// "boom" before and after it does not carry across.
+	if out.IdenticalErrors != 1 {
+		t.Fatalf("a success must reset the identical-error streak too, got IdenticalErrors=%d", out.IdenticalErrors)
 	}
 }
 
@@ -168,7 +196,7 @@ func TestSpawnGovernor_HealthyHulls_NeverHeld(t *testing.T) {
 	// A successful spawn/complete cycle leaves it eligible.
 	gov.NoteSpawn("TORWIND-3")
 	clock.Advance(5 * time.Minute)
-	gov.NoteCompletion("TORWIND-3", true)
+	gov.NoteCompletion("TORWIND-3", true, "")
 
 	eligible, held := gov.FilterEligible([]string{"TORWIND-3", "TORWIND-29"})
 	if len(held) != 0 {
@@ -181,15 +209,23 @@ func TestSpawnGovernor_HealthyHulls_NeverHeld(t *testing.T) {
 
 // A worker that runs past the instant-death threshold before failing did real
 // work first - it is NOT the hot-respawn signature, so it neither backs the hull
-// off nor accumulates toward quarantine, no matter how many times it happens.
-func TestSpawnGovernor_SlowDeaths_NeverBackoffOrQuarantine(t *testing.T) {
+// off nor accumulates toward the TIMING-shaped breaker, no matter how many times
+// it happens. With a DIFFERENT error each time the content-shaped breaker stays
+// out of it too, so the hull is never quarantined.
+//
+// sp-20eyn: this test previously asserted "slow deaths must never quarantine a
+// hull, no matter how many" with an identical (empty) error every iteration.
+// That claim was the prod hole itself - TORWIND-5 died slowly and identically
+// 34,279 times and was never quarantined. The invariant is now scoped to what it
+// should always have said: it is SLOWNESS PLUS VARIETY that is benign.
+func TestSpawnGovernor_SlowDeathsWithDifferentErrors_NeverBackoffOrQuarantine(t *testing.T) {
 	clock := &shared.MockClock{CurrentTime: time.Now()}
 	gov := newSpawnGovernor(clock)
 
 	for i := 0; i < spawnQuarantineThreshold+2; i++ {
 		gov.NoteSpawn("TORWIND-29")
 		clock.Advance(spawnInstantDeathThreshold + time.Second) // ran long enough to be "real work"
-		out := gov.NoteCompletion("TORWIND-29", false)
+		out := gov.NoteCompletion("TORWIND-29", false, fmt.Sprintf("distinct failure %d", i))
 		if out.InstantDeath {
 			t.Fatalf("a failure after the instant-death threshold must not count as an instant death, got %+v", out)
 		}
@@ -198,7 +234,7 @@ func TestSpawnGovernor_SlowDeaths_NeverBackoffOrQuarantine(t *testing.T) {
 		}
 	}
 	if gov.Quarantined("TORWIND-29") {
-		t.Fatalf("slow deaths must never quarantine a hull, no matter how many")
+		t.Fatalf("slow deaths with DIFFERENT errors must never quarantine a hull, no matter how many")
 	}
 }
 
@@ -208,11 +244,12 @@ func TestSpawnGovernor_DeathsBeyondWindow_StartFreshStreak(t *testing.T) {
 	clock := &shared.MockClock{CurrentTime: time.Now()}
 	gov := newSpawnGovernor(clock)
 
-	// Two instant deaths inside the window.
+	// Two instant deaths inside the window. Distinct error texts so the
+	// content-shaped breaker cannot contaminate a test about the TIME window.
 	for i := 0; i < 2; i++ {
 		gov.NoteSpawn("TORWIND-24")
 		clock.Advance(1 * time.Second)
-		gov.NoteCompletion("TORWIND-24", false)
+		gov.NoteCompletion("TORWIND-24", false, fmt.Sprintf("boom %d", i))
 		clock.Advance(spawnBackoffSchedule[len(spawnBackoffSchedule)-1])
 	}
 
@@ -220,7 +257,7 @@ func TestSpawnGovernor_DeathsBeyondWindow_StartFreshStreak(t *testing.T) {
 	clock.Advance(spawnQuarantineWindow + time.Minute)
 	gov.NoteSpawn("TORWIND-24")
 	clock.Advance(1 * time.Second)
-	out := gov.NoteCompletion("TORWIND-24", false)
+	out := gov.NoteCompletion("TORWIND-24", false, "boom later")
 	if out.InstantDeaths != 1 {
 		t.Fatalf("an instant death beyond the window must start a fresh streak at 1, got %d", out.InstantDeaths)
 	}
@@ -235,7 +272,7 @@ func TestSpawnGovernor_CompletionWithoutSpawn_IsNoOp(t *testing.T) {
 	clock := &shared.MockClock{CurrentTime: time.Now()}
 	gov := newSpawnGovernor(clock)
 
-	out := gov.NoteCompletion("TORWIND-99", false)
+	out := gov.NoteCompletion("TORWIND-99", false, "boom")
 	if out.InstantDeath || out.Quarantined || out.JustQuarantined {
 		t.Fatalf("a completion for an unspawned hull must be inert, got %+v", out)
 	}
@@ -244,10 +281,14 @@ func TestSpawnGovernor_CompletionWithoutSpawn_IsNoOp(t *testing.T) {
 	}
 }
 
-// The one loud captain event carries the hull, the count, a human message, and
-// the interrupt-class coordinator.error_loop type (Ship stays container-scoped).
+// The loud captain event carries the hull, the count, a human message, and the
+// interrupt-class coordinator.error_loop type (Ship stays container-scoped).
 func TestBuildHullQuarantineEvent_CarriesHullCountAndMessage(t *testing.T) {
-	event := buildHullQuarantineEvent("fleet-coordinator-1", 7, "TORWIND-24", 3)
+	event := buildHullQuarantineEvent("fleet-coordinator-1", 7, "TORWIND-24", spawnOutcome{
+		InstantDeaths: 3,
+		Cause:         quarantineCauseInstantDeath,
+		Cooldown:      15 * time.Minute,
+	})
 
 	if event.Type != captain.EventCoordinatorErrorLoop {
 		t.Fatalf("expected interrupt-class coordinator.error_loop type, got %q", event.Type)

@@ -207,7 +207,7 @@ func newFulfillVerifyHarness(t *testing.T, seed *contract.Contract, good string,
 	}
 	shipRepo.ship = med.rebuild(t, startCargo)
 	adapter := &fulfillVerifyMediatorAdapter{fulfillVerifyMediator: med, t: t}
-	handler := NewRunWorkflowHandler(adapter, shipRepo, contractRepo, nil)
+	handler := NewRunWorkflowHandler(adapter, shipRepo, contractRepo, nil, nil)
 	return adapter, handler
 }
 

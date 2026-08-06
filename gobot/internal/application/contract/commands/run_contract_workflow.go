@@ -95,11 +95,17 @@ func WithConcurrentSpendCap(ledger contractServices.ConcurrentSpendLedger) RunWo
 	}
 }
 
-// NewRunWorkflowHandler creates a new contract workflow handler
+// NewRunWorkflowHandler creates a new contract workflow handler.
+//
+// serverContracts is POSITIONAL rather than a functional option on purpose (sp-20eyn): the
+// server-truth reconcile it powers is a guard, not a feature, so every caller is forced by the
+// compiler to answer for it and there is no dormant knob left un-armed. Production passes the
+// real API client; unit tests that drive the workflow without an API pass nil.
 func NewRunWorkflowHandler(
 	mediator common.Mediator,
 	shipRepo navigation.ShipRepository,
 	contractRepo domainContract.ContractRepository,
+	serverContracts contractServices.ServerContractReader,
 	clock shared.Clock,
 	opts ...RunWorkflowOption,
 ) *RunWorkflowHandler {
@@ -109,7 +115,7 @@ func NewRunWorkflowHandler(
 	}
 
 	cargoManager := contractServices.NewCargoManager(mediator, shipRepo)
-	lifecycleService := contractServices.NewContractLifecycleService(mediator, contractRepo)
+	lifecycleService := contractServices.NewContractLifecycleService(mediator, contractRepo, serverContracts)
 	// Arm the proactive source-buy working-capital reserve floor unconditionally in
 	// production (sp-zq635 §4b): a contract source-buy can never silently drop treasury
 	// below the immutable reserve. Add-only safety guard (RULINGS #4), active on deploy
@@ -194,6 +200,20 @@ func (h *RunWorkflowHandler) executeWorkflow(
 		result.Negotiated = true
 	}
 
+	// SERVER-TRUTH RECONCILE, before anything is planned against this contract (sp-20eyn).
+	// The local delivery counts are a cache of numbers the server owns and can only ever be
+	// BEHIND — the direction that spends. Everything downstream (profitability, the delivery
+	// leg's units-remaining guards, CanFulfill) is only as honest as the counts it reads.
+	// Fail-open: an unreadable contract leaves the local counts in place, exactly as before.
+	contract, err = h.lifecycleService.ReconcileWithServer(ctx, contract, cmd.PlayerID)
+	if err != nil {
+		return err
+	}
+
+	if done, err := h.settleAlreadyDeliveredContract(ctx, cmd, contract, result); done {
+		return err
+	}
+
 	profitabilityResp, err := h.lifecycleService.EvaluateContractProfitability(ctx, cmd.ShipSymbol, cmd.PlayerID, contract)
 	if err != nil {
 		// Non-fatal - logged in method
@@ -254,6 +274,83 @@ func (h *RunWorkflowHandler) executeWorkflow(
 	h.negotiateNextContractBestEffort(ctx, cmd)
 
 	return nil
+}
+
+// settleAlreadyDeliveredContract closes out a contract the SERVER already considers delivered,
+// and reports whether it handled the workflow (sp-20eyn, acceptance 4).
+//
+// This is the branch that unwedges the 2026-08-05 TORWIND outage. That agent held a contract the
+// server read as 94/47 delivered and still `fulfilled: false`, while the local row read 0/47. Every
+// worker resumed it, walked into the delivery leg, tried to reload a hull the API could not return,
+// died, and respawned onto the same contract and the same hull — 34,279 times, ~24h of zero income.
+// There was nothing left to deliver the whole time. Fulfilling here, off contract state alone,
+// takes the ship out of the loop entirely: an unreadable, in-transit or missing hull cannot block
+// the collection of a contract that is already paid for in goods.
+//
+// It runs BEFORE profitability evaluation and before the delivery leg, because both are work
+// planned against a contract with nothing left to plan, and the delivery leg is where the ship
+// read that killed prod lives.
+func (h *RunWorkflowHandler) settleAlreadyDeliveredContract(
+	ctx context.Context,
+	cmd *RunWorkflowCommand,
+	contract *domainContract.Contract,
+	result *RunWorkflowResponse,
+) (handled bool, err error) {
+	logger := common.LoggerFromContext(ctx)
+
+	// The server has already fulfilled AND paid this one; the local row was the only thing
+	// still advertising it as work. ReconcileWithServer healed that row, so the next
+	// FindActiveContracts pass will stop handing it out. Nothing left to collect.
+	if contract.Fulfilled() {
+		logger.Log("INFO", fmt.Sprintf(
+			"Contract %s was already fulfilled server-side; local row healed and released, no delivery run needed (sp-20eyn)",
+			contract.ContractID()), map[string]interface{}{
+			"ship_symbol": cmd.ShipSymbol,
+			"action":      "contract_already_fulfilled_server_side",
+			"contract_id": contract.ContractID(),
+		})
+		result.Fulfilled = true
+		return true, nil
+	}
+
+	if !contract.CanFulfill() {
+		return false, nil
+	}
+
+	logger.Log("WARNING", fmt.Sprintf(
+		"Contract %s has every delivery met on the server but is not fulfilled; fulfilling it directly instead of dispatching %s at a contract with nothing left to deliver (sp-20eyn)",
+		contract.ContractID(), cmd.ShipSymbol), map[string]interface{}{
+		"ship_symbol": cmd.ShipSymbol,
+		"action":      "fulfill_already_delivered_contract",
+		"contract_id": contract.ContractID(),
+	})
+
+	// Accept first, always. Fulfill refuses an unaccepted contract ("contract not accepted"),
+	// and this branch overtakes the ordinary path's accept step — so skipping it turns a
+	// short-circuit into a per-pass error, which the continuous contract loop then retries
+	// forever. Idempotent: a no-op on the already-accepted contract this branch normally sees.
+	contract, wasAccepted, err := h.lifecycleService.AcceptContractIfNeeded(ctx, contract, cmd.PlayerID)
+	if err != nil {
+		return true, err
+	}
+	if wasAccepted {
+		result.Accepted = true
+	}
+
+	if err := h.lifecycleService.FulfillContract(ctx, contract, cmd.PlayerID); err != nil {
+		return true, err
+	}
+
+	result.Fulfilled = true
+	result.TotalProfit += h.lifecycleService.CalculateTotalProfit(contract)
+
+	// Same best-effort next-contract claim the ordinary fulfil path makes: the point of
+	// unwedging is that the agent starts earning again on this pass, not the next coordinator
+	// sweep. Failure is swallowed — with an unreadable hull the negotiate will fail, and the
+	// coordinator's discovery pass remains the fallback.
+	h.negotiateNextContractBestEffort(ctx, cmd)
+
+	return true, nil
 }
 
 // negotiateNextContractBestEffort reuses the same idempotent lifecycle calls

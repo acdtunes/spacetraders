@@ -149,7 +149,7 @@ func TestRunWorkflowHandler_ParksOnInsufficientCredits(t *testing.T) {
 	shipRepo := &creditsParkFakeShipRepo{ship: ship}
 	mediator := &creditsParkFakeMediator{ship: ship}
 
-	handler := NewRunWorkflowHandler(mediator, shipRepo, contractRepo, nil)
+	handler := NewRunWorkflowHandler(mediator, shipRepo, contractRepo, nil, nil)
 
 	ctx := auth.WithPlayerToken(context.Background(), "test-token")
 	cmd := &RunWorkflowCommand{

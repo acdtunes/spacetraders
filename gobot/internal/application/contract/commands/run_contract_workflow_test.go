@@ -153,7 +153,7 @@ func TestRunWorkflowHandler_AfterFulfill_NegotiatesAndAcceptsNextContractWithout
 	contractRepo := newWorkflowStubContractRepo(currentContract)
 	mediator := &workflowFakeMediator{contractRepo: contractRepo, nextContract: nextContract}
 
-	handler := NewRunWorkflowHandler(mediator, nil, contractRepo, nil)
+	handler := NewRunWorkflowHandler(mediator, nil, contractRepo, nil, nil)
 
 	ctx := auth.WithPlayerToken(context.Background(), "test-token")
 	cmd := &RunWorkflowCommand{

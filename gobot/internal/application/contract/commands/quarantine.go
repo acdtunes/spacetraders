@@ -8,13 +8,20 @@ import (
 )
 
 // hullQuarantineMessage is the loud, human-readable line the captain sees when
-// a hull is quarantined for repeated instant worker deaths (sp-lybx). It names
-// the hull and the count and points at the likeliest cause, so a mispinned
-// probe or a hull stuck in a bad state is diagnosable from the event alone.
-func hullQuarantineMessage(hull string, instantDeaths int) string {
+// a hull is quarantined (sp-lybx, widened by sp-20eyn). It names the hull, the
+// evidence, and WHEN the hull comes back, so a mispinned probe, a hull stuck in
+// a bad local state, and a hull that is unreadable upstream are told apart from
+// the event alone — and so nobody reads a quarantine as a permanent write-off.
+func hullQuarantineMessage(hull string, outcome spawnOutcome) string {
+	evidence := fmt.Sprintf("%d instant worker deaths — check hull class/state", outcome.InstantDeaths)
+	if outcome.Cause == quarantineCauseRepeatedError {
+		evidence = fmt.Sprintf(
+			"%d consecutive workers failed with the SAME error — check the hull upstream (unreadable ship, stuck server-side state)",
+			outcome.IdenticalErrors)
+	}
 	return fmt.Sprintf(
-		"hull %s quarantined: %d instant worker deaths — check hull class/state (skipped for the rest of this coordinator run)",
-		hull, instantDeaths)
+		"hull %s quarantined: %s (skipped for %s, then re-probed with one worker)",
+		hull, evidence, outcome.Cooldown)
 }
 
 // buildHullQuarantineEvent constructs the ONE loud captain event emitted when a
@@ -28,13 +35,22 @@ func hullQuarantineMessage(hull string, instantDeaths int) string {
 // carried both in the human message and as a structured payload field so
 // consumers can key on it without parsing prose. Pure and deterministic, so it
 // is unit-testable without a real EventRecorder.
-func buildHullQuarantineEvent(containerID string, playerID int, hull string, instantDeaths int) *captain.Event {
+//
+// sp-20eyn added `cause`, `identical_errors` and `cooldown_seconds` alongside the
+// original `instant_deaths`: the two quarantine causes have completely different
+// remedies (a bad hull class vs a hull the API cannot read), and a consumer that
+// cannot see which one fired cannot triage. The pre-existing keys are kept so no
+// downstream reader breaks.
+func buildHullQuarantineEvent(containerID string, playerID int, hull string, outcome spawnOutcome) *captain.Event {
 	payload, err := json.Marshal(map[string]any{
-		"container_id":   containerID,
-		"checkpoint":     "hull_quarantine",
-		"hull":           hull,
-		"instant_deaths": instantDeaths,
-		"message":        hullQuarantineMessage(hull, instantDeaths),
+		"container_id":     containerID,
+		"checkpoint":       "hull_quarantine",
+		"hull":             hull,
+		"cause":            outcome.Cause,
+		"instant_deaths":   outcome.InstantDeaths,
+		"identical_errors": outcome.IdenticalErrors,
+		"cooldown_seconds": outcome.Cooldown.Seconds(),
+		"message":          hullQuarantineMessage(hull, outcome),
 	})
 	if err != nil {
 		payload = []byte("{}")
