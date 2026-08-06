@@ -48,6 +48,14 @@ type PurchaseShipCommand struct {
 	OperationType string
 }
 
+// shipyardPurchaseContainer labels the ferry's spend. A purchase is not a container: nothing
+// here is long-lived and there is no running context to name, so a per-purchase identifier
+// would put an invocation where every other writer puts an operating context — splitting one
+// question ("what do shipyard purchases cost to fly?") across a row per purchase, and meaning
+// something different from the same column elsewhere. Correlating a single ferry back to its
+// purchase stays possible from the hull and the timestamp already on the row.
+const shipyardPurchaseContainer = "shipyard-purchase"
+
 // OperationTypeFleetExpansion is the ledger operation_type for a purchase that
 // grows the fleet: the frontier expansion engine's probes, the autosizer's
 // haulers and explorers, bootstrap's contract hulls, an operator's manual buy.
@@ -267,6 +275,20 @@ func (h *PurchaseShipHandler) navigateToShipyard(
 	if purchasingShip.CurrentLocation().Symbol == shipyardWaypoint {
 		return purchasingShip, nil
 	}
+
+	// Stamp the operation before the hull moves. The flight burns fuel, and the refuel that
+	// pays for it reads its attribution off this context: unstamped, a continuous cost of
+	// buying ships books under the unpropagated else-branch, which is where spend goes to
+	// become permanently unassignable rather than a category anyone chose.
+	//
+	// The label is the one the caller already declared for the purchase itself, so the flight
+	// and the hull it fetches land under the same name instead of the ledger splitting one
+	// decision across two operations. A synthetic container id keeps the pair complete —
+	// the readers ignore a context missing either half.
+	ctx = shared.WithOperationContext(ctx, shared.NewOperationContext(
+		shipyardPurchaseContainer,
+		purchaseOperationType(cmd.OperationType),
+	))
 
 	navCmd := &shipNav.NavigateRouteCommand{
 		ShipSymbol:  cmd.PurchasingShipSymbol,

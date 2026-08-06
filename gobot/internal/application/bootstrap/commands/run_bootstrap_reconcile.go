@@ -7,6 +7,7 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/application/liveconfig"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
 // BootstrapTunableDefaults maps every LIVE-tunable bootstrap knob to its documented
@@ -19,6 +20,9 @@ import (
 // shape of the seed itself, fixed in code. This key is the SEPARATE bare family — distinct from the
 // config.yaml-authoritative prefixed bootstrap_* launch keys — so a tune is never cleared by the
 // launch-config rebuild and survives a daemon bounce (RULINGS #2).
+// bootstrapOperationType is the ledger label for everything a bootstrap tick spends.
+const bootstrapOperationType = "bootstrap"
+
 func BootstrapTunableDefaults() map[string]int {
 	return map[string]int{
 		"tick_secs": defaultBootstrapTickSeconds,
@@ -161,6 +165,14 @@ func (h *RunBootstrapCoordinatorHandler) probeBridge(containerID string) *probeB
 // Every side-effecting step is guarded "already done / in-flight?" and fails CLOSED on an
 // unreadable input, so re-evaluation (including the first tick after a restart) never double-acts.
 func (h *RunBootstrapCoordinatorHandler) reconcileOnce(ctx context.Context, cmd *RunBootstrapCoordinatorCommand) (reconcileResult, error) {
+	// Stamp the tick, not the individual flights inside it. The ports this drives are
+	// registered singletons shared by every container and player, so they hold no identity of
+	// their own to stamp with — the only place the running operation is known is here, and
+	// everything the tick spends inherits it from this one point. Stamping the flights instead
+	// would leave each new one to remember, which is how the fuel for a ferry came to be filed
+	// as if nobody had asked for it.
+	ctx = shared.WithOperationContext(ctx, shared.NewOperationContext(cmd.ContainerID, bootstrapOperationType))
+
 	// The tick runs entirely on the live-config snapshot taken here; a knob tuned mid-tick lands
 	// on the next tick. A nil reader / read miss yields a nil snapshot, which
 	// resolveBootstrapConfig treats as "run this tick on the launch command" (fail-safe launch).

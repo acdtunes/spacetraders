@@ -248,6 +248,10 @@ func (h *RunFleetCoordinatorHandler) SetStandbyPlacementProvider(provider appCon
 }
 
 // Handle executes the fleet coordinator command
+// fleetCoordinatorOperationType files this coordinator's spend alongside the contract work it
+// exists to keep flying, rather than in a category of its own nobody would think to sum.
+const fleetCoordinatorOperationType = "contract_workflow"
+
 func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.Request) (common.Response, error) {
 	logger := common.LoggerFromContext(ctx)
 
@@ -255,6 +259,11 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 	if !ok {
 		return nil, fmt.Errorf("invalid request type")
 	}
+
+	// Everything this tick drives spends fuel that reads its attribution from here. The homing
+	// command carries no identity of its own, so without this the flight books as though nobody
+	// had asked for it.
+	ctx = shared.WithOperationContext(ctx, shared.NewOperationContext(cmd.ContainerID, fleetCoordinatorOperationType))
 
 	result := &RunFleetCoordinatorResponse{
 		ContractsCompleted: 0,

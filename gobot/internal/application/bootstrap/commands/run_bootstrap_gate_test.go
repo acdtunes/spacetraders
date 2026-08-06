@@ -764,12 +764,14 @@ func TestBootstrap_PlanGateWorkers_ReleasesIdleManufacturingSurplus(t *testing.T
 // reports every requested hull released (the happy path), so the test can assert exactly which hulls the
 // coordinator handed to the un-dedicate action.
 type fakeGateReleaser struct {
+	gotCtx     context.Context // the ctx a port actually received, for the attribution test
 	calls      [][]string
 	tradeCalls [][]string // The EXPANSION trade redirects, recorded separately from the surplus un-dedications
 	err        error
 }
 
 func (f *fakeGateReleaser) ReleaseSurplusGateWorkers(ctx context.Context, playerID int, shipSymbols []string) (int, error) {
+	f.gotCtx = ctx
 	f.calls = append(f.calls, shipSymbols)
 	if f.err != nil {
 		return 0, f.err
@@ -778,6 +780,7 @@ func (f *fakeGateReleaser) ReleaseSurplusGateWorkers(ctx context.Context, player
 }
 
 func (f *fakeGateReleaser) ReleaseGateWorkersToTrade(ctx context.Context, playerID int, shipSymbols []string) (int, error) {
+	f.gotCtx = ctx
 	f.tradeCalls = append(f.tradeCalls, shipSymbols)
 	if f.err != nil {
 		return 0, f.err

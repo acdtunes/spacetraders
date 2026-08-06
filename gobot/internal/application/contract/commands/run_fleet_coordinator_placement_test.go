@@ -36,10 +36,17 @@ var _ appContract.StandbyPlacementProvider = (*stubPlacementProvider)(nil)
 type recordingHomeMediator struct {
 	common.Mediator
 	got chan *HomeShipCommand
+	// gotCtx, when wired, receives the context the command was DISPATCHED with. Homing runs in
+	// a detached goroutine, so this is the only race-free way to see what actually crossed.
+	// Left nil by the tests that only care about the command itself.
+	gotCtx chan context.Context
 }
 
-func (m *recordingHomeMediator) Send(_ context.Context, request common.Request) (common.Response, error) {
+func (m *recordingHomeMediator) Send(ctx context.Context, request common.Request) (common.Response, error) {
 	if cmd, ok := request.(*HomeShipCommand); ok {
+		if m.gotCtx != nil {
+			m.gotCtx <- ctx
+		}
 		m.got <- cmd
 		return &HomeShipResponse{}, nil
 	}

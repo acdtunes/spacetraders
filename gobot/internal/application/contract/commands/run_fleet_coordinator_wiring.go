@@ -133,11 +133,13 @@ func (m *mediatorShipHomer) HomeShip(ctx context.Context, shipSymbol string, sta
 		StandbyStations: standbyStations,
 		FleetShips:      resolveDedicatedMembersForHoming(ctx, logger, m.shipRepo, m.playerID, m.fleet, nil),
 	}
+	opCtx := shared.OperationContextFromContext(ctx)
 	go func() {
-		// Background context (the dispatch ctx may be cancelled when the
-		// coordinator stops) carrying the container logger, mirroring the
-		// contract-handoff homing goroutine.
-		homeCtx := common.WithLogger(context.Background(), logger)
+		// Background context, because the dispatch ctx is cancelled when the coordinator stops
+		// and this flight must outlive it. Cancellation is the only thing that must not cross
+		// the boundary: the container logger and the operation the work belongs to both do, or
+		// the fuel the re-home burns is spend nobody can attribute.
+		homeCtx := shared.WithOperationContext(common.WithLogger(context.Background(), logger), opCtx)
 		if _, err := m.mediator.Send(homeCtx, homeCmd); err != nil {
 			logger.Log("WARNING", fmt.Sprintf("Idle-arb re-home: homing %s failed: %v", shipSymbol, err), nil)
 		}

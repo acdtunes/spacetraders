@@ -25,13 +25,17 @@ func (h *RunFleetCoordinatorHandler) repositionPreviousShip(ctx context.Context,
 	if !isDedicatedShip(previousShipSymbol, dedicatedMembers) {
 		logger.Log("INFO", fmt.Sprintf("Selected ship changed from %s to %s - balancing previous ship position", previousShipSymbol, selectedShip), nil)
 
+		opCtx := shared.OperationContextFromContext(ctx)
 		go func(shipSymbol string, playerID shared.PlayerID, coordinatorID string) {
 			balanceCmd := &BalanceShipPositionCommand{
 				ShipSymbol:    shipSymbol,
 				PlayerID:      playerID,
 				CoordinatorID: coordinatorID,
 			}
-			balanceCtx := common.WithLogger(context.Background(), common.LoggerFromContext(ctx))
+			// The goroutine deliberately starts from a background context so the flight outlives the
+			// tick that scheduled it. Cancellation is what must not cross that boundary; the operation
+			// the work belongs to still must, or the fuel it burns is spend nobody can attribute.
+			balanceCtx := shared.WithOperationContext(common.WithLogger(context.Background(), common.LoggerFromContext(ctx)), opCtx)
 
 			_, err := h.fleetPoolManager.GetMediator().Send(balanceCtx, balanceCmd)
 			if err != nil {
@@ -56,6 +60,7 @@ func (h *RunFleetCoordinatorHandler) repositionPreviousShip(ctx context.Context,
 	// by symbol against the dedicated roster (FleetShips) — no demand.
 	liveStandby = appContract.ResolveStandbyForHoming(ctx, logger, h.standbyPlacementProvider, cmd.PlayerID.Value(), liveStandby)
 
+	opCtx := shared.OperationContextFromContext(ctx)
 	go func(shipSymbol string, playerID shared.PlayerID, standbyStations []string, fleetShips []string) {
 		homeCmd := &HomeShipCommand{
 			ShipSymbol:      shipSymbol,
@@ -63,7 +68,10 @@ func (h *RunFleetCoordinatorHandler) repositionPreviousShip(ctx context.Context,
 			StandbyStations: standbyStations,
 			FleetShips:      fleetShips,
 		}
-		homeCtx := common.WithLogger(context.Background(), common.LoggerFromContext(ctx))
+		// The goroutine deliberately starts from a background context so the flight outlives the
+		// tick that scheduled it. Cancellation is what must not cross that boundary; the operation
+		// the work belongs to still must, or the fuel it burns is spend nobody can attribute.
+		homeCtx := shared.WithOperationContext(common.WithLogger(context.Background(), common.LoggerFromContext(ctx)), opCtx)
 
 		_, err := h.fleetPoolManager.GetMediator().Send(homeCtx, homeCmd)
 		if err != nil {
@@ -109,6 +117,7 @@ func (h *RunFleetCoordinatorHandler) homeCompletedHullToStandby(ctx context.Cont
 	// Fire-and-forget on a background context carrying the container logger — the
 	// SAME async dispatch the between-legs hook uses (HomeShipCommand blocks for the
 	// whole flight, so a synchronous send would stall the coordinator loop).
+	opCtx := shared.OperationContextFromContext(ctx)
 	go func(shipSymbol string, playerID shared.PlayerID, standbyStations []string, fleetShips []string) {
 		homeCmd := &HomeShipCommand{
 			ShipSymbol:      shipSymbol,
@@ -116,7 +125,10 @@ func (h *RunFleetCoordinatorHandler) homeCompletedHullToStandby(ctx context.Cont
 			StandbyStations: standbyStations,
 			FleetShips:      fleetShips,
 		}
-		homeCtx := common.WithLogger(context.Background(), logger)
+		// The goroutine deliberately starts from a background context so the flight outlives the
+		// tick that scheduled it. Cancellation is what must not cross that boundary; the operation
+		// the work belongs to still must, or the fuel it burns is spend nobody can attribute.
+		homeCtx := shared.WithOperationContext(common.WithLogger(context.Background(), logger), opCtx)
 		if _, err := h.fleetPoolManager.GetMediator().Send(homeCtx, homeCmd); err != nil {
 			logger.Log("WARNING", fmt.Sprintf("immediate homing: failed to home completed hull %s: %v", shipSymbol, err), nil)
 		}
