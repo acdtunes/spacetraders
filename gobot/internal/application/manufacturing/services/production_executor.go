@@ -302,12 +302,54 @@ func (e *ProductionExecutor) fillFromSource(
 		}
 
 		// Both money guards are re-checked EVERY iteration against live treasury and fail CLOSED
-		// (RULINGS #4): once the NEXT tranche would breach, the loop stops and delivers what is
-		// aboard rather than forcing the buy.
+		// (RULINGS #4): once the NEXT tranche would breach, the loop SHRINKS it to what the reserve
+		// can absorb, and stops only when even the minimum viable tranche will not fit.
+		//
+		// SHRINK, NOT BYPASS (sp-xcjuy). A full tranche breaching used to end the fill outright, so
+		// a step whose ask had risen died entirely: live, 60 IRON at 4,044 cost 242,640 against a
+		// 460,373 reserve on a 648,388 treasury, and the gate sat at FAB_MATS 1301/1600 for 78
+		// minutes while a 25-unit tranche would have fitted with 100k to spare. Treasury was FALLING
+		// across the stall, so there was no self-recovery path — waiting required reserve + a full
+		// tranche to become affordable, which was moving further away, not closer.
+		//
+		// The guard below still runs on the SHRUNKEN size and still decides. Nothing here spends
+		// against an unvalidated number: affordableTrancheUnits only PROPOSES, and a proposal that
+		// the guard then refuses stops the fill exactly as before.
 		projectedCost := trancheQty * ask
 		if breached, enforcedFloor := e.spendFloorBreached(ctx, playerID, projectedCost); breached {
-			logSpendFloorStop(ctx, good, source.WaypointSymbol, fill.acquired, projectedCost, enforcedFloor)
-			break
+			// THE RESIZE RESCUES AN EMPTY LEG, AND ONLY AN EMPTY LEG.
+			//
+			// With units already aboard the pre-existing behaviour is right and is left exactly as
+			// it was: stop, and deliver what the hull carries. The hull is not going home empty, the
+			// factory gets fed, and grinding the treasury down toward the floor in ever-smaller
+			// tranches would buy little while spending the fleet's whole cushion.
+			//
+			// It is acquired == 0 that is the defect: there the leg returns with NOTHING, the step
+			// is scored a failure, and the gate makes no progress at all. That is the 78-minute
+			// stall — one oversized first tranche, and the entire leg dies.
+			if fill.acquired > 0 {
+				logSpendFloorStop(ctx, good, source.WaypointSymbol, fill.acquired, projectedCost, enforcedFloor)
+				break
+			}
+			affordable := e.affordableTrancheUnits(ctx, playerID, ask, trancheQty)
+			if affordable < minViableTrancheUnits {
+				// Below the min-effective delivery a leg buys a dribble the feed side has already
+				// measured as moving a factory's activity nothing. Logged DISTINCTLY from the
+				// ordinary stop so "the reserve is genuinely too tight for a useful buy" and "the
+				// full tranche happened not to fit" are never the same line again.
+				logSpendFloorTooTightToShrink(ctx, good, source.WaypointSymbol, fill.acquired, trancheQty, affordable, projectedCost, enforcedFloor)
+				break
+			}
+			logSpendFloorShrink(ctx, good, source.WaypointSymbol, trancheQty, affordable, projectedCost, enforcedFloor)
+			trancheQty = affordable
+			projectedCost = trancheQty * ask
+			// THE GUARD DECIDES, EVEN ON THE SIZE WE JUST PROPOSED. Re-running it is what keeps this
+			// a resize rather than a relaxation: the shrunken buy has to pass the same commit-time
+			// check the full one failed, on a fresh treasury read.
+			if reBreached, reFloor := e.spendFloorBreached(ctx, playerID, projectedCost); reBreached {
+				logSpendFloorStop(ctx, good, source.WaypointSymbol, fill.acquired, projectedCost, reFloor)
+				break
+			}
 		}
 
 		purchaseCmd := &shipCargo.PurchaseCargoCommand{
@@ -634,5 +676,36 @@ func logEmptyTrancheStop(ctx context.Context, good, waypoint string, acquired in
 	}
 	logger.Log("INFO", fmt.Sprintf("Stopping hull-fill of %s at %s after %d units — market stock exhausted; delivering what is aboard", good, waypoint, acquired), map[string]interface{}{
 		"good": good, "market": waypoint, "acquired": acquired,
+	})
+}
+
+// logSpendFloorShrink records a tranche RESIZED to fit the reserve (sp-xcjuy). It is INFO, not a
+// warning: the buy proceeds and the factory gets fed. Distinct from the stop lines below so
+// "progress, just smaller" is never read as a park.
+func logSpendFloorShrink(ctx context.Context, good, waypoint string, wanted, shrunk, wantedCost, enforcedFloor int) {
+	common.LoggerFromContext(ctx).Log("INFO", fmt.Sprintf(
+		"Resized the %s tranche at %s from %d to %d units — the full %d would have cost %d against a reserve of %d, so the fill proceeds smaller rather than not at all",
+		good, waypoint, wanted, shrunk, wanted, wantedCost, enforcedFloor), map[string]interface{}{
+		"good": good, "market": waypoint, "wanted_units": wanted, "units": shrunk,
+		"wanted_cost": wantedCost, "reserve": enforcedFloor,
+		"action": "tranche_resized", "reason": "spend_floor_shrink",
+	})
+}
+
+// logSpendFloorTooTightToShrink records the one case that still declines: the reserve cannot absorb
+// even the min-effective tranche (sp-xcjuy).
+//
+// IT IS A SEPARATE LINE FROM logSpendFloorStop ON PURPOSE (acceptance criterion 5). The ordinary
+// stop means "the next tranche did not fit"; this means "no USEFUL tranche fits at all", which is a
+// statement about the treasury rather than about this buy — and conflating them is how the 78-minute
+// stall looked like routine tranche accounting.
+func logSpendFloorTooTightToShrink(ctx context.Context, good, waypoint string, acquired, wanted, affordable, wantedCost, enforcedFloor int) {
+	common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf(
+		"Parked input purchase of %s at %s — UNAFFORDABLE EVEN AT THE MINIMUM TRANCHE: %d units would cost %d against a reserve of %d, and the reserve leaves room for only %d units against a %d-unit minimum. %d already aboard",
+		good, waypoint, wanted, wantedCost, enforcedFloor, affordable, minViableTrancheUnits, acquired), map[string]interface{}{
+		"good": good, "market": waypoint, "wanted_units": wanted, "affordable_units": affordable,
+		"min_units": minViableTrancheUnits, "projected_cost": wantedCost, "reserve": enforcedFloor,
+		"acquired": acquired,
+		"action":   "factory_parked", "reason": "spend_floor_below_min_tranche",
 	})
 }

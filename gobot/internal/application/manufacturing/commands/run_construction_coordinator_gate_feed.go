@@ -596,7 +596,24 @@ func (h *RunConstructionCoordinatorHandler) planGateFeed(
 			// feed — refusing on ABSENCE of evidence rather than on evidence, which deadlocks exactly
 			// when the fleet is coldest.
 			if source.Price > 0 && source.TradeVolume > 0 {
+				// PRICE WHAT THE BUY WILL ACTUALLY SHRINK TO, not the full tranche (sp-xcjuy).
+				//
+				// This used to price min(units, TradeVolume) — the FULL first tranche — and decline
+				// the step when that breached. Once fillFromSource learned to resize a breaching
+				// tranche down to the largest affordable one, that made the planner strictly
+				// stricter than the buy: it refused steps the buy would have completed, and the
+				// refusal happened first, so the sizing-down never ran. Live, that stalled the gate
+				// at FAB_MATS 1301/1600 for 78 minutes — a 60-unit IRON tranche at 4,044 was
+				// declined while a 25-unit one fitted with ~100k to spare.
+				//
+				// So the question the precheck asks is now the same question the buy will ask: can
+				// the reserve absorb the SMALLEST USEFUL tranche? If not, no size of this step is
+				// worth a leg and declining is right. If it can, the step is viable and the buy
+				// sizes it — the planner does not need to predict which size.
 				tranche := min(units, source.TradeVolume)
+				if tranche > mfgServices.MinViableTrancheUnits {
+					tranche = mfgServices.MinViableTrancheUnits
+				}
 				projected := tranche * source.Price
 				if breached, reserve := h.factory.buyer.SpendFloorWouldBreach(ctx, cmd.PlayerID, projected); breached {
 					// THE NUMBERS GO IN THE MESSAGE. The container log renderer drops metadata maps,
@@ -607,7 +624,7 @@ func (h *RunConstructionCoordinatorHandler) planGateFeed(
 					// (criterion 4): one says a hull flew and was refused, the other says no hull was
 					// ever sent. Collapsing them into one phrase rebuilds the log archaeology this
 					// bead was filed out of.
-					logger.Log("WARNING", fmt.Sprintf("Gate factory: declining the %s feed for the %s factory — %d units at %s would cost about %d against a reserve of %d, so this leg takes the next affordable step instead of stalling on this one", step.Input, step.Target, tranche, source.WaypointSymbol, projected, reserve), map[string]interface{}{
+					logger.Log("WARNING", fmt.Sprintf("Gate factory: declining the %s feed for the %s factory — even the MINIMUM %d-unit tranche at %s would cost about %d against a reserve of %d, so no size of this step is affordable and the leg takes the next one", step.Input, step.Target, tranche, source.WaypointSymbol, projected, reserve), map[string]interface{}{
 						"good": step.Input, "target": step.Target, "source": source.WaypointSymbol,
 						"units": tranche, "projected_cost": projected, "reserve": reserve,
 						"reason": "unaffordable_input", "action": "step_skipped_unaffordable",

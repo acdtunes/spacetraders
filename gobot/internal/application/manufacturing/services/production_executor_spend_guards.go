@@ -236,6 +236,64 @@ func (e *ProductionExecutor) spendFloorBreached(ctx context.Context, playerID, p
 	return false, reserve
 }
 
+// minViableTrancheUnits is the smallest input buy worth a leg (sp-xcjuy).
+//
+// IT IS THE FEED SIDE'S OWN MIN-EFFECTIVE DELIVERY, NOT A NEW NUMBER. defaultFeedSaturationMinUnits
+// is the analyst-verified figure at which a delivery starts moving a factory's activity at all —
+// "<25u moves activity nothing, so a balanced tranche is never sized below this (a dribble is
+// wasted hull-hours)" — and the feeding policy already floors every delivery at it for exactly that
+// reason. Buying below it would acquire a quantity the feed side has already measured as moving
+// nothing, so the leg would fly, dock, spend and deliver a dribble.
+//
+// Deriving it rather than picking a round number also keeps the two sides from disagreeing: a buy
+// floor BELOW the feed floor would purchase amounts the feeding policy would round up or waste, and
+// a buy floor ABOVE it would refuse buys the feed side considers effective.
+const minViableTrancheUnits = defaultFeedSaturationMinUnits
+
+// MinViableTrancheUnits exports the floor so the gate feed's PRE-dispatch affordability check can
+// price the same quantity the buy will actually shrink to. Without that agreement the precheck
+// declines a step the buy would have completed — which is precisely the 78-minute stall: the
+// planner priced a FULL 60-unit tranche, refused, and the sizing-down below never ran.
+const MinViableTrancheUnits = minViableTrancheUnits
+
+// affordableTrancheUnits is the largest tranche of `want` units at `ask` that the working-capital
+// reserve can absorb right now, or 0 when even one unit cannot fit (sp-xcjuy).
+//
+// IT PROPOSES A SIZE; IT DOES NOT DECIDE A SPEND (RULINGS #4). Every caller re-runs
+// spendFloorBreached on the size this returns, so the commit-time guard remains the sole authority
+// on whether a buy may proceed and still runs on every tranche. This can only make a proposed buy
+// SMALLER — it never raises one, never skips the guard, and returning 0 collapses to today's
+// decline. That direction is pinned by TestFillFromSource_SizesDownButNeverPastTheGuard.
+//
+// It reads treasury and the reserve through the SAME primitives spendFloorBreached uses
+// (treasuryCredits, budgetedReserveFloor) rather than re-deriving either, so the size proposed and
+// the size validated can never be computed from different numbers.
+//
+// Fails CLOSED (returns 0) on an unreadable treasury, exactly as the guard does, and fails OPEN
+// (returns want) only when no treasury source is wired at all — the package's fixture contract,
+// never the daemon.
+func (e *ProductionExecutor) affordableTrancheUnits(ctx context.Context, playerID, ask, want int) int {
+	if ask <= 0 || want <= 0 {
+		return 0
+	}
+	if e.apiClient == nil && e.treasury == nil {
+		return want // no guard wired: the fixture contract, unchanged
+	}
+	credits, err := e.treasuryCredits(ctx, playerID)
+	if err != nil {
+		return 0 // blind: propose nothing, exactly as the guard parks
+	}
+	treasury := int(credits)
+	headroom := treasury - e.budgetedReserveFloor(ctx, playerID, treasury)
+	if headroom <= 0 {
+		return 0
+	}
+	if affordable := headroom / ask; affordable < want {
+		return affordable
+	}
+	return want
+}
+
 // SpendFloorWouldBreach exports the floor test above so a PLANNER can ask it before choosing a
 // step, and returns the reserve actually enforced so the caller names the real number rather than
 // re-deriving a base the capital budget may have raised.

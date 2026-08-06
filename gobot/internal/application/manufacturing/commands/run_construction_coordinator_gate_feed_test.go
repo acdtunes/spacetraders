@@ -38,6 +38,10 @@ type stubFactoryTopology struct {
 	// same, and "declined the expensive one" would be indistinguishable from "declined the first
 	// one", which is the very confusion sp-9eor3 is about.
 	priceByGood map[string]int
+	// volumeByGood overrides the per-transaction trade volume. Needed to exercise the precheck's
+	// minimum-tranche pricing at all: the default fixture volume is below the min-effective floor,
+	// so min(units, volume) is already under it and the two pricings coincide.
+	volumeByGood map[string]int
 	// importSupply is the destination factory's IMPORT supply of an input, keyed
 	// "FACTORY-WAYPOINT|INPUT" — the third quantity sp-q9um6 ranks on, deliberately NOT derivable
 	// from supplyByGood. supplyByGood is what TerminalFactory reports (a market's EXPORT supply of
@@ -118,11 +122,15 @@ func (s *stubFactoryTopology) TerminalFactory(_ context.Context, good, _ string,
 	if quote, ok := s.priceByGood[good]; ok {
 		price = quote
 	}
+	volume := gateTestTradeVolume
+	if v, ok := s.volumeByGood[good]; ok {
+		volume = v
+	}
 	return &mfgServices.MarketLocatorResult{
 		WaypointSymbol: good + "-EXPORTER",
 		Supply:         supply,
 		Price:          price,
-		TradeVolume:    gateTestTradeVolume,
+		TradeVolume:    volume,
 	}, nil
 }
 
@@ -1825,5 +1833,56 @@ func TestConstructionDrain_StillDeclinesAWedgedDELIVERYHullAfterTheRoleSplit(t *
 	// factory role and feedGateLegFromHold unloads for free.
 	if strings.Contains(logger.joined(), "before it can work again") {
 		t.Fatalf("the decline still advises manual intervention unconditionally, for a state the reallocation recovers by itself whenever the cargo is factory feedstock:\n%s", logger.joined())
+	}
+}
+
+// sp-xcjuy: THE PRECHECK MUST PRICE THE MINIMUM TRANCHE, NOT THE FULL ONE.
+//
+// fillFromSource resizes a breaching tranche down to the largest affordable one, but the planner
+// runs FIRST — so a precheck that prices the full tranche declines the step before the resize can
+// ever happen, and the fix is inert. That is the 78-minute gate stall exactly: 60 IRON at 4,044 was
+// refused while a 25-unit tranche had ~87k of room.
+//
+// Found by mutation probe, not by review: reverting the precheck to the full tranche compiled and
+// killed no test at all.
+func TestFeedGateLeg_TakesAStepWhoseMinimumTrancheFitsEvenWhenTheFullOneDoesNot(t *testing.T) {
+	f := newGateFactoryHandler(t)
+	// The incident's market: IRON at 4,044 with a 60-unit trade volume.
+	f.topo.priceByGood = map[string]int{"IRON": 4044}
+	f.topo.volumeByGood = map[string]int{"IRON": 60}
+	// Full 60 x 4044 = 242,640 (breaches); minimum 25 x 4044 = 101,100 (fits).
+	f.buyer.spendHeadroom = 150_000
+	assertIronIsPlannedBeforeQuartz(t, f)
+
+	f.runFeed(t, "GF-1")
+
+	bought := f.buyer.goods()
+	if _, boughtIron := bought["IRON"]; !boughtIron {
+		t.Fatalf("bought %v — IRON was declined although a %d-unit minimum tranche (%d credits) fits inside %d of headroom. Pricing the FULL tranche here refuses a step the buy would have completed, and the refusal happens first, so the resize never runs",
+			bought, mfgServices.MinViableTrancheUnits, mfgServices.MinViableTrancheUnits*4044, f.buyer.spendHeadroom)
+	}
+
+	// NON-VACUITY: the FULL tranche must genuinely be unaffordable, or this passes for a precheck
+	// that never narrowed anything.
+	if full := 60 * 4044; full <= f.buyer.spendHeadroom {
+		t.Fatalf("fixture is inert: the full tranche costs %d against %d headroom, so it was affordable all along", full, f.buyer.spendHeadroom)
+	}
+}
+
+// AND A STEP NO SIZE OF WHICH FITS IS STILL DECLINED, with its own wording (criterion 5).
+func TestFeedGateLeg_DeclinesWhenEvenTheMinimumTrancheBreaches(t *testing.T) {
+	f := newGateFactoryHandler(t)
+	f.topo.priceByGood = map[string]int{"IRON": 4044, "QUARTZ_SAND": 23}
+	f.topo.volumeByGood = map[string]int{"IRON": 60}
+	// 25 x 4044 = 101,100 — above this headroom, so no size of the IRON step is affordable.
+	f.buyer.spendHeadroom = 50_000
+
+	f.runFeed(t, "GF-1")
+
+	if _, boughtIron := f.buyer.goods()["IRON"]; boughtIron {
+		t.Fatal("bought IRON although even the minimum tranche breaches the reserve")
+	}
+	if want := "even the MINIMUM"; !strings.Contains(f.logLines(), want) {
+		t.Fatalf("no %q line: 'no size of this step is affordable' must not share wording with an ordinary decline:\n%s", want, f.logLines())
 	}
 }
