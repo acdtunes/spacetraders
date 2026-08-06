@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"fmt"
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
 	"math"
 	"time"
 
@@ -432,6 +433,32 @@ func (h *RunArbCoordinatorHandler) execute(
 
 	if err := reportHeldRemainder(cmd, response, sellResp, tranche, minBidPerUnit, quotedBid, sellFloorFraction, logger); err != nil {
 		return err
+	}
+
+	// THE REALIZED PAIR, PUBLISHED (sp-4i59r). trade_margin_percent and trade_profit_per_unit were
+	// declared, registered, correctly implemented — and never fed, so the histograms have never
+	// emitted a sample. When margin collapsed ~69% -> ~8% the only way to see it was hand-summing
+	// the transactions table in 15-minute buckets, and that aggregate cannot say WHICH good decayed.
+	//
+	// HERE BECAUSE THIS IS WHERE THE PAIR IS REALIZED, not merely projected. The decision-time quotes
+	// (source ask, destination bid) are known much earlier, but recording those would publish an
+	// INTENDED margin: it would miss price movement between the legs, partial fills, and every sale
+	// that came in under its quote — exactly the decay the metric exists to show. TotalCost is the
+	// basis actually paid (including a resumed run's PriorAttemptCost) and TotalRevenue is what the
+	// market actually paid us.
+	//
+	// PER-UNIT AND INTEGER-DIVIDED, because that is the shape RecordTrade takes. The division is
+	// safe: it is guarded on UnitsTraded > 0 below, and RecordTrade itself refuses non-positive
+	// inputs.
+	//
+	// SKIPPED RATHER THAN GUESSED when the basis is missing. TotalCost is 0 when a resumed run's
+	// cost was never persisted — the documented fail-open floor — and a 0 basis would publish an
+	// infinite margin. A missing sample is better than a wrong one.
+	if response.UnitsTraded > 0 && response.TotalCost > 0 && response.TotalRevenue > 0 {
+		metrics.RecordTradeMetrics(cmd.PlayerID, cmd.Good,
+			response.TotalCost/response.UnitsTraded,
+			response.TotalRevenue/response.UnitsTraded,
+			response.UnitsTraded)
 	}
 
 	logger.Log("INFO", "One-shot arb complete", map[string]interface{}{

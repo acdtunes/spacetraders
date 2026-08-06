@@ -327,3 +327,19 @@ func RecordTransaction(playerID int, agentSymbol string, transactionType string,
 		globalFinancialCollector.RecordTransaction(playerID, agentSymbol, transactionType, category, amount, creditsBalance, operationType)
 	}
 }
+
+// RecordTradeMetrics publishes a REALIZED trade's per-unit economics through the global financial
+// collector (sp-4i59r).
+//
+// The wrapper existed for every other collector in this package and not for this one, which is a
+// large part of why RecordTrade was never called: a caller in the application layer has no handle on
+// the collector, only on these package-level functions. Declared, registered, correctly implemented,
+// and unreachable.
+//
+// Nil-safe and best-effort like its siblings: metrics are pure observation and a recording miss must
+// never alter a trade decision (RULINGS #4).
+func RecordTradeMetrics(playerID int, goodSymbol string, buyPrice, sellPrice, quantity int) {
+	if globalFinancialCollector != nil {
+		globalFinancialCollector.RecordTrade(playerID, goodSymbol, buyPrice, sellPrice, quantity)
+	}
+}
