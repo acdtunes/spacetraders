@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/prometheus/client_golang/prometheus"
 	"gorm.io/gorm"
 )
@@ -224,17 +225,13 @@ func (c *MarketMetricsCollector) updateAllMetrics() {
 		return
 	}
 
-	// Get list of active players and systems
-	players, systems := c.getActivePlayersAndSystems()
-
-	for _, playerID := range players {
-		for _, systemSymbol := range systems {
-			scope := newMarketScope(playerID, systemSymbol)
-			c.updateCoverageMetrics(scope)
-			c.updatePriceMetrics(scope)
-			c.updateSupplyDemandMetrics(scope)
-			c.updateTradingOpportunities(scope)
-		}
+	// One pass per (player, system) that actually holds rows — not the cross product of the two
+	// sets, which spent four queries per poll on every combination that never existed.
+	for _, scope := range c.activeScopes() {
+		c.updateCoverageMetrics(scope)
+		c.updatePriceMetrics(scope)
+		c.updateSupplyDemandMetrics(scope)
+		c.updateTradingOpportunities(scope)
 	}
 }
 
@@ -256,47 +253,89 @@ func newMarketScope(playerID int, system string) marketScope {
 	}
 }
 
-// getActivePlayersAndSystems retrieves list of players and systems with market data
-func (c *MarketMetricsCollector) getActivePlayersAndSystems() ([]int, []string) {
+// activeScopes returns the (player, system) pairs that actually hold market data in the OPEN
+// era — one scope per pair, and no scope for a pair that has no rows.
+//
+// It replaces a version that returned two independent lists which the caller multiplied into a
+// cross product (sp-hrko6). Two things were wrong with that, and they compound:
+//
+// THE PAIRING WAS DISCARDED. The query already knows which (player, system) combinations exist;
+// splitting them into a set of players and a set of systems threw that away and re-derived every
+// combination, most of which have no rows. Each empty scope still costs four SQL round trips per
+// poll and still registers its Prometheus label series.
+//
+// AND market_data IS NOT PRUNED ON AN ERA ROLLOVER. `universe transition` deliberately preserves
+// the prior era's rows (only the gated `universe close` truncates), so an unscoped enumeration
+// keeps every dead era's player alive in the label set forever, and multiplies it by every system
+// any era ever visited. That is not merely cost: the market dashboards aggregate with an
+// unqualified `sum()` over these series — `sum(market_coverage_fresh) / sum(market_coverage_total)`
+// — so a dead era contributes a permanent, never-fresh denominator and drags the fresh-coverage
+// panel down forever. At the last measured ratio (27k dead rows against 3.3k live) that is most of
+// the number.
+//
+// FAIL-OPEN on an unresolvable era: fall back to every player rather than reporting nothing. This
+// is observability, not a money guard — a metrics collector that silently emits zero series is
+// harder to diagnose than one reporting a superset, and a database predating the eras table would
+// otherwise go dark.
+// The system is derived in Go via shared.ExtractSystemSymbol rather than in SQL. The previous
+// version used split_part, which is PostgreSQL-only — it made this path untestable against the
+// SQLite the suite runs on, and market_data has no system column precisely because every other
+// reader of this table derives it the same way.
+func (c *MarketMetricsCollector) activeScopes() []marketScope {
 	var results []struct {
-		PlayerID     int
-		SystemSymbol string
+		PlayerID       int
+		WaypointSymbol string
 	}
 
-	// Query to get distinct player_id and system combinations
-	// PostgreSQL-compatible: Extract system symbol (first two parts: X1-AU21)
-	err := c.db.Raw(`
-		SELECT DISTINCT
-			player_id,
-			split_part(waypoint_symbol, '-', 1) || '-' || split_part(waypoint_symbol, '-', 2) as system_symbol
-		FROM market_data
-	`).Scan(&results).Error
+	const scopeQuery = `SELECT DISTINCT player_id, waypoint_symbol FROM market_data`
 
+	openEraPlayer, err := c.openEraPlayerID()
 	if err != nil {
-		log.Printf("Failed to get active players and systems: %v", err)
+		log.Printf("Failed to resolve the open era's player for market metrics (reporting every player): %v", err)
+	}
+
+	query := scopeQuery
+	var args []interface{}
+	if openEraPlayer != nil {
+		query = scopeQuery + " WHERE player_id = ?"
+		args = append(args, *openEraPlayer)
+	}
+
+	if err := c.db.Raw(query, args...).Scan(&results).Error; err != nil {
+		log.Printf("Failed to get active market scopes: %v", err)
+		return nil
+	}
+
+	seen := make(map[string]bool, len(results))
+	scopes := make([]marketScope, 0, len(results))
+	for _, r := range results {
+		system := shared.ExtractSystemSymbol(r.WaypointSymbol)
+		if system == "" {
+			continue
+		}
+		key := strconv.Itoa(r.PlayerID) + "|" + system
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		scopes = append(scopes, newMarketScope(r.PlayerID, system))
+	}
+	return scopes
+}
+
+// openEraPlayerID returns the player of the currently-open era, or nil when no era is open (or
+// the eras table does not exist yet). A nil result is not an error — it is the caller's signal
+// to fall back to every player.
+func (c *MarketMetricsCollector) openEraPlayerID() (*int, error) {
+	var playerIDs []int
+	if err := c.db.Raw(`SELECT player_id FROM eras WHERE closed_at IS NULL ORDER BY era_id DESC LIMIT 1`).
+		Scan(&playerIDs).Error; err != nil {
+		return nil, err
+	}
+	if len(playerIDs) == 0 {
 		return nil, nil
 	}
-
-	// Deduplicate
-	playersMap := make(map[int]bool)
-	systemsMap := make(map[string]bool)
-
-	for _, r := range results {
-		playersMap[r.PlayerID] = true
-		systemsMap[r.SystemSymbol] = true
-	}
-
-	players := make([]int, 0, len(playersMap))
-	for p := range playersMap {
-		players = append(players, p)
-	}
-
-	systems := make([]string, 0, len(systemsMap))
-	for s := range systemsMap {
-		systems = append(systems, s)
-	}
-
-	return players, systems
+	return &playerIDs[0], nil
 }
 
 // updateCoverageMetrics updates market coverage and freshness metrics

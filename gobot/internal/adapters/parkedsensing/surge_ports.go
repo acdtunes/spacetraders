@@ -59,13 +59,30 @@ func NewUnpricedPoolPort(db *gorm.DB) *UnpricedPoolPort {
 // against an 85% ceiling. So an unresolvable era REFUSES, and the surge reads the
 // refusal as "dispatch nothing this tick".
 //
-// market_data IS NOT ERA-SCOPED, and it does not need to be — but the reasoning has
-// to be stated rather than assumed. The table carries no era column at all; what
-// keeps it honest is that the era transition TRUNCATES the player-partitioned market
-// cache, and that the difference below is taken over the era-scoped CHARTED set, so a
-// priced system that is not charted in the open era simply never appears on either
-// side. A stale priced row can therefore only ever exclude a system that was not a
-// candidate anyway.
+// market_data CARRIES NO ERA COLUMN, and it does not need one — but the reasoning has to
+// be stated rather than assumed, and it is NOT the reason this comment used to give. The
+// era transition does NOT truncate this table: `universe transition` goes through
+// TransitionEra, which deliberately preserves the prior era's rows; only the separately
+// --confirm-gated `universe close` truncates. Nothing may be built on "the cache is empty
+// after a rollover", because it is not.
+//
+// What actually keeps it honest is TWO mechanisms, guarding different halves:
+//
+//	THE KEY     market_data's PRIMARY KEY is (player_id, waypoint_symbol, good_symbol), so a
+//	            dead era's row can never occupy the key a live scan needs (sp-hdr4p). That is
+//	            a guarantee about WRITES.
+//	THE FILTER  every read carries player_id = ?, applied BEFORE any ORDER BY / MIN / MAX /
+//	            DISTINCT ON — pricedSystems below included — so no ranked query can surface
+//	            another era's row. That is the guarantee about READS.
+//
+// THE KEY DOES NOT MAKE THE FILTER REDUNDANT, and that is the whole reason this paragraph
+// is here (sp-hrko6). Dropping `player_id = ?` as "already handled by the primary key"
+// would let a dead era's price win a ranked query and feed a spend decision. The key stops
+// two eras COLLIDING; it does nothing to stop one era READING the other's rows.
+//
+// On top of both, the difference below is taken over the era-scoped CHARTED set, so a
+// priced system not charted in the open era never appears on either side — a stale priced
+// row could only ever exclude a system that was not a candidate anyway.
 //
 // A SYSTEM WITH NO CHARTED MARKETPLACE IS NOT IN THE POOL. It is charted and it is
 // unpriced, but no probe standing anywhere in it could ever produce a price, so
