@@ -15,6 +15,16 @@ type LaneKey struct {
 	Good   string
 }
 
+// ActivityStrong is the market activity tier whose price recovery was measured fast enough to
+// warrant its own decay rate.
+const ActivityStrong = "STRONG"
+
+// strongToRestrictedHalfLifeRatio scales tau for a STRONG market. Recovery half-lives were fitted
+// per activity tier and differ by roughly this much; tau already matches the slower tier, so a
+// STRONG market's constant is that one scaled down. A ratio rather than a second absolute constant
+// so refitting tau carries to both tiers together.
+const strongToRestrictedHalfLifeRatio = 1.7 / 9.0
+
 // LaneCooldownLedger is the shared, decaying, per-lane compression ledger. When a
 // hull trades U units on a lane it ADDS compression debt (buyImpact+sellImpact)·(U/tv),
 // timestamped; the debt DECAYS as exp(-dt/tau). The ranker SUBTRACTS the live decayed
@@ -38,6 +48,9 @@ type LaneCooldownLedger struct {
 	sellImpact float64
 	tau        time.Duration
 	entries    map[LaneKey]cooldownEntry
+	// activity resolves a market's observed activity tier, for the decay rate. Nil leaves every
+	// key on tau, which is what every caller that does not wire it sees.
+	activity func(waypoint, good string) (string, bool)
 }
 
 // cooldownEntry is one lane's accumulated compression debt as of a timestamp. Storing a
@@ -135,5 +148,46 @@ func (l *LaneCooldownLedger) decayLocked(key LaneKey, now time.Time) float64 {
 	if dt <= 0 {
 		return entry.debt
 	}
-	return entry.debt * math.Exp(-float64(dt)/float64(l.tau))
+	return entry.debt * math.Exp(-float64(dt)/float64(l.tauFor(key)))
+}
+
+// tauFor picks a key's decay constant from the observed activity of the market it names.
+//
+// A market under STRONG activity sheds a price move several times faster than one under
+// RESTRICTED, so a single constant is either far too slow for one or far too fast for the other.
+// Too slow only withholds buys, which is why the single constant was safe to ship and why the
+// faster rate is the only direction this may move.
+//
+// ONLY A KEY THAT NAMES ONE MARKET. A source-drain key names a single market, so its activity is
+// unambiguous. A full lane names two, and the recovery rates were fitted per market — there is no
+// measurement of what a two-ended lane decays at, so those keep tau and every lane ranking that
+// reads them is unchanged.
+//
+// UNKNOWN IS THE SLOW RATE, never the fast one: no resolver, an unreadable market, or any tier
+// other than the one measured fast all decay at tau. An activity this cannot read must not be
+// treated as one that has already recovered.
+func (l *LaneCooldownLedger) tauFor(key LaneKey) time.Duration {
+	if l.activity == nil || key.Dest != "" {
+		return l.tau
+	}
+	activity, ok := l.activity(key.Source, key.Good)
+	if !ok || activity != ActivityStrong {
+		return l.tau
+	}
+	return l.strongTau()
+}
+
+// strongTau is the decay constant for a STRONG market, scaled from tau by the ratio of the two
+// measured half-lives so a refit of tau carries to both tiers together.
+func (l *LaneCooldownLedger) strongTau() time.Duration {
+	return time.Duration(float64(l.tau) * strongToRestrictedHalfLifeRatio)
+}
+
+// SetActivityResolver wires the observed-activity lookup the decay rate reads. Activity is an
+// OBSERVABLE, not a knob: it does not track our own buying, so this only ever reads it to choose a
+// rate and never assumes a trade can induce a tier. Nil (the default) leaves every key on tau.
+func (l *LaneCooldownLedger) SetActivityResolver(resolve func(waypoint, good string) (string, bool)) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.activity = resolve
 }

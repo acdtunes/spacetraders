@@ -815,6 +815,23 @@ func run(cfg *config.Config) error {
 		cfg.TradeImpact.ResolvedSellImpact(),
 		cfg.TradeImpact.ResolvedCooldownTau(),
 	)
+	// Activity-conditioned decay — ARMED. A market under STRONG activity sheds a price move several
+	// times faster than one under RESTRICTED, so a single constant holds a recovered source yielded
+	// far longer than it needs. Activity is an OBSERVABLE and is only ever READ here: it does not
+	// track our buying, so nothing in the guard may assume a trade can induce a tier. A market the
+	// cache cannot answer for keeps the slow rate.
+	laneCooldownLedger.SetActivityResolver(func(waypoint, good string) (string, bool) {
+		mkt, err := marketRepo.GetMarketData(context.Background(), waypoint, cfg.Captain.PlayerID)
+		if err != nil || mkt == nil {
+			return "", false
+		}
+		g := mkt.FindGood(good)
+		if g == nil || g.Activity() == nil {
+			return "", false
+		}
+		return *g.Activity(), true
+	})
+
 	// The ledger is in-memory, so a restart would forget how much the fleet has just taken out of
 	// each market — permissive amnesia in a value a spend guard now reads (RULINGS #2 names cooldown
 	// clocks). Replay it from the purchase rows, which already record every drain durably.
