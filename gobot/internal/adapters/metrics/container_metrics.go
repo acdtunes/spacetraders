@@ -41,6 +41,11 @@ type ContainerMetricsCollector struct {
 	// selection, by cause.
 	hullQuarantines *prometheus.CounterVec
 
+	// containerRetentionDeleted counts rows the retention pruner removed, by the status they
+	// were in. A pruner nobody can see is indistinguishable from a broken one, and someone
+	// chasing a container that has vanished needs to know whether retention took it.
+	containerRetentionDeleted *prometheus.CounterVec
+
 	// Ship metrics
 	shipsTotal      *prometheus.GaugeVec
 	shipStatusTotal *prometheus.GaugeVec
@@ -107,6 +112,12 @@ func NewContainerMetricsCollector(
 			"Total number of container restarts",
 			"player_id",
 			"container_type",
+		),
+
+		containerRetentionDeleted: newCounterVec(
+			"container_retention_deleted_total",
+			"Container rows deleted by the retention pruner, by the status they were in",
+			"status",
 		),
 
 		// Container iterations counter
@@ -181,6 +192,7 @@ func (c *ContainerMetricsCollector) Register() error {
 		c.containerTotal,
 		c.containerDuration,
 		c.containerRestarts,
+		c.containerRetentionDeleted,
 		c.containerIterations,
 		c.containerExitTotal,
 		c.daemonComponentRestarts,
@@ -345,6 +357,17 @@ func (c *ContainerMetricsCollector) RecordContainerExit(containerInfo ContainerI
 	c.containerExitTotal.WithLabelValues(playerID, commandType, status).Inc()
 }
 
+// RecordContainerRetentionDeleted records a retention sweep's per-status deletions. Nil-safe on
+// both receiver and field, like RecordContainerExit: a metrics miss must never break the caller
+// (RULINGS #4). A zero count is still recorded, so a sweep that found nothing is visible as a
+// sweep that RAN rather than as silence.
+func (c *ContainerMetricsCollector) RecordContainerRetentionDeleted(status string, deleted int64) {
+	if c == nil || c.containerRetentionDeleted == nil {
+		return
+	}
+	c.containerRetentionDeleted.WithLabelValues(status).Add(float64(deleted))
+}
+
 // RecordShipVersionConflict implements ShipWriteConflictRecorder.
 func (c *ContainerMetricsCollector) RecordShipVersionConflict() {
 	c.shipVersionConflicts.Inc()
@@ -400,6 +423,13 @@ type HullQuarantineRecorder interface {
 	RecordHullQuarantine(cause string)
 }
 
+// ContainerRetentionRecorder is implemented by collectors that track retention-pruner
+// deletions. Separate single-method interface, like the two above, so existing
+// MetricsRecorder implementations and test fakes keep compiling.
+type ContainerRetentionRecorder interface {
+	RecordContainerRetentionDeleted(status string, deleted int64)
+}
+
 // SetGlobalCollector sets the global metrics collector
 // This should be called after the collector is created and started
 func SetGlobalCollector(collector MetricsRecorder) {
@@ -414,6 +444,13 @@ func RecordContainerCompletion(containerInfo ContainerInfo) {
 }
 
 // RecordContainerRestart records a container restart event globally
+// RecordContainerRetentionDeleted is the package-level shim over the global collector.
+func RecordContainerRetentionDeleted(status string, deleted int64) {
+	if rec, ok := globalCollector.(ContainerRetentionRecorder); ok {
+		rec.RecordContainerRetentionDeleted(status, deleted)
+	}
+}
+
 func RecordContainerRestart(containerInfo ContainerInfo) {
 	if globalCollector != nil {
 		globalCollector.RecordContainerRestart(containerInfo)

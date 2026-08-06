@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"gorm.io/gorm"
 
@@ -89,6 +90,79 @@ func (r *ContainerRepositoryGORM) FindByIDAcrossPlayers(
 	}
 
 	return &model, nil
+}
+
+// ContainerRetentionWindow is how long a TERMINAL container row is kept before it is pruned
+// (sp-72gmi).
+//
+// FOURTEEN DAYS, and the number is a forensics budget rather than a storage one. The sp-20eyn
+// crash loop was identified from container statuses — 34,279 FAILED rows — so a bound tight
+// enough to have swept them would have hidden its own smoking gun. Fourteen days covers an
+// incident that begins on a Friday and is not looked at until the following week, with two full
+// weekends inside the window.
+//
+// Tightening this is a forensics decision, not a performance one, and the performance argument
+// for tightening it no longer exists. Since the container lookup became an indexed read
+// (sp-72gmi, first half), the only reads that still grow with this table are the two boot-time
+// recovery scans, measured at 880us against 34,000 rows, twice per boot. Table size is disk and
+// clutter now, not latency. Anyone shortening this window should be arguing about how far back
+// an incident must stay diagnosable, and should say so here.
+//
+// WHAT THE ROWS ARE FOR, and what they are not. The COUNT of failures is NOT stored here: it
+// lives in the spacetraders_daemon_container_total{status} counter, on Prometheus's own
+// retention, and survives any pruning. These rows carry the per-container detail — which
+// container, which exit reason, when — which is only useful while an incident is recent. That
+// split is what lets this window be bounded at all without losing the evidence.
+const ContainerRetentionWindow = 14 * 24 * time.Hour
+
+// terminalContainerStatuses are the states a container never leaves. Only these are ever
+// pruned. RUNNING, PENDING, STOPPING and INTERRUPTED are deliberately absent: a live container
+// is operational state, and INTERRUPTED is the daemon's own restart-recovery queue — deleting
+// any of them by age would destroy work in progress rather than history.
+var terminalContainerStatuses = []container.ContainerStatus{
+	container.ContainerStatusFailed,
+	container.ContainerStatusStopped,
+	container.ContainerStatusCompleted,
+}
+
+// PruneTerminalContainers deletes terminal container rows that finished before olderThan, and
+// returns how many it deleted PER STATUS.
+//
+// The per-status breakdown is the point of returning a map rather than a total: a silent pruner
+// is indistinguishable from a broken one, and someone chasing a container that has vanished needs
+// to know whether retention took it and in what state it was taken. It runs one DELETE per status
+// for exactly that reason — three cheap statements bought a countable answer.
+//
+// Age is measured from stopped_at, falling back to started_at for a row whose stop was never
+// recorded. A row with NEITHER timestamp is never pruned: it cannot be dated, and refusing to
+// delete what we cannot date is the safe direction for an irreversible operation.
+//
+// That last protection actually comes from SQL's three-valued logic, not from the IS NOT NULL
+// clause below — `NULL < cutoff` evaluates to NULL rather than TRUE, so an undatable row fails
+// the age predicate on its own. A mutation probe removing the clause changed no behaviour and
+// killed no test, which is how that was established rather than assumed. It is kept because it
+// states the intent at the query site AND because it becomes load-bearing the moment anyone
+// gives the COALESCE a non-NULL final argument — a plausible edit that would otherwise silently
+// turn every undatable row into an old one and delete the lot.
+func (r *ContainerRepositoryGORM) PruneTerminalContainers(
+	ctx context.Context,
+	olderThan time.Time,
+) (map[container.ContainerStatus]int64, error) {
+	deleted := make(map[container.ContainerStatus]int64, len(terminalContainerStatuses))
+
+	for _, status := range terminalContainerStatuses {
+		result := r.db.WithContext(ctx).
+			Where("status = ?", string(status)).
+			Where("COALESCE(stopped_at, started_at) IS NOT NULL").
+			Where("COALESCE(stopped_at, started_at) < ?", olderThan).
+			Delete(&ContainerModel{})
+		if result.Error != nil {
+			return deleted, fmt.Errorf("failed to prune %s containers: %w", status, result.Error)
+		}
+		deleted[status] = result.RowsAffected
+	}
+
+	return deleted, nil
 }
 
 // ListAll lists all containers, optionally filtered by player

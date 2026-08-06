@@ -62,6 +62,11 @@ func (s *DaemonServer) Start() error {
 		s.sup.Go(s.runCtx, "ship-resync", s.shipResyncScheduler.Run)
 	}
 
+	// Bounds the containers table. Sweeps once at start, then daily.
+	if s.containerRetentionScheduler != nil {
+		s.sup.Go(s.runCtx, "container-retention", s.containerRetentionScheduler.Run)
+	}
+
 	// Unconditional, like the ship state scheduler — not gated behind metricsConfig.Enabled.
 	if s.dutyCycleSampler != nil {
 		s.dutyCycleSampler.Start()

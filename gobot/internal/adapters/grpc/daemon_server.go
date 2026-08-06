@@ -110,6 +110,11 @@ type DaemonServer struct {
 	// Start; halted by runCtx cancellation on shutdown.
 	shipResyncScheduler *ShipResyncScheduler
 
+	// Container retention sweep (sp-72gmi): deletes terminal container rows older than the
+	// retention window, so the table cannot grow without bound. Launched under supervision in
+	// Start; halted by runCtx cancellation on shutdown.
+	containerRetentionScheduler *ContainerRetentionScheduler
+
 	// Duty-cycle KPI sampler (sp-51ti captain amendment): ship-hours
 	// EARNING/day per hull.
 	dutyCycleSampler *metrics.DutyCycleSampler
@@ -287,6 +292,11 @@ func NewDaemonServer(
 		resyncConfig.ResolvedInterval(),
 		resyncConfig.ResolvedJitter(),
 	)
+
+	// Container retention (sp-72gmi): the containers table had no bound at all, and the
+	// sp-20eyn crash loop put 34,279 FAILED rows in it in a day. Sweeps at start and daily
+	// thereafter; only terminal rows past the window are ever touched.
+	server.containerRetentionScheduler = NewContainerRetentionScheduler(containerRepo)
 
 	// Hoisted above the metricsConfig.Enabled block: the duty-cycle sampler needs it
 	// unconditionally, so it cannot live inside the optional Prometheus wiring.
