@@ -53,7 +53,6 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/system/gategraph"
 	systemQuery "github.com/andrescamacho/spacetraders-go/internal/application/system/queries"
 	tradeRouteCmd "github.com/andrescamacho/spacetraders-go/internal/application/trading/commands"
-	"github.com/andrescamacho/spacetraders-go/internal/application/trading/cooldownreplay"
 	tradingSvc "github.com/andrescamacho/spacetraders-go/internal/application/trading/services"
 	watchkeeper "github.com/andrescamacho/spacetraders-go/internal/captain"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
@@ -488,11 +487,6 @@ func (s sensingWiring) enginePorts(
 	}
 }
 
-// cooldownReplayWindow bounds the boot replay. Debt decays as exp(-dt/tau), so past ~3 tau a row
-// contributes under 5% of what it accrued — replaying further back costs query time to restore
-// nothing. Derived from the configured tau rather than pinned, so a refit moves both together.
-func cooldownReplayWindow(tau time.Duration) time.Duration { return 3 * tau }
-
 func run(cfg *config.Config) error {
 	db, err := openDatabase(&cfg.Database)
 	if err != nil {
@@ -821,22 +815,6 @@ func run(cfg *config.Config) error {
 		cfg.TradeImpact.ResolvedSellImpact(),
 		cfg.TradeImpact.ResolvedCooldownTau(),
 	)
-	// The ledger is in-memory, so a restart would forget how much the fleet has just taken out of
-	// each market — permissive amnesia in a value a spend guard now reads (RULINGS #2 names cooldown
-	// clocks). Replay it from the purchase rows, which already record every drain durably. Done HERE,
-	// before any coordinator exists to accrue, though Rebuild also refuses any key already carrying
-	// debt so the correctness does not rest on this ordering.
-	//
-	// Best-effort: a replay that cannot read its history leaves the ledger empty, which is exactly
-	// the behaviour before it existed — never a boot failure.
-	if replayed, rerr := cooldownreplay.Rebuild(
-		context.Background(), laneCooldownLedger, transactionRepo, marketRepo,
-		shared.MustNewPlayerID(cfg.Captain.PlayerID), cooldownReplayWindow(cfg.TradeImpact.ResolvedCooldownTau()), time.Now(),
-	); rerr != nil {
-		fmt.Printf("Lane cooldown replay failed, starting with no compression memory: %v\n", rerr)
-	} else if replayed > 0 {
-		fmt.Printf("Lane cooldown replay: restored %d recent purchase(s) of source drain\n", replayed)
-	}
 
 	contractFleetCoordinatorHandler := contractCmd.NewRunFleetCoordinatorHandler(med, shipRepo, contractRepo, marketRepoAdapter, daemonClientLocal, graphService, waypointConverter, containerRepo, nil, captainEventRepo)
 	contractFleetCoordinatorHandler.SetEventSubscriber(shipEventBus)

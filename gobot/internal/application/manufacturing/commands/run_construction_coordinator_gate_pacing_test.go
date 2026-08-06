@@ -19,9 +19,10 @@ func gateSourceFor(good string) string { return good + "-EXPORTER" }
 
 // pacedLedger is a ledger pre-loaded with `tranches` full trade-volumes of compression on one
 // (source, factory, good), as if the fleet had just bought that much there.
-func pacedLedger(source, good string, tranches int, at time.Time) *trading.LaneCooldownLedger {
+func pacedLedger(source, factory, good string, tranches int, at time.Time) *trading.LaneCooldownLedger {
 	ledger := trading.NewLaneCooldownLedger(0, 0, 0) // era defaults
-	ledger.Accrue(trading.SourceDrainKey(source, good), tranches*gateTestTradeVolume, gateTestTradeVolume, at)
+	ledger.Accrue(trading.LaneKey{Source: source, Dest: factory, Good: good},
+		tranches*gateTestTradeVolume, gateTestTradeVolume, at)
 	return ledger
 }
 
@@ -38,7 +39,7 @@ func TestFeedGateLeg_YieldsALeggedSourceToAnUntouchedStep(t *testing.T) {
 		importSupplyKey(gateFactoryWaypoint, "QUARTZ_SAND"): "MODERATE",
 	}
 	f.topo.priceByGood = map[string]int{"IRON": 23, "QUARTZ_SAND": 23}
-	f.handler.SetSourceCooldown(pacedLedger(gateSourceFor("IRON"), "IRON", 2, f.handler.clock.Now()))
+	f.handler.SetSourceCooldown(pacedLedger(gateSourceFor("IRON"), gateFactoryWaypoint, "IRON", 2, f.handler.clock.Now()))
 
 	f.runFeed(t, "GF-1")
 
@@ -96,10 +97,14 @@ func TestFeedGateLeg_EveryStepCompressedStillFeedsTheLeastCompressed(t *testing.
 	// and this proves nothing about the fallback. The plan is IRON->FAB_MATS, QUARTZ_SAND->FAB_MATS
 	// and the depth-2 IRON_ORE->IRON, so all three are drained — QUARTZ_SAND the least.
 	for _, drained := range []struct {
-		good     string
-		tranches int
-	}{{"IRON", 8}, {"IRON_ORE", 6}, {"QUARTZ_SAND", 3}} {
-		ledger.Accrue(trading.SourceDrainKey(gateSourceFor(drained.good), drained.good),
+		source, dest, good string
+		tranches           int
+	}{
+		{gateSourceFor("IRON"), gateFactoryWaypoint, "IRON", 8},
+		{gateSourceFor("IRON_ORE"), gateSourceFor("IRON"), "IRON_ORE", 6},
+		{gateSourceFor("QUARTZ_SAND"), gateFactoryWaypoint, "QUARTZ_SAND", 3},
+	} {
+		ledger.Accrue(trading.LaneKey{Source: drained.source, Dest: drained.dest, Good: drained.good},
 			drained.tranches*gateTestTradeVolume, gateTestTradeVolume, now)
 	}
 	f.handler.SetSourceCooldown(ledger)
@@ -128,7 +133,7 @@ func TestFeedGateLeg_AccruesWhatItBoughtAgainstTheSource(t *testing.T) {
 	}
 	ledger := trading.NewLaneCooldownLedger(0, 0, 0)
 	f.handler.SetSourceCooldown(ledger)
-	key := trading.SourceDrainKey(gateSourceFor("IRON"), "IRON")
+	key := trading.LaneKey{Source: gateSourceFor("IRON"), Dest: gateFactoryWaypoint, Good: "IRON"}
 	if before := ledger.Debt(key, f.handler.clock.Now()); before != 0 {
 		t.Fatalf("fixture is not clean: debt %v before the leg", before)
 	}
@@ -174,72 +179,5 @@ func TestLaneCooldownLedger_TrancheDebtIsTheModelsOwnUnit(t *testing.T) {
 	ledger.Accrue(key, 60, 60, now)
 	if debt := ledger.Debt(key, now); debt <= ledger.TrancheDebt() {
 		t.Fatalf("a second undecayed tranche (%v) must exceed the bound (%v), or nothing is ever paced", debt, ledger.TrancheDebt())
-	}
-}
-
-// ONE SOURCE, MANY TARGETS is the norm rather than an edge case — IRON has a single exporter and
-// four importers; EQUIPMENT and POLYNUCLEOTIDES have five. Keying the pacing consult by the full
-// arbitrage lane splits one source's drain across a bucket per target, each sitting under the bound
-// while the source is drained n times as fast. The consult must read the SOURCE-aggregate key.
-func TestFeedGateLeg_PacingReadsTheSourceAggregateNotThePerTargetLane(t *testing.T) {
-	f := newGateFactoryHandler(t)
-	f.topo.importSupply = map[string]string{
-		importSupplyKey(gateFactoryWaypoint, "IRON"):        "SCARCE",
-		importSupplyKey(gateFactoryWaypoint, "QUARTZ_SAND"): "MODERATE",
-	}
-	f.topo.priceByGood = map[string]int{"IRON": 23, "QUARTZ_SAND": 23}
-	ledger := trading.NewLaneCooldownLedger(0, 0, 0)
-	// Drain recorded against the SOURCE alone — no destination. This is the shape a boot replay
-	// rebuilds, because a purchase row records where we bought and never where we were taking it.
-	ledger.Accrue(trading.SourceDrainKey(gateSourceFor("IRON"), "IRON"),
-		2*gateTestTradeVolume, gateTestTradeVolume, f.handler.clock.Now())
-	f.handler.SetSourceCooldown(ledger)
-
-	f.runFeed(t, "GF-1")
-
-	if named := strings.Join(f.feeder.feeds()[0].inputs, ","); named != "QUARTZ_SAND" {
-		t.Fatalf("fed %q; drain recorded against the source alone must yield IRON — a consult keyed per target cannot see it", named)
-	}
-}
-
-// The converse, and the reason the two keys are kept apart: drain recorded ONLY against a single
-// target's lane must NOT pace the source. That entry is the trade engine's, and reading it here is
-// exactly the per-target split this fix removes.
-func TestFeedGateLeg_PerTargetLaneDebtAloneDoesNotPaceTheSource(t *testing.T) {
-	f := newGateFactoryHandler(t)
-	f.topo.importSupply = map[string]string{
-		importSupplyKey(gateFactoryWaypoint, "IRON"):        "SCARCE",
-		importSupplyKey(gateFactoryWaypoint, "QUARTZ_SAND"): "MODERATE",
-	}
-	ledger := trading.NewLaneCooldownLedger(0, 0, 0)
-	ledger.Accrue(trading.LaneKey{Source: gateSourceFor("IRON"), Dest: gateFactoryWaypoint, Good: "IRON"},
-		9*gateTestTradeVolume, gateTestTradeVolume, f.handler.clock.Now())
-	f.handler.SetSourceCooldown(ledger)
-
-	f.runFeed(t, "GF-1")
-
-	if named := strings.Join(f.feeder.feeds()[0].inputs, ","); named != "IRON" {
-		t.Fatalf("fed %q; a full-lane entry is the trade engine's and must not pace the source consult", named)
-	}
-}
-
-// THE TRADE ENGINE STAYS BYTE-IDENTICAL. Its ranking reads the full-lane key, so the leg must keep
-// accruing there as well as on the source aggregate. Asserted, not argued.
-func TestFeedGateLeg_StillAccruesTheFullLaneTheTradeEngineReads(t *testing.T) {
-	f := newGateFactoryHandler(t)
-	f.topo.importSupply = map[string]string{importSupplyKey(gateFactoryWaypoint, "IRON"): "SCARCE"}
-	ledger := trading.NewLaneCooldownLedger(0, 0, 0)
-	f.handler.SetSourceCooldown(ledger)
-
-	f.runFeed(t, "GF-1")
-
-	now := f.handler.clock.Now()
-	full := ledger.Debt(trading.LaneKey{Source: gateSourceFor("IRON"), Dest: gateFactoryWaypoint, Good: "IRON"}, now)
-	source := ledger.Debt(trading.SourceDrainKey(gateSourceFor("IRON"), "IRON"), now)
-	if full <= 0 {
-		t.Fatalf("full-lane debt %v; dropping it would silently re-rank the trade engine's lanes", full)
-	}
-	if source <= 0 {
-		t.Fatalf("source-aggregate debt %v; the pacing consult reads this key", source)
 	}
 }
