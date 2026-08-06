@@ -815,6 +815,17 @@ func run(cfg *config.Config) error {
 		cfg.TradeImpact.ResolvedSellImpact(),
 		cfg.TradeImpact.ResolvedCooldownTau(),
 	)
+	// The ledger is in-memory, so a restart would forget how much the fleet has just taken out of
+	// each market — permissive amnesia in a value a spend guard now reads (RULINGS #2 names cooldown
+	// clocks). Replay it from the purchase rows, which already record every drain durably.
+	//
+	// HERE, before any coordinator is handed the ledger to accrue into: Rebuild refuses a key that
+	// already carries debt, so a replay running after live accrual would silently restore nothing.
+	// It cannot fail the boot — see replayLaneCooldown.
+	replayLaneCooldown(
+		context.Background(), laneCooldownLedger, transactionRepo, marketRepo,
+		cfg.Captain.PlayerID, cfg.TradeImpact.ResolvedCooldownTau(), time.Now(),
+	)
 
 	contractFleetCoordinatorHandler := contractCmd.NewRunFleetCoordinatorHandler(med, shipRepo, contractRepo, marketRepoAdapter, daemonClientLocal, graphService, waypointConverter, containerRepo, nil, captainEventRepo)
 	contractFleetCoordinatorHandler.SetEventSubscriber(shipEventBus)

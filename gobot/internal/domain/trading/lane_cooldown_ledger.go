@@ -90,6 +90,19 @@ func (l *LaneCooldownLedger) Accrue(key LaneKey, units, tradeVolume int, now tim
 	}
 }
 
+// SourceDrainKey is the key for compression measured against a SOURCE MARKET alone, with no
+// destination. A buyer pacing itself against a market it is draining cares only about how much it
+// has taken OUT of that market: the same source commonly feeds several destinations (one exporter
+// to four or five importers is ordinary), so a per-destination key splits one market's drain into a
+// bucket per destination, each reading under any bound while the market is drained several times as
+// fast.
+//
+// It shares the ledger with the full-lane keys rather than living in a second one, and cannot
+// collide with them: every real lane names a destination, and this names none.
+func SourceDrainKey(source, good string) LaneKey {
+	return LaneKey{Source: source, Good: good}
+}
+
 // TrancheDebt is the debt ONE full trade-volume purchase adds — the model's own unit of
 // compression, in the same dimensionless fraction Debt returns.
 //
