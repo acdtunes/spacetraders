@@ -5,6 +5,7 @@ package watchkeeper
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"gorm.io/gorm"
@@ -80,13 +81,31 @@ func creditsAnchoredToContract(ctx context.Context, db *gorm.DB, playerID int, a
 	return anchor.BalanceAfter + delta.Sum, nil
 }
 
+// creditsFromLatestBalance reports the newest recorded balance for the player.
+//
+// EMPTY IS NOT ZERO, AND First IS WHAT DISTINGUISHES THEM (sp-2ms9x). This used Find into a SINGLE
+// STRUCT, which does not return ErrRecordNotFound: an empty result leaves the struct zero-valued and
+// returns a nil error, so an unreadable balance became the VALUE zero. A fresh era legitimately has
+// an empty ledger and 0 credits is itself a legitimate balance, so the two are indistinguishable in
+// exactly the case where getting it wrong matters.
+//
+// It reports the empty ledger as an ERROR rather than a number, which is the fail-safe direction for
+// every caller it has: CurrentCredits propagates it, and the watchkeeper's sampler already handles a
+// read failure by RETAINING ITS LAST KNOWN VALUE. Reporting 0 instead made it record a bankrupt
+// agent, which is what the credits-threshold detector then fires on.
+//
+// Find into a SLICE stays correct and is deliberately not touched — len() makes the empty case
+// observable to the caller. latestContractAnchor above keeps its Find for the same reason: it tests
+// tx.ID != "" and so observes emptiness explicitly.
 func creditsFromLatestBalance(ctx context.Context, db *gorm.DB, playerID int) (int, error) {
 	var tx persistence.TransactionModel
 	err := db.WithContext(ctx).
 		Where("player_id = ?", playerID).
 		Order("timestamp DESC, created_at DESC, id DESC").
-		Limit(1).
-		Find(&tx).Error
+		First(&tx).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return 0, fmt.Errorf("no recorded balance for player %d: the ledger is empty, which is not the same as a zero balance", playerID)
+	}
 	if err != nil {
 		return 0, err
 	}

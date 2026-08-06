@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"time"
 
 	"gorm.io/gorm"
@@ -18,9 +19,16 @@ func NewEraRepository(db *gorm.DB) *EraRepository {
 }
 
 type CloseReport struct {
-	Era                 *EraModel
-	AlreadyClosed       bool
-	FinalCredits        int64
+	Era           *EraModel
+	AlreadyClosed bool
+	FinalCredits  int64
+	// FinalCreditsKnown reports whether FinalCredits is a READING or a placeholder (sp-2ms9x).
+	//
+	// It exists because a zero cannot speak for itself: an empty ledger and a genuinely bankrupt
+	// agent both produce 0, and before this the caller had no way to tell them apart. A log line
+	// alone was not enough — nothing a caller can branch on, and nothing a test can assert, so the
+	// distinction was real in the code and invisible everywhere else.
+	FinalCreditsKnown   bool
 	WaypointsBackfilled int64
 }
 
@@ -108,12 +116,18 @@ func (r *EraRepository) CloseEra(ctx context.Context, name string) (*CloseReport
 		return &CloseReport{Era: era, AlreadyClosed: true}, nil
 	}
 
-	credits, err := r.anchoredCredits(ctx, era.PlayerID)
+	credits, known, err := r.anchoredCredits(ctx, era.PlayerID)
 	if err != nil {
 		return nil, err
 	}
+	if !known {
+		// The figure recorded below is NOT a reading. Saying so here is the whole of sp-2ms9x for
+		// this call site: previously a zero went into final_credits indistinguishable from a real one.
+		log.Printf("WARNING: closing era %d with NO recorded transactions for player %d — final_credits is being stored as 0 because the balance is UNKNOWN, not because the agent was broke",
+			era.EraID, era.PlayerID)
+	}
 
-	report := &CloseReport{Era: era, FinalCredits: credits}
+	report := &CloseReport{Era: era, FinalCredits: credits, FinalCreditsKnown: known}
 	now := time.Now().UTC()
 
 	err = r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -183,7 +197,19 @@ func (r *EraRepository) ScrubEra(ctx context.Context, name string) (*ScrubReport
 	return report, nil
 }
 
-func (r *EraRepository) anchoredCredits(ctx context.Context, playerID int) (int64, error) {
+// anchoredCredits reports the era's credit figure and whether it could be READ AT ALL.
+//
+// THE BOOLEAN IS THE POINT (sp-2ms9x). This used Find into a SINGLE STRUCT, which does not return
+// ErrRecordNotFound: an empty result left the struct zero-valued with a nil error, so an unreadable
+// balance became the value 0 and both callers wrote it to the database as the era's final_credits —
+// a fabricated figure that later accounting reads as fact.
+//
+// It reports rather than refuses. An earlier attempt returned an error on the empty case, which
+// broke era TRANSITION: a universe flip whose closing era has no recorded transactions is real and
+// reachable (TestTransition_MintPathPersistsANonNullEraFaction), and blocking the flip is worse than
+// recording an unknown. So the emptiness is surfaced to the caller, which decides — and both callers
+// now say so in their logs instead of passing a silent zero along.
+func (r *EraRepository) anchoredCredits(ctx context.Context, playerID int) (int64, bool, error) {
 	var anchor TransactionModel
 	err := r.db.WithContext(ctx).
 		Where("player_id = ? AND transaction_type LIKE ?", playerID, "CONTRACT_%").
@@ -191,7 +217,7 @@ func (r *EraRepository) anchoredCredits(ctx context.Context, playerID int) (int6
 		Limit(1).
 		Find(&anchor).Error
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
 	if anchor.ID != "" {
 		var delta struct{ Sum int64 }
@@ -200,21 +226,33 @@ func (r *EraRepository) anchoredCredits(ctx context.Context, playerID int) (int6
 			Where("player_id = ? AND timestamp > ?", playerID, anchor.Timestamp).
 			Scan(&delta).Error
 		if err != nil {
-			return 0, err
+			return 0, false, err
 		}
-		return int64(anchor.BalanceAfter) + delta.Sum, nil
+		return int64(anchor.BalanceAfter) + delta.Sum, true, nil
 	}
 
+	// EMPTY IS NOT ZERO (sp-2ms9x). This used Find into a SINGLE STRUCT, which does not return
+	// ErrRecordNotFound: an empty result left the struct zero-valued with a nil error, so an
+	// unreadable balance became the value 0 — and both callers write that figure to the database as
+	// the era's final_credits. A fabricated zero there is a permanent, wrong historical record, and
+	// era close is exactly when a ledger may be empty.
+	//
+	// It fails rather than inventing a number. An era whose ledger holds nothing has final credits
+	// that are genuinely UNKNOWN, and refusing to close on a figure we cannot read is the honest
+	// answer — the alternative is a durable lie that later accounting reads as fact. Closing an era
+	// with zero recorded transactions is anomalous in itself and worth surfacing.
 	var latest TransactionModel
 	err = r.db.WithContext(ctx).
 		Where("player_id = ?", playerID).
 		Order("timestamp DESC, created_at DESC, id DESC").
-		Limit(1).
-		Find(&latest).Error
-	if err != nil {
-		return 0, err
+		First(&latest).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return 0, false, nil // empty ledger: UNKNOWN, not zero — the caller must say so
 	}
-	return int64(latest.BalanceAfter), nil
+	if err != nil {
+		return 0, false, err
+	}
+	return int64(latest.BalanceAfter), true, nil
 }
 
 func truncateCaches(tx *gorm.DB) error {

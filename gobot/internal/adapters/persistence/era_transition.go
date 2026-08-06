@@ -2,6 +2,7 @@ package persistence
 
 import (
 	"context"
+	"log"
 	"time"
 
 	"gorm.io/gorm"
@@ -44,9 +45,15 @@ func (r *EraRepository) TransitionEra(ctx context.Context, newPlayer *PlayerMode
 	// Compute the closing era's final credits with the same anchor semantics as
 	// CloseEra (read-only, outside the write transaction).
 	if open != nil {
-		credits, cerr := r.anchoredCredits(ctx, open.PlayerID)
+		credits, known, cerr := r.anchoredCredits(ctx, open.PlayerID)
 		if cerr != nil {
 			return nil, cerr
+		}
+		if !known {
+			// sp-2ms9x: an empty ledger is UNKNOWN, not zero. The flip must not be blocked — a
+			// closing era with no transactions is real — but the stored figure is not a reading.
+			log.Printf("WARNING: closing era %d with NO recorded transactions for player %d — final_credits is being stored as 0 because the balance is UNKNOWN, not because the agent was broke",
+				open.EraID, open.PlayerID)
 		}
 		report.ClosedCredits = credits
 	}
