@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 
+	tradingQueries "github.com/andrescamacho/spacetraders-go/internal/application/trading/queries"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
@@ -52,57 +53,23 @@ func (s *autosizerLightSources) Vacancies(ctx context.Context, playerID int) (in
 	return 0, nil
 }
 
-// profitableLaneCounter counts the profitable, feasible trade lanes ranked across the given systems,
-// read-only, off the persisted market cache. Satisfied by tradingQueries.ProfitableLaneReader.
-type profitableLaneCounter interface {
-	CountProfitableLanes(ctx context.Context, playerID int, systems []string) (count int, readable bool, err error)
-}
-
 type autosizerHeavySources struct {
-	shipRepo   navigation.ShipRepository
-	laneReader profitableLaneCounter
+	shipRepo navigation.ShipRepository
+	unserved *tradingQueries.UnservedLaneReader
 }
 
 func (s *autosizerHeavySources) HeavyCount(ctx context.Context, playerID int) (int, error) {
 	return countShips(ctx, s.shipRepo, playerID, func(sh *navigation.Ship) bool { return sh.DedicatedFleet() == "trade" })
 }
 
-// UnservedLaneCount surfaces the trade solver's profitable-but-unflown lane count as the heavy
-// capacity-short signal: the number of profitable, feasible lanes the player's trading
-// grounds rank BEYOND the current trade-hull pool. It discovers those grounds from the player's hull
-// locations (the yard-price reader's system-discovery idiom), asks the read-only lane reader how many
-// profitable lanes they hold, and subtracts the current heavies. READ-ONLY: it never perturbs the
-// trade coordinator (it consumes the same pure trading.RankSpreads ranking off the market cache).
-// Fails CLOSED (readable=false) on a genuine ship/market read failure; a readable zero (empty cache,
-// no floor-clearing lane) yields 0 unserved (no demand, no buy) — not a fail-closed.
+// UnservedLaneCount delegates to the shared reader: one definition of the capacity-short
+// signal, consumed by every spender that acts on it.
 func (s *autosizerHeavySources) UnservedLaneCount(ctx context.Context, playerID int) (int, bool, error) {
-	pid, err := shared.NewPlayerID(playerID)
-	if err != nil {
-		return 0, false, nil // invalid player → unreadable → fail closed
-	}
-	ships, err := s.shipRepo.FindAllByPlayer(ctx, pid)
-	if err != nil {
-		return 0, false, err // a genuine ship read failure fails closed
-	}
-	profitable, readable, err := s.laneReader.CountProfitableLanes(ctx, playerID, distinctShipSystems(ships))
-	if err != nil || !readable {
-		return 0, false, err // unreadable lane surface → fail closed
-	}
-	heavies := 0
-	for _, sh := range ships {
-		if sh.DedicatedFleet() == "trade" {
-			heavies++
-		}
-	}
-	unserved := profitable - heavies
-	if unserved < 0 {
-		unserved = 0 // never a negative demand (the pool already covers the lanes)
-	}
-	return unserved, true, nil
+	return s.unserved.UnservedLaneCount(ctx, playerID)
 }
 
 // distinctShipSystems returns the distinct systems the player's hulls are located in — the trading
-// grounds the unserved-lane count scans. Mirrors autosizerYardPriceReader's system discovery.
+// grounds the yard readers scan for shipyards.
 func distinctShipSystems(ships []*navigation.Ship) []string {
 	seen := map[string]struct{}{}
 	out := make([]string, 0, len(ships))

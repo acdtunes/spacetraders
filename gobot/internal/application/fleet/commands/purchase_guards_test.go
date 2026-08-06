@@ -264,3 +264,105 @@ func assertBlockedBy(t *testing.T, r PurchaseRequest, want GuardName) {
 		t.Fatalf("expected block by %q, got %q; arithmetic: %s", want, d.BlockedBy, d.Arithmetic())
 	}
 }
+
+// Working capital is a term ABOVE the immutable floor. A purchase that clears the floor and
+// the margin must still be refused when it would not leave the observed working capital behind.
+func TestGuardAffordability_WorkingCapitalRaisesTheFloor(t *testing.T) {
+	req := PurchaseRequest{
+		Class: HullClassHeavy, TreasuryReadable: true,
+		LiveTreasury: 1_000_000, Price: 700_000, MarginOverFloor: 200_000,
+		// treasury 1_000_000 − floor 50_000 = 950_000 >= 700_000 + 200_000 = 900_000 : PASSES today.
+	}
+	if v := guardAffordability(req); !v.Passed {
+		t.Fatalf("baseline must pass before the new term is added: %s", v.Detail)
+	}
+	req.WorkingCapital = 100_000
+	// 1_000_000 − 50_000 − 100_000 = 850_000 < 900_000 : must now BLOCK.
+	v := guardAffordability(req)
+	if v.Passed {
+		t.Fatalf("working capital must raise the effective floor: %s", v.Detail)
+	}
+	if !strings.Contains(v.Detail, "working capital") {
+		t.Fatalf("the arithmetic must NAME the term an operator would retune: %s", v.Detail)
+	}
+}
+
+// The term is NEVER waived, including for the heavy purchase itself. The heavy RESERVE is
+// waived because that reservation exists FOR this buy; working capital is the trading fleet's
+// committed cargo spend, which the purchase does not fund and must not consume.
+func TestGuardAffordability_WorkingCapitalIsNotWaivedForHeavies(t *testing.T) {
+	req := PurchaseRequest{
+		Class: HullClassHeavy, TreasuryReadable: true,
+		LiveTreasury: 1_000_000, Price: 700_000, MarginOverFloor: 200_000,
+		HeavyReserve: 400_000, WorkingCapital: 100_000,
+	}
+	v := guardAffordability(req)
+	if v.Passed {
+		t.Fatalf("the heavy reserve is waived but working capital is not: %s", v.Detail)
+	}
+}
+
+// A zero term is byte-identical to the pre-existing behaviour — the migration's safety net
+// while both coordinators exist.
+func TestGuardAffordability_ZeroWorkingCapitalIsUnchanged(t *testing.T) {
+	req := PurchaseRequest{
+		Class: HullClassHeavy, TreasuryReadable: true,
+		LiveTreasury: 1_000_000, Price: 700_000, MarginOverFloor: 200_000,
+	}
+	if v := guardAffordability(req); !v.Passed {
+		t.Fatalf("a zero working-capital term must change nothing: %s", v.Detail)
+	}
+}
+
+// A NEGATIVE term is the one direction this guard may never move: subtracted as handed it would
+// ADD spendable credits the treasury does not hold and BUY a hull the floor refused. The clamp
+// must land a malformed derivation on exactly the zero-term verdict — the arithmetic included,
+// because a detail that prints the negative is a decision log that lies about the floor it applied.
+func TestGuardAffordability_NegativeWorkingCapitalCannotLoosenTheFloor(t *testing.T) {
+	for _, class := range []HullClass{HullClassHeavy, HullClassLight} {
+		t.Run(string(class), func(t *testing.T) {
+			// treasury 1_000_000 − floor 50_000 = 950_000 < 900_000 + 100_000: the fixture BLOCKS
+			// with the term at zero, so an unclamped negative is the only thing that can pass it.
+			atZero := PurchaseRequest{
+				Class: class, TreasuryReadable: true,
+				LiveTreasury: 1_000_000, Price: 900_000, MarginOverFloor: 100_000,
+			}
+			want := guardAffordability(atZero)
+			if want.Passed {
+				t.Fatalf("the fixture must block at a zero term or the clamp is never exercised: %s", want.Detail)
+			}
+
+			negative := atZero
+			negative.WorkingCapital = -500_000
+			got := guardAffordability(negative)
+			if got.Passed {
+				t.Fatalf("a negative working capital must not buy headroom the treasury lacks: %s", got.Detail)
+			}
+			if got.Detail != want.Detail {
+				t.Fatalf("the clamped verdict must read identically to the zero term:\n zero: %s\n  neg: %s", want.Detail, got.Detail)
+			}
+			if !strings.Contains(got.Detail, "working capital 0") {
+				t.Fatalf("the clamped term must print the 0 it applied, never the negative it was handed: %s", got.Detail)
+			}
+		})
+	}
+}
+
+// The term binds EVERY class. The waiver in this guard belongs to the heavy RESERVE alone —
+// working capital is the trading fleet's committed cargo spend whatever hull is being priced, so
+// scoping it to heavies would let the other spender consume it.
+func TestGuardAffordability_WorkingCapitalBindsANonHeavyClass(t *testing.T) {
+	req := PurchaseRequest{
+		Class: HullClassLight, TreasuryReadable: true,
+		LiveTreasury: 1_000_000, Price: 700_000, MarginOverFloor: 200_000,
+	}
+	if v := guardAffordability(req); !v.Passed {
+		t.Fatalf("baseline must pass with the term at zero: %s", v.Detail)
+	}
+	req.WorkingCapital = 100_000
+	// 1_000_000 − 50_000 − 100_000 = 850_000 < 900_000: must BLOCK a light hull too.
+	v := guardAffordability(req)
+	if v.Passed {
+		t.Fatalf("working capital must raise the effective floor for every class: %s", v.Detail)
+	}
+}

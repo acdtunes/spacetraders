@@ -72,7 +72,7 @@ type APIUtilizationReader interface {
 }
 
 // The buy port's shapes are shared with the contract scaler and live in domain/hullbuy; these
-// aliases keep the coordinator's internals reading as one package (see fleet_autosizer_types.go).
+// aliases keep the coordinator's internals reading as one package (see hull_classes.go).
 type (
 	YardPriceReader = hullbuy.YardPriceReader
 	BuyOrder        = hullbuy.BuyOrder

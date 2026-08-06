@@ -1,13 +1,9 @@
-// Package commands holds the fleet capacity autosizer: a standing per-player
-// coordinator that SIZES the hull pool to demand and AUTO-BUYS hulls behind the full
-// money-guard stack. It is the buy-side twin of the vdld siting coordinator (which sizes the
-// factory-chain portfolio at zero cost); this one spends real credits, so its guard stack is
-// fail-CLOSED (any unreadable input ⇒ no buy) where vdld's kill-switch is fail-open.
+// Package commands holds the fleet's HULL-BUYING coordinators and the fail-CLOSED money-guard
+// stack they judge every purchase through. Spending is irreversible and not-buying is safe, so
+// any unreadable input (price, treasury, census, lane count, API utilization) BLOCKS.
 //
-// Shape mirrors run_siting_coordinator.go: a registered singleton handler with optional
-// setter-collaborators, one infinite reconcile loop in Handle(), resolveFleetAutosizerConfig()
-// resolving every <=0 knob to a documented protective default (RULINGS #5). One coordinator,
-// N pluggable demand providers (lights, heavies) — the vdld pluggable-provider idiom.
+// The guard stack is the package's, not any one coordinator's: it is judged pure, it is shared,
+// and it outlives whichever coordinator currently calls it.
 package commands
 
 import "github.com/andrescamacho/spacetraders-go/internal/domain/hullbuy"

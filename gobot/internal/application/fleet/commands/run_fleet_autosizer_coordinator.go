@@ -20,7 +20,7 @@ const (
 	defaultAutosizerTickSeconds = 900 // 15min — sizing is strategic, not per-second
 	defaultPurchaseCapPerTick   = 1
 
-	// There are no per-class pool ceilings — see fleet_autosizer_guards.go for what bounds each
+	// There are no per-class pool ceilings — see purchase_guards.go for what bounds each
 	// class.
 
 	defaultPurchaseMarginOverFloor     = 200000

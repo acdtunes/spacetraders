@@ -55,8 +55,8 @@ func NewFleetAutosizerCoordinatorHandler(
 	// realized tour-rate reads persisted tour telemetry. Both fail closed on a genuine read failure,
 	// so the guard stack still gates every heavy buy; the seam only makes the demand READABLE.
 	h.AddDemandProvider(fleetCmd.NewHeavyDemandProvider(&autosizerHeavySources{
-		shipRepo:   shipRepo,
-		laneReader: tradingQueries.NewProfitableLaneReader(marketRepo),
+		shipRepo: shipRepo,
+		unserved: tradingQueries.NewUnservedLaneReader(shipRepo, tradingQueries.NewProfitableLaneReader(marketRepo)),
 	}))
 
 	// Buy-path readers + writers.

@@ -7,9 +7,16 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	tradingQueries "github.com/andrescamacho/spacetraders-go/internal/application/trading/queries"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
+
+// heavySourcesFor wires the demand source over the shared unserved-lane reader, the way the
+// composition root does.
+func heavySourcesFor(shipRepo navigation.ShipRepository, lanes tradingQueries.ProfitableLaneCounter) *autosizerHeavySources {
+	return &autosizerHeavySources{shipRepo: shipRepo, unserved: tradingQueries.NewUnservedLaneReader(shipRepo, lanes)}
+}
 
 // --- fakes for the heavy-demand seam ports ----------------------------------------------------
 
@@ -63,7 +70,7 @@ func TestUnservedLaneCount_ReadableCountBeyondHeavies(t *testing.T) {
 		tradeShipAt(t, "TR-2", 1, "X1-BB-1"),
 	}}
 	lanes := &fakeLaneCounter{count: 5, readable: true}
-	src := &autosizerHeavySources{shipRepo: shipRepo, laneReader: lanes}
+	src := heavySourcesFor(shipRepo, lanes)
 
 	unserved, readable, err := src.UnservedLaneCount(context.Background(), 1)
 	require.NoError(t, err)
@@ -80,7 +87,7 @@ func TestUnservedLaneCount_MoreHeaviesThanLanes_ZeroButReadable(t *testing.T) {
 		tradeShipAt(t, "TR-3", 1, "X1-AA-3"),
 	}}
 	lanes := &fakeLaneCounter{count: 2, readable: true}
-	src := &autosizerHeavySources{shipRepo: shipRepo, laneReader: lanes}
+	src := heavySourcesFor(shipRepo, lanes)
 
 	unserved, readable, err := src.UnservedLaneCount(context.Background(), 1)
 	require.NoError(t, err)
@@ -94,24 +101,18 @@ func TestUnservedLaneCount_GenuineReadFailure_FailsClosed(t *testing.T) {
 	ships := []*navigation.Ship{tradeShipAt(t, "TR-1", 1, "X1-AA-1")}
 
 	// (a) the lane reader reports its surface unreadable.
-	src := &autosizerHeavySources{
-		shipRepo:   &fakeHeavyShipRepo{all: ships},
-		laneReader: &fakeLaneCounter{readable: false},
-	}
+	src := heavySourcesFor(&fakeHeavyShipRepo{all: ships}, &fakeLaneCounter{readable: false})
 	_, readable, err := src.UnservedLaneCount(context.Background(), 1)
 	require.NoError(t, err)
 	require.False(t, readable, "an unreadable lane surface must fail closed")
 
 	// (b) the lane read errors outright.
-	src.laneReader = &fakeLaneCounter{err: errors.New("market surface down")}
+	src = heavySourcesFor(&fakeHeavyShipRepo{all: ships}, &fakeLaneCounter{err: errors.New("market surface down")})
 	_, readable, _ = src.UnservedLaneCount(context.Background(), 1)
 	require.False(t, readable)
 
 	// (c) the ship read (system discovery) errors.
-	src = &autosizerHeavySources{
-		shipRepo:   &fakeHeavyShipRepo{err: errors.New("db down")},
-		laneReader: &fakeLaneCounter{count: 9, readable: true},
-	}
+	src = heavySourcesFor(&fakeHeavyShipRepo{err: errors.New("db down")}, &fakeLaneCounter{count: 9, readable: true})
 	_, readable, err = src.UnservedLaneCount(context.Background(), 1)
 	require.Error(t, err)
 	require.False(t, readable)

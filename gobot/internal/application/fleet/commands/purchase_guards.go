@@ -154,6 +154,17 @@ type PurchaseRequest struct {
 	// reserving against itself, which spec §4 names as circular.
 	HeavyReserve int64
 
+	// WorkingCapital is the credits the TRADING fleet's observed activity has already spoken
+	// for — derived by fleetgrowth.WorkingCapital from ledger observations, never a constant.
+	// It raises this buy's effective floor ABOVE the immutable reserve and is never subtracted
+	// from it, so adding it can only ever make this guard stricter (RULINGS #4).
+	//
+	// NOT WAIVED FOR THE HEAVY BUY, unlike HeavyReserve. The reservation is waived because it
+	// is being accumulated FOR this purchase; working capital is money the trading fleet is
+	// about to spend on cargo, which this purchase does not fund and must not consume — buying
+	// a hull out of it stalls the trades that pay for everything, including the next hull.
+	WorkingCapital int64
+
 	// API utilization (dynamic; fails CLOSED when unreadable). Holds concurrency growth
 	// when sustained utilization is at/over the ceiling OR the signal cannot be read.
 	APIUtilPct      float64
@@ -339,7 +350,7 @@ func guardAPIUtil(req PurchaseRequest) GuardVerdict {
 // never a behavioural loosening:
 //
 //	treasury_pct   : pct<=0 ? pass : (TreasuryReadable && Price <= pct% × treasury)
-//	treasury_floor : TreasuryReadable && (treasury − floor − heavyReserve) >= price + margin
+//	treasury_floor : TreasuryReadable && (treasury − floor − heavyReserve − workingCapital) >= price + margin
 //	merged         : TreasuryReadable && pctTerm && floorTerm
 //
 // The unreadable case is identical to the pair's: treasury_pct passed vacuously when the rule was
@@ -389,14 +400,25 @@ func guardAffordability(req PurchaseRequest) GuardVerdict {
 		// the heavy buy" from "reserve silently dropped".
 		reserveNote = fmt.Sprintf(" (own reserve waived: %d)", req.HeavyReserve)
 	}
-	spendable := req.LiveTreasury - floor - heavyReserve
+	spendable := req.LiveTreasury - floor - heavyReserve - maxGuardInt64(0, req.WorkingCapital)
 	need := req.Price + req.MarginOverFloor
 	floorOK := spendable >= need
-	floorDetail := fmt.Sprintf("treasury %d − floor %d%s = %d >= price %d + margin %d = %d", req.LiveTreasury, floor, reserveNote, spendable, req.Price, req.MarginOverFloor, need)
+	floorDetail := fmt.Sprintf("treasury %d − floor %d%s − working capital %d = %d >= price %d + margin %d = %d",
+		req.LiveTreasury, floor, reserveNote, maxGuardInt64(0, req.WorkingCapital), spendable, req.Price, req.MarginOverFloor, need)
 
 	return GuardVerdict{
 		Guard:  GuardAffordability,
 		Passed: pctOK && floorOK,
 		Detail: pctDetail + "; " + floorDetail,
 	}
+}
+
+// maxGuardInt64 clamps a term non-negative before it reaches the floor arithmetic. A negative
+// working capital would ADD spendable credits, which is the one direction a money guard may
+// never move.
+func maxGuardInt64(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
 }
