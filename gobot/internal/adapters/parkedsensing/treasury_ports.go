@@ -79,3 +79,47 @@ func (p *CargoSpendPort) AbsCargoBuySpendSince(ctx context.Context, playerID int
 	}
 	return sum, nil
 }
+
+// CargoOutflowSince reports the trading fleet's cargo outflow since `since` as BOTH statistics
+// the working-capital formula needs, from ONE pass over one row set: the absolute sum, and the
+// largest single row.
+//
+// ONE QUERY BECAUSE THEY MUST SEE THE SAME ROWS. The two terms of the working-capital formula
+// are a max() over each other, and computing them from two reads would let a row land between
+// them and make the comparison meaningless.
+//
+// THE LARGEST SINGLE ROW IS THE PER-HULL SCALE. The ledger carries no ship symbol, so a
+// per-hull mean is not derivable here; the largest observed cargo purchase is, it does not
+// dilute as the pool grows, and an outlier can only raise it — which makes the guard stricter,
+// the only direction a money guard may move.
+//
+// Ledger expenses are stored NEGATIVE and the absolute value of each row is taken
+// individually, so a stray positive row still ADDS to measured outflow instead of cancelling
+// real spend out of it.
+func (p *CargoSpendPort) CargoOutflowSince(ctx context.Context, playerID int, since time.Time) (int64, int64, error) {
+	pid, err := shared.NewPlayerID(playerID)
+	if err != nil {
+		return 0, 0, err
+	}
+	cargo := ledger.TransactionTypePurchaseCargo
+	rows, err := p.txns.FindByPlayer(ctx, pid, ledger.QueryOptions{
+		TransactionType: &cargo,
+		StartDate:       &since,
+		Limit:           cargoSpendScan,
+	})
+	if err != nil {
+		return 0, 0, fmt.Errorf("failed to read recent cargo outflow: %w", err)
+	}
+	var total, largest int64
+	for _, row := range rows {
+		amount := int64(row.Amount())
+		if amount < 0 {
+			amount = -amount
+		}
+		total += amount
+		if amount > largest {
+			largest = amount
+		}
+	}
+	return total, largest, nil
+}

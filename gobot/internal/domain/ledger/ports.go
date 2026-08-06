@@ -44,6 +44,14 @@ type GateFeeAggregator interface {
 	PerOriginGateFees(ctx context.Context, playerID shared.PlayerID, since time.Time) (map[string]int64, error)
 }
 
+// TreasuryHighWaterReader reports the PEAK balance a player held across a trailing window — the
+// fleet's capacity, not its instant. EMPTY IS NOT ZERO: no rows is readable=false, never a zero peak.
+type TreasuryHighWaterReader interface {
+	TreasuryHighWaterSince(
+		ctx context.Context, playerID shared.PlayerID, since time.Time,
+	) (highWater int64, readable bool, err error)
+}
+
 // QueryOptions defines filtering and pagination options for transaction queries
 type QueryOptions struct {
 	// Date range filtering

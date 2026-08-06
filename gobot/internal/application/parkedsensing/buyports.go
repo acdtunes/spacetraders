@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/fleetgrowth"
 )
 
 // buyports.go declares the ports and types of the spend half of the parked-probe
@@ -50,9 +51,9 @@ const SensingCoverageOperationType = "sensing coverage"
 // deliberately not a knob: a rate limit on API bursts, not an economic lever.
 const maxDrainAttempts = 6
 
-// cargoSpendLookback is the trailing window the cargo-runway term of the floor
-// measures. One hour, matching ProbeBuyFloor's per-hour units.
-const cargoSpendLookback = time.Hour
+// cargoSpendLookback names the shared window for call-site readability. Two money guards measuring
+// one fleet's outflow over two windows would reserve against two measurements of one quantity.
+const cargoSpendLookback = fleetgrowth.TradeCycleWindow
 
 // TreasuryReader live-reads the player's spendable credits. Structurally satisfied
 // by the same api-backed reader every other money guard uses, whose cache is

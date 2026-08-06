@@ -2,6 +2,7 @@ package persistence
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -153,6 +154,32 @@ func (r *GormTransactionRepository) PerOriginGateFees(
 		fees[rw.OriginSystem] = int64(math.Round(rw.MeanFee))
 	}
 	return fees, nil
+}
+
+var _ ledger.TreasuryHighWaterReader = (*GormTransactionRepository)(nil)
+
+// TreasuryHighWaterSince reports the window's peak balance, and whether it held anything to read.
+func (r *GormTransactionRepository) TreasuryHighWaterSince(
+	ctx context.Context, playerID shared.PlayerID, since time.Time,
+) (int64, bool, error) {
+	// EMPTY IS NOT ZERO, and an aggregate has TWO empty shapes: a bare int64 destination would
+	// report a fleet that has never traded as one that has never held a credit, and a MAX over an
+	// empty window arrives as ONE row of SQL NULL rather than as zero rows. A nullable element in a
+	// slice covers both, and keeps both distinct from a genuine zero balance.
+	var peaks []sql.NullInt64
+	err := r.db.WithContext(ctx).Model(&TransactionModel{}).
+		Select("MAX(balance_after)").
+		Where("player_id = ?", playerID.Value()).
+		// `timestamp`, not created_at: the half of idx_player_timestamp that bounds this scan.
+		Where("timestamp >= ?", since).
+		Scan(&peaks).Error
+	if err != nil {
+		return 0, false, fmt.Errorf("failed to read treasury high-water: %w", err)
+	}
+	if len(peaks) == 0 || !peaks[0].Valid {
+		return 0, false, nil
+	}
+	return peaks[0].Int64, true, nil
 }
 
 // applyFilters applies query options to a GORM query
