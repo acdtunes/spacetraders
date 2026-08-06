@@ -99,7 +99,7 @@ func (e *RouteExecutor) handlePostArrivalRefueling(ctx context.Context, segment 
 		//
 		// An opportunistic top-up is BY DEFINITION never required: the plan was built
 		// without it, so nothing downstream is waiting on it.
-		if err := e.refuelShipWithoutEscalation(ctx, ship, playerID, false); err != nil {
+		if err := e.attemptNonEssentialRefuel(ctx, ship, playerID, false); err != nil {
 			e.absorbNonEssentialRefuelFailure(ctx, ship, segment, "opportunistic", err)
 		}
 	}
@@ -113,7 +113,7 @@ func (e *RouteExecutor) handlePostArrivalRefueling(ctx context.Context, segment 
 		})
 		// CUT 2: stay docked after a post-arrival refuel (see above).
 		if e.remainingLegsAffordable(ship, remainingLegFuel) {
-			if err := e.refuelShipWithoutEscalation(ctx, ship, playerID, false); err != nil {
+			if err := e.attemptNonEssentialRefuel(ctx, ship, playerID, false); err != nil {
 				e.absorbNonEssentialRefuelFailure(ctx, ship, segment, "planned_not_required", err)
 			}
 			return nil

@@ -219,7 +219,7 @@ func TestRefuelWithoutEscalation_DoesNotReachForAnAlternateStop(t *testing.T) {
 			if tc.escalating {
 				err = executor.refuelShipWithRetry(context.Background(), ship, shared.MustNewPlayerID(1), false)
 			} else {
-				err = executor.refuelShipWithoutEscalation(context.Background(), ship, shared.MustNewPlayerID(1), false)
+				err = executor.attemptNonEssentialRefuel(context.Background(), ship, shared.MustNewPlayerID(1), false)
 			}
 
 			if err == nil {
@@ -273,5 +273,59 @@ func TestFuelForSegmentsAfter_CountsPastFuelSellingWaypoints(t *testing.T) {
 	}
 	if got := fuelForSegmentsAfter(route, 0); got <= 0 {
 		t.Fatalf("the leg past the fuel-selling waypoint still burns fuel and must be counted, got %d", got)
+	}
+}
+
+// TestPostArrivalRefuel_NonEssentialFailureDoesNotSpendTheRetryBudget is the dead time the
+// absorb left behind. The hull is standing on the waypoint it was sent to, loaded; the refuel
+// here tops it up for a LATER trip and the remaining route does not need it. Absorbing that
+// failure only AFTER the full elapsed-time budget leaves the hull parked for the length of the
+// budget over fuel nothing is waiting on — on the critical path of whatever it is carrying.
+//
+// The budget exists to rescue a refuel the route DEPENDS on. Spending it on one nothing depends
+// on buys nothing and costs the delivery.
+//
+// Waiting is measured on the mock clock, which advances only when the retry loop sleeps, so this
+// asserts the absence of retry waiting itself rather than wall-clock timing that could pass on a
+// fast machine for the wrong reason.
+func TestPostArrivalRefuel_NonEssentialFailureDoesNotSpendTheRetryBudget(t *testing.T) {
+	executor, fake, ship, seg := postArrivalFixture(t, 200, false) // opportunistic: never required
+	start := fake.clock.Now()
+
+	err := executor.handlePostArrivalRefueling(context.Background(), seg, ship, shared.MustNewPlayerID(1), 0)
+	if err != nil {
+		t.Fatalf("an opportunistic top-up must still be absorbed, got: %v", err)
+	}
+
+	// Calibration: a refuel that was never attempted would satisfy both assertions below for the
+	// opposite reason.
+	if fake.refuelAttempts() == 0 {
+		t.Fatal("fixture never attempted a refuel, so nothing was retried and this proves nothing")
+	}
+	if waited := fake.clock.Now().Sub(start); waited >= DefaultRefuelBackoffBase {
+		t.Fatalf("the hull waited %s on a refuel the remaining route does not need — it must not sleep even once before carrying on", waited)
+	}
+	if attempts := fake.refuelAttempts(); attempts != 1 {
+		t.Fatalf("a refuel nothing depends on should be tried once and let go, got %d attempts", attempts)
+	}
+}
+
+// TestPostArrivalRefuel_EssentialFailureStillSpendsTheFullBudget is the RULINGS #4 half. A hull
+// that genuinely cannot reach the next waypoint on what it holds is stranded without this
+// refuel, and waiting out a transient upstream failure is enormously cheaper than the
+// alternative. Narrowing the non-essential branch must not touch this one.
+func TestPostArrivalRefuel_EssentialFailureStillSpendsTheFullBudget(t *testing.T) {
+	executor, fake, ship, seg := postArrivalFixture(t, 175, true) // planned, and the rest is unaffordable
+	start := fake.clock.Now()
+
+	err := executor.handlePostArrivalRefueling(context.Background(), seg, ship, shared.MustNewPlayerID(1), 400)
+	if err == nil {
+		t.Fatal("a refuel the remaining legs depend on must still fail the segment when unrecoverable")
+	}
+	if waited := fake.clock.Now().Sub(start); waited < DefaultRefuelRetryBudget {
+		t.Fatalf("an essential refuel gave up after %s — it must spend the whole budget waiting out a transient failure before escalating", waited)
+	}
+	if attempts := fake.refuelAttempts(); attempts < 2 {
+		t.Fatalf("an essential refuel must RETRY, got %d attempt(s)", attempts)
 	}
 }

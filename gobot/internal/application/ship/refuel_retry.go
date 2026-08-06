@@ -113,21 +113,32 @@ func (e *RouteExecutor) refuelShipWithRetry(
 	return e.refuelShipWithRetryCore(ctx, ship, playerID, DefaultRefuelRetryBudget, DefaultRefuelBackoffBase, returnToOrbit, true)
 }
 
-// refuelShipWithoutEscalation retries at the CURRENT waypoint only and never flies the
-// hull to an alternate fuel stop.
+// NonEssentialRefuelBudget is what a refuel the remaining route does not need is worth waiting
+// for: nothing. The retry loop always makes one attempt before it consults the budget, so a
+// budget of zero means try once and let go.
+const NonEssentialRefuelBudget = 0
+
+// attemptNonEssentialRefuel tries the refuel ONCE at the current waypoint and neither retries
+// nor flies the hull to an alternate fuel stop.
 //
-// The reroute is the expensive half: it commits the hull to a crawl across the system for
-// fuel, and it is worth that price only when the plan cannot continue without it. For a
-// refuel the remaining route does not need, the same reroute carries the hull — and
-// whatever it is holding — away from where it was actually due. Retrying in place still
-// wins the top-up whenever the upstream failure clears, which is the outcome worth having.
-func (e *RouteExecutor) refuelShipWithoutEscalation(
+// Both of those exist to rescue a refuel the plan CANNOT CONTINUE WITHOUT, and they are priced
+// for that: the reroute commits the hull to a crawl across the system, and the retry budget
+// holds it in place for as long as an upstream failure lasts. Neither price is worth paying for
+// fuel nothing is waiting on — and the hull spending it is, by definition of how this is
+// reached, standing at the waypoint it was sent to with whatever it was carrying still aboard.
+// The wait lands on that cargo, not on the fuel.
+//
+// One attempt is not a token gesture: it wins the top-up in every case except an upstream
+// failure lasting longer than a single call, which is precisely the case where continuing beats
+// waiting. What is given up is fuel for a LATER trip; what is bought back is the trip already
+// in progress.
+func (e *RouteExecutor) attemptNonEssentialRefuel(
 	ctx context.Context,
 	ship *domainNavigation.Ship,
 	playerID shared.PlayerID,
 	returnToOrbit bool,
 ) error {
-	return e.refuelShipWithRetryCore(ctx, ship, playerID, DefaultRefuelRetryBudget, DefaultRefuelBackoffBase, returnToOrbit, false)
+	return e.refuelShipWithRetryCore(ctx, ship, playerID, NonEssentialRefuelBudget, DefaultRefuelBackoffBase, returnToOrbit, false)
 }
 
 // refuelShipWithRetryCore is refuelShipWithRetry's configurable core. Tests can
