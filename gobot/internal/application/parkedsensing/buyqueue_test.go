@@ -281,9 +281,15 @@ func (f *fakeYards) ListProbeYards(_ context.Context, system string) ([]string, 
 }
 
 type fakeShipReader struct {
-	docked    map[string]string // waypoint → docked probe symbol
+	docked map[string]string // waypoint → docked probe symbol
+	// lent maps a waypoint to a NON-PROBE hull of ours standing at it — the
+	// cold-start borrow (counterstaff.go). Kept apart from `docked` on purpose: the
+	// two reads answer different questions and buyerAt asks them in order, so a fake
+	// that merged them could not witness the preference.
+	lent      map[string]string
 	positions map[string]ShipPos
 	dockedErr error
+	lentErr   error
 	atErr     error
 }
 
@@ -293,6 +299,20 @@ func (f *fakeShipReader) DockedProbeAt(_ context.Context, _ int, waypoint string
 	}
 	s, ok := f.docked[waypoint]
 	return s, ok, nil
+}
+
+func (f *fakeShipReader) DockedBuyerAt(_ context.Context, _ int, waypoint string) (string, bool, error) {
+	if f.lentErr != nil {
+		// Adversarial: a usable buyer alongside the error, so a caller that ignores
+		// the error engages a hull it cannot prove is claimable.
+		return "HULL-GHOST", true, f.lentErr
+	}
+	s, ok := f.lent[waypoint]
+	return s, ok, nil
+}
+
+func (f *fakeShipReader) LendableHulls(_ context.Context, _ int, _ int) ([]LendableHull, error) {
+	return nil, nil
 }
 
 func (f *fakeShipReader) ShipAt(_ context.Context, _ int, ship string) (ShipPos, error) {

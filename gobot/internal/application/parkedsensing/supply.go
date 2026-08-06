@@ -106,6 +106,12 @@ func (t *expandTick) hullessSpareIsFundable(ctx context.Context, waypoint string
 // a counter before this engine has written a row for it. That is the same fallback
 // buyerAt makes, and skipping it would decline yards the queue would have funded.
 //
+// THE SHIPS HALF IS TWO READS, IN buyerAt's ORDER: a probe of ours first, then ANY
+// hull of ours the queue could claim to buy through — which is how a NON-PROBE hull
+// lent to the counter is recognised (counterstaff.go). The second read is what makes
+// the cold-start escape visible to staging at all; without it a borrowed frigate
+// stands at the yard and this predicate still calls the yard empty.
+//
 // IT STOPS AT DOCKED, deliberately. PurchaseShipCommand will dock a hull it finds in
 // orbit, so the purchase itself would tolerate one — but buyerAt is what SELECTS the
 // buyer, and it reads DOCKED only. Staging on an orbiting hull would write a want
@@ -123,6 +129,13 @@ func (t *expandTick) staffedAt(ctx context.Context, waypoint string) (bool, erro
 	staffed := t.book.staffedYard(waypoint)
 	if !staffed {
 		_, found, err := t.p.Ships.DockedProbeAt(ctx, t.playerID, waypoint)
+		if err != nil {
+			return false, fmt.Errorf("failed to look for a hull standing at %q: %w", waypoint, err)
+		}
+		staffed = found
+	}
+	if !staffed {
+		_, found, err := t.p.Ships.DockedBuyerAt(ctx, t.playerID, waypoint)
 		if err != nil {
 			return false, fmt.Errorf("failed to look for a hull standing at %q: %w", waypoint, err)
 		}
@@ -247,6 +260,13 @@ func (t *expandTick) requestSeeds(ctx context.Context) error {
 			// hulls and free of a SPARE placement. Expected while the map is thin, and
 			// it costs nothing — the target waits and takes nothing from the targets
 			// we CAN reach on its way past.
+			//
+			// COUNTED RATHER THAN SILENT. On a cold fleet this branch takes EVERY
+			// target and the tick reports a serene zero — 5,549 placements wanted and
+			// no seed requested, with nothing in the heartbeat saying why. The count is
+			// also the trigger for the escape: staffCounters lends a non-probe hull to
+			// a counter precisely when this is nonzero (counterstaff.go).
+			t.rep.SeedsUnstaged++
 			continue
 		}
 		if err := t.p.Ledger.UpsertSlotMetadata(ctx, t.playerID, SlotRecord{

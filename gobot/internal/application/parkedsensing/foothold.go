@@ -22,6 +22,16 @@ import (
 // the local counter. That leverage is why this path is restricted to SPARE
 // placements; a MARKET want is worth one probe, a foothold is worth a system.
 //
+// IT CANNOT BREAK THE COLDEST FORM OF THE DEADLOCK, and counterstaff.go is what
+// does. Everything here starts from a SPARE WANT that already exists, and
+// requestSeeds only writes one at a yard a hull of ours already stands at — so on a
+// fleet with no staffed probe counter this path is offered nothing at all. Its
+// carrier is also drawn from PARKED MARKET probes, which a fleet holding one probe
+// per system cannot release. The escape is a NON-PROBE hull, and it must be a BUYER
+// rather than a carrier: the carrier here CLAIMS the placement, which for a borrowed
+// frigate would mean the sensing fleet tag, a probe-cap row, and the seed never
+// being bought at all. See counterstaff.go for the whole argument.
+//
 // WHAT IT COSTS is a PARKED MARKET placement within gate reach, which stops being
 // watched. Two guards decide which hull may be taken: GOODS REDUNDANCY — every
 // whitelisted good the candidate observes must ALSO be observed by another parked

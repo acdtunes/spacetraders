@@ -84,6 +84,16 @@ func (keyTestShips) DockedProbeAt(_ context.Context, _ int, _ string) (string, b
 	return "", false, nil
 }
 
+// Nobody stands anywhere and nothing is lendable: this fixture is about the
+// placement KEY, so the borrow reads answer the neutral "no".
+func (keyTestShips) DockedBuyerAt(_ context.Context, _ int, _ string) (string, bool, error) {
+	return "", false, nil
+}
+
+func (keyTestShips) LendableHulls(_ context.Context, _ int, _ int) ([]appSensing.LendableHull, error) {
+	return nil, nil
+}
+
 func (keyTestShips) ShipAt(_ context.Context, _ int, _ string) (appSensing.ShipPos, error) {
 	return appSensing.ShipPos{}, nil
 }

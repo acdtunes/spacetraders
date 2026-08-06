@@ -222,6 +222,17 @@ func (w *walkWorld) DockedProbeAt(context.Context, int, string) (string, bool, e
 	return "", false, nil
 }
 
+// The borrow path is not exercised here — this world is about the gate walk — so
+// both reads answer "nobody", which is the neutral value: it leaves the walk under
+// test deciding exactly what it decided before the escape existed.
+func (w *walkWorld) DockedBuyerAt(context.Context, int, string) (string, bool, error) {
+	return "", false, nil
+}
+
+func (w *walkWorld) LendableHulls(context.Context, int, int) ([]appSensing.LendableHull, error) {
+	return nil, nil
+}
+
 // walkLedger is the placement ledger, and it PERSISTS: a transition really flips
 // the stored state, so the next tick reads the state this one wrote. That is the
 // property the headline test turns on — a ledger that merely recorded the

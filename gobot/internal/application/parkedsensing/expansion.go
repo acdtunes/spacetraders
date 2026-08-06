@@ -264,6 +264,17 @@ type ExpandReport struct {
 	Discovered int
 	// SeedsRequested counts SPARE placements enqueued for the buy queue to fund.
 	SeedsRequested int
+	// SeedsUnstaged counts the targets requestSeeds passed over because no probe
+	// counter within reach is staffed by a hull of ours — the cold-start deadlock,
+	// made COUNTABLE rather than left as a silent `continue`. It is the trigger for
+	// staffCounters as well as the operator's view of it, so a fleet in the deadlock
+	// reads as blocked rather than as idle.
+	SeedsUnstaged int
+	// CountersStaffed counts non-probe hulls lent to a probe counter this tick so the
+	// buy queue has somebody to buy through (counterstaff.go). Nonzero beside a
+	// nonzero SeedsUnstaged is the escape working; nonzero for many ticks running is
+	// the borrowed hulls being taken back faster than a probe can be bought.
+	CountersStaffed int
 	// SeedsClaimed counts parked spares turned into charting errands.
 	SeedsClaimed int
 	// Jumped, Navigated and Charted count the seed steps actually commanded. Jumped
@@ -426,6 +437,7 @@ func AdvanceExpansion(
 		probeYards: probeYards,
 		staffed:    map[string]bool{},
 		listings:   map[string]probeStock{},
+		serving:    map[string]bool{},
 		targets:    targets, covered: covered,
 		rep: &rep,
 	}
@@ -439,6 +451,14 @@ func AdvanceExpansion(
 		return rep, err
 	}
 	if err := t.requestSeeds(ctx); err != nil {
+		return rep, err
+	}
+
+	// LAST OF THE SEED PASSES, and only reachable when every one before it came up
+	// empty: it reads rep.SeedsUnstaged, which requestSeeds has just filled in. A
+	// fleet that could stage a seed the ordinary way never lends a hull (see
+	// counterstaff.go).
+	if err := t.staffCounters(ctx); err != nil {
 		return rep, err
 	}
 
@@ -488,10 +508,15 @@ type expandTick struct {
 	k        ExpandKnobs
 	book     *slotBook
 	reach    *gateReach
-	// None of the three can change while the tick runs.
+	// None of the four can change while the tick runs. serving memoises whether
+	// staging would ever choose a yard in a system at all — see originServesATarget —
+	// and origins is that test's own index, built lazily because most ticks never
+	// reach the pass that asks.
 	probeYards map[string][]string
 	staffed    map[string]bool
 	listings   map[string]probeStock
+	serving    map[string]bool
+	origins    map[string]bool
 	// covered is struck off by every branch that answers a target, which keeps one
 	// system from being sent both a spare and a fresh probe.
 	targets []ExpandSystem

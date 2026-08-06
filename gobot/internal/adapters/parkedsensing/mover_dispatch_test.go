@@ -185,6 +185,17 @@ func (stubShipReader) DockedProbeAt(context.Context, int, string) (string, bool,
 	return "", false, nil
 }
 
+// The placement machine never asks either of these; they are here so the stub still
+// satisfies the port, and they answer "nobody" so a future caller cannot read a
+// presence this fixture does not model.
+func (stubShipReader) DockedBuyerAt(context.Context, int, string) (string, bool, error) {
+	return "", false, nil
+}
+
+func (stubShipReader) LendableHulls(context.Context, int, int) ([]appSensing.LendableHull, error) {
+	return nil, nil
+}
+
 func (s stubShipReader) ShipAt(_ context.Context, _ int, shipSymbol string) (appSensing.ShipPos, error) {
 	return s.positions[shipSymbol], nil
 }

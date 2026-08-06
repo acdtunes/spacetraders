@@ -360,10 +360,23 @@ type fakeExpandShips struct {
 	// docked maps a waypoint to the probe of ours standing at it, mirroring the
 	// ships-table read buyerAt falls back to. Seed staging consults the same
 	// question, so it is no longer a stub.
-	docked    map[string]string
-	dockedErr error
-	err       error
-	calls     int
+	docked map[string]string
+	// lent maps a waypoint to a NON-PROBE hull of ours standing at it — what a
+	// borrowed hull looks like once it has arrived (counterstaff.go). Kept apart from
+	// `docked` because staffedAt asks the two questions in order and a merged fake
+	// could not tell a probe on station from a hull on loan.
+	lent map[string]string
+	// lendable is what LendableHulls answers, IN ORDER. Empty by default, so every
+	// fixture written before the escape existed lends nothing and reads unchanged.
+	lendable    []LendableHull
+	dockedErr   error
+	lentErr     error
+	lendableErr error
+	err         error
+	calls       int
+	// lendableCalls counts the borrow read, which is how a test proves a tick that
+	// staged everything it wanted never asked for a hull at all.
+	lendableCalls int
 }
 
 func (f *fakeExpandShips) DockedProbeAt(_ context.Context, _ int, waypoint string) (string, bool, error) {
@@ -374,6 +387,29 @@ func (f *fakeExpandShips) DockedProbeAt(_ context.Context, _ int, waypoint strin
 	}
 	s, ok := f.docked[waypoint]
 	return s, ok, nil
+}
+
+func (f *fakeExpandShips) DockedBuyerAt(_ context.Context, _ int, waypoint string) (string, bool, error) {
+	if f.lentErr != nil {
+		// Adversarial, same shape as DockedProbeAt's: a usable buyer alongside the
+		// error, so a caller that leaks it stages a want nothing can fund.
+		return "HULL-GHOST", true, f.lentErr
+	}
+	s, ok := f.lent[waypoint]
+	return s, ok, nil
+}
+
+func (f *fakeExpandShips) LendableHulls(_ context.Context, _ int, limit int) ([]LendableHull, error) {
+	f.lendableCalls++
+	if f.lendableErr != nil {
+		// Adversarial: a borrowable hull alongside the error, so a caller that
+		// swallows it commands a hull belonging to another coordinator.
+		return []LendableHull{{ShipSymbol: "HULL-GHOST", Waypoint: "X1-GHOST-A1", System: "X1-GHOST"}}, f.lendableErr
+	}
+	if limit <= 0 || len(f.lendable) <= limit {
+		return f.lendable, nil
+	}
+	return f.lendable[:limit], nil
 }
 
 func (f *fakeExpandShips) ShipAt(_ context.Context, _ int, ship string) (ShipPos, error) {

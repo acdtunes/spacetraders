@@ -257,10 +257,17 @@ func (h *RunProbeSensingCoordinatorHandler) heartbeat(ctx context.Context, cmd *
 			"expansion_spending_paused": hb.expand.SpendingPaused,
 			"expansion_discovered":      hb.expand.Discovered,
 			"seeds_requested":           hb.expand.SeedsRequested,
-			"seeds_claimed":             hb.expand.SeedsClaimed,
-			"charted":                   hb.expand.Charted,
-			"markets_found":             hb.expand.MarketsFound,
-			"retargeted":                hb.expand.Retargeted,
+			// The cold-start deadlock, made readable. A fleet with no staffed probe
+			// counter reported "0 seeds requested" and nothing else for an entire era —
+			// indistinguishable from a fleet with nothing left to seed. seeds_unstaged
+			// says WHY it is zero, and counters_staffed says whether the escape is
+			// running (counterstaff.go).
+			"seeds_unstaged":   hb.expand.SeedsUnstaged,
+			"counters_staffed": hb.expand.CountersStaffed,
+			"seeds_claimed":    hb.expand.SeedsClaimed,
+			"charted":          hb.expand.Charted,
+			"markets_found":    hb.expand.MarketsFound,
+			"retargeted":       hb.expand.Retargeted,
 		})
 }
 
@@ -402,6 +409,14 @@ func expansionSummary(rep parkedsensing.ExpandReport) string {
 	}
 	summary := fmt.Sprintf("+%d discovered, %d seed(s) requested, %d claimed, %d charted",
 		rep.Discovered, rep.SeedsRequested, rep.SeedsClaimed, rep.Charted)
+	// APPENDED ONLY WHEN IT BINDS, so the ordinary line is unchanged. "0 seed(s)
+	// requested" on its own reads as "nothing left to seed"; it is the opposite
+	// condition that needs saying out loud, and it is the one that ran for an era
+	// unnoticed.
+	if rep.SeedsUnstaged > 0 {
+		summary += fmt.Sprintf(" (%d target(s) have no staffed probe counter in reach; %d hull(s) lent to one)",
+			rep.SeedsUnstaged, rep.CountersStaffed)
+	}
 	if rep.SpendingPaused {
 		return summary + " (spending paused: no seed purchase, no explorer demand)"
 	}

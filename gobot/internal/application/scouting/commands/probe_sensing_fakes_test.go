@@ -711,11 +711,28 @@ func (f *psPurchaser) Buy(_ context.Context, _ int, _, _, owner string) (parkeds
 type fakeShipPositions struct {
 	at     map[string]parkedsensing.ShipPos
 	docked map[string]string
+	// lent is the cold-start borrow's half: waypoint → NON-PROBE hull of ours
+	// standing there. Empty by default, so every existing fixture reads exactly as it
+	// did before the escape existed.
+	lent     map[string]string
+	lendable []parkedsensing.LendableHull
 }
 
 func (f *fakeShipPositions) DockedProbeAt(_ context.Context, _ int, waypoint string) (string, bool, error) {
 	ship, ok := f.docked[waypoint]
 	return ship, ok, nil
+}
+
+func (f *fakeShipPositions) DockedBuyerAt(_ context.Context, _ int, waypoint string) (string, bool, error) {
+	ship, ok := f.lent[waypoint]
+	return ship, ok, nil
+}
+
+func (f *fakeShipPositions) LendableHulls(_ context.Context, _ int, limit int) ([]parkedsensing.LendableHull, error) {
+	if limit <= 0 || len(f.lendable) <= limit {
+		return f.lendable, nil
+	}
+	return f.lendable[:limit], nil
 }
 
 func (f *fakeShipPositions) ShipAt(_ context.Context, _ int, shipSymbol string) (parkedsensing.ShipPos, error) {

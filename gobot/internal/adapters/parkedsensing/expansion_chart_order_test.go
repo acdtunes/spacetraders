@@ -49,6 +49,17 @@ func (s *tourShips) DockedProbeAt(_ context.Context, _ int, _ string) (string, b
 	return "", false, nil
 }
 
+// No hull is lendable and no counter is staffed by one: this fixture is about the
+// tour's ORDER, and an available borrow would add a dispatch the ordering
+// assertions would have to account for.
+func (s *tourShips) DockedBuyerAt(_ context.Context, _ int, _ string) (string, bool, error) {
+	return "", false, nil
+}
+
+func (s *tourShips) LendableHulls(_ context.Context, _ int, _ int) ([]appSensing.LendableHull, error) {
+	return nil, nil
+}
+
 // tourSeedCommander is the flying half, and it WRITES BACK. Charting a waypoint
 // clears its UNCHARTED trait in the waypoints table, which is what lets the next
 // tick's catalog read see the tour advance. A commander that only recorded calls

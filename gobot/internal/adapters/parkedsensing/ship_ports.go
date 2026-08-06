@@ -75,6 +75,20 @@ const (
 	catalogPageSize = 20
 	maxCatalogPages = 10
 
+	// activeAssignment is the assignment_status a hull carries while a container
+	// claim or a captain reservation is live. Both use it, and the borrow path
+	// excludes both together: neither is this engine's to take, and both would be
+	// refused by ClaimShip permanently rather than transiently.
+	activeAssignment = "active"
+
+	// buyerPreferenceOrder ranks the hulls that may sign for a purchase. A probe
+	// already on station first, an ordinary hull next, and the command frigate LAST
+	// (RULINGS #7 — the flagship is drafted only when nothing else can do the job).
+	// Written as a CASE rather than as several ordered queries so the preference is
+	// one expression the database applies, and paired with a ship_symbol tie-break by
+	// every caller so repeated reads pick the same hull.
+	buyerPreferenceOrder = "CASE role WHEN 'SATELLITE' THEN 0 WHEN 'COMMAND' THEN 2 ELSE 1 END"
+
 	// cargoSpendScan bounds the transaction rows summed for the buy floor's
 	// cargo-runway term. Generous enough to cover an hour of a busy trading
 	// fleet: under-reading here would UNDERSTATE the floor, which is the
@@ -157,6 +171,93 @@ func (p *ShipPositionPort) DockedProbeAt(ctx context.Context, playerID int, wayp
 		return "", false, fmt.Errorf("failed to look for a docked probe at %q: %w", waypoint, err)
 	}
 	return model.ShipSymbol, true, nil
+}
+
+// DockedBuyerAt returns any hull of ours docked at waypoint that this engine may
+// claim to buy through, preferring a probe and taking the command frigate last.
+//
+// THE CLAIM FILTER IS THE WHOLE QUERY, and it is stricter than DockedProbeAt's
+// because a non-probe hull has an owner. ShipRepository.ClaimShip refuses, inside
+// its own row lock, a hull dedicated to another fleet, a hull a container already
+// holds, and a hull the captain has reserved — and every one of those refusals is
+// PERMANENT rather than transient, which is exactly the standing API drain
+// DockedProbeAt's contract warns about. So all three are excluded here, at
+// selection, rather than discovered at the claim.
+//
+// A captain reservation and a container claim are the same assignment_status
+// ("active") and are excluded together; the reservation's owner column is not
+// consulted, because neither kind is ours to take.
+//
+// NULL assignment_status is treated as free. The schema defaults it to 'idle', so
+// this is the row-written-before-the-column case, and a NULL there means no claim
+// was ever recorded rather than one that cannot be read.
+//
+// THE ORDER IS A PREFERENCE LADDER, not a tie-break: a probe already on station
+// signs for the purchase if one is there, an ordinary hull next, and the command
+// frigate last (RULINGS #7 — the flagship is drafted only when nothing else can
+// do the job). Symbol breaks the tie so repeated calls pick the same hull.
+func (p *ShipPositionPort) DockedBuyerAt(ctx context.Context, playerID int, waypoint string) (string, bool, error) {
+	var model persistence.ShipModel
+	err := p.db.WithContext(ctx).
+		Where("player_id = ? AND location_symbol = ? AND nav_status = ?",
+			playerID, waypoint, string(navigation.NavStatusDocked)).
+		Where("dedicated_fleet IN ?", []string{"", appSensing.SensingParkedFleetTag}).
+		Where("assignment_status IS NULL OR assignment_status <> ?", activeAssignment).
+		Order(buyerPreferenceOrder).
+		Order("ship_symbol").
+		First(&model).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("failed to look for a hull standing at %q: %w", waypoint, err)
+	}
+	return model.ShipSymbol, true, nil
+}
+
+// LendableHulls returns the non-probe hulls this engine may borrow to staff a
+// probe counter, bounded by limit.
+//
+// SAME CLAIM FILTER AS DockedBuyerAt, for the same reason: a hull the claim path
+// would refuse is not a hull worth flying anywhere. What differs is the shape of
+// the answer — every candidate rather than one waypoint's, and IN-TRANSIT hulls
+// INCLUDED, because a hull already flying to a counter is what tells the next tick
+// not to send a second one there.
+//
+// PROBES ARE EXCLUDED, and that is the point of the pass rather than an
+// optimisation: the deadlock this serves is "no probe is free to put at a probe
+// counter", so a probe answer would be either already impossible or already handled
+// by the paths that move probes (yardpresence.go, foothold.go).
+//
+// A non-positive limit yields nothing rather than the whole fleet: the bound is
+// this port's contract, and defaulting an unset one to "unbounded" is how a bounded
+// read quietly becomes a fleet walk.
+func (p *ShipPositionPort) LendableHulls(ctx context.Context, playerID int, limit int) ([]appSensing.LendableHull, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	var models []persistence.ShipModel
+	err := p.db.WithContext(ctx).
+		Where("player_id = ? AND role <> ?", playerID, satelliteRole).
+		Where("dedicated_fleet IN ?", []string{"", appSensing.SensingParkedFleetTag}).
+		Where("assignment_status IS NULL OR assignment_status <> ?", activeAssignment).
+		Order(buyerPreferenceOrder).
+		Order("ship_symbol").
+		Limit(limit).
+		Find(&models).Error
+	if err != nil {
+		return nil, fmt.Errorf("failed to list the hulls available to staff a probe counter: %w", err)
+	}
+	hulls := make([]appSensing.LendableHull, 0, len(models))
+	for _, model := range models {
+		hulls = append(hulls, appSensing.LendableHull{
+			ShipSymbol: model.ShipSymbol,
+			Waypoint:   model.LocationSymbol,
+			System:     model.SystemSymbol,
+			InTransit:  model.NavStatus == string(navigation.NavStatusInTransit),
+		})
+	}
+	return hulls, nil
 }
 
 // ShipAt returns one hull's recorded position. A hull the table does not know is

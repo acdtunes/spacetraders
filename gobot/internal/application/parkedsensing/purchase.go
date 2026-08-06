@@ -191,7 +191,22 @@ func (t *drainTick) skipKnownProbeless(ctx context.Context, yard string, now tim
 
 // buyerAt finds a hull of ours standing at one waypoint: first a parked sensing
 // probe the ledger already accounts for, then any probe of ours the ships table
-// shows docked there.
+// shows docked there, and last ANY hull of ours docked there that this engine could
+// claim.
+//
+// THE THIRD READ IS THE COLD-START ESCAPE (counterstaff.go). SpaceTraders sells a
+// hull wherever a hull of ours is docked and does not care which, so a command
+// frigate or a hauler standing at the counter can sign for a probe the fleet has no
+// probe to buy. It is asked LAST, so a probe is always preferred and the borrowed
+// hull is engaged only when nothing else can transact here.
+//
+// NOTHING IS OWED TO THE HULL EITHER WAY. A buyer is used for the length of one
+// purchase and named by no row afterwards — the same relationship the DockedProbeAt
+// fallback has always had with a probe no placement accounts for. The hull that
+// FILLS the placement is the probe that gets bought.
+//
+// A ROLE IS NEVER INFERRED FROM THIS ANSWER. It reports who can transact, not what
+// the fleet owns: the probe cap counts ledger rows, and no row is written here.
 func buyerAt(ctx context.Context, p BuyPorts, playerID int, waypoint string, inSystem []QueuedSlot) (string, bool, error) {
 	for _, s := range inSystem {
 		if s.Waypoint == waypoint && s.State == SlotStateParked && s.AssignedShip != "" {
@@ -201,6 +216,13 @@ func buyerAt(ctx context.Context, p BuyPorts, playerID int, waypoint string, inS
 	ship, found, err := p.Ships.DockedProbeAt(ctx, playerID, waypoint)
 	if err != nil {
 		return "", false, fmt.Errorf("failed to look for a docked probe at %q: %w", waypoint, err)
+	}
+	if found {
+		return ship, true, nil
+	}
+	ship, found, err = p.Ships.DockedBuyerAt(ctx, playerID, waypoint)
+	if err != nil {
+		return "", false, fmt.Errorf("failed to look for a hull docked at %q: %w", waypoint, err)
 	}
 	return ship, found, nil
 }

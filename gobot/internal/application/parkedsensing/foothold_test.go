@@ -67,6 +67,17 @@ func (w *flyingWorld) DockedProbeAt(_ context.Context, _ int, waypoint string) (
 	return s, ok, nil
 }
 
+// No borrowed hull stands anywhere in this world, and no hull is lendable: these
+// tests are about the foothold's own carrier selection, and a borrow answering here
+// would fund placements the surplus pool was supposed to be the only source for.
+func (w *flyingWorld) DockedBuyerAt(_ context.Context, _ int, _ string) (string, bool, error) {
+	return "", false, nil
+}
+
+func (w *flyingWorld) LendableHulls(_ context.Context, _ int, _ int) ([]LendableHull, error) {
+	return nil, nil
+}
+
 func (w *flyingWorld) ShipAt(_ context.Context, _ int, ship string) (ShipPos, error) {
 	return w.positions[ship], nil
 }

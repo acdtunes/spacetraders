@@ -119,10 +119,11 @@ type ProbeListingMemo interface {
 	LastListingScan(ctx context.Context, playerID int, waypoint string) (sellsProbe bool, scannedAt time.Time, known bool, err error)
 }
 
-// ParkedShipReader reads ship positions from the DATABASE, never the API. Both
-// methods are scoped to ONE waypoint or ONE ship by construction, and the interface
-// deliberately exposes no fleet-listing method: the sensing engine's per-tick cost
-// must scale with the placements it is working, not with the size of the fleet.
+// ParkedShipReader reads ship positions from the DATABASE, never the API. Every
+// read is scoped to ONE waypoint, ONE ship, or a BOUNDED page by construction, and
+// the interface deliberately exposes no unbounded fleet-listing method: the sensing
+// engine's per-tick cost must scale with the placements it is working, not with the
+// size of the fleet.
 type ParkedShipReader interface {
 	// DockedProbeAt returns a probe docked at waypoint that this engine may actually
 	// DRIVE, if any. "May drive" is part of the contract: implementations MUST
@@ -131,8 +132,64 @@ type ParkedShipReader interface {
 	// be selected as a purchasing hull, rejected at the claim, and selected again
 	// every tick after, burning a live price read and never filling the placement.
 	DockedProbeAt(ctx context.Context, playerID int, waypoint string) (string, bool, error)
+	// DockedBuyerAt returns ANY hull of ours docked at waypoint that this engine may
+	// claim to buy THROUGH — the probe DockedProbeAt already finds, or a NON-PROBE
+	// hull standing at the counter on loan (see counterstaff.go).
+	//
+	// A SECOND READ RATHER THAN A WIDENING OF DockedProbeAt, and the split is
+	// load-bearing. DockedProbeAt's answer is also read as "a probe of ours is on
+	// station here"; this one answers only "somebody of ours can sign for a
+	// purchase". Callers ask DockedProbeAt FIRST and fall through to this, so the
+	// pair is a strict superset of the old behaviour however this one is narrowed.
+	//
+	// THE SAME PERMANENT-REJECTION CONTRACT APPLIES, and it is stricter here because
+	// a non-probe hull has an owner. Implementations MUST exclude every hull the
+	// claim path would refuse forever: one dedicated to another fleet, one a
+	// container already holds, and one the captain has reserved. A hull that fails
+	// its claim on every tick is a standing API drain — the buy queue would select
+	// it, pay for a live shipyard price read, fail, and select it again.
+	//
+	// The mechanic behind it: SpaceTraders sells a hull only where a hull of ours is
+	// already docked, and it does not care WHICH. Presence is the requirement, not a
+	// probe.
+	DockedBuyerAt(ctx context.Context, playerID int, waypoint string) (string, bool, error)
+	// LendableHulls returns at most `limit` NON-PROBE hulls of ours that this engine
+	// could borrow for one errand, cheapest sacrifice first.
+	//
+	// BOUNDED, WHICH IS WHY IT IS ADMISSIBLE HERE. The bound is the caller's and the
+	// pass that uses it dispatches at most one hull per tick, so the cost is a single
+	// indexed page read rather than a fleet walk — the property the note above this
+	// interface protects.
+	//
+	// IT ADMITS ONLY WHAT THE CLAIM PATH WOULD ACCEPT, the same list DockedBuyerAt
+	// excludes: undedicated (or already ours), unclaimed by any container, and
+	// unreserved by the captain. Borrowing is a reachability trick, not a way to
+	// take a hull off another coordinator's work.
+	//
+	// IN-TRANSIT HULLS ARE INCLUDED AND FLAGGED. They are not borrowable, but a hull
+	// already FLYING to a counter is exactly what stops the next tick sending a
+	// second one there — dropping them would make the pass double-dispatch.
+	LendableHulls(ctx context.Context, playerID int, limit int) ([]LendableHull, error)
 	// ShipAt returns one hull's recorded position.
 	ShipAt(ctx context.Context, playerID int, shipSymbol string) (ShipPos, error)
+}
+
+// LendableHull is one hull the fleet could lend to stand at a probe counter.
+//
+// It carries no role, no cargo and no capacity, and that narrowness is the point:
+// the borrower's only question is "can this hull stand somewhere it is not standing
+// now", and a richer type would invite this engine into fleet decisions that belong
+// to the coordinators that own these hulls.
+type LendableHull struct {
+	ShipSymbol string
+	// Waypoint is where the hull STANDS — or, when InTransit, where it is flying TO,
+	// which is what the ships row records for a hull under way.
+	Waypoint string
+	System   string
+	// InTransit reports that the hull is under way and therefore NOT borrowable. It
+	// is returned rather than filtered out so a counter with a hull already inbound
+	// can be recognised and left alone.
+	InTransit bool
 }
 
 // FleetTagger writes the dedicated-fleet tag — the single write path for fleet
