@@ -395,9 +395,89 @@ func gateMaterialsNeediestFirst(pipeline *manufacturing.ManufacturingPipeline) [
 	return materials
 }
 
+// gateFeedCandidate is one feed step that survived the cheap declines, carrying the scarcity the
+// ranking sorts on. supply and known are kept alongside rank because the LOG needs the level's
+// NAME and needs to distinguish "MODERATE" from "could not read it" — rank alone collapses those
+// two into the same integer, which is precisely the confusion the ranking must not hide.
+type gateFeedCandidate struct {
+	step   gate.FeedStep
+	target *mfgServices.MarketLocatorResult
+	supply string
+	known  bool
+	rank   int
+}
+
+// scarcityRank orders inputs by how short the destination factory is of them: SCARCE(1) sorts
+// ahead of ABUNDANT(5), so a lower rank is a more urgent feed.
+//
+// AN UNREADABLE SUPPLY RANKS AS MODERATE — the middle of the ladder — and that is a deliberate
+// choice between two bad extremes, not a fallback nobody thought about. Ranking unknown FIRST
+// prioritises exactly the factories we cannot see, letting one unscanned market capture every leg;
+// ranking it LAST starves any factory whose listing happens to be stale. The neutral middle lets a
+// genuinely SCARCE step outrank it and a genuinely ABUNDANT one lose to it, while a plan whose
+// supplies are ALL unreadable ties throughout and keeps plan order exactly.
+//
+// It is expressed as MODERATE's own Order() rather than a literal 3 so it cannot drift if the
+// ladder is ever renumbered.
+func scarcityRank(supply string, known bool) int {
+	if !known {
+		return shared.SupplyLevelModerate.Order()
+	}
+	return shared.ParseSupplyLevel(supply).Order()
+}
+
+// logGateFeedRanking records the order the leg will actually try, and it only speaks when the
+// ranking CHANGED something.
+//
+// A line per leg restating an unchanged plan order would be pure noise, and noise is how a real
+// reordering stops being noticed. But a silent reordering is worse: the leg would feed a different
+// input than the plan lists first, with nothing in the log saying why — rebuilding the "ordering
+// encodes priority by accident" opacity from the other side.
+//
+// The numbers go in the MESSAGE: the container log renderer drops metadata maps.
+func logGateFeedRanking(ctx context.Context, root string, candidates []gateFeedCandidate) {
+	if len(candidates) < 2 {
+		return
+	}
+	head := candidates[0]
+	if !head.known {
+		return // nothing was readable enough to reorder anything
+	}
+	reordered := false
+	for _, candidate := range candidates {
+		if candidate.rank > head.rank {
+			reordered = true
+			break
+		}
+	}
+	if !reordered {
+		return // every candidate is equally short; plan order stands and says so by staying quiet
+	}
+	order := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		level := candidate.supply
+		if !candidate.known {
+			level = "unreadable"
+		}
+		order = append(order, fmt.Sprintf("%s(%s)", candidate.step.Input, level))
+	}
+	common.LoggerFromContext(ctx).Log("INFO", fmt.Sprintf("Gate factory: feeding the %s chain by SCARCITY, not recipe order — %s is next because its factory is %s of it; full order %s", root, head.step.Input, head.supply, strings.Join(order, " > ")), map[string]interface{}{
+		"root": root, "chosen": head.step.Input, "supply": head.supply,
+		"order": strings.Join(order, ">"), "action": "feed_ranked_by_scarcity",
+	})
+}
+
 // planGateFeed picks THIS leg's single feed step: walk each outstanding gate material neediest
-// first, and take the first step whose input source AND destination factory both resolve AND whose
-// first tranche this treasury can actually pay for.
+// first and, within a material, take the step whose destination factory is SHORTEST of that input
+// (sp-q9um6) among those whose input source AND destination factory both resolve AND whose first
+// tranche this treasury can actually pay for.
+//
+// Ordering runs in two passes, and the split is what keeps the ranking from costing anything it
+// does not have to: the two CHEAP declines (no destination factory, target ABUNDANT) are applied to
+// every step first, only the survivors are ranked, and the EXPENSIVE work — resolving each input's
+// source and pricing its tranche against treasury — happens in ranked order and stops at the first
+// step that passes. So a leg still resolves roughly as many sources as before; what changed is
+// WHICH step it tries first.
 //
 // Every declined step is logged with its reason. A walk that declines silently rebuilds the exact
 // opacity this design exists to remove — a starved factory and a satisfied one would look the same.
@@ -432,6 +512,11 @@ func (h *RunConstructionCoordinatorHandler) planGateFeed(
 			"root": plan.Root, "steps": len(plan.Steps), "stops": len(plan.Stops),
 		})
 
+		// THE TWO CHEAP DECLINES RUN FIRST, ON EVERY STEP, and only the survivors get ranked. An
+		// ABUNDANT factory needs no feedstock at ANY rank, so it must never become a candidate —
+		// ranking it and then declining it would price an input the leg was never going to buy,
+		// which is exactly the ordering the fail-safe's own comment protects.
+		candidates := make([]gateFeedCandidate, 0, len(plan.Steps))
 		for _, step := range plan.Steps {
 			target, terr := h.factory.topology.TerminalFactory(ctx, step.Target, systemSymbol, cmd.PlayerID)
 			if terr != nil || target == nil {
@@ -453,6 +538,36 @@ func (h *RunConstructionCoordinatorHandler) planGateFeed(
 				})
 				continue
 			}
+			supply, known := h.factory.topology.ImportSupply(ctx, target.WaypointSymbol, step.Input, cmd.PlayerID)
+			candidates = append(candidates, gateFeedCandidate{
+				step: step, target: target, supply: supply, known: known,
+				rank: scarcityRank(supply, known),
+			})
+		}
+
+		// SCARCEST INPUT FIRST, PLAN ORDER TO BREAK EVERY TIE (sp-q9um6).
+		//
+		// A factory cannot produce while it is short of ANY input, so the input it is shortest of
+		// is the one worth a hull-load — regardless of where the recipe happens to list it. Plan
+		// order encoded priority purely by accident: F45 read IRON MODERATE and QUARTZ_SAND SCARCE,
+		// and IRON won every leg for no better reason than appearing first in the recipe.
+		//
+		// THE SORT IS STABLE, AND THAT IS THE SAFETY PROPERTY, not a detail. Ties keep plan order,
+		// and every step whose supply could not be read ties with every other — so when the market
+		// data is absent this ordering degrades to EXACTLY the plan order it replaced. A ranking
+		// that fell back to something else would be worse than no ranking at all, because plan
+		// order is at least predictable. It also preserves shallowest-first among equally-short
+		// steps, which plan order already encodes and which
+		// TestFeedGateLeg_FeedsTheTerminalFactoryBeforeAnythingDeeper pins.
+		sort.SliceStable(candidates, func(i, j int) bool { return candidates[i].rank < candidates[j].rank })
+
+		logGateFeedRanking(ctx, plan.Root, candidates)
+
+		// THE EXPENSIVE DECLINES RUN IN RANKED ORDER, so the scarcest input is the one whose source
+		// is resolved and whose cost is priced first — and a scarcest step that declines yields to
+		// the next-scarcest rather than ending the leg (sp-9eor3).
+		for _, candidate := range candidates {
+			step, target := candidate.step, candidate.target
 			source, serr := h.factory.topology.TerminalFactory(ctx, step.Input, systemSymbol, cmd.PlayerID)
 			if serr != nil || source == nil {
 				// A refusal, never a substitution: sending a hull to some other waypoint is how

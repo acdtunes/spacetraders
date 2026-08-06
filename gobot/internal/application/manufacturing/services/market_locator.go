@@ -97,6 +97,25 @@ func (l *MarketLocator) scannedTradeGood(ctx context.Context, waypointSymbol str
 	return tradeGood, nil
 }
 
+// TradeGoodAt reads ONE known waypoint's listing for ONE good (sp-q9um6).
+//
+// It is the odd one out in this file and deliberately so: every other locator here SEARCHES a
+// system for a market matching a role, and returns whichever waypoint won. This one answers a
+// question about a waypoint the CALLER has already resolved — "what does THIS market say about
+// THIS good" — which no searching locator can answer, because their whole job is to pick the
+// waypoint for you.
+//
+// That distinction is the reason it exists. A caller holding a resolved factory and wanting its
+// IMPORT supply of an input cannot get there through FindImportMarket: that returns the BEST
+// importer in the system, which is a different waypoint whenever the resolved factory is not the
+// best one — so the answer would silently describe some other market.
+//
+// It is a thin export of scannedTradeGood rather than new logic, so there is one market read in
+// this file and not two that can drift.
+func (l *MarketLocator) TradeGoodAt(ctx context.Context, waypointSymbol, good string, playerID int) (*market.TradeGood, error) {
+	return l.scannedTradeGood(ctx, waypointSymbol, good, playerID)
+}
+
 // FindExportMarket finds a market that SELLS a good to us — a buy SOURCE.
 // For actual ship types (not ship components), searches shipyards.
 // For regular goods and ship components, returns the cheapest EXPORT or EXCHANGE

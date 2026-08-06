@@ -6,6 +6,7 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/goods"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
 // marketResolver is the narrow view of MarketLocator that GateTopology needs. Declaring it
@@ -15,6 +16,10 @@ import (
 type marketResolver interface {
 	FindExportMarket(ctx context.Context, good, systemSymbol string, playerID int) (*MarketLocatorResult, error)
 	FindImportMarket(ctx context.Context, good, systemSymbol string, playerID int) (*MarketLocatorResult, error)
+	// TradeGoodAt reads a RESOLVED waypoint's own listing for a good. Distinct from the two
+	// searches above, which pick a waypoint by role: this one is the only way to ask what a
+	// specific already-resolved factory says about a specific good.
+	TradeGoodAt(ctx context.Context, waypointSymbol, good string, playerID int) (*market.TradeGood, error)
 }
 
 // Compile-time enforcement of the conformance claimed above. Without this line the comment is
@@ -233,4 +238,50 @@ func (t *GateTopology) ValidateFeedDestination(
 		}
 	}
 	return nil
+}
+
+// ImportSupply reports the supply level at which factoryWaypoint IMPORTS good — how short that
+// specific factory is of that specific input (sp-q9um6).
+//
+// THIS IS A THIRD QUANTITY, and the two already in hand are both the wrong one. For a feed step
+// IRON -> FAB_MATS with the FAB_MATS factory resolved at F45:
+//
+//   - TerminalFactory("IRON").Supply is H51's EXPORT supply of IRON — how much the market we BUY
+//     FROM has. Ranking on it is actively perverse: it would prefer IRON precisely BECAUSE its
+//     source is scarce, which is backwards on both counts (it is the hardest to buy and says
+//     nothing about need).
+//   - TerminalFactory("FAB_MATS").Supply is F45's EXPORT supply of its own OUTPUT — how much
+//     FAB_MATS F45 has made. That is the ABUNDANT fail-safe's subject, and it answers "does this
+//     factory need feeding at all", never "which of its inputs is it shortest of".
+//
+// Only F45's own IMPORT listing for IRON answers the third question, and no searching locator can
+// reach it: FindImportMarket returns the system's BEST importer of IRON, which is a different
+// waypoint whenever F45 is not it.
+//
+// IMPORT ONLY. An EXPORT listing means the factory makes the good rather than consuming it, where
+// a high supply means the opposite of need; EXCHANGE means it merely trades it, where supply is
+// not a statement of need at all. Reading either as "how short it is" inverts or invents the
+// signal, so both are reported unknown and the caller falls back to its existing order.
+//
+// UNKNOWN IS A REAL ANSWER, not a failure to be papered over, and the boolean is what keeps it
+// honest. An unscanned market, an absent listing and a null supply are all "no basis to rank",
+// which must leave the caller's existing order untouched — never sort to the front (prioritising
+// exactly the factories we cannot see) nor to the back (starving them). A guard that rejects on
+// ABSENCE of evidence deadlocks precisely when the fleet is coldest and nothing has been scanned.
+func (t *GateTopology) ImportSupply(ctx context.Context, factoryWaypoint, good string, playerID int) (string, bool) {
+	if factoryWaypoint == "" || good == "" {
+		return "", false
+	}
+	listing, err := t.markets.TradeGoodAt(ctx, factoryWaypoint, good, playerID)
+	if err != nil || listing == nil {
+		return "", false
+	}
+	if listing.TradeType() != market.TradeTypeImport {
+		return "", false
+	}
+	supply := listing.Supply()
+	if supply == nil || !shared.IsValidSupply(*supply) {
+		return "", false
+	}
+	return *supply, true
 }

@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"regexp"
 	"strings"
@@ -115,6 +116,26 @@ type fakeMarkets struct {
 	exportErr map[string]error
 	importErr map[string]error
 	err       error
+	// listings answers TradeGoodAt, keyed "WAYPOINT|GOOD". Deliberately separate from exports and
+	// imports above: those are SEARCHES that pick a waypoint by role, this is one named waypoint's
+	// own listing, and a fixture that derived one from the other could not tell an implementation
+	// reading the right market from one reading the system's best.
+	listings map[string]*market.TradeGood
+	// listingErr forces a read failure for a key, so the unreadable-market path is reachable.
+	listingErr map[string]error
+}
+
+func fakeListingKey(waypoint, good string) string { return waypoint + "|" + good }
+
+func (f *fakeMarkets) TradeGoodAt(_ context.Context, waypointSymbol, good string, _ int) (*market.TradeGood, error) {
+	if err := f.listingErr[fakeListingKey(waypointSymbol, good)]; err != nil {
+		return nil, err
+	}
+	listing, ok := f.listings[fakeListingKey(waypointSymbol, good)]
+	if !ok {
+		return nil, fmt.Errorf("good %s not found in market %s", good, waypointSymbol)
+	}
+	return listing, nil
 }
 
 func (f *fakeMarkets) FindExportMarket(_ context.Context, good, _ string, _ int) (*MarketLocatorResult, error) {
@@ -497,5 +518,108 @@ func TestGateTopology_SourceContainsNoWaypointLiterals(t *testing.T) {
 	}
 	if strings.Contains(string(src), "X1-") {
 		t.Fatal("gate_topology.go references an X1- prefixed symbol")
+	}
+}
+
+// ---------------------------------------------------------------------------------------------
+// ImportSupply (sp-q9um6) — the THIRD supply quantity: how short a resolved factory is of an INPUT.
+// ---------------------------------------------------------------------------------------------
+
+func tradeGoodFixture(t *testing.T, symbol, supply string, tradeType market.TradeType) *market.TradeGood {
+	t.Helper()
+	var supplyPtr *string
+	if supply != "" {
+		supplyPtr = &supply
+	}
+	good, err := market.NewTradeGood(symbol, supplyPtr, nil, 100, 90, 20, tradeType)
+	if err != nil {
+		t.Fatalf("building trade good fixture: %v", err)
+	}
+	return good
+}
+
+// THE HAPPY PATH: the factory's own IMPORT listing is what comes back, read from the waypoint the
+// caller resolved rather than from whichever market a role search would have picked.
+func TestGateTopology_ImportSupplyReadsTheResolvedFactorysOwnImportListing(t *testing.T) {
+	markets := &fakeMarkets{
+		listings: map[string]*market.TradeGood{
+			fakeListingKey("X1-KP46-F45", "IRON"): tradeGoodFixture(t, "IRON", "MODERATE", market.TradeTypeImport),
+		},
+		// A DIFFERENT market is the system's "best" importer of IRON. If ImportSupply ever routed
+		// through a role search instead of the pinned waypoint, it would answer about this one.
+		imports: map[string]*MarketLocatorResult{
+			"IRON": {WaypointSymbol: "X1-KP46-OTHER", Supply: "SCARCE"},
+		},
+	}
+	topo := NewGateTopology(markets, map[string][]string{"FAB_MATS": {"IRON", "QUARTZ_SAND"}})
+
+	supply, ok := topo.ImportSupply(context.Background(), "X1-KP46-F45", "IRON", 1)
+	if !ok {
+		t.Fatal("ImportSupply reported no basis to rank for a market that lists IRON as a scanned IMPORT")
+	}
+	if supply != "MODERATE" {
+		t.Fatalf("ImportSupply = %q, want MODERATE — F45's own listing. SCARCE would mean it answered about the system's best importer instead of the waypoint it was given", supply)
+	}
+}
+
+// AN EXPORT LISTING IS NOT A STATEMENT OF NEED — it is the opposite one. A factory EXPORTING a good
+// makes it; high supply there means it has plenty to sell, not that it is desperate for more.
+// Reading it as scarcity inverts the signal, which is the specific wrong fix sp-q9um6 exists to
+// rule out.
+func TestGateTopology_ImportSupplyRefusesAnExportListing(t *testing.T) {
+	markets := &fakeMarkets{
+		listings: map[string]*market.TradeGood{
+			fakeListingKey("X1-KP46-H51", "IRON"): tradeGoodFixture(t, "IRON", "SCARCE", market.TradeTypeExport),
+		},
+	}
+	topo := NewGateTopology(markets, map[string][]string{})
+
+	if supply, ok := topo.ImportSupply(context.Background(), "X1-KP46-H51", "IRON", 1); ok {
+		t.Fatalf("ImportSupply returned (%q, true) for an EXPORT listing; that market SELLS iron, so its supply says nothing about how short of iron it is — ranking on it prefers an input precisely because it is hard to buy", supply)
+	}
+}
+
+// EXCHANGE is not a statement of need either: the market neither produces nor consumes it.
+func TestGateTopology_ImportSupplyRefusesAnExchangeListing(t *testing.T) {
+	markets := &fakeMarkets{
+		listings: map[string]*market.TradeGood{
+			fakeListingKey("X1-KP46-B7", "QUARTZ_SAND"): tradeGoodFixture(t, "QUARTZ_SAND", "LIMITED", market.TradeTypeExchange),
+		},
+	}
+	topo := NewGateTopology(markets, map[string][]string{})
+
+	if supply, ok := topo.ImportSupply(context.Background(), "X1-KP46-B7", "QUARTZ_SAND", 1); ok {
+		t.Fatalf("ImportSupply returned (%q, true) for an EXCHANGE listing; that market only trades the good, so its supply is not a measure of need", supply)
+	}
+}
+
+// UNKNOWN IS A REAL ANSWER. An unscanned market, an absent listing and a null supply must all
+// report "no basis to rank" so the caller leaves its existing order alone — never a fabricated
+// level that silently sorts the unreadable to one end of the queue.
+func TestGateTopology_ImportSupplyReportsUnknownRatherThanGuessing(t *testing.T) {
+	markets := &fakeMarkets{
+		listings: map[string]*market.TradeGood{
+			// Listed as an IMPORT, but the supply field itself never came back.
+			fakeListingKey("X1-KP46-F45", "COPPER"): tradeGoodFixture(t, "COPPER", "", market.TradeTypeImport),
+		},
+		listingErr: map[string]error{
+			fakeListingKey("X1-KP46-F45", "SILICON_CRYSTALS"): errors.New("market may not have been scanned"),
+		},
+	}
+	topo := NewGateTopology(markets, map[string][]string{})
+	ctx := context.Background()
+
+	for _, tc := range []struct{ name, waypoint, good string }{
+		{"unscanned market", "X1-KP46-UNSEEN", "IRON"},
+		{"read failure", "X1-KP46-F45", "SILICON_CRYSTALS"},
+		{"listing present but supply null", "X1-KP46-F45", "COPPER"},
+		{"empty waypoint", "", "IRON"},
+		{"empty good", "X1-KP46-F45", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if supply, ok := topo.ImportSupply(ctx, tc.waypoint, tc.good, 1); ok {
+				t.Fatalf("ImportSupply returned (%q, true); %s is no basis to rank, and inventing a level here sorts an unreadable factory to one end of the queue", supply, tc.name)
+			}
+		})
 	}
 }

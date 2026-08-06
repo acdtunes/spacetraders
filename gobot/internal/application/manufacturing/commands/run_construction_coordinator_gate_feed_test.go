@@ -38,7 +38,37 @@ type stubFactoryTopology struct {
 	// same, and "declined the expensive one" would be indistinguishable from "declined the first
 	// one", which is the very confusion sp-9eor3 is about.
 	priceByGood map[string]int
-	asked       []string
+	// importSupply is the destination factory's IMPORT supply of an input, keyed
+	// "FACTORY-WAYPOINT|INPUT" — the third quantity sp-q9um6 ranks on, deliberately NOT derivable
+	// from supplyByGood. supplyByGood is what TerminalFactory reports (a market's EXPORT supply of
+	// its own output); conflating the two in the fixture would make the tests pass for a
+	// implementation that ranked on the wrong quantity, which is the exact failure sp-q9um6 warns
+	// about. An absent key means UNREADABLE, which is the cold-cache default.
+	importSupply map[string]string
+	asked        []string
+	// importsAsked records every ImportSupply lookup, kept apart from `asked` so a test asserting
+	// which goods were resolved as SOURCES is not polluted by ranking reads.
+	importsAsked []string
+}
+
+// importSupplyKey names one (factory, input) pair in the fixture's import table.
+func importSupplyKey(factoryWaypoint, good string) string { return factoryWaypoint + "|" + good }
+
+func (s *stubFactoryTopology) ImportSupply(_ context.Context, factoryWaypoint, good string, _ int) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.importsAsked = append(s.importsAsked, importSupplyKey(factoryWaypoint, good))
+	level, ok := s.importSupply[importSupplyKey(factoryWaypoint, good)]
+	if !ok {
+		return "", false // unscanned: no basis to rank
+	}
+	return level, true
+}
+
+func (s *stubFactoryTopology) importsAskedList() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.importsAsked...)
 }
 
 func newStubFactoryTopology() *stubFactoryTopology {
@@ -586,6 +616,229 @@ func TestFeedGateLeg_AnUnpricedInputIsNotTreatedAsUnaffordable(t *testing.T) {
 	bought := f.buyer.goods()
 	if _, boughtIron := bought["IRON"]; !boughtIron {
 		t.Fatalf("bought %v; IRON has NO cached quote, so there is no prediction to make and the step must proceed to the commit-time guard. Declining on a missing price deadlocks a cold cache", bought)
+	}
+}
+
+// ---------------------------------------------------------------------------------------------
+// sp-q9um6: THE SCARCEST INPUT WINS, NOT THE FIRST ONE IN THE RECIPE
+//
+// Plan order encoded priority by accident. F45 read IRON IMPORT MODERATE and QUARTZ_SAND IMPORT
+// SCARCE, and IRON won every leg for no better reason than appearing first in FAB_MATS' recipe.
+// A factory cannot produce while short of ANY input, so the one it is shortest of is the one worth
+// a hull-load.
+// ---------------------------------------------------------------------------------------------
+
+// gateFactoryWaypoint is the destination the FAB_MATS steps feed — the stub's exporter naming.
+const gateFactoryWaypoint = gateMaterialPrimary + "-EXPORTER"
+
+// THE BEAD. Both inputs are affordable and both resolve; only their scarcity at the destination
+// differs. Against the unmodified planner this fails: it takes the first resolvable step, which is
+// IRON.
+func TestFeedGateLeg_FeedsTheInputTheFactoryIsShortestOfNotTheFirstInTheRecipe(t *testing.T) {
+	f := newGateFactoryHandler(t)
+	f.topo.importSupply = map[string]string{
+		importSupplyKey(gateFactoryWaypoint, "IRON"):        "MODERATE",
+		importSupplyKey(gateFactoryWaypoint, "QUARTZ_SAND"): "SCARCE",
+	}
+	assertIronIsPlannedBeforeQuartz(t, f)
+
+	f.runFeed(t, "GF-1")
+
+	feeds := f.feeder.feeds()
+	if len(feeds) != 1 {
+		t.Fatalf("feeds = %+v, want exactly one", feeds)
+	}
+	if named := strings.Join(feeds[0].inputs, ","); named != "QUARTZ_SAND" {
+		t.Fatalf("fed %q; the %s factory is MODERATE on IRON and SCARCE on QUARTZ_SAND, so quartz is the input it actually cannot produce without. Feeding IRON is plan order winning on recipe position alone", named, gateMaterialPrimary)
+	}
+	if calls := f.buyer.calls(); calls != 1 {
+		t.Fatalf("BuyAtTerminalFactory called %d time(s); ranking reorders the queue, it must not buy more than once", calls)
+	}
+}
+
+// THE TEST THAT EARNS THE NEW SEAM. Two supply levels were already in hand and BOTH are the wrong
+// quantity; this fixture is rigged so that ranking on the source's EXPORT supply gives the exact
+// OPPOSITE answer to ranking on the destination's IMPORT supply.
+//
+// IRON's source is SCARCE and QUARTZ_SAND's is ABUNDANT, while the destination factory is MODERATE
+// on IRON and SCARCE on QUARTZ_SAND. An implementation ranking on source.Supply picks IRON —
+// preferring it precisely BECAUSE the market we buy it from is scarce, which is backwards. Only an
+// implementation reading the destination's own import listing picks QUARTZ_SAND.
+func TestFeedGateLeg_RanksOnTheFactorysImportSupplyNotTheSourcesExportSupply(t *testing.T) {
+	f := newGateFactoryHandler(t)
+	// Source-side EXPORT supplies, the perverse signal.
+	f.topo.supplyByGood = map[string]string{"IRON": "SCARCE", "QUARTZ_SAND": "ABUNDANT"}
+	// Destination-side IMPORT supplies, the correct signal — pointing the other way.
+	f.topo.importSupply = map[string]string{
+		importSupplyKey(gateFactoryWaypoint, "IRON"):        "MODERATE",
+		importSupplyKey(gateFactoryWaypoint, "QUARTZ_SAND"): "SCARCE",
+	}
+	assertIronIsPlannedBeforeQuartz(t, f)
+
+	f.runFeed(t, "GF-1")
+
+	feeds := f.feeder.feeds()
+	if len(feeds) != 1 {
+		t.Fatalf("feeds = %+v, want exactly one", feeds)
+	}
+	if named := strings.Join(feeds[0].inputs, ","); named != "QUARTZ_SAND" {
+		t.Fatalf("fed %q. IRON's SOURCE is SCARCE and QUARTZ_SAND's is ABUNDANT, but the FACTORY is MODERATE on IRON and SCARCE on QUARTZ_SAND. Choosing IRON means ranking on the source's export supply — preferring an input BECAUSE it is hard to buy, which says nothing about need", named)
+	}
+	// NON-VACUITY: the ranking must have actually consulted the destination's listing. Without this,
+	// any rule that happened to land on QUARTZ_SAND would satisfy the assertion above.
+	asked := strings.Join(f.topo.importsAskedList(), ",")
+	if !strings.Contains(asked, importSupplyKey(gateFactoryWaypoint, "QUARTZ_SAND")) {
+		t.Fatalf("the destination's IMPORT listing for QUARTZ_SAND was never read (asked %v); the choice came from somewhere else", asked)
+	}
+}
+
+// THE SAFETY PROPERTY, and the reason this ranking is not riskier than the order it replaces: with
+// NO readable import data the leg behaves EXACTLY as plan order did. The sort is stable and every
+// unreadable step ties, so nothing moves.
+//
+// Passes against the unmodified planner too — deliberately. It pins the FALLBACK, and a fallback
+// that only holds after the change would be no fallback at all.
+func TestFeedGateLeg_KeepsPlanOrderWhenNoImportSupplyIsReadable(t *testing.T) {
+	f := newGateFactoryHandler(t)
+	// importSupply deliberately unset: every listing is unscanned.
+	assertIronIsPlannedBeforeQuartz(t, f)
+
+	f.runFeed(t, "GF-1")
+
+	feeds := f.feeder.feeds()
+	if len(feeds) != 1 {
+		t.Fatalf("feeds = %+v, want exactly one", feeds)
+	}
+	if named := strings.Join(feeds[0].inputs, ","); named != "IRON" {
+		t.Fatalf("fed %q with no supply data readable anywhere; an unrankable plan must keep plan order exactly, and IRON is first in FAB_MATS' recipe. Anything else means unreadable steps are being sorted rather than left alone", named)
+	}
+}
+
+// UNREADABLE RANKS AS THE MIDDLE OF THE LADDER, never the front. One unscanned market must not
+// capture every leg by outranking a factory we can see is fine.
+func TestFeedGateLeg_AnUnreadableListingDoesNotOutrankAReadableOne(t *testing.T) {
+	f := newGateFactoryHandler(t)
+	// IRON unreadable (absent); QUARTZ_SAND readable and ABUNDANT — the factory has plenty.
+	f.topo.importSupply = map[string]string{
+		importSupplyKey(gateFactoryWaypoint, "QUARTZ_SAND"): "ABUNDANT",
+	}
+	assertIronIsPlannedBeforeQuartz(t, f)
+
+	f.runFeed(t, "GF-1")
+
+	feeds := f.feeder.feeds()
+	if len(feeds) != 1 {
+		t.Fatalf("feeds = %+v, want exactly one", feeds)
+	}
+	// Unknown ranks MODERATE(3), ABUNDANT ranks 5, so IRON legitimately wins here — but on the
+	// neutral middle, not on being unknown. The inverse fixture below is what proves it is not
+	// simply "unknown always wins".
+	if named := strings.Join(feeds[0].inputs, ","); named != "IRON" {
+		t.Fatalf("fed %q; an unreadable IRON ranks as the ladder's middle and an ABUNDANT quartz ranks above it, so IRON is correctly preferred", named)
+	}
+
+	// THE INVERSE, in the same test so the pair cannot drift apart: a readable SCARCE step must
+	// still beat an unreadable one. If unknown sorted to the FRONT, IRON would win this too.
+	f2 := newGateFactoryHandler(t)
+	f2.topo.importSupply = map[string]string{
+		importSupplyKey(gateFactoryWaypoint, "QUARTZ_SAND"): "SCARCE",
+	}
+	f2.runFeed(t, "GF-2")
+	feeds2 := f2.feeder.feeds()
+	if len(feeds2) != 1 {
+		t.Fatalf("feeds = %+v, want exactly one", feeds2)
+	}
+	if named := strings.Join(feeds2[0].inputs, ","); named != "QUARTZ_SAND" {
+		t.Fatalf("fed %q; IRON is UNREADABLE and QUARTZ_SAND is readably SCARCE. Choosing IRON means an unknown listing sorts to the front, which lets one unscanned market capture every leg", named)
+	}
+}
+
+// RANKING COMPOSES WITH THE AFFORDABILITY DECLINE (sp-9eor3), it does not replace it. The scarcest
+// input is tried FIRST; when the reserve refuses it the leg falls through to the next-scarcest
+// rather than ending.
+func TestFeedGateLeg_FallsPastTheScarcestInputWhenItIsUnaffordable(t *testing.T) {
+	f := newGateFactoryHandler(t)
+	f.topo.importSupply = map[string]string{
+		importSupplyKey(gateFactoryWaypoint, "IRON"):        "MODERATE",
+		importSupplyKey(gateFactoryWaypoint, "QUARTZ_SAND"): "SCARCE",
+	}
+	// The SCARCEST input is the expensive one: 20 units at 3480 = 69,600, past the headroom.
+	f.topo.priceByGood = map[string]int{"QUARTZ_SAND": 3480, "IRON": 23}
+	f.buyer.spendHeadroom = 10_000
+
+	f.runFeed(t, "GF-1")
+
+	feeds := f.feeder.feeds()
+	if len(feeds) != 1 {
+		t.Fatalf("feeds = %+v; the scarcest step being unaffordable must not stand the leg down while another step is affordable", feeds)
+	}
+	if named := strings.Join(feeds[0].inputs, ","); named != "IRON" {
+		t.Fatalf("fed %q; QUARTZ_SAND ranks first on scarcity but breaches the reserve, so the leg must fall through to the affordable IRON", named)
+	}
+	// NON-VACUITY: the scarcest step must actually have been tried and declined, not skipped by the
+	// ranking. Its decline names it.
+	if want := "declining the QUARTZ_SAND feed"; !strings.Contains(f.logLines(), want) {
+		t.Fatalf("no %q line: QUARTZ_SAND was never priced, so the ranking did not put it first and this test proves nothing about falling through:\n%s", want, f.logLines())
+	}
+}
+
+// A SCARCE INPUT DOES NOT OVERRIDE THE ABUNDANT FAIL-SAFE. A factory whose OUTPUT is already at the
+// top of the ladder needs no feedstock however short of an input it is — it must never be ranked
+// into the queue at all, because ranking it would price an input the leg was never going to buy.
+func TestFeedGateLeg_DoesNotRankAnAbundantTargetIntoTheQueue(t *testing.T) {
+	f := newGateFactoryHandler(t)
+	f.topo.supplyByGood = map[string]string{
+		gateMaterialPrimary:   "ABUNDANT",
+		gateMaterialSecondary: "ABUNDANT",
+		"IRON":                "ABUNDANT",
+	}
+	// The most starved input in the system sits at a factory that needs nothing.
+	f.topo.importSupply = map[string]string{
+		importSupplyKey(gateFactoryWaypoint, "QUARTZ_SAND"): "SCARCE",
+	}
+
+	f.runFeed(t, "GF-1")
+
+	if feeds := f.feeder.feeds(); len(feeds) != 0 {
+		t.Fatalf("fed %+v; every target is ABUNDANT and needs no feedstock. A SCARCE input must not promote a full warehouse into the queue", feeds)
+	}
+	if bought := f.buyer.goods(); len(bought) != 0 {
+		t.Fatalf("bought %v for factories that are already full", bought)
+	}
+	// The fail-safe must still decline BEFORE the source lookup — the ordering its own comment
+	// protects. QUARTZ_SAND is only ever asked about as a SOURCE.
+	if asked := strings.Join(f.topo.goodsAsked(), ","); strings.Contains(asked, "QUARTZ_SAND") {
+		t.Fatalf("the leg resolved the QUARTZ_SAND SOURCE (asked %v) for a step whose destination is ABUNDANT — ranking must not move the source lookup ahead of the fail-safe", asked)
+	}
+}
+
+// THE REORDERING ANNOUNCES ITSELF. A silent reorder feeds a different input than the plan lists
+// first with nothing saying why — the same opacity from the other side.
+func TestFeedGateLeg_LogsWhenScarcityReordersTheQueue(t *testing.T) {
+	f := newGateFactoryHandler(t)
+	f.topo.importSupply = map[string]string{
+		importSupplyKey(gateFactoryWaypoint, "IRON"):        "MODERATE",
+		importSupplyKey(gateFactoryWaypoint, "QUARTZ_SAND"): "SCARCE",
+	}
+
+	f.runFeed(t, "GF-1")
+
+	lines := f.logLines()
+	if want := "by SCARCITY, not recipe order"; !strings.Contains(lines, want) {
+		t.Fatalf("no %q line: the leg fed a different input than the plan lists first and said nothing about why:\n%s", want, lines)
+	}
+	// The LEVELS in the message, not just the goods — the renderer drops metadata maps, and
+	// "QUARTZ_SAND was chosen" without its supply level cannot be checked against the market.
+	if want := "QUARTZ_SAND(SCARCE)"; !strings.Contains(lines, want) {
+		t.Fatalf("the ranking does not name the supply levels it sorted on (want %q):\n%s", want, lines)
+	}
+
+	// AND IT STAYS QUIET WHEN NOTHING MOVED. A line per leg restating an unchanged plan order is
+	// noise, and noise is how a real reordering stops being noticed.
+	quiet := newGateFactoryHandler(t)
+	quiet.runFeed(t, "GF-2")
+	if strings.Contains(quiet.logLines(), "by SCARCITY, not recipe order") {
+		t.Fatalf("the ranking announced itself on a leg where no supply was readable and nothing was reordered:\n%s", quiet.logLines())
 	}
 }
 

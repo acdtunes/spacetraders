@@ -148,6 +148,16 @@ type GateFactoryTopology interface {
 	TerminalFactory(ctx context.Context, good, systemSymbol string, playerID int) (*mfgServices.MarketLocatorResult, error)
 	IsRaw(good string) bool
 	Inputs(good string) []string
+	// ImportSupply reports how short a RESOLVED factory is of one of its INPUTS — that factory's
+	// own IMPORT supply level for the good (sp-q9um6). It is a third quantity, distinct from both
+	// supply levels TerminalFactory returns: the source's EXPORT supply of the input, and the
+	// target's EXPORT supply of its own output. Neither of those answers "which input is this
+	// factory shortest of", and ranking on either is wrong in a way that looks right.
+	//
+	// The boolean is load-bearing: false means "no basis to rank" (unscanned market, absent
+	// listing, non-IMPORT listing, null supply), which must leave the caller's existing order
+	// untouched rather than sorting the unreadable to either end.
+	ImportSupply(ctx context.Context, factoryWaypoint, good string, playerID int) (string, bool)
 }
 
 // GateFeeder delivers a hull's inputs INTO a pinned factory.
