@@ -126,8 +126,9 @@ func NewSeedCommandPort(
 //
 // The jump itself needs no wait: it is instantaneous at the API, leaving only a
 // reactor cooldown, which gates the next JUMP rather than the navigate that
-// follows it — and a cooldown-rejected jump is just the free retry every step in
-// this engine already gets.
+// follows it. That cooldown is NOT re-learned from the API: stepThroughGate reads
+// it off the hull's own row and holds the hop without a call until it clears
+// (sp-7e5j6), so a cooling seed costs this walk nothing but a database read.
 func (p *SeedCommandPort) JumpTo(ctx context.Context, playerID int, shipSymbol, fromWaypoint, targetSystem string) error {
 	pid, err := shared.NewPlayerID(playerID)
 	if err != nil {

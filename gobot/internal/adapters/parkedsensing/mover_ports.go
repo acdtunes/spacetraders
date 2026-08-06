@@ -2,11 +2,14 @@ package parkedsensing
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	appSensing "github.com/andrescamacho/spacetraders-go/internal/application/parkedsensing"
 	shipNav "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
+	shipQueries "github.com/andrescamacho/spacetraders-go/internal/application/ship/queries"
 	shipTypes "github.com/andrescamacho/spacetraders-go/internal/application/ship/types"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
@@ -177,10 +180,21 @@ func (p *MoverPort) RouteAcross(ctx context.Context, playerID int, shipSymbol, f
 	//
 	// The two warnings are deliberately distinct actions. Unroutable means the
 	// stored graph names no way there and the fix is a gate re-probe; a refused
-	// step means the graph was right and the MOVE failed, which is a cooldown, a
-	// fuel state, or a gate that will not take the hull. Reading one as the other
-	// sends the next reader to the wrong subsystem.
+	// step means the graph was right and the MOVE failed, which is a fuel state or
+	// a gate that will not take the hull. Reading one as the other sends the next
+	// reader to the wrong subsystem.
+	//
+	// A COOLDOWN HOLD IS NEITHER, and it must not borrow this wording. The hold is
+	// the healthy case — the hull is waiting out a game timer nobody can shorten,
+	// stepThroughGate has already named it at INFO with its expiry, and no request
+	// was spent learning it. Reported here as a refusal it read as a WARNING in
+	// routing language, one per hull per tick: during the first EXPANSION run after
+	// gate completion those lines were the most visible thing in the sensing log
+	// and made a system that was working look blocked (sp-7e5j6).
 	if err := stepThroughGate(ctx, p.mediator, pid, shipSymbol, fromWaypoint, nextSystem); err != nil {
+		if heldForCooldown(err) {
+			return err
+		}
 		common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf(
 			"Sensing placement resolved a gate route for %s from %s toward %s, but the step from %s into %s was refused — the placement is held and retried, and the hull keeps counting against the probe cap: %v",
 			shipSymbol, currentSystem, destination, fromWaypoint, nextSystem, err), map[string]interface{}{
@@ -209,6 +223,12 @@ func (p *MoverPort) RouteAcross(ctx context.Context, playerID int, shipSymbol, f
 // would sit on the gate re-issuing it forever. Resolving that is the caller's
 // job, and both callers do it BEFORE reaching here, which is what keeps an
 // unroutable destination from buying a wasted flight to a gate.
+//
+// THE COOLDOWN GUARD SITS ON THE JUMP, NOT ON THE STEP. A jump cooldown gates the
+// jump ACTION and nothing else, so a cooling hull may still be flown onto its gate
+// — that step is productive work, and refusing it would idle the hull for the
+// whole cooldown and then need another tick to start walking. Only the branch that
+// would issue the jump consults it.
 func stepThroughGate(
 	ctx context.Context,
 	med common.Mediator,
@@ -229,8 +249,38 @@ func stepThroughGate(
 	// Step two. The hull is ON the gate, so JumpShipCommand's navigate branch is
 	// unreachable and the command is the bare jump it was named for. The jump is
 	// instantaneous at the API, leaving only a reactor cooldown — which gates the
-	// next JUMP rather than this navigate, and a cooldown-rejected jump is just
-	// the free retry every step in this engine already gets.
+	// NEXT jump, and which this walk must not spend a request re-discovering.
+	//
+	// THE RETRY WAS NEVER THE BUG; THE ATTEMPT WAS. A tick machine re-decides from
+	// scratch every tick, so a hull mid-cooldown is handed back to this same branch
+	// on every one of them: at a 262-second cooldown and the sensing tick's cadence
+	// that is ~30 jumps per hull per cooldown, each one a 409 code-4000 the API
+	// answers with the very expiry the ships row already holds. Measured live at
+	// 7-8 hulls a minute across three consecutive minutes, it was ~0.12 req/s —
+	// about a quarter of sensing's own pacer — spent re-learning a known fact,
+	// against a hard 2 req/s account ceiling several coordinators contend for
+	// (sp-7e5j6).
+	//
+	// So the cooldown is consulted FIRST, from the hull's own row, and a hull that
+	// cannot jump is HELD rather than asked. This is the trade watchdog's idiom
+	// (watchdog.go: `ship.IsInTransit() || ship.IsOnCooldown(now)`) and the siphon
+	// worker's, deliberately reused rather than a second notion of "busy" invented
+	// beside them.
+	if until, held := heldByJumpCooldown(ctx, med, pid, shipSymbol); held {
+		common.LoggerFromContext(ctx).Log("INFO", fmt.Sprintf(
+			"Sensing gate step for %s at %s into %s is HELD: the hull is on jump cooldown until %s (%s remaining) — no jump was attempted, and the next tick retries for free",
+			shipSymbol, fromWaypoint, nextSystem,
+			until.UTC().Format(time.RFC3339), time.Until(until).Round(time.Second)),
+			map[string]interface{}{
+				"action":         "parked_sensing_gate_step_cooldown_hold",
+				"ship_symbol":    shipSymbol,
+				"from_waypoint":  fromWaypoint,
+				"next_system":    nextSystem,
+				"cooldown_until": until.UTC().Format(time.RFC3339),
+			})
+		return &jumpCooldownHold{shipSymbol: shipSymbol, nextSystem: nextSystem, until: until}
+	}
+
 	id := pid.Value()
 	if _, err := med.Send(sensingCtx(ctx), &shipNav.JumpShipCommand{
 		ShipSymbol:        shipSymbol,
@@ -240,6 +290,77 @@ func stepThroughGate(
 		return fmt.Errorf("failed to jump %s to %s: %w", shipSymbol, nextSystem, err)
 	}
 	return nil
+}
+
+// jumpCooldownHold reports that a gate step was NOT attempted, because the hull is
+// waiting out a jump cooldown the ships row was already carrying when the step was
+// considered.
+//
+// IT IS STILL AN ERROR, and deliberately so: the walk did not advance, and every
+// caller's hold-and-retry — the placement machine's refusal budget and re-stamp,
+// the seed errand's hold — is exactly the handling a held step wants. What the
+// type buys is a caller that can tell a HOLD from a REFUSAL without parsing a
+// message, so the healthy case stops borrowing the routing failure's wording.
+type jumpCooldownHold struct {
+	shipSymbol string
+	nextSystem string
+	until      time.Time
+}
+
+func (e *jumpCooldownHold) Error() string {
+	return fmt.Sprintf("held %s from jumping to %s: on jump cooldown until %s (no jump attempted)",
+		e.shipSymbol, e.nextSystem, e.until.UTC().Format(time.RFC3339))
+}
+
+// heldForCooldown reports whether err is a held step rather than a refused one.
+func heldForCooldown(err error) bool {
+	var held *jumpCooldownHold
+	return errors.As(err, &held)
+}
+
+// heldByJumpCooldown answers "can this hull jump right now?" from the ships table,
+// and names when it can if it cannot.
+//
+// A PURE STORE READ, AND NOTHING NEW IS STORED (RULINGS #2). The expiry is already
+// a column on the hull's row: JumpShipCommand CAS-writes it the instant a jump
+// succeeds (persistPostJumpNav → SetCooldown), and GetShipQuery resolves through
+// ShipRepository.FindBySymbol, which reads that row from the database with no
+// cache in front of it. So this is the freshest answer that exists locally, it
+// costs no request, and a cooldown cache here would only be a second, staler copy
+// of a fact the row already carries.
+//
+// IT FAILS OPEN, and that direction is the safe one: an unreadable row, a missing
+// ship, or an unexpected response leaves the walk EXACTLY as it was before this
+// guard existed — the jump is attempted, and the API remains the authority that
+// refuses it. Holding on absence would be the dangerous direction, because an
+// unknown cooldown is not a known one (a hull whose row we cannot read would be
+// held forever, never jumping and never arriving, while still counting against the
+// probe cap). This guard removes a doomed call; it never authorises one, and it
+// never blocks a hull it cannot prove is on cooldown.
+func heldByJumpCooldown(ctx context.Context, med common.Mediator, pid shared.PlayerID, shipSymbol string) (time.Time, bool) {
+	id := pid.Value()
+	// sensingCtx for the same reason every other Send here carries it: the read is
+	// a database hit today, but FindBySymbol falls back to an API sync for a hull
+	// with no row yet, and a request this engine causes must be attributed to it.
+	res, err := med.Send(sensingCtx(ctx), &shipQueries.GetShipQuery{ShipSymbol: shipSymbol, PlayerID: &id})
+	if err != nil {
+		return time.Time{}, false
+	}
+	resp, ok := res.(*shipQueries.GetShipResponse)
+	if !ok || resp.Ship == nil {
+		return time.Time{}, false
+	}
+	// The domain's own predicate, not a hand-rolled comparison: a nil or
+	// already-past expiry is NOT a cooldown there, so a stale timestamp can never
+	// hold a hull that is free to jump.
+	if !resp.Ship.IsOnCooldown(time.Now()) {
+		return time.Time{}, false
+	}
+	expiry := resp.Ship.CooldownExpiration()
+	if expiry == nil {
+		return time.Time{}, false
+	}
+	return *expiry, true
 }
 
 // nextHopToward names the ADJACENT system a walk should jump to next to get from
