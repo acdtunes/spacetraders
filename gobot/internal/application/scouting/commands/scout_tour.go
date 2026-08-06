@@ -14,6 +14,19 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
+// ScoutTourOperationType is the ledger operation_type every credit a scout tour
+// spends in flight is booked under — the refuels and gate fees the route executor
+// records on the way to a post's markets.
+//
+// Deliberately NOT parkedsensing.SensingCoverageOperationType, and deliberately
+// not shared with the relay below: three DIFFERENT coordinators fly probes, and
+// one label across them leaves the ledger unable to answer "which one spent
+// this" — the same reasoning that gave the parked-sensing engine its own name
+// rather than "fleet expansion". Spaced and lower-case to match the column's
+// other human-readable values, because operation_type is read off a Grafana
+// legend and typed by hand into ad-hoc SQL.
+const ScoutTourOperationType = "scout tour"
+
 const (
 	// defaultDirectScanInterval is the probe market-scan cadence applied when a
 	// scout_tour is launched with no ScanInterval supplied — the
@@ -227,6 +240,22 @@ func (h *ScoutTourHandler) Handle(ctx context.Context, request common.Request) (
 	if err != nil {
 		return nil, err
 	}
+
+	// ATTRIBUTION (sp-wxgd2). A tour NAVIGATES, and the route executor it navigates
+	// through books the refuels and any gate fee the leg costs. Those leaf recorders
+	// read the operation context off ctx and label the row "manual" when they find
+	// none — which is not a category but the else branch, read by an operator as "a
+	// human did this". Stamped here, a scout post's flying costs land under
+	// ScoutTourOperationType beside the sensing engine's own line.
+	//
+	// The container is the SPAWNING COORDINATOR's, matching the gas/storage worker
+	// idiom: a tour is a managed worker of one scout_post_coordinator, and that is
+	// the operation whose P&L the fuel belongs to. A tour launched WITHOUT one (the
+	// `workflow scout-markets` CLI verb, the direct ScoutTour RPC) yields a nil
+	// context from NewOperationContext and honestly stays 'manual' — an operator
+	// action mislabelled as automated would be the same defect pointing the other
+	// way.
+	ctx = shared.WithOperationContext(ctx, shared.NewOperationContext(cmd.CoordinatorID, ScoutTourOperationType))
 
 	// A multi-market tour never scans in this handler — it navigates and the route
 	// executor scans on arrival, reading the window off the context — so the window

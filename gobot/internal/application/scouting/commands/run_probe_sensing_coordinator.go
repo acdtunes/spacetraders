@@ -353,6 +353,36 @@ type sensingCycle struct {
 // still refresh the scan rotation — aborting on the first error would let one
 // unreadable port dark the whole fleet's market data.
 func (h *RunProbeSensingCoordinatorHandler) ReconcileOnce(ctx context.Context, cmd *RunProbeSensingCoordinatorCommand) error {
+	// ATTRIBUTION, AND IT HAS TO BE STAMPED HERE. Every credit this tick spends is
+	// recorded by a LEAF handler deep in ship/commands — the jump-gate fee the
+	// placement walk and the charting seeds pay, the refuel a flight books, the
+	// cargo an outfit sells — and each of those reads the operation context off
+	// ctx and books the row "manual" when it finds none. "manual" is not a
+	// category, it is the else branch: it reads as "an operator did this" and
+	// means "attribution was lost". Sensing was the ONE spending subsystem that
+	// never stamped a context, so its whole spend landed there (sp-wxgd2: 762 rows
+	// netting -686,731, of which all 113 unattributed jump fees name hulls this
+	// engine owns).
+	//
+	// The name is parkedsensing.SensingCoverageOperationType — the SAME label this
+	// engine's probe PURCHASES already carry — deliberately, not a near-duplicate:
+	// a per-operation breakdown must show one engine under one name, or the buy
+	// line and the fee line for the same hull land in different rows and neither
+	// total is true.
+	//
+	// ATTRIBUTION ONLY, no spend decision moves. The operation context has exactly
+	// six readers: the four leaf recorders (cargo, refuel, jump fee, outfitting),
+	// which only label a row already committed, and two concurrent-spend caps
+	// (contract delivery, factory production) which use ContainerID as a
+	// reservation LABEL while summing per PLAYER — and neither is reachable from
+	// this tick, which dispatches only jump / navigate / dock / orbit / purchase-
+	// ship. RULINGS #4 untouched.
+	//
+	// At the top of the TICK rather than in Handle so it also covers the scan
+	// pacer this tick may start, and so the tests that drive ReconcileOnce
+	// directly exercise the real stamp.
+	ctx = shared.WithOperationContext(ctx, shared.NewOperationContext(cmd.ContainerID, parkedsensing.SensingCoverageOperationType))
+
 	// EXPANSION GATE. Parked sensing buys hulls and sizes its footprint against
 	// the fleet's trading reach; before the home jump gate is built there is no
 	// such reach, and bootstrap owns probe provisioning. Checked FIRST so a

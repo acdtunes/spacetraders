@@ -8,6 +8,16 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
+// ScoutRepositionOperationType is the ledger operation_type the cross-gate relay's
+// spend is booked under — overwhelmingly JUMP GATE FEES, since crossing gates is
+// the whole of what this worker does.
+//
+// Kept separate from ScoutTourOperationType even though both serve scout posts:
+// they are different cost shapes (a relay pays per-gate fees once, a tour burns
+// fuel forever), and collapsing them would hide the one number an operator sizing
+// the reposition policy actually needs.
+const ScoutRepositionOperationType = "scout reposition"
+
 // Repositioner is the narrow movement port the reposition worker rides (sp-s232):
 // fly shipSymbol to destinationWaypoint, crossing gates as needed. It is satisfied
 // by the trade-route coordinator's exported RepositionToWaypoint, which delegates to
@@ -98,6 +108,21 @@ func (h *ScoutRepositionHandler) Handle(ctx context.Context, request common.Requ
 	if !ok {
 		return nil, fmt.Errorf("invalid request type")
 	}
+
+	// ATTRIBUTION (sp-wxgd2). This relay is the scouting subsystem's JUMPING path:
+	// it crosses gates, and every crossing charges a gate fee that jump_ship_fee
+	// records off the operation context riding ctx — labelling it "manual" when
+	// there is none, which is the else branch, not a category. The travel machinery
+	// it delegates to is a bare movement primitive shared with trade and arb and
+	// stamps nothing of its own (RepositionToWaypointWithinJumps is called outside
+	// the trade coordinator's own execute(), which is where "trade_route" is
+	// stamped), so this handler is the boundary that owns the work and the only
+	// place the name can come from.
+	//
+	// CoordinatorID for the same reason the tour uses it: a relay is a managed
+	// worker of one scout_post_coordinator. Absent, NewOperationContext returns nil
+	// and the relay stays honestly 'manual'.
+	ctx = shared.WithOperationContext(ctx, shared.NewOperationContext(cmd.CoordinatorID, ScoutRepositionOperationType))
 
 	logger := common.LoggerFromContext(ctx)
 	logger.Log("INFO", fmt.Sprintf("Repositioning satellite %s to %s (cross-gate relay)", cmd.ShipSymbol, cmd.DestinationWaypoint), map[string]interface{}{
