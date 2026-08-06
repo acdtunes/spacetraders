@@ -416,7 +416,7 @@ func (h *RunConstructionCoordinatorHandler) drainOnce(ctx context.Context, cmd *
 	// gate needs — and by the slots this tick has free. The whole pool is offered to the planner even
 	// when it may only start a few of them, so a hull already laden with a material is still paired
 	// with THAT material rather than trimmed off the end of the pool and its load re-bought.
-	lots := h.planDispatchLots(ctx, cmd, tasks, idleShips, slots)
+	lots := h.planDispatchLots(ctx, cmd, systemSymbol, tasks, idleShips, slots)
 	if len(lots) == 0 {
 		// Every ready material's bill is already met (a met/racing-replenishment leftover) — nothing to
 		// buy without over-supplying. Report a clean no-drain tick rather than dispatch an empty haul.

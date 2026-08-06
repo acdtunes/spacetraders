@@ -170,6 +170,46 @@ func (w *supplyWorkers) reservedUnits(material string) int {
 	return w.reserved[material]
 }
 
+// reservationFor reports what hull's live worker is authorized to buy, and for which material.
+// (0, "") once no worker holds the hull.
+//
+// The PER-HULL grain is what lets the commitment fold combine a reservation with the hull's actual
+// cargo by MAX rather than by sum. The aggregate reservedUnits above cannot say which hull a
+// reservation belongs to, so it cannot tell "reserved but not yet spent" from "reserved and
+// already in that same hold", and adding those two starves the fleet of dispatch while its holds
+// are full.
+func (w *supplyWorkers) reservationFor(hull string) (int, string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	hold, held := w.byHull[hull]
+	if !held {
+		return 0, ""
+	}
+	return hold.reserved, hold.material
+}
+
+// reservationsExcept totals, per material, the reservations of every worker whose hull is NOT in
+// counted — the workers the caller's own hull-by-hull fold never saw.
+//
+// It is the fail-CLOSED floor under a cargo-derived commitment. Deriving from holds is what makes
+// the count survive a restart and a lapsed registration, but it sees only hulls the ship
+// repository returns: a row a read dropped, or a worker of another container holding a hull this
+// drain's query does not surface. Those reservations are still real spend authority. Hulls the
+// caller DELIBERATELY skipped must be passed in as counted, or a leg's exclusion of its own hull
+// is undone by that hull's own reservation.
+func (w *supplyWorkers) reservationsExcept(counted map[string]bool) map[string]int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	out := make(map[string]int)
+	for hull, hold := range w.byHull {
+		if counted[hull] || hold.reserved <= 0 {
+			continue
+		}
+		out[hold.material] += hold.reserved
+	}
+	return out
+}
+
 // inFlight is how many workers containerID still has out — what the tick's max_workers budget is
 // measured against.
 func (w *supplyWorkers) inFlight(containerID string) int {

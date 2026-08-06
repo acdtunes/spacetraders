@@ -20,15 +20,18 @@ import (
 // live fill data once phase 2 runs.
 const gateMaxTranchesPerStop = 4
 
-// Skip reasons, in PRECEDENCE order. hold_full and bill_satisfied are facts independent
-// of policy and therefore outrank it: reporting a met bill as "paused" would send an
-// operator to tune a knob that changes nothing. hold_full is a real outcome the greedy
-// loop produces that none of the spec's three named reasons describes honestly.
+// Skip reasons, in PRECEDENCE order. hold_full, bill_satisfied and in_flight_covered are
+// facts independent of policy and therefore outrank it: reporting a covered bill as "paused"
+// would send an operator to tune a knob that changes nothing. hold_full is a real outcome the
+// greedy loop produces that none of the spec's named reasons describes honestly.
 const (
 	SkipHoldFull      = "hold_full"
 	SkipBillSatisfied = "bill_satisfied"
-	SkipPaused        = "paused"
-	SkipNoSupply      = "no_supply"
+	// SkipInFlightCovered: still WANTED, but every outstanding unit is already paid for and in
+	// a hold. Distinct from bill_satisfied, which reads the SERVER's fulfilled counter.
+	SkipInFlightCovered = "in_flight_covered"
+	SkipPaused          = "paused"
+	SkipNoSupply        = "no_supply"
 )
 
 // Material is one gate material as the fill planner sees it: what the site still needs,
@@ -38,10 +41,21 @@ const (
 // waypoint and price to actually buy) and PROJECTS down to this type before planning, so
 // the fill arithmetic cannot accidentally depend on a price or a waypoint symbol.
 type Material struct {
-	Good        string
-	Remaining   int
+	Good      string
+	Remaining int
+	// Committed is how many Remaining units are ALREADY PAID FOR: in a hull's hold, or reserved
+	// for a live worker. Remaining says the site WANTS it; Buyable says what to SPEND.
+	Committed   int
 	TradeVolume int
 	Paused      bool
+}
+
+// Buyable is the outstanding bill net of Committed, floored at zero.
+func (m Material) Buyable() int {
+	if buyable := m.Remaining - m.Committed; buyable > 0 {
+		return buyable
+	}
+	return 0
 }
 
 // Stop is one factory visit on the trip: what to buy and in how many transactions.
@@ -111,10 +125,10 @@ func (t Trip) LogLine() string {
 // against its co-located sibling, and the pause becomes invisible exactly when the fleet is
 // running at full capacity, which is when an operator most needs to see it.
 //
-// A material whose bill is already MET is deliberately NOT exempt: neither hold_full nor
-// bill_satisfied is actionable there, so the trip-level fact wins, per the stated precedence.
+// A material already MET, or covered by cargo in a hold, is NOT exempt: neither reason is
+// actionable, so the trip-level fact wins. Hence Buyable, not Remaining.
 func blockedWhileStillWanted(m Material) bool {
-	return m.Remaining > 0 && (m.Paused || m.TradeVolume <= 0)
+	return m.Buyable() > 0 && (m.Paused || m.TradeVolume <= 0)
 }
 
 // PlanFill builds the greedy max-cargo mixed load: fill from eligible factories, by
@@ -137,11 +151,13 @@ func PlanFill(capacity int, materials []Material) Trip {
 
 	// Sort a COPY: the caller reuses its slice to record per-material decisions after
 	// planning, and reordering it under them would misattribute those records.
+	//
+	// Ordered by BUYABLE, not Remaining: the hold goes to whichever material can absorb most.
 	ordered := make([]Material, len(materials))
 	copy(ordered, materials)
 	sort.SliceStable(ordered, func(i, j int) bool {
-		if ordered[i].Remaining != ordered[j].Remaining {
-			return ordered[i].Remaining > ordered[j].Remaining
+		if ordered[i].Buyable() != ordered[j].Buyable() {
+			return ordered[i].Buyable() > ordered[j].Buyable()
 		}
 		return ordered[i].Good < ordered[j].Good // deterministic tie-break
 	})
@@ -164,6 +180,12 @@ func PlanFill(capacity int, materials []Material) Trip {
 			trip.Skips = append(trip.Skips, Skip{Good: m.Good, Reason: SkipBillSatisfied})
 			continue
 		}
+		// THE DOUBLE-BUY GUARD: already bought and in a hold, so buying again pays market price
+		// for cargo the site refuses (API 4801). Above pause/supply, as bill_satisfied is.
+		if m.Buyable() <= 0 {
+			trip.Skips = append(trip.Skips, Skip{Good: m.Good, Reason: SkipInFlightCovered})
+			continue
+		}
 		if m.Paused {
 			trip.Skips = append(trip.Skips, Skip{Good: m.Good, Reason: SkipPaused})
 			continue
@@ -175,7 +197,7 @@ func PlanFill(capacity int, materials []Material) Trip {
 			continue
 		}
 
-		take := min(m.Remaining, capacityLeft, m.TradeVolume*gateMaxTranchesPerStop)
+		take := min(m.Buyable(), capacityLeft, m.TradeVolume*gateMaxTranchesPerStop)
 		if take <= 0 {
 			trip.Skips = append(trip.Skips, Skip{Good: m.Good, Reason: SkipNoSupply})
 			continue

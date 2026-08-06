@@ -89,7 +89,7 @@ func (h *RunConstructionCoordinatorHandler) feedGateLeg(
 	// Size the buy against the free hold, including whatever the flush just released. The cached
 	// *Ship is deliberately not updated by DeliverToConstructionSite (it writes the emptied hold
 	// back through the repository), so the freed units are added explicitly rather than re-read.
-	capacity := freed
+	capacity := totalUnits(freed)
 	if cargo := lot.ship.Cargo(); cargo != nil {
 		capacity += cargo.Capacity - cargo.Units
 	}

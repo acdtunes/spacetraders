@@ -173,6 +173,14 @@ func (r *freshAggregatePipelineRepo) setBill(good string, target int) {
 	r.target[good] = target
 }
 
+// setDelivered pins what the SERVER has already accepted for good, so a test can stage the exact
+// mid-build state the sp-v2a2h ledger recorded (364 of 400 fulfilled, 36 outstanding).
+func (r *freshAggregatePipelineRepo) setDelivered(good string, delivered int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.delivered[good] = delivered
+}
+
 // gateTestLot is a lot whose task is ALREADY EXECUTING — the state claimTaskForSupply leaves
 // behind before supplyTask routes to the leg. Tests that call deliverGateLeg directly must start
 // from that state, or the completion path's Complete/ParkForResupply transitions are illegal and
@@ -236,8 +244,13 @@ func (s *stubGateTopology) TerminalFactory(_ context.Context, good, _ string, _ 
 type countingGateBuyer struct {
 	mu     sync.Mutex
 	bought map[string]int
-	seen   int
-	err    error
+	// attempts counts BuyAtTerminalFactory CALLS per good, recorded before any outcome. It is the
+	// only way to assert "no purchase was even attempted" — sp-v2a2h acceptance 2 asks for the API
+	// call count, not the spend, because a fill the guards happen to refuse and a fill that was
+	// never planned are the same zero in `bought` and completely different bugs.
+	attempts map[string]int
+	seen     int
+	err      error
 	// acquireZero models the money/price guards stopping the fill: the buy is ATTEMPTED and returns
 	// a zero-quantity result, which is the shape fillFromSource produces when spendFloorBreached or
 	// the price ceiling trips. Deliberately distinct from err, which is a failed CALL — a caller
@@ -257,6 +270,10 @@ func (b *countingGateBuyer) BuyAtTerminalFactory(_ context.Context, _ *navigatio
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.seen++
+	if b.attempts == nil {
+		b.attempts = make(map[string]int)
+	}
+	b.attempts[good]++
 	if b.err != nil {
 		return nil, b.err
 	}
@@ -291,11 +308,19 @@ func (b *countingGateBuyer) goods() map[string]int {
 	return out
 }
 
+// attemptsFor is how many times the leg CALLED the buyer for good, whatever the outcome.
+func (b *countingGateBuyer) attemptsFor(good string) int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.attempts[good]
+}
+
 func (b *countingGateBuyer) reset() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.seen = 0
 	b.bought = nil
+	b.attempts = nil
 }
 
 // gateLegFixture is one wired delivery-fleet drain plus every seam a test needs to assert on.

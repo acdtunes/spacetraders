@@ -173,8 +173,16 @@ type constructionLot struct {
 	// fillCap bounds this lot's PHASE-2 buy so the lots working a material do not collectively buy past
 	// what it still needs (the over-supply guard), and is the buy reservation the lot's worker holds
 	// against that material for its whole life. A material's caps sum to its outstanding bill net of
-	// the workers already in flight for it. 0 = NO cap (the zero value; planned lots always carry one).
+	// what is already committed to it. 0 = NO cap UNLESS buyCapped says otherwise (see below).
 	fillCap int
+	// buyCapped marks fillCap AUTHORITATIVE, including when it is zero.
+	//
+	// A zero fillCap has two opposite meanings and the planner mints both. The zero VALUE means
+	// "no cap" (a lot built by hand). A zero ASSIGNED by the planner means "buy NOTHING": the lot
+	// exists only to unload cargo the hull already carries, because every outstanding unit of its
+	// material is already paid for. Reading the second as the first hands an uncapped fill to
+	// exactly the lot that must not spend.
+	buyCapped bool
 	// ephemeral marks a fan-out CLONE (not one of the pipeline's persisted ready tasks): it does the real
 	// source+deliver+record work but skips task-status persistence AND replenishment — the material's
 	// original ready task (always dispatched alongside a clone) owns those, so the ready queue stays at
@@ -196,10 +204,31 @@ func (l constructionLot) buyReservation() int {
 	if cargo := l.ship.Cargo(); cargo != nil && cargo.Capacity > 0 {
 		capacity = cargo.Capacity
 	}
+	if l.buyCapped && l.fillCap <= 0 {
+		return 0 // an unload-only lot reserves no budget: it is not going to spend
+	}
 	if l.fillCap > 0 && l.fillCap < capacity {
 		return l.fillCap
 	}
 	return capacity
+}
+
+// mayBuy reports whether this lot is allowed to SPEND at all. False only for a planner-assigned
+// zero cap — the unload-only lot described on buyCapped.
+func (l constructionLot) mayBuy() bool {
+	return !l.buyCapped || l.fillCap > 0
+}
+
+// cappedNeed bounds a sourcing target by this lot's authoritative buy budget. A lot with no
+// authoritative cap keeps today's behaviour (a positive fillCap bounds, a zero one does not).
+func (l constructionLot) cappedNeed(need int) int {
+	if !l.mayBuy() {
+		return 0
+	}
+	if l.fillCap > 0 && l.fillCap < need {
+		return l.fillCap
+	}
+	return need
 }
 
 // planDispatchLots fans the ready material-tasks into per-hull lot-tasks so throughput is not capped
@@ -214,11 +243,11 @@ func (l constructionLot) buyReservation() int {
 // only a few hulls will actually be started. maxLots is the tick's free budget under max_workers:
 // every lot minted here is dispatched, and a slot a haul frees is refilled by the next tick from live
 // hulls rather than from a plan made before that haul began.
-func (h *RunConstructionCoordinatorHandler) planDispatchLots(ctx context.Context, cmd *RunConstructionCoordinatorCommand, tasks []*manufacturing.ManufacturingTask, idleShips []*navigation.Ship, maxLots int) []constructionLot {
+func (h *RunConstructionCoordinatorHandler) planDispatchLots(ctx context.Context, cmd *RunConstructionCoordinatorCommand, systemSymbol string, tasks []*manufacturing.ManufacturingTask, idleShips []*navigation.Ship, maxLots int) []constructionLot {
 	if len(idleShips) == 0 || maxLots <= 0 {
 		return nil
 	}
-	budget := h.materialBuyBudgets(ctx, tasks, representativeLotUnits(idleShips))
+	budget := h.materialBuyBudgets(ctx, cmd, systemSymbol, tasks, idleShips, representativeLotUnits(idleShips))
 
 	// Drop hulls that can do NO work this tick before any lot is minted against them (see
 	// wedgedAtFullHold). Done here, after the budget, because "can this hull do anything" is a
@@ -373,56 +402,129 @@ func wedgedAtFullHold(ship *navigation.Ship, budget *materialBudget) bool {
 type materialBudget struct {
 	order     []string
 	remaining map[string]int
-	// rawRemaining is the material's OUTSTANDING BILL, before in-flight reservations are netted
-	// out. It answers a different question from remaining and the two must not be confused:
-	// remaining is how much may still be BOUGHT, rawRemaining is how much the site still WANTS.
-	// Delivering cargo already aboard spends nothing, so it is governed by demand, never by a buy
-	// budget — a hull whose material is fully reserved by in-flight workers is still carrying units
-	// the site needs, and can still unload them for free.
+	// rawRemaining is the material's OUTSTANDING BILL, before any commitment is netted out. It
+	// answers a different question from remaining and the two must not be confused: remaining is
+	// how much may still be BOUGHT, rawRemaining is how much the site still WANTS. Delivering
+	// cargo already aboard spends nothing, so it is governed by demand, never by a buy budget — a
+	// hull whose material is fully covered by in-flight loads is still carrying units the site
+	// needs, and can still unload them for free.
 	rawRemaining map[string]int
-	repTask      map[string]*manufacturing.ManufacturingTask
-	assigned     map[string]int
-	lotUnits     int
+	// lotDemand is how many units still need a HULL this tick: the outstanding bill less what is
+	// committed to hulls this tick CANNOT dispatch. It sits between the other two and is what the
+	// lot count is sized from.
+	//
+	// It cannot be remaining, which also nets out cargo aboard hulls in this tick's own pool: a
+	// material covered that way would want ZERO lots, leaving the laden hull with no lot minted
+	// to unload it and the bill never closing. It cannot be rawRemaining either, which re-mints a
+	// lot for every unit an unreachable hull already carries.
+	lotDemand map[string]int
+	repTask   map[string]*manufacturing.ManufacturingTask
+	assigned  map[string]int
+	lotUnits  int
 }
 
 // materialBuyBudgets reads, once per distinct material, how many units may still be BOUGHT this
 // tick, plus a representative task to clone for fan-out, in first-seen order for deterministic
-// distribution. The budget nets out what in-flight workers are already authorized to buy: their
-// loads are paid for but not yet delivered, so the site's bill has not moved for them and sizing
-// against the raw bill would buy the same units twice.
-func (h *RunConstructionCoordinatorHandler) materialBuyBudgets(ctx context.Context, tasks []*manufacturing.ManufacturingTask, lotUnits int) *materialBudget {
+// distribution.
+//
+// The budget nets out COMMITTED units — everything already paid for, whether it sits in a live
+// worker's reservation or in a hull's hold. Sizing against the raw bill buys the same units twice;
+// sizing against the in-memory reservation alone survives neither a restart nor the reservation's
+// own expiry, while the cargo stays aboard through both. See
+// run_construction_coordinator_commitment.go.
+func (h *RunConstructionCoordinatorHandler) materialBuyBudgets(
+	ctx context.Context,
+	cmd *RunConstructionCoordinatorCommand,
+	systemSymbol string,
+	tasks []*manufacturing.ManufacturingTask,
+	idleShips []*navigation.Ship,
+	lotUnits int,
+) *materialBudget {
 	b := &materialBudget{
 		order:        make([]string, 0, len(tasks)),
 		remaining:    make(map[string]int),
 		rawRemaining: make(map[string]int),
+		lotDemand:    make(map[string]int),
 		repTask:      make(map[string]*manufacturing.ManufacturingTask),
 		assigned:     make(map[string]int),
 		lotUnits:     lotUnits,
 	}
+	dispatchable := make(map[string]bool, len(idleShips))
+	for _, ship := range idleShips {
+		if ship != nil {
+			dispatchable[ship.ShipSymbol()] = true
+		}
+	}
+	playerID := shared.MustNewPlayerID(cmd.PlayerID)
+	// One fold per PIPELINE, so a multi-material gate costs one fleet read, not one per material.
+	commitments := make(map[string]gateCommitments)
+	for _, pipelineID := range distinctPipelines(tasks) {
+		commitments[pipelineID] = h.gateMaterialCommitments(ctx, cmd, playerID, systemSymbol, pipelineID, pipelineGoods(tasks, pipelineID), dispatchable)
+	}
+
 	for _, task := range tasks {
 		key := materialKey(task)
-		if _, seen := b.remaining[key]; !seen {
-			// One read, two questions: the site's outstanding DEMAND, and what may still be BOUGHT
-			// against it once in-flight workers' reservations are netted out.
-			bill := h.remainingBill(ctx, task)
-			b.rawRemaining[key] = bill
-			b.remaining[key] = bill - h.supplies.reservedUnits(key)
-			b.repTask[key] = task
-			b.order = append(b.order, key)
+		if _, seen := b.remaining[key]; seen {
+			continue
 		}
+		// One read, three questions: the site's outstanding DEMAND, how many units still need a
+		// HULL, and what may still be BOUGHT once every commitment is netted out.
+		bill := h.remainingBill(ctx, task)
+		commitment := commitments[task.PipelineID()]
+		committed := commitment.unitsFor(task.Good())
+		warnOnOvershoot(ctx, task.Good(), bill, committed)
+
+		b.rawRemaining[key] = bill
+		b.lotDemand[key] = bill - commitment.undispatchableFor(task.Good())
+		b.remaining[key] = bill - committed
+		if bill > 0 && b.remaining[key] <= 0 {
+			logInFlightSkip(ctx, task.Good(), bill, committed)
+		}
+		b.repTask[key] = task
+		b.order = append(b.order, key)
 	}
 	return b
 }
 
-// desiredLots is how many hull-load lots this material still wants: ceil(remaining/hull-load), 0
-// once its bill is met.
-func (b *materialBudget) desiredLots(key string) int {
-	return ceilDiv(b.remaining[key], b.lotUnits)
+// distinctPipelines is the tick's pipeline ids, first-seen order, deduplicated.
+func distinctPipelines(tasks []*manufacturing.ManufacturingTask) []string {
+	seen := make(map[string]bool, len(tasks))
+	ids := make([]string, 0, len(tasks))
+	for _, task := range tasks {
+		if id := task.PipelineID(); !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
+	return ids
 }
 
-// wantsAnotherLot reports whether the material still has unmet bill AND unfilled lot budget.
+// pipelineGoods is the distinct goods pipelineID's ready tasks name, first-seen order.
+func pipelineGoods(tasks []*manufacturing.ManufacturingTask, pipelineID string) []string {
+	seen := make(map[string]bool, len(tasks))
+	out := make([]string, 0, len(tasks))
+	for _, task := range tasks {
+		if task.PipelineID() != pipelineID || seen[task.Good()] {
+			continue
+		}
+		seen[task.Good()] = true
+		out = append(out, task.Good())
+	}
+	return out
+}
+
+// desiredLots is how many hull-load lots this material still wants: ceil(lotDemand/hull-load), 0
+// once every outstanding unit is either delivered or aboard a hull this tick cannot dispatch.
+func (b *materialBudget) desiredLots(key string) int {
+	return ceilDiv(b.lotDemand[key], b.lotUnits)
+}
+
+// wantsAnotherLot reports whether the material still has work for a hull AND unfilled lot budget.
+// It asks lotDemand, not remaining: a lot that only UNLOADS cargo already aboard spends nothing
+// and still advances the gate, so a zero buy budget must not withhold the hull that carries the
+// last tranche in.
 func (b *materialBudget) wantsAnotherLot(key string) bool {
-	return b.remaining[key] > 0 && b.assigned[key] < b.desiredLots(key)
+	return b.lotDemand[key] > 0 && b.assigned[key] < b.desiredLots(key)
 }
 
 // wantsMaterialAboard reports whether the hull carries any material the SITE still wants — the
@@ -529,8 +631,12 @@ func (b *materialBudget) neediestMaterial() string {
 // needs (the over-supply guard). A material with a SINGLE lot takes the whole budget — an
 // effectively uncapped fill, safe because the executor stops at hull capacity anyway. A material
 // with MULTIPLE lots has that budget sliced into hull-load caps that sum to it. The budget is the
-// planner's, already net of what in-flight workers are authorized to buy, so it is also the buy
-// reservation each dispatched lot registers.
+// planner's, already net of every committed unit, so it is also the buy reservation each dispatched
+// lot registers.
+//
+// EVERY cap it assigns is marked AUTHORITATIVE, zero included. A zero here is not "no cap" — it is
+// a lot minted purely to unload cargo the hull already carries, whose material has nothing left to
+// buy. Left unmarked it reads as the zero value and licenses an uncapped fill.
 func (b *materialBudget) assignFillCaps(lots []constructionLot) {
 	counts := make(map[string]int)
 	for i := range lots {
@@ -550,6 +656,7 @@ func (b *materialBudget) assignFillCaps(lots []constructionLot) {
 			slice = 0
 		}
 		lots[i].fillCap = slice
+		lots[i].buyCapped = true
 		unspent[key] -= slice
 	}
 }

@@ -195,6 +195,10 @@ func (h *RunConstructionCoordinatorHandler) SetGateFactory(topology GateFactoryT
 type gateMaterial struct {
 	good      string
 	remaining int
+	// committed is how many of those remaining units are ALREADY PAID FOR and sitting in another
+	// gate hull's hold. Carried alongside remaining, not subtracted into it, so the leg can still
+	// tell "the site no longer wants this" from "the site wants it and we already bought it".
+	committed int
 	source    *mfgServices.MarketLocatorResult // nil when this era exports the good nowhere
 }
 
@@ -211,15 +215,19 @@ type gateMaterial struct {
 // path, no duplicated navigation. A material whose bill is already MET is not flown anywhere: the
 // site would reject it. That case is logged loudly rather than silently skipped, because a hull
 // holding material nobody needs is stuck on capacity this leg cannot recover.
+// It returns the freed units PER GOOD, not one total. The per-good grain is load-bearing for the
+// buy sizing: only the LOT'S OWN material has its delivery recorded into the pipeline counter
+// here, so for every OTHER material the bill this leg reads is stale by exactly the units this
+// flush unloaded — and sizing a purchase against that stale bill re-buys them.
 func (h *RunConstructionCoordinatorHandler) flushOnHandGateMaterials(
 	ctx context.Context,
 	leg *supplyLeg,
 	pipeline *manufacturing.ManufacturingPipeline,
 	playerID shared.PlayerID,
-) int {
+) map[string]int {
 	logger := common.LoggerFromContext(ctx)
 	task := leg.task()
-	freed := 0
+	freed := make(map[string]int, len(pipeline.Materials()))
 
 	for _, target := range pipeline.Materials() {
 		good := target.TradeSymbol()
@@ -261,7 +269,7 @@ func (h *RunConstructionCoordinatorHandler) flushOnHandGateMaterials(
 			continue
 		}
 
-		freed += units
+		freed[good] += units
 		logger.Log("INFO", fmt.Sprintf("Gate delivery: unloaded %d %s already aboard %s to %s before buying — freeing hold for this leg", units, good, leg.ship.ShipSymbol(), task.ConstructionSite()), map[string]interface{}{
 			"good": good, "units": units, "construction_site": task.ConstructionSite(), "ship": leg.ship.ShipSymbol(),
 		})
@@ -344,10 +352,44 @@ func (h *RunConstructionCoordinatorHandler) deliverGateLeg(
 	// LIVE floors, re-read this leg.
 	policy := h.gate.policyFor(pipeline.DeliveryBuyFloor(), pipeline.DeliveryResumeFloor())
 
+	// NET OUT WHAT IS ALREADY BOUGHT, before a single unit is sized.
+	//
+	// THIS NETTING IS NEEDED HERE AND NOT ONLY IN THE DISPATCH PLANNER. A delivery trip is MIXED:
+	// it buys every gate material on the pipeline, not just the one its lot was dispatched for.
+	// The planner's budget governs which lots EXIST and never reaches this sizing, so without a
+	// second netting a fully committed material is re-bought by the first leg that goes out for
+	// anything else.
+	//
+	// THIS hull is excluded BY SYMBOL, never by subtracting its cargo. Its load was just flushed
+	// into billSource, so counting it again nets the same units out twice — and the cached *Ship
+	// this leg holds is deliberately NOT updated by DeliverToConstructionSite, so subtracting its
+	// cargo would subtract a PRE-flush figure from a POST-flush fold and under-count, which is the
+	// over-buying direction. Whatever the flush could not unload still occupies the hold, which
+	// the capacity arithmetic below already accounts for.
+	self := lot.ship.ShipSymbol()
+	commitment := h.commitUnits(
+		h.commitmentHulls(ctx, cmd, playerID, systemSymbol),
+		task.PipelineID(),
+		pipelineMaterialGoods(billSource),
+		func(ship *navigation.Ship) bool { return ship.ShipSymbol() == self },
+	)
+
 	// Resolve each material's terminal factory and quote.
 	materials := make([]gateMaterial, 0, len(billSource.Materials()))
 	for _, target := range billSource.Materials() {
-		m := gateMaterial{good: target.TradeSymbol(), remaining: target.RemainingQuantity()}
+		m := gateMaterial{good: target.TradeSymbol(), remaining: target.RemainingQuantity(), committed: commitment[target.TradeSymbol()]}
+		// ADD BACK what this hull just flushed of ANOTHER material. Only task.Good()'s delivery is
+		// recorded into the pipeline counter (a second material would need its own task and
+		// pipeline lock, and would double-count against the next tick's site reconcile), so for
+		// every other good billSource is stale by exactly the units the flush unloaded — and
+		// sizing against that stale bill buys them a second time.
+		if m.good != task.Good() {
+			m.committed += freed[m.good]
+		}
+		warnOnOvershoot(ctx, m.good, m.remaining, m.committed)
+		if m.remaining > 0 && m.committed >= m.remaining {
+			logInFlightSkip(ctx, m.good, m.remaining, m.committed)
+		}
 		source, terr := h.gate.topology.TerminalFactory(ctx, m.good, systemSymbol, cmd.PlayerID)
 		if terr != nil || source == nil {
 			// A refusal, never a substitution: sending a hull to some other waypoint is how cargo
@@ -403,13 +445,13 @@ func (h *RunConstructionCoordinatorHandler) deliverGateLeg(
 	// cached *Ship is deliberately not updated by it and would still report a full hold. Units the
 	// site accepted are exactly the units that left the hold, so this is the same number a re-read
 	// would return, without a second query.
-	capacity := freed
+	capacity := totalUnits(freed)
 	if cargo := lot.ship.Cargo(); cargo != nil {
 		capacity += cargo.Capacity - cargo.Units
 	}
 	planInput := make([]gate.Material, 0, len(materials))
 	for _, m := range materials {
-		fm := gate.Material{Good: m.good, Remaining: m.remaining, Paused: paused[m.good]}
+		fm := gate.Material{Good: m.good, Remaining: m.remaining, Committed: m.committed, Paused: paused[m.good]}
 		if m.source != nil {
 			fm.TradeVolume = m.source.TradeVolume
 		}
@@ -483,7 +525,7 @@ func (h *RunConstructionCoordinatorHandler) deliverGateLeg(
 	// A MIXED trip moved more than this task's own material. Say so explicitly, or the only figures
 	// an operator sees are this task's — and the other material's units would look unaccounted for
 	// until the next tick's site reconcile raises them.
-	if total := freed + tripUnits; total > leg.delivered {
+	if total := totalUnits(freed) + tripUnits; total > leg.delivered {
 		logger.Log("INFO", fmt.Sprintf("Gate delivery: %s moved %d unit(s) to %s this leg, of which %d were %s (this task's material); the rest belong to other gate materials and are reconciled from the live site next tick", lot.ship.ShipSymbol(), total, task.ConstructionSite(), leg.delivered, task.Good()), map[string]interface{}{
 			"ship": lot.ship.ShipSymbol(), "trip_units": total, "task_units": leg.delivered, "good": task.Good(),
 		})

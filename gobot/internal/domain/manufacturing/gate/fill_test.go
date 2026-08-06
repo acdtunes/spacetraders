@@ -278,3 +278,115 @@ func TestGatePolicyPackage_ContainsNoWaypointLiterals(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------------------------
+// COMMITTED UNITS — sp-v2a2h, the double-buy
+// ---------------------------------------------------------------------------------------------
+
+// A material whose whole outstanding bill is ALREADY PAID FOR and riding in a hold must not be
+// bought again. This is the arithmetic behind the sp-v2a2h ledger: the site read 364/400, the
+// outstanding 36 were aboard a stranded hull, and the planner sized 36 a second time.
+func TestPlanFill_NeverBuysUnitsAlreadyCommittedToAHold(t *testing.T) {
+	trip := PlanFill(80, []Material{
+		{Good: "ADVANCED_CIRCUITRY", Remaining: 36, Committed: 36, TradeVolume: 28},
+	})
+
+	if len(trip.Stops) != 0 {
+		t.Fatalf("Stops = %+v, want none — every outstanding unit is already bought and in a hold, so this trip re-buys 36 units the site will reject with API 4801", trip.Stops)
+	}
+	if len(trip.Skips) != 1 || trip.Skips[0].Reason != SkipInFlightCovered {
+		t.Fatalf("Skips = %+v, want a single %s — a covered bill and a finished one must not render the same", trip.Skips, SkipInFlightCovered)
+	}
+}
+
+// PARTIAL coverage buys the UNCOVERED part, exactly. Netting by the wrong amount either re-buys
+// (the bug) or refuses a purchase the gate genuinely needs (a stall).
+func TestPlanFill_BuysOnlyTheUncommittedRemainder(t *testing.T) {
+	trip := PlanFill(80, []Material{
+		{Good: "ADVANCED_CIRCUITRY", Remaining: 36, Committed: 20, TradeVolume: 28},
+	})
+
+	if len(trip.Stops) != 1 || trip.Stops[0].Units != 16 {
+		t.Fatalf("Stops = %+v, want one stop of exactly 16 units (36 outstanding less 20 already in a hold)", trip.Stops)
+	}
+}
+
+// in_flight_covered outranks paused and no_supply, for the same reason bill_satisfied does:
+// neither knob an operator can turn changes a bill that is already paid for.
+func TestPlanFill_InFlightCoverageOutranksPausedAndNoSupply(t *testing.T) {
+	trip := PlanFill(80, []Material{
+		{Good: "ADVANCED_CIRCUITRY", Remaining: 36, Committed: 36, TradeVolume: 28, Paused: true},
+		{Good: "FAB_MATS", Remaining: 40, Committed: 40, TradeVolume: 0},
+	})
+
+	for _, skip := range trip.Skips {
+		if skip.Reason != SkipInFlightCovered {
+			t.Fatalf("%s was skipped as %q, want %s — reporting a covered bill as a pause or a dry market sends an operator to fix something that is not broken", skip.Good, skip.Reason, SkipInFlightCovered)
+		}
+	}
+	if len(trip.Skips) != 2 {
+		t.Fatalf("Skips = %+v, want both materials skipped", trip.Skips)
+	}
+}
+
+// A MET bill still reports bill_satisfied, not in_flight_covered: the two are different facts and
+// the first is the one that means the material is done.
+func TestPlanFill_AMetBillIsStillBillSatisfiedNotInFlightCovered(t *testing.T) {
+	trip := PlanFill(80, []Material{
+		{Good: "ADVANCED_CIRCUITRY", Remaining: 0, Committed: 36, TradeVolume: 28},
+	})
+
+	if len(trip.Skips) != 1 || trip.Skips[0].Reason != SkipBillSatisfied {
+		t.Fatalf("Skips = %+v, want a single %s", trip.Skips, SkipBillSatisfied)
+	}
+}
+
+// THE SORT IS BY BUYABLE, NOT BY RAW BILL. A fully covered material with a huge outstanding bill
+// must not sort ahead of a small one that can actually load: it would consume the ordering slot on
+// a bill it is never going to buy against, and then report its own state as hold_full — invisible
+// exactly when the fleet is busy, which is when a duplicate purchase is most expensive.
+//
+// hold_full still legitimately WINS once the hold really is full, per the precedence this file
+// documents (neither reason is operator-actionable there, so the trip-level fact wins, exactly as
+// for bill_satisfied). What must not happen is the covered material CAUSING that state.
+func TestPlanFill_ACoveredMaterialDoesNotTakeTheOrderingSlotFromOneThatCanLoad(t *testing.T) {
+	trip := PlanFill(80, []Material{
+		{Good: "ADVANCED_CIRCUITRY", Remaining: 900, Committed: 900, TradeVolume: 40},
+		{Good: "FAB_MATS", Remaining: 20, TradeVolume: 40},
+	})
+
+	if len(trip.Stops) != 1 || trip.Stops[0].Good != "FAB_MATS" || trip.Stops[0].Units != 20 {
+		t.Fatalf("Stops = %+v, want one 20-unit FAB_MATS stop — the covered material sorted first on a bill it will not buy against", trip.Stops)
+	}
+	if len(trip.Skips) != 1 || trip.Skips[0].Reason != SkipInFlightCovered {
+		t.Fatalf("Skips = %+v, want %s and not %s — with hold left over, the covered material must report the fact an operator can act on", trip.Skips, SkipInFlightCovered, SkipHoldFull)
+	}
+}
+
+// Over-commitment (more aboard than the site still wants — the 436-vs-400 state) buys nothing and
+// never yields a negative take.
+func TestPlanFill_OverCommitmentBuysNothingRatherThanANegativeTake(t *testing.T) {
+	trip := PlanFill(80, []Material{
+		{Good: "ADVANCED_CIRCUITRY", Remaining: 36, Committed: 80, TradeVolume: 28},
+	})
+
+	if trip.Loaded() != 0 {
+		t.Fatalf("Loaded() = %d, want 0", trip.Loaded())
+	}
+	if got := (Material{Remaining: 36, Committed: 80}).Buyable(); got != 0 {
+		t.Fatalf("Buyable() = %d for an over-committed material, want 0", got)
+	}
+}
+
+// With NOTHING committed the planner is unchanged — the guard must not alter the ordinary fill.
+func TestPlanFill_IsUnchangedWhenNothingIsCommitted(t *testing.T) {
+	materials := []Material{
+		{Good: "ADVANCED_CIRCUITRY", Remaining: 200, TradeVolume: 40},
+		{Good: "FAB_MATS", Remaining: 900, TradeVolume: 40},
+	}
+	trip := PlanFill(80, materials)
+
+	if len(trip.Stops) == 0 || trip.Stops[0].Good != "FAB_MATS" || trip.Loaded() != 80 {
+		t.Fatalf("Trip = %+v, want the pre-sp-v2a2h fill (FAB_MATS first, full 80-unit hold)", trip)
+	}
+}

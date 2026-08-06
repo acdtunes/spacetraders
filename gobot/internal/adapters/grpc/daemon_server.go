@@ -468,6 +468,12 @@ func (s *DaemonServer) registerMetricsCollectors(getContainers func() map[string
 	}
 	metrics.SetGlobalSpendCapCollector(spendCapCollector)
 
+	gateCommitmentCollector, err := registerCollector(metrics.NewGateCommitmentMetricsCollector(), "gate commitment metrics collector")
+	if err != nil {
+		return err
+	}
+	metrics.SetGlobalGateCommitmentCollector(gateCommitmentCollector)
+
 	absorptionCollector, err := registerCollector(metrics.NewAbsorptionMetricsCollector(), "absorption metrics collector")
 	if err != nil {
 		return err

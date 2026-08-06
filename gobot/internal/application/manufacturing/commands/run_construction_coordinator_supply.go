@@ -170,10 +170,7 @@ func (h *RunConstructionCoordinatorHandler) supplyFromWarehouse(
 	logger := common.LoggerFromContext(ctx)
 	task, ship := leg.task(), leg.ship
 
-	need := h.remainingBill(ctx, task)
-	if leg.lot.fillCap > 0 && leg.lot.fillCap < need {
-		need = leg.lot.fillCap
-	}
+	need := leg.lot.cappedNeed(h.remainingBill(ctx, task))
 	withdrew, reloaded, werr := h.trySourceFromWarehouse(ctx, task, ship, systemSymbol, playerID, need)
 	if werr != nil {
 		// Fail-open: a warehouse hiccup never starves the gate — log and fall through to the buy.
@@ -209,6 +206,17 @@ func (h *RunConstructionCoordinatorHandler) sourceAndDeliverRemainder(
 	playerID shared.PlayerID,
 ) bool {
 	task, ship := leg.task(), leg.ship
+
+	// AN UNLOAD-ONLY LOT NEVER REACHES THE BUY. Its material has nothing left to purchase — every
+	// outstanding unit is already paid for and in some hull's hold — so the lot exists only to
+	// unload what it carries, which PHASE 1 has already done. Falling through would hand a zero
+	// fill target to the executor, and a zero target means "fill to full capacity".
+	if !leg.lot.mayBuy() {
+		common.LoggerFromContext(ctx).Log("INFO", fmt.Sprintf("Construction drain: %s is not buying %s this trip — every outstanding unit is already paid for and in a hull's hold, so this lot only unloads what it carries", ship.ShipSymbol(), task.Good()), map[string]interface{}{
+			"ship": ship.ShipSymbol(), "good": task.Good(), "task": task.ID(), "action": "skip_inflight_covered",
+		})
+		return h.completeOrDefer(ctx, leg)
+	}
 
 	ctx = mfgServices.WithHullFillTarget(ctx, h.hullFillTarget(ctx, leg.lot), 0)
 
@@ -272,14 +280,10 @@ func (h *RunConstructionCoordinatorHandler) completeOrDefer(ctx context.Context,
 // bill, so a round-trip carries ~a hull rather than one ~trade-volume tranche. A 0 bill
 // (pipeline/material unreadable) leaves the executor to fill to full capacity — a supply is never
 // harmful. One of SEVERAL lots fanned onto the same material is capped to its hull-load SLICE so
-// the concurrent lots together never buy past the remaining requirement; the SOLE lot carries
-// fillCap 0 and fills toward the whole bill.
+// the concurrent lots together never buy past the remaining requirement; a lot with no
+// authoritative cap fills toward the whole bill.
 func (h *RunConstructionCoordinatorHandler) hullFillTarget(ctx context.Context, lot constructionLot) int {
-	fillTarget := h.remainingBill(ctx, lot.task)
-	if lot.fillCap > 0 && lot.fillCap < fillTarget {
-		fillTarget = lot.fillCap
-	}
-	return fillTarget
+	return lot.cappedNeed(h.remainingBill(ctx, lot.task))
 }
 
 // gateSupplyContext marks the run as construction supply carrying the gate waypoint, so the
