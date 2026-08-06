@@ -394,9 +394,13 @@ comment-audit:
 # lane self-runs before the gate; scope it to the touched set with ONLY=.
 #   make comment-audit-check
 #   make comment-audit-check ONLY=internal/application/parkedsensing
+#   make comment-audit-check ONLY="internal/application/parkedsensing internal/domain/hullbuy"
+# ONLY takes commas or spaces; the value is quoted through, so a list stays one argument. An
+# unquoted list would reach the tool already split, and it refuses that rather than checking
+# the first entry and reporting OK.
 comment-audit-check:
 	@go run ./cmd/comment-audit -root . -baseline $(COMMENT_BASELINE) \
-		$(if $(ONLY),-only $(ONLY),) -quiet
+		$(if $(ONLY),-only "$(ONLY)",) -quiet
 
 # Re-record the baseline. Run this only after a deliberate sweep LOWERS a
 # package; never to bless a regression.

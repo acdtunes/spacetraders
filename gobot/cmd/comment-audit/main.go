@@ -33,7 +33,7 @@ func main() {
 		baseline   = flag.String("baseline", "", "baseline file to check for REGRESSION against")
 		writeBase  = flag.String("write-baseline", "", "write the current census to this file and exit 0")
 		tolerance  = flag.Float64("tolerance", 0, "ratio increase forgiven before a regression fires; 0 is strict, and strict is the default because a proportional slack is a per-line budget on a big package (0.005 buys ~45 free comment lines across 9k)")
-		only       = flag.String("only", "", "comma-separated package prefixes to check (a lane's touched set)")
+		only       = flag.String("only", "", "package prefixes to check (a lane's touched set), separated by commas or spaces; QUOTE the value so the shell keeps it as one argument")
 		maxMarkers = flag.Int("max-markers", -1, "fail a checked package carrying more archaeology markers than this (-1 disables)")
 		top        = flag.Int("top", 0, "print only the N densest packages (0 prints all)")
 		explain    = flag.Bool("explain", false, "list every archaeology marker with file:line")
@@ -66,9 +66,12 @@ func main() {
 		Tolerance:  *tolerance,
 		MaxMarkers: *maxMarkers,
 	}
-	if *only != "" {
-		opts.Only = strings.Split(*only, ",")
+	selected, err2 := resolveOnly(*only, flag.Args())
+	if err2 != nil {
+		fmt.Fprintf(os.Stderr, "comment-audit: %v\n", err2)
+		os.Exit(2)
 	}
+	opts.Only = selected
 	if *baseline != "" {
 		bl, err := LoadBaseline(*baseline)
 		if err != nil {
@@ -143,4 +146,34 @@ func emitJSON(pkgs map[string]*PkgStat) {
 		fmt.Fprintf(os.Stderr, "comment-audit: %v\n", err)
 		os.Exit(2)
 	}
+}
+
+// resolveOnly turns the -only value, plus anything the flag parser could not consume, into the
+// set of package prefixes to check.
+//
+// THE LEFTOVERS ARE THE BUG, AND REFUSING ON THEM IS THE POINT. A list written the way it reads
+// — separated by spaces — and interpolated into a command unquoted arrives as several arguments
+// rather than one. The flag takes the first and the rest become positional arguments; worse, Go
+// stops parsing flags at the first of them, so every flag after the list is dropped too. The tool
+// then checks one package out of several, finds it clean, and reports OK. Nothing about that is
+// distinguishable from a real pass, which is the one failure a checking tool must not have.
+//
+// So a value that survives intact is honoured whichever separator it used, and a value the shell
+// already took apart is refused outright with the form that works. Diagnosing it is not enough:
+// the caller who hits this wrote the form that reads naturally and has no reason to suspect a
+// separator, so the tool has to be the one that knows.
+func resolveOnly(value string, leftovers []string) ([]string, error) {
+	if len(leftovers) > 0 {
+		return nil, fmt.Errorf(
+			"unexpected argument %q after -only: the package list reached this tool already split up, "+
+				"so only the first entry would have been checked and every later flag ignored. "+
+				"Quote it and separate with commas: -only \"pkg1,pkg2\"", leftovers[0])
+	}
+	fields := strings.FieldsFunc(value, func(r rune) bool {
+		return r == ',' || r == ' ' || r == '\t' || r == '\n'
+	})
+	if len(fields) == 0 {
+		return nil, nil
+	}
+	return fields, nil
 }
