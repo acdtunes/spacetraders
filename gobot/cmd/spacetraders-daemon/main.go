@@ -823,7 +823,7 @@ func run(cfg *config.Config) error {
 	// already carries debt, so a replay running after live accrual would silently restore nothing.
 	// It cannot fail the boot — see replayLaneCooldown.
 	replayLaneCooldown(
-		context.Background(), laneCooldownLedger, transactionRepo, marketRepo,
+		context.Background(), laneCooldownLedger, transactionRepo, marketRepo, playerRepo,
 		cfg.Captain.PlayerID, cfg.TradeImpact.ResolvedCooldownTau(), time.Now(),
 	)
 

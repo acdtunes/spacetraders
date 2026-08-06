@@ -21,6 +21,7 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/ledger"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	domainTrading "github.com/andrescamacho/spacetraders-go/internal/domain/trading"
 )
@@ -33,6 +34,24 @@ type replayStubHistory struct {
 func (s *replayStubHistory) FindByPlayer(context.Context, shared.PlayerID, ledger.QueryOptions) ([]*ledger.Transaction, error) {
 	return s.rows, s.err
 }
+
+type replayStubPlayers struct {
+	ids []int
+	err error
+}
+
+func (s *replayStubPlayers) ListAll(context.Context) ([]*player.Player, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	out := make([]*player.Player, 0, len(s.ids))
+	for _, id := range s.ids {
+		out = append(out, &player.Player{ID: shared.MustNewPlayerID(id)})
+	}
+	return out, nil
+}
+
+func onePlayer(id int) *replayStubPlayers { return &replayStubPlayers{ids: []int{id}} }
 
 type replayStubMarkets struct{ err error }
 
@@ -66,7 +85,7 @@ func TestReplayLaneCooldown_AnUnconfiguredPlayerIDDoesNotPanic(t *testing.T) {
 
 	require.NotPanics(t, func() {
 		replayed := replayLaneCooldown(context.Background(), l,
-			&replayStubHistory{}, &replayStubMarkets{}, 0, 750*time.Minute, time.Now())
+			&replayStubHistory{}, &replayStubMarkets{}, onePlayer(1), 0, 750*time.Minute, time.Now())
 		require.Zero(t, replayed, "no player means nothing to replay, not a panic")
 	}, "a zero player id is what every captain-less deployment passes; panicking here kills the daemon before it listens")
 }
@@ -78,7 +97,7 @@ func TestReplayLaneCooldown_AnUnreadableHistoryStillBoots(t *testing.T) {
 
 	require.NotPanics(t, func() {
 		replayed := replayLaneCooldown(context.Background(), l,
-			&replayStubHistory{err: errors.New("db down")}, &replayStubMarkets{}, 1, 750*time.Minute, time.Now())
+			&replayStubHistory{err: errors.New("db down")}, &replayStubMarkets{}, onePlayer(1), 1, 750*time.Minute, time.Now())
 		require.Zero(t, replayed)
 	})
 }
@@ -91,7 +110,7 @@ func TestReplayLaneCooldown_AnUnreadableMarketStillBoots(t *testing.T) {
 	require.NotPanics(t, func() {
 		replayLaneCooldown(context.Background(), l,
 			&replayStubHistory{rows: []*ledger.Transaction{replayPurchase(t, 60, now.Add(-time.Hour))}},
-			&replayStubMarkets{err: errors.New("no market")}, 1, 750*time.Minute, now)
+			&replayStubMarkets{err: errors.New("no market")}, onePlayer(1), 1, 750*time.Minute, now)
 	})
 }
 
@@ -106,10 +125,54 @@ func TestReplayLaneCooldown_AWellFormedBootRestoresDebt(t *testing.T) {
 			replayPurchase(t, 60, now.Add(-30*time.Minute)),
 			replayPurchase(t, 60, now.Add(-20*time.Minute)),
 		}},
-		&replayStubMarkets{}, 1, 750*time.Minute, now)
+		&replayStubMarkets{}, onePlayer(1), 1, 750*time.Minute, now)
 
 	require.Equal(t, 2, replayed)
 	key := domainTrading.SourceDrainKey("X1-KP46-H51", "IRON")
 	require.Greater(t, l.Debt(key, now), l.TrancheDebt(),
 		"a boot that restores nothing usable is the amnesia this exists to repair")
+}
+
+// THE SECOND HALF OF THE REGRESSION. Not panicking is not enough: staging runs with no captain
+// player, so a replay that merely SKIPS there is the amnesia with a log line on top. With one
+// stored player and no configured id, the replay must actually run.
+func TestReplayLaneCooldown_FallsBackToTheSingleStoredPlayer(t *testing.T) {
+	now := time.Now()
+	l := domainTrading.NewLaneCooldownLedger(0, 0, 0)
+
+	replayed := replayLaneCooldown(context.Background(), l,
+		&replayStubHistory{rows: []*ledger.Transaction{replayPurchase(t, 60, now.Add(-20*time.Minute))}},
+		&replayStubMarkets{}, onePlayer(1), 0, 750*time.Minute, now)
+
+	require.Equal(t, 1, replayed,
+		"one stored player and no configured id must still replay: this is exactly the shape of the only environment we deploy to")
+}
+
+// An explicitly configured captain player is never overridden by whatever happens to be in the
+// table.
+func TestReplayLaneCooldown_ConfiguredPlayerWinsOverStored(t *testing.T) {
+	got, ok := resolveReplayPlayer(context.Background(), 7, &replayStubPlayers{ids: []int{1}})
+	require.True(t, ok)
+	require.Equal(t, 7, got.Value())
+}
+
+// It refuses to guess rather than blending two players' drains into one market's history — the
+// ledger key carries no player dimension. Every refusal is a skip, never a panic.
+func TestResolveReplayPlayer_RefusesToGuess(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		players PlayerDirectory
+	}{
+		{"no players stored", &replayStubPlayers{}},
+		{"several players stored", &replayStubPlayers{ids: []int{1, 2}}},
+		{"directory unreadable", &replayStubPlayers{err: errors.New("db down")}},
+		{"directory unwired", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			require.NotPanics(t, func() {
+				_, ok := resolveReplayPlayer(context.Background(), 0, tc.players)
+				require.False(t, ok)
+			})
+		})
+	}
 }
