@@ -79,7 +79,11 @@ func (h *RefuelShipHandler) Handle(ctx context.Context, request common.Request) 
 	// post-transaction credits in-band, which is the authoritative balance_after
 	// for the ledger. When absent (older API/mock) the ledger reconstructs from
 	// the running chain (balance_before=0 baseline).
-	go h.recordRefuelTransaction(ctx, cmd, response, refuelResult.AgentCredits)
+	//
+	// The hull is taken from the LOADED ship rather than the command, because a
+	// caller may name it by either field and only the loaded ship is populated
+	// for both shapes — the ledger row must name the hull whichever was used.
+	go h.recordRefuelTransaction(ctx, cmd, ship.ShipSymbol(), response, refuelResult.AgentCredits)
 
 	return response, nil
 }
@@ -171,11 +175,13 @@ func (h *RefuelShipHandler) buildRefuelResponse(ship *navigation.Ship, fuelBefor
 }
 
 // recordRefuelTransaction records the refuel transaction in the ledger.
+// shipSymbol is the resolved hull, which is what the row is attributed to.
 // authoritativeBalance, when non-nil, is the agent's post-refuel credits as
 // reported in-band by the refuel API response; the ledger anchors on it.
 func (h *RefuelShipHandler) recordRefuelTransaction(
 	ctx context.Context,
 	cmd *types.RefuelShipCommand,
+	shipSymbol string,
 	response *types.RefuelShipResponse,
 	authoritativeBalance *int,
 ) {
@@ -185,7 +191,7 @@ func (h *RefuelShipHandler) recordRefuelTransaction(
 	// Transaction validation requires amount != 0
 	if response.CreditsCost == 0 {
 		logger.Log("DEBUG", "Skipping ledger entry for zero-cost refuel", map[string]interface{}{
-			"ship":       cmd.ShipSymbol,
+			"ship":       shipSymbol,
 			"fuel_added": response.FuelAdded,
 		})
 		return
@@ -206,7 +212,7 @@ func (h *RefuelShipHandler) recordRefuelTransaction(
 	// Build metadata
 	metadata := map[string]interface{}{
 		"agent":       agentSymbol,
-		"ship_symbol": cmd.ShipSymbol,
+		"ship_symbol": shipSymbol,
 		"fuel_added":  response.FuelAdded,
 	}
 
@@ -218,7 +224,7 @@ func (h *RefuelShipHandler) recordRefuelTransaction(
 		BalanceBefore:        balanceBefore,
 		BalanceAfter:         balanceAfter,
 		AuthoritativeBalance: authoritativeBalance,
-		Description:          fmt.Sprintf("Refueled ship %s", cmd.ShipSymbol),
+		Description:          fmt.Sprintf("Refueled ship %s", shipSymbol),
 		Metadata:             metadata,
 	}
 
@@ -238,13 +244,13 @@ func (h *RefuelShipHandler) recordRefuelTransaction(
 		// Log error but don't fail the operation
 		logger.Log("ERROR", "Failed to record refuel transaction in ledger", map[string]interface{}{
 			"error":     err.Error(),
-			"ship":      cmd.ShipSymbol,
+			"ship":      shipSymbol,
 			"cost":      response.CreditsCost,
 			"player_id": cmd.PlayerID.Value(),
 		})
 	} else {
 		logger.Log("DEBUG", "Refuel transaction recorded in ledger", map[string]interface{}{
-			"ship": cmd.ShipSymbol,
+			"ship": shipSymbol,
 			"cost": response.CreditsCost,
 		})
 	}
