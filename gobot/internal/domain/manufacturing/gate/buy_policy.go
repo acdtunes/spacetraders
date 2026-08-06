@@ -3,6 +3,7 @@ package gate
 import (
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
@@ -14,6 +15,46 @@ const (
 	DefaultBuyFloor    = shared.SupplyLevelModerate
 	DefaultResumeFloor = shared.SupplyLevelHigh
 )
+
+// StuckPauseTimeout bounds how long a pause may hold while supply sits AT OR ABOVE the buy floor
+// but below the resume floor — the gap the fleet can otherwise never climb out of (sp-c9wuu).
+//
+// WHY A TIMEOUT RATHER THAN A DERIVED GAP. The bead offers both. A gap derived from each market's
+// observed recovery rate needs a regeneration model this system does not have, would be wrong
+// exactly when it is coldest (a market we have never watched recover), and would STILL need a
+// backstop for the case where the estimate is too optimistic. The timeout is that backstop, so it
+// is the necessary half; the rate model is the optional extra. It also bounds the harm directly:
+// the defect is that PROGRESS STOPPED, and a timeout is a bound on stopped progress.
+//
+// WHY SIXTY MINUTES, DERIVED. The pause exists to damp the buy-deplete-pause cycle, so it must
+// outlast one full cycle or it releases before the leg that depleted the market has even finished —
+// which is the chatter it was built to prevent. One cycle is bounded by
+// constructionSupplyTaskDefaultTimeout (30m), the drain's own limit on a single
+// claim->source->deliver->record task, chosen to never cut a legitimate in-system round trip. Two
+// of those is the floor for safety: one to outlast the depleting leg, a second to observe whether
+// supply is genuinely climbing rather than momentarily bouncing.
+//
+// Against the incident it is 60 minutes versus the 450 the fleet actually lost — the stall is
+// bounded at ~13% of what it cost, while every oscillation faster than an hour is still damped.
+//
+// It is NOT a round number chosen for comfort: change constructionSupplyTaskDefaultTimeout and this
+// should move with it, because it is two of those.
+const StuckPauseTimeout = 60 * time.Minute
+
+// SuspectedStuckAfter is when a pause held at the buy floor starts REPORTING itself as suspected
+// stuck — half the release timeout, i.e. one supply-task lifetime.
+//
+// IT MUST BE STRICTLY BELOW StuckPauseTimeout OR IT IS UNREACHABLE, which is how this was first
+// written: escalating at the same threshold that releases means the flag is computed on a decision
+// that has already resumed, so it can never be observed and the "counter" criterion 3 asks for
+// would always read zero. A check that cannot fire is the failure mode this bead is about.
+//
+// The half-window is also defence in depth, and that is the real reason for the gap rather than
+// merely making the field reachable: the escalation does NOT depend on the release working. If the
+// timeout is ever mis-tuned, disabled, or broken by a later change, the fleet still spends thirty
+// minutes shouting that a pause has plateaued before anything releases it — which is exactly the
+// signal that was missing for seven and a half hours.
+const SuspectedStuckAfter = StuckPauseTimeout / 2
 
 // supplyLadder is the SCARCE..ABUNDANT ordering, used to raise a mis-set resume floor to
 // the level above the buy floor. It mirrors shared.SupplyLevel.Order() and is asserted
@@ -38,15 +79,42 @@ type Decision struct {
 	Paused      bool
 	BuyFloor    shared.SupplyLevel
 	ResumeFloor shared.SupplyLevel
+	// HeldAtBuyFloor is how long supply has sat AT OR ABOVE the buy floor while still paused. It is
+	// the quantity the deadlock is made of, and it was not previously observable at all: the pause
+	// logged the same reassuring line whether it had held for one tick or seven hours.
+	HeldAtBuyFloor time.Duration
+	// SuspectedStuck marks a pause that has held at the buy floor past StuckPauseTimeout. It is what
+	// makes a stuck pause DISTINGUISHABLE from healthy patience — the observability half of sp-c9wuu,
+	// and arguably the more important half: a permanently-stuck state that logs a reassuring reason
+	// every tick actively argues for the wrong conclusion, and did, twice, to the Admiral.
+	SuspectedStuck bool
+	// ResumedByTimeout marks the resume that the timeout, rather than the resume floor, produced.
+	ResumedByTimeout bool
 }
 
 // LogLine renders the decision for the container log. Everything is in the MESSAGE, not
 // in a metadata map: the container log renderer drops the map, so a decision that
 // reported itself only in metadata would be exactly as invisible as one that said nothing.
 func (d Decision) LogLine() string {
+	if d.Paused && d.SuspectedStuck {
+		return fmt.Sprintf("Gate delivery PAUSE SUSPECTED STUCK on %s at %s: supply %s has been AT OR ABOVE the %s buy floor for %s but has never reached the %s resume floor — this is no longer patience, the market has plateaued inside the hysteresis gap and delivery is making no progress",
+			d.Good, d.Factory, d.Supply, d.BuyFloor, d.HeldAtBuyFloor.Round(time.Minute), d.ResumeFloor)
+	}
+	// AT OR ABOVE THE BUY FLOOR BUT STILL PAUSED. This case had no wording of its own and fell to
+	// the generic line below, which then said something FALSE — "supply LIMITED is below the LIMITED
+	// buy floor". That sentence is a large part of why the deadlock read as healthy: it described a
+	// market that had recovered to the configured buy level as one that was still too thin.
+	if d.Paused && d.Supply.Order() >= d.BuyFloor.Order() {
+		return fmt.Sprintf("Gate delivery PAUSED on %s at %s: supply %s has recovered to the %s buy floor and held %s, but resumes only at %s",
+			d.Good, d.Factory, d.Supply, d.BuyFloor, d.HeldAtBuyFloor.Round(time.Minute), d.ResumeFloor)
+	}
 	if d.Paused {
 		return fmt.Sprintf("Gate delivery PAUSED on %s at %s: supply %s is below the %s buy floor — resumes at %s",
 			d.Good, d.Factory, d.Supply, d.BuyFloor, d.ResumeFloor)
+	}
+	if d.ResumedByTimeout {
+		return fmt.Sprintf("Gate delivery RESUMING %s at %s by TIMEOUT: supply %s held at or above the %s buy floor for %s without reaching the %s resume floor, so the hysteresis gap is being overridden rather than stalling delivery further",
+			d.Good, d.Factory, d.Supply, d.BuyFloor, d.HeldAtBuyFloor.Round(time.Minute), d.ResumeFloor)
 	}
 	return fmt.Sprintf("Gate delivery BUYING %s at %s: supply %s is at or above the %s buy floor",
 		d.Good, d.Factory, d.Supply, d.BuyFloor)
@@ -65,9 +133,20 @@ type BuyPolicy struct {
 	mu          sync.Mutex
 	buyFloor    shared.SupplyLevel
 	resumeFloor shared.SupplyLevel
+	clock       shared.Clock
 	// paused is good -> paused. Absent means "never observed", which is NOT paused: an
 	// unobserved fleet must never read as a paused one.
 	paused map[string]bool
+	// heldAtBuyFloorSince is good -> when supply FIRST reached the buy floor during the current
+	// pause, zero when it is not currently there.
+	//
+	// THE CLOCK STARTS ON RECOVERY, NOT ON THE PAUSE, and that is the whole of the anti-chatter
+	// guarantee (criterion 4). A market that keeps dipping back below the buy floor keeps resetting
+	// this to zero, so it can never accumulate an hour and can never be released early — the
+	// timeout is unreachable for exactly the fast oscillation the hysteresis exists to damp. Only a
+	// market that has genuinely climbed to a level we are configured to buy at, and HELD it, can
+	// spend the timeout down.
+	heldAtBuyFloorSince map[string]time.Time
 }
 
 // NewBuyPolicy builds the policy from the live floors. Unset floors resolve to the armed
@@ -75,6 +154,16 @@ type BuyPolicy struct {
 // next level up — a zero-or-negative gap collapses the hysteresis back to the single
 // threshold that chatters, which is the whole defect the second floor exists to prevent.
 func NewBuyPolicy(buyFloor, resumeFloor shared.SupplyLevel) *BuyPolicy {
+	return NewBuyPolicyWithClock(buyFloor, resumeFloor, nil)
+}
+
+// NewBuyPolicyWithClock is NewBuyPolicy with an injectable clock, so the stuck-pause timeout can be
+// exercised without sleeping. A nil clock resolves to the real one, matching the DI convention the
+// rest of the codebase uses for optional clocks.
+func NewBuyPolicyWithClock(buyFloor, resumeFloor shared.SupplyLevel, clock shared.Clock) *BuyPolicy {
+	if clock == nil {
+		clock = shared.NewRealClock()
+	}
 	if buyFloor.Order() == 0 {
 		buyFloor = DefaultBuyFloor
 	}
@@ -84,7 +173,13 @@ func NewBuyPolicy(buyFloor, resumeFloor shared.SupplyLevel) *BuyPolicy {
 	if resumeFloor.Order() <= buyFloor.Order() {
 		resumeFloor = nextLevelAbove(buyFloor)
 	}
-	return &BuyPolicy{buyFloor: buyFloor, resumeFloor: resumeFloor, paused: make(map[string]bool)}
+	return &BuyPolicy{
+		buyFloor:            buyFloor,
+		resumeFloor:         resumeFloor,
+		clock:               clock,
+		paused:              make(map[string]bool),
+		heldAtBuyFloorSince: make(map[string]time.Time),
+	}
 }
 
 // nextLevelAbove is the supply level one step above level, or level itself when it is
@@ -117,22 +212,54 @@ func (p *BuyPolicy) Decide(good, factory string, supply shared.SupplyLevel) Deci
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	now := p.clock.Now()
+	atBuyFloor := supply.Order() >= p.buyFloor.Order()
+
+	// THE HELD-AT-BUY-FLOOR CLOCK. It runs only while paused AND at or above the buy floor, and is
+	// cleared the instant either stops being true. Every reset is a market that dipped again, which
+	// is precisely the case the timeout must NOT rescue.
+	if !p.paused[good] || !atBuyFloor {
+		delete(p.heldAtBuyFloorSince, good)
+	} else if _, running := p.heldAtBuyFloorSince[good]; !running {
+		p.heldAtBuyFloorSince[good] = now
+	}
+
+	var held time.Duration
+	if since, running := p.heldAtBuyFloorSince[good]; running {
+		held = now.Sub(since)
+	}
+
 	buy := false
+	resumedByTimeout := false
 	if p.paused[good] {
 		buy = supply.Order() >= p.resumeFloor.Order()
+		// THE STUCK-PAUSE RELEASE. Supply is at a level the operator configured us to BUY at, and
+		// has held there past the timeout, but the resume floor sits further up the ladder than this
+		// market recovers. Waiting longer is not patience; it is the 7.5-hour deadlock.
+		if !buy && held >= StuckPauseTimeout {
+			buy = true
+			resumedByTimeout = true
+		}
 	} else {
-		buy = supply.Order() >= p.buyFloor.Order()
+		buy = atBuyFloor
 	}
 	p.paused[good] = !buy
+	if buy {
+		// A resumed material starts its next pause with a fresh clock.
+		delete(p.heldAtBuyFloorSince, good)
+	}
 
 	return Decision{
-		Good:        good,
-		Factory:     factory,
-		Supply:      supply,
-		Buy:         buy,
-		Paused:      !buy,
-		BuyFloor:    p.buyFloor,
-		ResumeFloor: p.resumeFloor,
+		Good:             good,
+		Factory:          factory,
+		Supply:           supply,
+		Buy:              buy,
+		Paused:           !buy,
+		BuyFloor:         p.buyFloor,
+		ResumeFloor:      p.resumeFloor,
+		HeldAtBuyFloor:   held,
+		SuspectedStuck:   !buy && held >= SuspectedStuckAfter,
+		ResumedByTimeout: resumedByTimeout,
 	}
 }
 

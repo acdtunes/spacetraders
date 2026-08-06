@@ -446,10 +446,26 @@ func (h *RunConstructionCoordinatorHandler) deliverGateLeg(
 		if decision.Paused {
 			level = "WARNING"
 		}
+		// A SUSPECTED-STUCK PAUSE IS AN ERROR, NOT A WARNING (sp-c9wuu). The ordinary pause is a
+		// WARNING and reads as healthy patience — correctly, most of the time. That is exactly why
+		// the stuck case has to leave the band the healthy case occupies: the 7.5-hour deadlock was
+		// invisible because it logged the same reassuring level and shape as every legitimate pause,
+		// and was twice read as "thin market, being patient".
+		action := "gate_delivery_paused"
+		if decision.SuspectedStuck {
+			level = "ERROR"
+			action = "gate_delivery_pause_suspected_stuck"
+		}
+		if decision.ResumedByTimeout {
+			level = "WARNING"
+			action = "gate_delivery_resumed_by_timeout"
+		}
 		logger.Log(level, decision.LogLine(), map[string]interface{}{
 			"good": decision.Good, "factory": decision.Factory, "supply": string(decision.Supply),
 			"buy_floor": string(decision.BuyFloor), "resume_floor": string(decision.ResumeFloor),
-			"paused": decision.Paused,
+			"paused": decision.Paused, "held_at_buy_floor_minutes": int(decision.HeldAtBuyFloor.Minutes()),
+			"suspected_stuck": decision.SuspectedStuck, "resumed_by_timeout": decision.ResumedByTimeout,
+			"action": action,
 		})
 	}
 
