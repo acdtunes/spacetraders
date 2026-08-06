@@ -62,11 +62,11 @@ type recordingMediator struct {
 
 	// refuelErrors, if non-empty, is consumed FIFO: each RefuelShipCommand
 	// sent while the queue is non-empty pops and returns the front error
-	// instead of succeeding; once empty, refuel succeeds normally (sp-vsfn).
-	// Kept as a plain queue rather than keyed by ship location because the
-	// NavigateDirectCommand case below does not mutate ship.CurrentLocation()
-	// - only the real handler does that - so a location-keyed queue would not
-	// observe a simulated reroute anyway.
+	// instead of succeeding; once empty, refuel succeeds normally.
+	// Ordered rather than keyed by waypoint because its users stage a COUNT of
+	// failures - "the retry loop sees N errors, then success" - and are
+	// indifferent to where the hull stands when each one lands. An outage tied
+	// to a place is a different shape and has its own field below.
 	refuelErrors []error
 
 	// refuelAlwaysErr, when non-nil, fails EVERY RefuelShipCommand with it -
@@ -76,11 +76,12 @@ type recordingMediator struct {
 	// and succeed, and every assertion about exhaustion would pass vacuously.
 	refuelAlwaysErr error
 
-	// refuelFailsUntilReroute narrows refuelAlwaysErr to the ORIGIN waypoint:
-	// refuels fail until the first NavigateDirectCommand is sent and succeed
-	// after it. That models a broken origin fuel station plus a healthy
-	// alternate, which the location-blind queue above cannot express (see the
-	// refuelErrors note). Ignored unless refuelAlwaysErr is set.
+	// refuelFailsUntilReroute confines refuelAlwaysErr to the stop the hull started
+	// from: refuels fail until the first NavigateDirectCommand is sent and succeed
+	// after it. That models a broken origin fuel station plus a healthy alternate.
+	// The switch is the navigate rather than a waypoint symbol so a fixture need not
+	// predict WHICH alternate the executor's search picks. Ignored unless
+	// refuelAlwaysErr is set.
 	refuelFailsUntilReroute bool
 
 	// refuelFailsUntilTime models a TRANSIENT outage rather than a broken station: refuels fail
@@ -96,6 +97,11 @@ type recordingMediator struct {
 	clock         *shared.MockClock
 	refuelTimes   []time.Time
 	navigateTimes []time.Time
+
+	// refuelPlaces records where the hull stood for each refuel, stamped as the command
+	// arrives because the hull moves on afterwards. WHICH waypoint a refuel ran at is what
+	// separates a pre-departure top-off from a post-arrival one.
+	refuelPlaces []string
 }
 
 // stamp records the current mock time into dst when a clock is wired.
@@ -115,6 +121,7 @@ func (m *recordingMediator) Send(_ context.Context, request mediator.Request) (m
 		return &types.DockShipResponse{Status: "docked"}, nil
 	case *types.RefuelShipCommand:
 		m.stamp(&m.refuelTimes)
+		m.refuelPlaces = append(m.refuelPlaces, cmd.Ship.CurrentLocation().Symbol)
 		if m.refuelAlwaysErr != nil && (!m.refuelFailsUntilReroute || len(m.navigateCommands()) == 0) {
 			return nil, m.refuelAlwaysErr
 		}
@@ -132,6 +139,14 @@ func (m *recordingMediator) Send(_ context.Context, request mediator.Request) (m
 		return &types.SetFlightModeResponse{Status: "set", Mode: cmd.Mode}, nil
 	case *types.NavigateDirectCommand:
 		m.stamp(&m.navigateTimes)
+		if cmd.Ship.CurrentLocation().Symbol == cmd.Destination {
+			// A hop to where the hull already stands is a no-op the real handler answers
+			// before it spends fuel or touches nav status, and the executor has a branch
+			// keyed on this status. Moving the hull is what makes the case reachable at
+			// all, so without this a fixture hits a domain error the executor never sees
+			// in production.
+			return &types.NavigateDirectResponse{Status: "already_at_destination"}, nil
+		}
 		mode := flightModeFromName(cmd.FlightMode)
 		distance := m.distByDest[cmd.Destination]
 		cost := mode.FuelCost(distance)
@@ -143,6 +158,9 @@ func (m *recordingMediator) Send(_ context.Context, request mediator.Request) (m
 			)
 		}
 		m.fuel -= cost
+		if err := m.relocate(cmd); err != nil {
+			return nil, err
+		}
 		// Empty ArrivalTimeStr => executor skips the event wait.
 		return &types.NavigateDirectResponse{
 			Status:       "navigating",
@@ -152,6 +170,28 @@ func (m *recordingMediator) Send(_ context.Context, request mediator.Request) (m
 	default:
 		return nil, fmt.Errorf("recordingMediator: unexpected command type %T", request)
 	}
+}
+
+// relocate stands the hull at the navigate's destination, as the real handler does.
+//
+// Without it every decision taken AFTER a leg lands - the refuel preconditions, the
+// opportunistic-refuel strategy, the alternate-stop reroute - resolves against the
+// DEPARTURE waypoint, so post-arrival state cannot be staged at all.
+//
+// Transit is opened and closed in one step because the response carries no arrival time:
+// nothing would later close it, and a hull left IN_TRANSIT gets waited on through an event
+// channel these fixtures do not feed.
+func (m *recordingMediator) relocate(cmd *types.NavigateDirectCommand) error {
+	if cmd.DestinationWaypoint == nil {
+		return nil
+	}
+	if _, err := cmd.Ship.EnsureInOrbit(); err != nil {
+		return err
+	}
+	if err := cmd.Ship.StartTransit(cmd.DestinationWaypoint); err != nil {
+		return err
+	}
+	return cmd.Ship.Arrive()
 }
 
 func (m *recordingMediator) Register(reflect.Type, mediator.RequestHandler) error { return nil }
@@ -166,6 +206,11 @@ func (m *recordingMediator) navigateCommands() []*types.NavigateDirectCommand {
 		}
 	}
 	return out
+}
+
+// refuelWaypoints returns the waypoint each refuel was attempted at, in send order.
+func (m *recordingMediator) refuelWaypoints() []string {
+	return m.refuelPlaces
 }
 
 // refuelAttempts returns the number of RefuelShipCommands sent, successful or not.
