@@ -4,11 +4,52 @@ import (
 	"context"
 	"fmt"
 
+	"time"
+
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/application/ship/types"
 	domainNavigation "github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
+
+// SlowRefuelThreshold is how long the dock/refuel/orbit trio may block before it is reported.
+//
+// THE TRIO IS THE ONE PLACE A CONTRACT WORKER CAN GO QUIET FOR MINUTES. Each of the three is a
+// bare mediator send with no per-attempt logging of its own, while the API client retries
+// underneath it (staging: 3 attempts, 1s base backoff, a 30s timeout per request) — so an upstream
+// 500 storm turns one refuel into minutes of wall clock that emit NOTHING at container level. The
+// worker keeps heartbeating throughout, so nothing else notices either: sp-ehf4x was diagnosed by
+// counting log lines per minute by hand.
+//
+// Contrast the retrying path, refuelShipWithRetryCore, which logs every attempt and is therefore
+// perfectly visible. Same failure, two call paths, and only one of them could be seen. This closes
+// that asymmetry for every caller rather than only the alternate-fuel-stop reroute where it was
+// observed.
+//
+// 30s is above any healthy refuel (three sequential calls against a responsive API) and well under
+// the multi-minute windows actually observed (3m15s and 3m20s), so a quiet fleet stays quiet.
+const SlowRefuelThreshold = 30 * time.Second
+
+// reportSlowRefuel logs a refuel that blocked past SlowRefuelThreshold, whatever its outcome.
+//
+// DEFERRED, so it covers the ERROR paths too — and that is the point, because the observed incident
+// spent 3m15s in here and then FAILED. A report only on success would have stayed silent through
+// exactly the case it exists to surface. The stable `refuel_slow` action is what makes this
+// greppable and alertable without reading cadence by hand; a Prometheus counter belongs with the
+// other refuel-anomaly metrics under sp-az5a5 rather than as a second mechanism here.
+func (e *RouteExecutor) reportSlowRefuel(logger common.ContainerLogger, ship *domainNavigation.Ship, waypoint string, startedAt time.Time) {
+	elapsed := e.clock.Now().Sub(startedAt)
+	if elapsed < SlowRefuelThreshold {
+		return
+	}
+	logger.Log("WARNING", fmt.Sprintf("Refuel at %s blocked for %s with no output of its own - the API client was retrying underneath it", waypoint, elapsed.Round(time.Second)), map[string]interface{}{
+		"ship_symbol":     ship.ShipSymbol(),
+		"action":          "refuel_slow",
+		"waypoint":        waypoint,
+		"elapsed_seconds": int(elapsed.Seconds()),
+		"threshold_secs":  int(SlowRefuelThreshold.Seconds()),
+	})
+}
 
 func (e *RouteExecutor) handlePreDepartureRefuel(ctx context.Context, segment *domainNavigation.RouteSegment, ship *domainNavigation.Ship, playerID shared.PlayerID) error {
 	logger := common.LoggerFromContext(ctx)
@@ -168,6 +209,15 @@ func (e *RouteExecutor) refuelShip(
 		})
 		return nil // Skip refuel gracefully
 	}
+
+	// Everything below is API work that can block silently under an upstream 500 storm — see
+	// SlowRefuelThreshold. Registered after the two precondition skips as a matter of scope, not of
+	// behaviour: those skips are pure local reads that return instantly, so timing them would
+	// report nothing anyway. Placing it here keeps the measurement about API work should a
+	// precondition ever grow one. There is deliberately no test for the placement — a skip cannot
+	// consume time, so no fixture can make a hoisted timer misreport, and a test asserting it would
+	// pass against either version.
+	defer e.reportSlowRefuel(logger, ship, ship.CurrentLocation().Symbol, e.clock.Now())
 
 	dockCmd := &types.DockShipCommand{
 		Ship:     ship,

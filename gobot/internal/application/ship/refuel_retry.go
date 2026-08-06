@@ -297,6 +297,20 @@ func (e *RouteExecutor) refuelAtAlternateStop(
 		return fmt.Errorf("failed to navigate to alternate fuel waypoint %s: %w", alt.Symbol, err)
 	}
 
+	// NAME THE THING ABOUT TO BLOCK, before it blocks. This refuel is a bare refuelShip — it does
+	// NOT go through the retrying, per-attempt-logging path the original waypoint's refuel used —
+	// so when the same 500 storm that caused the reroute also hits the alternate, the worker goes
+	// quiet for minutes with its last line being an arrival event. In the sp-ehf4x incident that
+	// left "arrived at the alternate" as the final word for 3m15s before the failure surfaced.
+	// This line makes the silence attributable while it is happening; reportSlowRefuel measures it
+	// afterwards.
+	logger.Log("INFO", fmt.Sprintf("Refuelling at alternate fuel stop %s - this call blocks with no output of its own while the API client retries", alt.Symbol), map[string]interface{}{
+		"ship_symbol":     ship.ShipSymbol(),
+		"action":          "refuel_alternate_started",
+		"alternate":       alt.Symbol,
+		"failed_waypoint": failedWaypoint.Symbol,
+	})
+
 	// Return to orbit after the reroute refuel: the ship has moved, so the
 	// stay-docked optimization does not apply and the caller still needs orbit.
 	return e.refuelShip(ctx, ship, playerID, true)
