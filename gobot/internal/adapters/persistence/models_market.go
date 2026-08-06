@@ -171,3 +171,39 @@ type ShipyardInventoryModel struct {
 func (ShipyardInventoryModel) TableName() string {
 	return "shipyard_inventory"
 }
+
+// LaneCooldownDebtModel is one trade lane's accrued compression debt as of accrued_at — the
+// durable half of domain/trading.LaneCooldownLedger's FULL-LANE entries, written through on every
+// accrual and reloaded at boot so a restart does not forget how much the fleet has just compressed
+// a lane (RULINGS #2 names cooldown clocks as state that must survive a restart).
+//
+// ONLY FULL-LANE KEYS LIVE HERE. The ledger's other key shape — a source market with no
+// destination — is the construction gate feed's spend guard, and it is RECONSTRUCTED at boot from
+// the purchase rows instead (the cooldownreplay package), because those rows already record every
+// drain durably. A full lane has no such record: a purchase row names the market the buy happened
+// at and a sale row the market the sale happened at, and nothing carries the pair, so the lane
+// identity exists nowhere but in the ledger. That is why this table exists for one shape and not
+// the other, and why dest_waypoint is never empty in it.
+//
+// Debt is the model's dimensionless compression FRACTION, not credits — the same units the ledger
+// stores, so a reload is exact and needs no price. AccruedAt is the timestamp the debt was stamped
+// with, NOT the write time: the reload replays it as of that instant so decay continues from the
+// accrual rather than restarting at boot.
+//
+// The composite primary key (player_id, source_waypoint, dest_waypoint, good_symbol) is the ledger
+// key plus the player scope, so the write-through is a plain upsert and duplicate lanes are
+// structurally impossible. Born from AutoMigrate (no CREATE TABLE migration), like scout_posts. No
+// era scoping and no players foreign key: reads are bounded to a window of a few tau, so rows left
+// behind by an era reset fall out of range on their own rather than needing a sweep.
+type LaneCooldownDebtModel struct {
+	PlayerID  int       `gorm:"column:player_id;primaryKey"`
+	Source    string    `gorm:"column:source_waypoint;primaryKey"`
+	Dest      string    `gorm:"column:dest_waypoint;primaryKey"`
+	Good      string    `gorm:"column:good_symbol;primaryKey"`
+	Debt      float64   `gorm:"column:debt;not null"`
+	AccruedAt time.Time `gorm:"column:accrued_at;not null;index:idx_lane_cooldown_accrued"`
+}
+
+func (LaneCooldownDebtModel) TableName() string {
+	return "lane_cooldown_debt"
+}

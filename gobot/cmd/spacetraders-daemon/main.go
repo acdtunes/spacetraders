@@ -844,6 +844,23 @@ func run(cfg *config.Config) error {
 		cfg.Captain.PlayerID, cfg.TradeImpact.ResolvedCooldownTau(), time.Now(),
 	)
 
+	// The replay above restores only the SOURCE-DRAIN keys, because those are the only ones the
+	// purchase rows can rebuild. The trade engine keys on the whole lane (source, dest, good) and
+	// no transaction row carries that pair, so its debt is persisted as it accrues instead —
+	// reloaded here, and the write-through armed for the rest of this process's life.
+	//
+	// HERE for the same reason the replay is here: Restore refuses a key already carrying debt, so
+	// a reload after live accrual would silently restore nothing. Same player resolution too — the
+	// configured captain id is zero on any captain-less deployment, which is the shape of staging,
+	// and a store scoped to player 0 would be a table nothing ever reads.
+	if playerID, ok := resolveReplayPlayer(context.Background(), cfg.Captain.PlayerID, playerRepo); ok {
+		armLaneCooldownPersistence(
+			context.Background(), laneCooldownLedger,
+			persistence.NewLaneCooldownDebtRepositoryGORM(db, playerID.Value()),
+			cfg.TradeImpact.ResolvedCooldownTau(), time.Now(),
+		)
+	}
+
 	contractFleetCoordinatorHandler := contractCmd.NewRunFleetCoordinatorHandler(med, shipRepo, contractRepo, marketRepoAdapter, daemonClientLocal, graphService, waypointConverter, containerRepo, nil, captainEventRepo)
 	contractFleetCoordinatorHandler.SetEventSubscriber(shipEventBus)
 	// First-boot seed marker (sp-86vb): persist "the --dedicated-ships seed has
