@@ -4,16 +4,16 @@ import (
 	"context"
 	"fmt"
 
-	fleetCmd "github.com/andrescamacho/spacetraders-go/internal/application/fleet/commands"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/hullbuy"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
-// explorerDedicatedFleet is the tag the autosizer's dedicate-at-purchase stamps on a bought
-// explorer. Read from the autosizer's OWN class constant rather than copied as a literal: a drift
-// between the two would make this finder silently see no explorer, which fails safe (no warp) but
-// would present as a fleet that bought a 769k hull and then never used it.
-var explorerDedicatedFleet = string(fleetCmd.HullClassExplorer)
+// explorerDedicatedFleet is the tag dedicate-at-purchase stamps on a bought explorer. Read from the
+// SHARED buy policy rather than copied as a literal: a drift between the two would make this finder
+// silently see no explorer, which fails safe (no warp) but would present as a fleet that bought a
+// 769k hull and then never used it.
+var explorerDedicatedFleet = hullbuy.DedicatedFleet(hullbuy.HullClassExplorer)
 
 // idle_explorer_port.go finds the bought+dedicated explorer waiting to be warped.
 //

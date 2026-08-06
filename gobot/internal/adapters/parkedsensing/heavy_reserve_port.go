@@ -12,10 +12,10 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
-	fleetCmd "github.com/andrescamacho/spacetraders-go/internal/application/fleet/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/application/logging"
 	shipyardQueries "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/queries"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/hullbuy"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
@@ -198,9 +198,9 @@ func abandoned(ctx context.Context, err error) bool {
 
 // resolveHeavyCap walks the fallback ladder. ok=false means "reserve nothing".
 func (p *HeavyReservePort) resolveHeavyCap(ctx context.Context, playerID int) (int, bool) {
-	// Resolved ONCE and named, because two separate rungs below fall back to it and the whole
-	// point of both is that they land on the SAME number the autosizer itself resolves to.
-	documentedCap := fleetCmd.FleetAutosizerTunableDefaults()[heavyCapKey]
+	// Named once, because two separate rungs below fall back to it and the whole point of both is
+	// that they land on the SAME number the buyer itself resolves to — hence the SHARED constant.
+	documentedCap := hullbuy.DefaultHeavyCap
 
 	value, present, containerExists, err := p.caps.HeavyCap(ctx, playerID)
 	switch {

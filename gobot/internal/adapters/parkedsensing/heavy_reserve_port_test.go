@@ -10,9 +10,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
-	fleetCmd "github.com/andrescamacho/spacetraders-go/internal/application/fleet/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/application/logging"
 	shipyardQueries "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/queries"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/hullbuy"
 )
 
 type fakeCensus struct {
@@ -96,7 +96,7 @@ func TestHeavyReservePort_NoAutosizerContainerReservesNothing(t *testing.T) {
 func TestHeavyReservePort_AbsentCapUsesTheCompiledDefault(t *testing.T) {
 	p, _, ctx := portWith(
 		&fakeCapSource{exists: true, present: false},
-		&fakeCensus{owned: fleetCmd.FleetAutosizerTunableDefaults()["heavy_cap"] - 1},
+		&fakeCensus{owned: hullbuy.DefaultHeavyCap - 1},
 		&fakeYardPricer{price: 1_565_500, found: true},
 	)
 	got, err := p.Reserve(ctx, 1)
@@ -106,7 +106,7 @@ func TestHeavyReservePort_AbsentCapUsesTheCompiledDefault(t *testing.T) {
 	// At the default cap there is no room and the reserve drops — proving the DEFAULT is what bound it.
 	atCap, _, ctx2 := portWith(
 		&fakeCapSource{exists: true, present: false},
-		&fakeCensus{owned: fleetCmd.FleetAutosizerTunableDefaults()["heavy_cap"]},
+		&fakeCensus{owned: hullbuy.DefaultHeavyCap},
 		&fakeYardPricer{price: 1_565_500, found: true},
 	)
 	got2, err := atCap.Reserve(ctx2, 1)
@@ -147,7 +147,7 @@ func TestHeavyReservePort_UnreadableCapFallsBackToTheDocumentedDefaultAndWarns(t
 	// Under the default cap ⇒ the reservation still forms, which is the whole point.
 	p, log, ctx := portWith(
 		&fakeCapSource{err: errors.New("container config unreadable")},
-		&fakeCensus{owned: fleetCmd.FleetAutosizerTunableDefaults()["heavy_cap"] - 1},
+		&fakeCensus{owned: hullbuy.DefaultHeavyCap - 1},
 		&fakeYardPricer{price: 1_565_500, found: true},
 	)
 	got, err := p.Reserve(ctx, 1)
@@ -160,7 +160,7 @@ func TestHeavyReservePort_UnreadableCapFallsBackToTheDocumentedDefaultAndWarns(t
 	// than an unbounded fallback that would reserve forever.
 	atCap, _, capCtx := portWith(
 		&fakeCapSource{err: errors.New("container config unreadable")},
-		&fakeCensus{owned: fleetCmd.FleetAutosizerTunableDefaults()["heavy_cap"]},
+		&fakeCensus{owned: hullbuy.DefaultHeavyCap},
 		&fakeYardPricer{price: 1_565_500, found: true},
 	)
 	got2, err := atCap.Reserve(capCtx, 1)

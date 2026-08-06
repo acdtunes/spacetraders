@@ -16,6 +16,7 @@ import (
 	tradingQueries "github.com/andrescamacho/spacetraders-go/internal/application/trading/queries"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/apibudget"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/hullbuy"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
@@ -188,37 +189,17 @@ func (r *autosizerAPIUtilReader) UtilizationPct(ctx context.Context) (float64, b
 }
 
 // autosizerPurchaser buys one hull through the money-integrity batch path, then dedicates it.
+// It is driven by BOTH the autosizer and the dedicated contract scaler, so it speaks the neutral
+// hullbuy vocabulary rather than either coordinator's.
 type autosizerPurchaser struct {
 	med      common.Mediator
 	shipRepo navigation.ShipRepository
 }
 
-// autosizerDedicatedFleet maps a hull class to its permanent dedicated-fleet tag. Lights get NO tag
-// (a SHIP_LIGHT_HAULER is a HAULER worker the moment it is bought — being adopted by a factory chain
-// is the intended outcome, not the absorption hazard); heavies (and explorer/contract hulls) MUST be
-// tagged at purchase so no coordinator poaches them before they reach their role (the 3-of-5-absorbed lesson).
-func autosizerDedicatedFleet(class fleetCmd.HullClass) string {
-	switch class {
-	case fleetCmd.HullClassHeavy:
-		return "trade"
-	case fleetCmd.HullClassExplorer:
-		// Dedicate-at-purchase: tag the bought explorer to the "explorer" fleet in the same
-		// breath so no coordinator poaches it before the frontier dispatch loop warps it off-gate.
-		return "explorer"
-	case fleetCmd.HullClassContractDelivery:
-		// The dedicated contract auto-scaler drives this class through BuyAndDedicate, so a
-		// contract-delivery hull is stamped EXCLUSIVE to the "contract" fleet at purchase — killing the
-		// churn class the shared reuse pool created. Safe to tag: the class is opt-in default-off.
-		return "contract"
-	default:
-		return ""
-	}
-}
-
-func (p *autosizerPurchaser) BuyAndDedicate(ctx context.Context, order fleetCmd.BuyOrder) (fleetCmd.BuyResult, error) {
+func (p *autosizerPurchaser) BuyAndDedicate(ctx context.Context, order hullbuy.BuyOrder) (hullbuy.BuyResult, error) {
 	pid, err := shared.NewPlayerID(order.PlayerID)
 	if err != nil {
-		return fleetCmd.BuyResult{}, err
+		return hullbuy.BuyResult{}, err
 	}
 	// The purchase needs a hull to travel to and buy at the shipyard. sp-7r7w: PREFER the exclusive
 	// purchasing ship (the pivoted command frigate) when idle — the deterministic, protected buy ship for
@@ -226,7 +207,7 @@ func (p *autosizerPurchaser) BuyAndDedicate(ctx context.Context, order fleetCmd.
 	// The battle-tested batch path navigates it and enforces the money-integrity type guard.
 	ships, err := p.shipRepo.FindAllByPlayer(ctx, pid)
 	if err != nil {
-		return fleetCmd.BuyResult{}, err
+		return hullbuy.BuyResult{}, err
 	}
 	purchaser := ""
 	for _, s := range ships {
@@ -244,7 +225,7 @@ func (p *autosizerPurchaser) BuyAndDedicate(ctx context.Context, order fleetCmd.
 		}
 	}
 	if purchaser == "" {
-		return fleetCmd.BuyResult{}, fmt.Errorf("no idle hull available to execute the purchase")
+		return hullbuy.BuyResult{}, fmt.Errorf("no idle hull available to execute the purchase")
 	}
 
 	resp, err := p.med.Send(ctx, &shipyardCmd.BatchPurchaseShipsCommand{
@@ -256,24 +237,25 @@ func (p *autosizerPurchaser) BuyAndDedicate(ctx context.Context, order fleetCmd.
 		ShipyardWaypoint:     order.Yard,
 	})
 	if err != nil {
-		return fleetCmd.BuyResult{}, err
+		return hullbuy.BuyResult{}, err
 	}
 	batch, ok := resp.(*shipyardCmd.BatchPurchaseShipsResponse)
 	if !ok || batch.ShipsPurchasedCount == 0 || len(batch.PurchasedShips) == 0 {
-		return fleetCmd.BuyResult{}, fmt.Errorf("purchase returned no ship")
+		return hullbuy.BuyResult{}, fmt.Errorf("purchase returned no ship")
 	}
 	bought := batch.PurchasedShips[0]
 
 	// Dedicate-at-purchase: tag heavy/explorer/contract hulls to their fleet in the same breath so no
-	// coordinator tick can adopt them first. Idempotent; lights get no tag (they ARE workers).
+	// coordinator tick can adopt them first. Idempotent; lights get no tag (they ARE workers) — the
+	// asymmetry, and why it is load-bearing, is on hullbuy.DedicatedFleet.
 	dedicated := false
-	if fleet := autosizerDedicatedFleet(order.Class); fleet != "" {
+	if fleet := hullbuy.DedicatedFleet(order.Class); fleet != "" {
 		if aerr := p.shipRepo.AssignFleet(ctx, bought.ShipSymbol(), fleet, pid); aerr != nil {
-			return fleetCmd.BuyResult{}, fmt.Errorf("bought %s but failed to dedicate to %q: %w", bought.ShipSymbol(), fleet, aerr)
+			return hullbuy.BuyResult{}, fmt.Errorf("bought %s but failed to dedicate to %q: %w", bought.ShipSymbol(), fleet, aerr)
 		}
 		dedicated = true
 	}
-	return fleetCmd.BuyResult{ShipSymbol: bought.ShipSymbol(), Price: int64(batch.TotalCost), Dedicated: dedicated}, nil
+	return hullbuy.BuyResult{ShipSymbol: bought.ShipSymbol(), Price: int64(batch.TotalCost), Dedicated: dedicated}, nil
 }
 
 // autosizerNotifier records a purchase as a captain event — a buy is real news.

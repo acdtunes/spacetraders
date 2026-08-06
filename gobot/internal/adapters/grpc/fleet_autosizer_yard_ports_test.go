@@ -12,8 +12,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	fleetCmd "github.com/andrescamacho/spacetraders-go/internal/application/fleet/commands"
 	shipyardQueries "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/queries"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/hullbuy"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
@@ -57,7 +57,7 @@ func TestYardPriceReader_HeavyFallsBackToScannedYards_WhenLiveWalkEmpty(t *testi
 		scannedYards: scanned,
 	}
 
-	price, cheapest, yard, readable, err := r.PriceFor(context.Background(), 1, fleetCmd.HullClassHeavy, "SHIP_HEAVY_FREIGHTER", true)
+	price, cheapest, yard, readable, err := r.PriceFor(context.Background(), 1, hullbuy.HullClassHeavy, "SHIP_HEAVY_FREIGHTER", true)
 	require.NoError(t, err)
 	require.True(t, readable, "a known, reachable scanned yard must open the heavy price signal")
 	require.Equal(t, int64(1_300_000), price, "price = the NEAREST candidate's ask (hops dominate)")
@@ -76,13 +76,13 @@ func TestYardPriceReader_Heavy_EmptyScanStore_StaysFailClosed(t *testing.T) {
 		scannedYards: &fakeScannedYards{}, // wired but empty — the pre-scan universe
 	}
 
-	_, _, _, readable, err := r.PriceFor(context.Background(), 1, fleetCmd.HullClassHeavy, "SHIP_HEAVY_FREIGHTER", true)
+	_, _, _, readable, err := r.PriceFor(context.Background(), 1, hullbuy.HullClassHeavy, "SHIP_HEAVY_FREIGHTER", true)
 	require.NoError(t, err)
 	require.False(t, readable, "no scan data ⇒ the heavy price guard must stay closed")
 
 	// An unwired ranker (nil) is equally fail-closed — the pre-42ow wiring.
 	r.scannedYards = nil
-	_, _, _, readable, err = r.PriceFor(context.Background(), 1, fleetCmd.HullClassHeavy, "SHIP_HEAVY_FREIGHTER", true)
+	_, _, _, readable, err = r.PriceFor(context.Background(), 1, hullbuy.HullClassHeavy, "SHIP_HEAVY_FREIGHTER", true)
 	require.NoError(t, err)
 	require.False(t, readable)
 }
@@ -100,7 +100,7 @@ func TestYardPriceReader_LightClass_NeverConsultsScannedYards(t *testing.T) {
 		scannedYards: scanned,
 	}
 
-	_, _, _, readable, err := r.PriceFor(context.Background(), 1, fleetCmd.HullClassLight, "SHIP_LIGHT_HAULER", true)
+	_, _, _, readable, err := r.PriceFor(context.Background(), 1, hullbuy.HullClassLight, "SHIP_LIGHT_HAULER", true)
 	require.NoError(t, err)
 	require.False(t, readable, "a light-class miss must stay fail-closed")
 	require.Zero(t, scanned.calls, "the scanned-yard store is a heavy-class signal only")

@@ -10,33 +10,32 @@
 // N pluggable demand providers (lights, heavies, explorer) — the vdld pluggable-provider idiom.
 package commands
 
-// HullClass identifies an autosized hull pool. Each class has its own demand provider, fleet
-// ceiling, price ceiling, purchased ship type, and dedicated-fleet name.
-type HullClass string
+import "github.com/andrescamacho/spacetraders-go/internal/domain/hullbuy"
+
+// The hull-purchase VOCABULARY is not the autosizer's to own — the dedicated contract scaler
+// buys through the same classes and the same order/result shapes — so it lives in
+// domain/hullbuy and these are aliases. They exist so this coordinator's internals keep reading
+// as one package; every consumer outside it names hullbuy directly, and deleting this package
+// deletes only the aliases.
+type HullClass = hullbuy.HullClass
 
 const (
 	// HullClassLight is the factory-worker pool (HAULER role), sized to factory-chain demand.
-	HullClassLight HullClass = "light"
+	HullClassLight = hullbuy.HullClassLight
 	// HullClassHeavy is the trade-tour pool (DedicatedFleet "trade"), sized to trade demand.
-	HullClassHeavy HullClass = "heavy"
-	// HullClassExplorer is the off-gate warp-exploration pool (DedicatedFleet "explorer").
-	// It is sized to slice-B off-gate demand: an explorer buys REACH (it charts new systems so the
-	// cheap probe frontier resumes via growFrontierGraph), NOT income. It runs the SAME guard stack
-	// as every other class — there is no class-gated carve-out. Its ~819k spend is bounded by the
-	// demand-gate (buys only when off-gate demand fires AND the class is armed), a HARD CAP of 1
-	// (the class fleet ceiling), and a price ceiling (~819k SHIP_EXPLORER + premium).
-	// Opt-IN (explorer_hulls_enabled, default OFF) and double-gated, so a bare deploy buys nothing.
-	HullClassExplorer HullClass = "explorer"
-	// HullClassContractDelivery is the capacity reconciler's contract-delivery capital pool
-	// (delivery hulls + contract-depot warehouses + contract-depot stockers). The
+	HullClassHeavy = hullbuy.HullClassHeavy
+	// HullClassExplorer is sized to slice-B off-gate demand and runs the SAME guard stack as every
+	// other class — there is no class-gated carve-out. Its ~819k spend is bounded by the demand
+	// gate, a HARD CAP of 1 (the class fleet ceiling) and a price ceiling. Opt-IN
+	// (explorer_hulls_enabled, default OFF) and double-gated, so a bare deploy buys nothing.
+	HullClassExplorer = hullbuy.HullClassExplorer
+	// HullClassContractDelivery is the capacity reconciler's contract-delivery capital pool. The
 	// reconciler EMITS its tier-4 gap into this class via the ContractDeliveryDemandBridge, so
 	// arming it routes ROUTINE early-game hauler scaling through this coordinator's SINGLE
 	// money-guard stack — guard-gated AUTO, not captain-approval-gated (RULINGS #6: the guards are
-	// the gate). Opt-IN (contract_delivery_hulls_enabled, default OFF) exactly like the
-	// warehouse/explorer classes, so a bare deploy keeps it dormant (byte-identical).
-	// The canonical constant lives here (the fleetCmd package the guard switches read); the
-	// adapter-layer bridge aliases it to avoid a second string literal drifting.
-	HullClassContractDelivery HullClass = "contract_delivery"
+	// the gate). Opt-IN (contract_delivery_hulls_enabled, default OFF), so a bare deploy keeps it
+	// dormant (byte-identical).
+	HullClassContractDelivery = hullbuy.HullClassContractDelivery
 )
 
 // ClassDemand is one class's demand read for a tick: how many hulls the demand model wants

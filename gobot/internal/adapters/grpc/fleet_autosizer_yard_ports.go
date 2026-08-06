@@ -4,8 +4,8 @@ import (
 	"context"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
-	fleetCmd "github.com/andrescamacho/spacetraders-go/internal/application/fleet/commands"
 	shipyardQueries "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/queries"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/hullbuy"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/marketscan"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
@@ -43,7 +43,7 @@ type autosizerYardPriceReader struct {
 // yard, ranked hops-then-price — the availability signal the fail-closed heavy branch was designed
 // to consume. Returns readable=false (price guard fails closed) when neither surface knows a priced
 // yard. The demand-proximal preference is a later refinement (banked) — cheapest is returned now.
-func (r *autosizerYardPriceReader) PriceFor(ctx context.Context, playerID int, class fleetCmd.HullClass, shipType string, preferProximal bool) (int64, int64, string, bool, error) {
+func (r *autosizerYardPriceReader) PriceFor(ctx context.Context, playerID int, class hullbuy.HullClass, shipType string, preferProximal bool) (int64, int64, string, bool, error) {
 	if r.waypointRepo == nil {
 		return 0, 0, "", false, nil
 	}
@@ -129,8 +129,8 @@ func (r *autosizerYardPriceReader) PriceForSystem(ctx context.Context, playerID 
 // across reachable candidates so the premium guard judges the proximity premium
 // honestly. No candidates / no ranker wired / rank read failure ⇒ readable=false:
 // exactly the historical fail-closed behavior.
-func (r *autosizerYardPriceReader) scannedYardFallback(ctx context.Context, playerID int, class fleetCmd.HullClass, shipType string, ships []*navigation.Ship) (int64, int64, string, bool, error) {
-	if class != fleetCmd.HullClassHeavy || r.scannedYards == nil {
+func (r *autosizerYardPriceReader) scannedYardFallback(ctx context.Context, playerID int, class hullbuy.HullClass, shipType string, ships []*navigation.Ship) (int64, int64, string, bool, error) {
+	if class != hullbuy.HullClassHeavy || r.scannedYards == nil {
 		return 0, 0, "", false, nil
 	}
 	candidates, err := r.scannedYards.NearestYardsSelling(ctx, playerID, []string{shipType}, distinctShipSystems(ships))

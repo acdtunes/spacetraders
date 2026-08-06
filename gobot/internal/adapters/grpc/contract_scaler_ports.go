@@ -10,8 +10,8 @@ import (
 	contractCmd "github.com/andrescamacho/spacetraders-go/internal/application/contract/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/application/contract/depotstore"
 	contractScalerCmd "github.com/andrescamacho/spacetraders-go/internal/application/contractscaler/commands"
-	fleetCmd "github.com/andrescamacho/spacetraders-go/internal/application/fleet/commands"
 	shipNav "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/hullbuy"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
@@ -124,10 +124,10 @@ func wireContractScalerDepotActuation(h *contractScalerCmd.RunContractScalerHand
 // contractScalerPriceReader wraps the autosizer's YardPriceReader, asking it for the contract-delivery
 // class's cheapest priced yard and projecting the (price, yard, readable) triple the scaler needs.
 // readable=false ⇒ the ramp holds (fail-closed — no price, no cushion check, no buy).
-type contractScalerPriceReader struct{ reader fleetCmd.YardPriceReader }
+type contractScalerPriceReader struct{ reader hullbuy.YardPriceReader }
 
 func (p *contractScalerPriceReader) NextHullPrice(ctx context.Context, playerID int, shipType string) (int64, string, bool, error) {
-	price, _, yard, readable, err := p.reader.PriceFor(ctx, playerID, fleetCmd.HullClassContractDelivery, shipType, false)
+	price, _, yard, readable, err := p.reader.PriceFor(ctx, playerID, hullbuy.HullClassContractDelivery, shipType, false)
 	return price, yard, readable, err
 }
 
@@ -143,7 +143,7 @@ func (c *contractScalerFleetCounter) ContractHullCount(ctx context.Context, play
 // contractScalerBuyer is the narrow buy+dedicate primitive the purchaser composes — the kept
 // autosizerPurchaser.BuyAndDedicate (the money-integrity batch path + dedicate-at-purchase).
 type contractScalerBuyer interface {
-	BuyAndDedicate(ctx context.Context, order fleetCmd.BuyOrder) (fleetCmd.BuyResult, error)
+	BuyAndDedicate(ctx context.Context, order hullbuy.BuyOrder) (hullbuy.BuyResult, error)
 }
 
 // contractScalerPurchaser executes ONE scaler buy: it drives the kept autosizer buy primitive to
@@ -164,9 +164,9 @@ type commandSender interface {
 }
 
 func (p *contractScalerPurchaser) BuyAndHome(ctx context.Context, order contractScalerCmd.BuyOrder) (contractScalerCmd.BuyResult, error) {
-	res, err := p.buyer.BuyAndDedicate(ctx, fleetCmd.BuyOrder{
+	res, err := p.buyer.BuyAndDedicate(ctx, hullbuy.BuyOrder{
 		PlayerID:      order.PlayerID,
-		Class:         fleetCmd.HullClassContractDelivery, // → dedicates to the exclusive "contract" fleet
+		Class:         hullbuy.HullClassContractDelivery, // → dedicates to the exclusive "contract" fleet
 		ShipType:      order.Unit.ShipType,
 		Yard:          order.Yard,
 		ExpectedPrice: order.ExpectedPrice,
@@ -180,15 +180,15 @@ func (p *contractScalerPurchaser) BuyAndHome(ctx context.Context, order contract
 
 // BuyHull buys ONE UNDEDICATED light hull for a DEPOT role (warehouse/stocker) — the kept buy
 // primitive driven with HullClassLight, whose dedicate-at-purchase tag is EMPTY
-// (autosizerDedicatedFleet(light)=""). It is deliberately NOT contract-dedicated and NOT homed: the
+// (hullbuy.DedicatedFleet(light)==""). It is deliberately NOT contract-dedicated and NOT homed: the
 // grower's launch (positionDepotElementHull) re-dedicates the idle hull to its "warehouse"/"stocker"
 // fleet, so leaving it undedicated is what lets that adoption succeed (a "contract"-tagged hull would
 // be refused by the depot never-poach guard). This mirrors the reclaim path, which likewise hands the
 // grower an undedicated idle hull; the buy is the fallback when no reclaimable hull is free.
 func (p *contractScalerPurchaser) BuyHull(ctx context.Context, order contractScalerCmd.BuyOrder) (contractScalerCmd.BuyResult, error) {
-	res, err := p.buyer.BuyAndDedicate(ctx, fleetCmd.BuyOrder{
+	res, err := p.buyer.BuyAndDedicate(ctx, hullbuy.BuyOrder{
 		PlayerID:      order.PlayerID,
-		Class:         fleetCmd.HullClassLight, // undedicated (no tag) → the grower re-dedicates to the role fleet
+		Class:         hullbuy.HullClassLight, // undedicated (no tag) → the grower re-dedicates to the role fleet
 		ShipType:      order.Unit.ShipType,
 		Yard:          order.Yard,
 		ExpectedPrice: order.ExpectedPrice,

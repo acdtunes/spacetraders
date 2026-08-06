@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/hullbuy"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shipyard"
 )
 
@@ -70,28 +71,13 @@ type APIUtilizationReader interface {
 	UtilizationPct(ctx context.Context) (pct float64, readable bool, err error)
 }
 
-// YardPriceReader reads the purchase price for a ship type at the preferred yard (demand-proximal
-// when preferProximal), plus the cheapest known yard ask (for the premium ceiling) and the yard
-// waypoint the buy targets. readable=false ⇒ the price guards fail closed.
-type YardPriceReader interface {
-	PriceFor(ctx context.Context, playerID int, class HullClass, shipType string, preferProximal bool) (price, cheapest int64, yard string, readable bool, err error)
-}
-
-// BuyOrder is one approved hull purchase, dedicated to its class fleet at purchase time.
-type BuyOrder struct {
-	PlayerID      int
-	Class         HullClass
-	ShipType      string
-	Yard          string
-	ExpectedPrice int64
-}
-
-// BuyResult reports the executed purchase.
-type BuyResult struct {
-	ShipSymbol string
-	Price      int64
-	Dedicated  bool
-}
+// The buy port's shapes are shared with the contract scaler and live in domain/hullbuy; these
+// aliases keep the coordinator's internals reading as one package (see fleet_autosizer_types.go).
+type (
+	YardPriceReader = hullbuy.YardPriceReader
+	BuyOrder        = hullbuy.BuyOrder
+	BuyResult       = hullbuy.BuyResult
+)
 
 // Purchaser buys ONE hull and dedicates it to its class fleet in the same breath (dedicate-at
 // -purchase). The concrete impl buys through the batch-purchase money-integrity path and

@@ -13,10 +13,10 @@ import (
 	contractCmd "github.com/andrescamacho/spacetraders-go/internal/application/contract/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/application/contract/depotstore"
 	contractScalerCmd "github.com/andrescamacho/spacetraders-go/internal/application/contractscaler/commands"
-	fleetCmd "github.com/andrescamacho/spacetraders-go/internal/application/fleet/commands"
 	shipNav "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/contract/depot"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/contractscaler"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/hullbuy"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
@@ -300,12 +300,12 @@ func TestContractScalerShipHomeReader_FleetReadErrorFailsClosed(t *testing.T) {
 // --- Purchaser composition: buy+dedicate (kept primitive) then home demand-ranked ---
 
 type fakeContractBuyer struct {
-	order  fleetCmd.BuyOrder
-	result fleetCmd.BuyResult
+	order  hullbuy.BuyOrder
+	result hullbuy.BuyResult
 	err    error
 }
 
-func (f *fakeContractBuyer) BuyAndDedicate(ctx context.Context, order fleetCmd.BuyOrder) (fleetCmd.BuyResult, error) {
+func (f *fakeContractBuyer) BuyAndDedicate(ctx context.Context, order hullbuy.BuyOrder) (hullbuy.BuyResult, error) {
 	f.order = order
 	return f.result, f.err
 }
@@ -323,7 +323,7 @@ func (r *recordingSender) Send(ctx context.Context, request common.Request) (com
 // demand-ranked homing consumer. This is what makes the 3rd..Nth delivery hull pay (each covers a
 // distinct central pickup region) instead of piling on one hub.
 func TestContractScalerPurchaser_BuysContractDedicatedThenHomesToFixedSlot(t *testing.T) {
-	buyer := &fakeContractBuyer{result: fleetCmd.BuyResult{ShipSymbol: "SHIP-NEW", Price: 120000, Dedicated: true}}
+	buyer := &fakeContractBuyer{result: hullbuy.BuyResult{ShipSymbol: "SHIP-NEW", Price: 120000, Dedicated: true}}
 	sender := &recordingSender{}
 	p := &contractScalerPurchaser{buyer: buyer, med: sender, shipRepo: nil}
 
@@ -344,7 +344,7 @@ func TestContractScalerPurchaser_BuysContractDedicatedThenHomesToFixedSlot(t *te
 	}
 
 	// The buy drives the kept primitive with the CONTRACT-DELIVERY class (→ "contract" exclusivity).
-	if buyer.order.Class != fleetCmd.HullClassContractDelivery {
+	if buyer.order.Class != hullbuy.HullClassContractDelivery {
 		t.Fatalf("buy class = %q, want the contract-delivery class (dedicates to \"contract\")", buyer.order.Class)
 	}
 	if buyer.order.ShipType != "SHIP_LIGHT_HAULER" || buyer.order.Yard != "YARD-1" {
@@ -374,7 +374,7 @@ func TestContractScalerPurchaser_BuysContractDedicatedThenHomesToFixedSlot(t *te
 // (positionDepotElementHull adopts an undedicated hull; a "contract"-tagged one would be never-poach
 // refused). It dispatches NO HomeShipCommand — a depot hull is placed by the grower, never contract-homed.
 func TestContractScalerPurchaser_BuyHullBuysUndedicatedAndDoesNotHome(t *testing.T) {
-	buyer := &fakeContractBuyer{result: fleetCmd.BuyResult{ShipSymbol: "DEPOT-HULL", Price: 90000}}
+	buyer := &fakeContractBuyer{result: hullbuy.BuyResult{ShipSymbol: "DEPOT-HULL", Price: 90000}}
 	sender := &recordingSender{}
 	p := &contractScalerPurchaser{buyer: buyer, med: sender, shipRepo: nil}
 
@@ -386,7 +386,7 @@ func TestContractScalerPurchaser_BuyHullBuysUndedicatedAndDoesNotHome(t *testing
 	})
 	require.NoError(t, err)
 	require.Equal(t, "DEPOT-HULL", res.ShipSymbol)
-	require.Equal(t, fleetCmd.HullClassLight, buyer.order.Class, "depot hull buys undedicated (light class) — the grower re-dedicates")
+	require.Equal(t, hullbuy.HullClassLight, buyer.order.Class, "depot hull buys undedicated (light class) — the grower re-dedicates")
 	require.Equal(t, "SHIP_LIGHT_HAULER", buyer.order.ShipType)
 	require.Equal(t, "YARD-1", buyer.order.Yard)
 	require.Empty(t, sender.sent, "a depot hull is placed by the grower, never contract-homed")

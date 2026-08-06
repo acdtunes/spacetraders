@@ -9,6 +9,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/application/health"
 	"github.com/andrescamacho/spacetraders-go/internal/application/liveconfig"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/hullbuy"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
@@ -27,11 +28,12 @@ const (
 	defaultLightRotationSlots          = 3.5
 	defaultHeavyUnservedLanesMin       = 3
 	defaultHeavyTreasuryPctPerPurchase = 25
-	// defaultHeavyCap bounds CAPITAL EXPOSURE in heavy hulls, counted fleet-wide regardless of
-	// dedicated_fleet tag. It is the ONLY count-based bound on any class. 5 per the Admiral. An
-	// explicit 0 in config.yaml is a legitimate operator HOLD, which is why the config field is a
-	// *int (see config.FleetAutosizerConfig.HeavyCap).
-	defaultHeavyCap                  = 5
+	// defaultHeavyCap is the ONLY count-based bound on any class. It is the SHARED constant
+	// (hullbuy.DefaultHeavyCap), not a copy: sensing's heavy reservation falls back to the same
+	// value, and two hand-copied literals is how the withholder and the spender end up saving
+	// toward different caps. An explicit 0 in config.yaml is a legitimate operator HOLD, which is
+	// why the config field is a *int (see config.FleetAutosizerConfig.HeavyCap).
+	defaultHeavyCap                  = hullbuy.DefaultHeavyCap
 	defaultAPIUtilCeilingPct         = 85
 	defaultMaxPremiumOverCheapestPct = 50
 	defaultZeroEffectAlarmTicks      = 4
