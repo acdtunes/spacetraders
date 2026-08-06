@@ -110,7 +110,24 @@ func (e *RouteExecutor) refuelShipWithRetry(
 	playerID shared.PlayerID,
 	returnToOrbit bool,
 ) error {
-	return e.refuelShipWithRetryCore(ctx, ship, playerID, DefaultRefuelRetryBudget, DefaultRefuelBackoffBase, returnToOrbit)
+	return e.refuelShipWithRetryCore(ctx, ship, playerID, DefaultRefuelRetryBudget, DefaultRefuelBackoffBase, returnToOrbit, true)
+}
+
+// refuelShipWithoutEscalation retries at the CURRENT waypoint only and never flies the
+// hull to an alternate fuel stop.
+//
+// The reroute is the expensive half: it commits the hull to a crawl across the system for
+// fuel, and it is worth that price only when the plan cannot continue without it. For a
+// refuel the remaining route does not need, the same reroute carries the hull — and
+// whatever it is holding — away from where it was actually due. Retrying in place still
+// wins the top-up whenever the upstream failure clears, which is the outcome worth having.
+func (e *RouteExecutor) refuelShipWithoutEscalation(
+	ctx context.Context,
+	ship *domainNavigation.Ship,
+	playerID shared.PlayerID,
+	returnToOrbit bool,
+) error {
+	return e.refuelShipWithRetryCore(ctx, ship, playerID, DefaultRefuelRetryBudget, DefaultRefuelBackoffBase, returnToOrbit, false)
 }
 
 // refuelShipWithRetryCore is refuelShipWithRetry's configurable core. Tests can
@@ -138,6 +155,7 @@ func (e *RouteExecutor) refuelShipWithRetryCore(
 	budget time.Duration,
 	backoffBase time.Duration,
 	returnToOrbit bool,
+	escalateToAlternateStop bool,
 ) error {
 	logger := common.LoggerFromContext(ctx)
 	origin := ship.CurrentLocation()
@@ -202,6 +220,20 @@ func (e *RouteExecutor) refuelShipWithRetryCore(
 	}
 
 	elapsed := e.clock.Now().Sub(start)
+
+	if !escalateToAlternateStop {
+		logger.Log("WARNING", "Refuel retry budget exhausted at waypoint - not escalating, the remaining route does not need this fuel", map[string]interface{}{
+			"ship_symbol":  ship.ShipSymbol(),
+			"action":       "refuel_retries_exhausted_no_escalation",
+			"waypoint":     origin.Symbol,
+			"attempts":     attempt,
+			"elapsed":      elapsed.String(),
+			"retry_budget": budget.String(),
+			"error":        lastErr.Error(),
+		})
+		return lastErr
+	}
+
 	logger.Log("ERROR", "Refuel retry budget exhausted at waypoint, attempting alternate fuel stop", map[string]interface{}{
 		"ship_symbol":  ship.ShipSymbol(),
 		"action":       "refuel_retries_exhausted",

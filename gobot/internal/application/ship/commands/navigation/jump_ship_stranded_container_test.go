@@ -30,6 +30,7 @@ type fakeNavMetrics struct {
 func (f *fakeNavMetrics) RecordRouteCompletion(int, domainNavigation.RouteStatus, float64, int, int) {
 }
 func (f *fakeNavMetrics) RecordSegmentCompletion(int, int, int)             {}
+func (f *fakeNavMetrics) RecordNonEssentialRefuelFailure(int, string)       {}
 func (f *fakeNavMetrics) RecordFuelPurchase(int, string, int)               {}
 func (f *fakeNavMetrics) RecordFuelConsumption(int, shared.FlightMode, int) {}
 func (f *fakeNavMetrics) RecordStrandedJumpContainer(_ int, outcome string) {

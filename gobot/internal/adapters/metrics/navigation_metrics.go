@@ -25,6 +25,9 @@ type NavigationMetricsCollector struct {
 
 	// Jump claim-record hygiene
 	strandedJumpContainers *prometheus.CounterVec
+
+	// Refuel failures that were absorbed instead of failing the route
+	nonEssentialRefuelFailures *prometheus.CounterVec
 }
 
 // NewNavigationMetricsCollector creates a new navigation metrics collector
@@ -104,6 +107,18 @@ func NewNavigationMetricsCollector() *NavigationMetricsCollector {
 			"player_id",
 			"outcome",
 		),
+
+		// A refuel failure the route survived. Without it, "the top-up failed and we
+		// carried on" and "the hull is genuinely stranded" are the same silence at the
+		// metrics layer, and telling them apart means reading log cadence by hand — which
+		// is how the incident this closes was found in the first place. kind separates the
+		// discretionary top-up from a planned stop the remaining legs turned out not to need.
+		nonEssentialRefuelFailures: newCounterVec(
+			"non_essential_refuel_failures_total",
+			"Refuel failures absorbed without failing the route, by kind (opportunistic/planned_not_required)",
+			"player_id",
+			"kind",
+		),
 	}
 }
 
@@ -122,6 +137,7 @@ func (c *NavigationMetricsCollector) Register() error {
 		c.fuelConsumed,
 		c.fuelEfficiency,
 		c.strandedJumpContainers,
+		c.nonEssentialRefuelFailures,
 	)
 }
 
@@ -192,6 +208,13 @@ func (c *NavigationMetricsCollector) RecordFuelConsumption(
 	c.fuelConsumed.WithLabelValues(playerIDStr, flightModeStr).Add(float64(units))
 }
 
+// RecordNonEssentialRefuelFailure records globally one refuel failure the route survived.
+func RecordNonEssentialRefuelFailure(playerID int, kind string) {
+	if globalNavigationCollector != nil {
+		globalNavigationCollector.RecordNonEssentialRefuelFailure(playerID, kind)
+	}
+}
+
 // RecordStrandedJumpContainer records one leftover jump container row the
 // post-claim reap found, under the outcome it reached ("cleared" /
 // "clear_failed").
@@ -213,6 +236,12 @@ type NavigationMetricsRecorder interface {
 	RecordFuelPurchase(playerID int, waypoint string, units int)
 	RecordFuelConsumption(playerID int, flightMode shared.FlightMode, units int)
 	RecordStrandedJumpContainer(playerID int, outcome string)
+	RecordNonEssentialRefuelFailure(playerID int, kind string)
+}
+
+// RecordNonEssentialRefuelFailure records one refuel failure that did not fail its route.
+func (c *NavigationMetricsCollector) RecordNonEssentialRefuelFailure(playerID int, kind string) {
+	c.nonEssentialRefuelFailures.WithLabelValues(strconv.Itoa(playerID), kind).Inc()
 }
 
 // SetGlobalNavigationCollector sets the global navigation metrics collector

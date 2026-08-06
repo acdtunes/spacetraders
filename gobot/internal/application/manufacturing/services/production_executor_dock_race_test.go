@@ -217,6 +217,10 @@ type dockRaceMediator struct {
 	purchaseBranch string  // Selector branch observed on ctx at the last purchase dispatch
 	sellCalls      int
 	sellShouldFail bool // Model a market that won't import the onboard good
+	// navErrAfterArrival models the leg that LANDS and then fails on the work that follows
+	// arrival (a fuel top-up, most of all): the hull really is at the destination, and the
+	// caller nonetheless sees an error from the navigate.
+	navErrAfterArrival error
 }
 
 func (m *dockRaceMediator) Send(ctx context.Context, request common.Request) (common.Response, error) {
@@ -230,6 +234,9 @@ func (m *dockRaceMediator) Send(ctx context.Context, request common.Request) (co
 		m.mu.Unlock()
 		// Model arrival: NavigateRouteCommand ends with ship.Arrive() -> IN_ORBIT.
 		m.repo.arriveInOrbit(cmd.Destination)
+		if m.navErrAfterArrival != nil {
+			return nil, m.navErrAfterArrival
+		}
 		return nil, nil
 
 	case *shipCargo.PurchaseCargoCommand:

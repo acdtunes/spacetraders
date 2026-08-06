@@ -189,7 +189,21 @@ func (e *ProductionExecutor) DeliverToConstructionSite(
 	// this is a NavigateAndDock (never a jump), returning only once CONFIRMED docked at the site.
 	docked, err := e.NavigateAndDock(ctx, shipSymbol, site, playerID)
 	if err != nil {
-		return 0, fmt.Errorf("failed to navigate to construction site %s for %s: %w", site, good, err)
+		// A navigate error does NOT imply the hull is elsewhere. The leg ends with work that
+		// happens ONCE THE HULL HAS LANDED — a fuel top-up for its next trip, most of all — and
+		// a transient failure there surfaces here as a navigate error while the hull is standing
+		// on the site with the cargo aboard. Delivering costs no fuel and no flight, so giving
+		// up at that point abandons a delivery that has already physically happened and carries
+		// the material away again. Re-read position rather than inferring it from the error: if
+		// the hull is on site, supply; otherwise the error stands.
+		onSite, reloadErr := e.shipRepo.FindBySymbol(ctx, shipSymbol, playerID)
+		if reloadErr != nil || onSite == nil || onSite.CurrentLocation() == nil || onSite.CurrentLocation().Symbol != site {
+			return 0, fmt.Errorf("failed to navigate to construction site %s for %s: %w", site, good, err)
+		}
+		logger.Log("WARNING", fmt.Sprintf("Navigation to %s reported an error but %s is already on site - delivering anyway", site, shipSymbol), map[string]interface{}{
+			"ship": shipSymbol, "construction_site": site, "good": good, "error": err.Error(),
+		})
+		docked = onSite
 	}
 
 	units := onboardUnits(docked, good)

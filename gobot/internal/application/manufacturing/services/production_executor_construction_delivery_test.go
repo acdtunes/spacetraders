@@ -234,3 +234,37 @@ func TestDeliverToConstructionSite_SupplyError_Bubbles(t *testing.T) {
 		t.Fatalf("expected the hull to have flown to the site before the failed supply, at %s", got)
 	}
 }
+
+// TestDeliverToConstructionSite_SuppliesWhenOnSiteDespiteNavigateError is criterion 3.
+//
+// The delivery leg ends with post-arrival work — a fuel top-up for the NEXT trip above all —
+// and a transient failure there surfaces to this caller as a navigate error while the hull is
+// standing on the construction site with the material aboard. Supplying costs no fuel and no
+// flight, so abandoning at that point throws away a delivery that has already physically
+// happened and carries the material back off the site.
+//
+// The assertion is deliberately on the SUPPLY CALL COUNT, not on the returned error: a
+// delivery that returns nil while never calling SupplyMaterial is exactly the failure being
+// fixed, and an error-only assertion cannot tell the two apart.
+func TestDeliverToConstructionSite_SuppliesWhenOnSiteDespiteNavigateError(t *testing.T) {
+	construction := &fakeConstructionRepo{}
+	executor, repo, mediator := newDeliveryExecutor(t, makeCargo(deliveryTestGood, 36), construction)
+	mediator.navErrAfterArrival = errors.New("failed to refuel: max retries exceeded: server error (500)")
+
+	delivered, err := executor.DeliverToConstructionSite(
+		context.Background(), dockRaceShip, deliveryTestGood, deliveryTestSiteWP, shared.MustNewPlayerID(1),
+	)
+
+	if len(construction.supplyCalls) != 1 {
+		t.Fatalf("the hull is ON the site holding the material - expected exactly 1 SupplyMaterial call, got %d", len(construction.supplyCalls))
+	}
+	if err != nil {
+		t.Fatalf("a post-arrival failure must not abandon a delivery already made, got %v", err)
+	}
+	if delivered != 36 {
+		t.Fatalf("expected all 36 carried units supplied, got %d", delivered)
+	}
+	if got := repo.locationNow(); got != deliveryTestSiteWP {
+		t.Fatalf("fixture never put the hull on the site (%s), so this proves nothing: at %s", deliveryTestSiteWP, got)
+	}
+}

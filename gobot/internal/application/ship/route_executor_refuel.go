@@ -6,6 +6,7 @@ import (
 
 	"time"
 
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/application/ship/types"
 	domainNavigation "github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
@@ -69,7 +70,18 @@ func (e *RouteExecutor) handlePreDepartureRefuel(ctx context.Context, segment *d
 	return nil
 }
 
-func (e *RouteExecutor) handlePostArrivalRefueling(ctx context.Context, segment *domainNavigation.RouteSegment, ship *domainNavigation.Ship, playerID shared.PlayerID) error {
+// handlePostArrivalRefueling runs the refuels that belong AFTER the segment landed.
+//
+// Everything here happens with the hull already standing at the segment's destination: the
+// movement this segment existed to perform is done. That is what decides how a failure here
+// is treated. A refuel the REMAINING route needs is still fatal — the plan cannot continue
+// without it. A refuel the remaining route does NOT need is an optimization for a later trip,
+// and letting it fail the route throws away a leg that already succeeded, along with whatever
+// the hull was carrying to this waypoint.
+//
+// remainingLegFuel is the fuel the segments still ahead will burn; it is the whole of the
+// essential/non-essential distinction, so it is passed in rather than re-derived here.
+func (e *RouteExecutor) handlePostArrivalRefueling(ctx context.Context, segment *domainNavigation.RouteSegment, ship *domainNavigation.Ship, playerID shared.PlayerID, remainingLegFuel int) error {
 	logger := common.LoggerFromContext(ctx)
 
 	// Check for opportunistic refueling (strategy-based)
@@ -84,8 +96,11 @@ func (e *RouteExecutor) handlePostArrivalRefueling(ctx context.Context, segment 
 		// action at this waypoint is a trade that docks; staying docked makes
 		// that dock a CUT-1 no-op skip. A following segment re-orbits via
 		// ensureShipInOrbit, so this is never a wrong state for a later navigate.
-		if err := e.refuelShipWithRetry(ctx, ship, playerID, false); err != nil {
-			return err
+		//
+		// An opportunistic top-up is BY DEFINITION never required: the plan was built
+		// without it, so nothing downstream is waiting on it.
+		if err := e.refuelShipWithoutEscalation(ctx, ship, playerID, false); err != nil {
+			e.absorbNonEssentialRefuelFailure(ctx, ship, segment, "opportunistic", err)
 		}
 	}
 
@@ -97,12 +112,57 @@ func (e *RouteExecutor) handlePostArrivalRefueling(ctx context.Context, segment 
 			"waypoint":    segment.ToWaypoint.Symbol,
 		})
 		// CUT 2: stay docked after a post-arrival refuel (see above).
+		if e.remainingLegsAffordable(ship, remainingLegFuel) {
+			if err := e.refuelShipWithoutEscalation(ctx, ship, playerID, false); err != nil {
+				e.absorbNonEssentialRefuelFailure(ctx, ship, segment, "planned_not_required", err)
+			}
+			return nil
+		}
 		if err := e.refuelShipWithRetry(ctx, ship, playerID, false); err != nil {
 			return err
 		}
 	}
 
 	return nil
+}
+
+// remainingLegsAffordable reports whether the hull can already fly everything still ahead of
+// it, which is what makes a refuel here optional rather than load-bearing.
+//
+// It FAILS CLOSED on anything it cannot establish — an unreadable tank counts as unaffordable,
+// so the refuel stays essential and an unrecoverable failure still stops the route. The margin
+// is the same one the pre-departure skip and the affordability guard already reserve, so this
+// grants no latitude they do not; a hull is only excused a refuel when it could complete the
+// plan and still land holding that reserve. A zero-capacity hull burns no fuel at all, so
+// nothing ahead of it can require a refuel.
+func (e *RouteExecutor) remainingLegsAffordable(ship *domainNavigation.Ship, remainingLegFuel int) bool {
+	if remainingLegFuel <= 0 {
+		return true
+	}
+	fuel := ship.Fuel()
+	if fuel == nil {
+		return false
+	}
+	if fuel.Capacity == 0 {
+		return true
+	}
+	return fuel.Current >= remainingLegFuel+domainNavigation.DefaultFuelSafetyMargin
+}
+
+// absorbNonEssentialRefuelFailure records a refuel failure that the route survives.
+//
+// It counts as well as logs: at the metrics layer a top-up that failed and was carried past
+// is otherwise indistinguishable from a fleet with nothing to report, and telling those apart
+// by log cadence is exactly the manual work this exists to remove.
+func (e *RouteExecutor) absorbNonEssentialRefuelFailure(ctx context.Context, ship *domainNavigation.Ship, segment *domainNavigation.RouteSegment, kind string, err error) {
+	common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf("Refuel at %s failed but the remaining route does not need it - continuing", segment.ToWaypoint.Symbol), map[string]interface{}{
+		"ship_symbol": ship.ShipSymbol(),
+		"action":      "non_essential_refuel_failed",
+		"waypoint":    segment.ToWaypoint.Symbol,
+		"kind":        kind,
+		"error":       err.Error(),
+	})
+	metrics.RecordNonEssentialRefuelFailure(ship.PlayerID().Value(), kind)
 }
 
 // refuelBeforeDeparture refuels ship before starting the journey, retrying a

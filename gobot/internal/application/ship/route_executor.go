@@ -180,7 +180,7 @@ func (e *RouteExecutor) ExecuteRoute(
 			"to":            segment.ToWaypoint.Symbol,
 		})
 
-		if err := e.executeSegment(ctx, segment, ship, playerID, route.FuelReserveAfterCurrentSegment()); err != nil {
+		if err := e.executeSegment(ctx, segment, ship, playerID, route.FuelReserveAfterCurrentSegment(), fuelForSegmentsAfter(route, segmentCount)); err != nil {
 			return e.reactToSegmentFailure(ctx, route, ship, segment, segmentCount, err)
 		}
 
@@ -229,6 +229,24 @@ func (e *RouteExecutor) ExecuteRoute(
 	})
 
 	return nil
+}
+
+// fuelForSegmentsAfter totals the fuel every segment PAST executedIndex will burn.
+//
+// It deliberately does NOT stop at the next fuel-selling waypoint the way the flight-mode
+// reserve does. That reserve answers "what must I not spend before I can next top up"; this
+// answers "could I finish the whole plan on what is in the tank now" — and a refuel is only
+// skippable if the answer covers every leg left, not just the ones before the next station.
+// Reusing the reserve here would read zero at any waypoint that sells fuel, which is every
+// waypoint a refuel is ever attempted at, and would excuse the failures that genuinely strand
+// a hull.
+func fuelForSegmentsAfter(route *domainNavigation.Route, executedIndex int) int {
+	total := 0
+	segments := route.Segments()
+	for i := executedIndex + 1; i < len(segments); i++ {
+		total += segments[i].FlightMode.FuelCost(segments[i].Distance)
+	}
+	return total
 }
 
 // reactToSegmentFailure decides how ExecuteRoute responds to a failed segment.
@@ -308,6 +326,7 @@ func (e *RouteExecutor) executeSegment(
 	ship *domainNavigation.Ship,
 	playerID shared.PlayerID,
 	fuelReserve int,
+	remainingLegFuel int,
 ) error {
 	// OPTIMIZATION: Only reload ship if it might be in transit
 	// The previous segment's waitForArrival already updated ship state
@@ -341,7 +360,7 @@ func (e *RouteExecutor) executeSegment(
 		return err
 	}
 
-	if err := e.handlePostArrivalRefueling(ctx, segment, ship, playerID); err != nil {
+	if err := e.handlePostArrivalRefueling(ctx, segment, ship, playerID, remainingLegFuel); err != nil {
 		return err
 	}
 
