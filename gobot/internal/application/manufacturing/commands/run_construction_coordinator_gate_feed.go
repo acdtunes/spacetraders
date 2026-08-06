@@ -147,9 +147,14 @@ func (h *RunConstructionCoordinatorHandler) feedGateLeg(
 	// against the market's own depth is the whole input — no price — which is what keeps the
 	// baseline from ratcheting as the ask we are pushing up rises.
 	if h.sourceCooldown != nil {
+		// Two keys, one ledger: the full lane is the trade ranker's, the source aggregate is pacing's.
+		now := h.clock.Now()
 		h.sourceCooldown.Accrue(
 			trading.LaneKey{Source: input.WaypointSymbol, Dest: target.WaypointSymbol, Good: step.Input},
-			result.QuantityAcquired, input.TradeVolume, h.clock.Now())
+			result.QuantityAcquired, input.TradeVolume, now)
+		h.sourceCooldown.Accrue(
+			trading.SourceDrainKey(input.WaypointSymbol, step.Input),
+			result.QuantityAcquired, input.TradeVolume, now)
 	}
 
 	// THE INPUT LIST IS WHAT THIS LEG BOUGHT FOR THIS FACTORY — step.Input alone — and NOT the
@@ -691,8 +696,7 @@ func (h *RunConstructionCoordinatorHandler) planGateFeed(
 			// fallback below feeds the least-compressed when nothing else survives — so pacing can
 			// reorder a leg but can never be the reason a factory goes unfed.
 			if h.sourceCooldown != nil {
-				key := trading.LaneKey{Source: source.WaypointSymbol, Dest: target.WaypointSymbol, Good: step.Input}
-				debt := h.sourceCooldown.Debt(key, h.clock.Now())
+				debt := h.sourceCooldown.Debt(trading.SourceDrainKey(source.WaypointSymbol, step.Input), h.clock.Now())
 				if debt > h.sourceCooldown.TrancheDebt() {
 					logger.Log("INFO", fmt.Sprintf("Gate factory: yielding the %s feed for the %s factory — this fleet still has %.0f%% of a tranche's compression standing on %s, so the leg takes a less-drained step and lets it recover", step.Input, step.Target, 100*debt/h.sourceCooldown.TrancheDebt(), source.WaypointSymbol), map[string]interface{}{
 						"good": step.Input, "target": step.Target, "source": source.WaypointSymbol,
