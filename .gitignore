@@ -86,7 +86,14 @@ logs/
 # repo root so tracked beads DBs (.beads/issues.jsonl, city/.beads/issues.jsonl)
 # are unaffected.
 /issues.jsonl
-staging/
+
+# The staging RUNTIME directory at the repo root: logs, a built daemon binary, and a
+# local config. Anchored, because unanchored this matches a directory named staging at
+# any depth — which silently swallowed the deployment config of the staging stack,
+# leaving the only running environment's compose and monitoring files untrackable and
+# unreviewable. Runtime output under the deploy tree stays ignored by the .gitignore
+# beside it, not by this line.
+/staging/
 
 # Local scratch: DB snapshots, one-off dumps. Never committed.
 scratchpad/

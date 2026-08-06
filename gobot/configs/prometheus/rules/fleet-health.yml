@@ -146,3 +146,58 @@ groups:
             the hull to a live trading ground (the immediate fix), then investigate why the
             origin gate is uncharted / probe-backed-off. The tour coordinator's "hull
             stranded" WARN names the same ship + system.
+
+      # AgentDark: the agent stopped trading entirely while its coordinators kept running.
+      #
+      # WHY A CONJUNCTION. Neither half is a signal alone. A quiet stretch is normal for a
+      # healthy fleet, and a daemon that is simply down is already covered by the paths keyed
+      # on something being DOWN. The gap this closes is the case where nothing is down: every
+      # coordinator heartbeats, containers restart cleanly, and the agent nonetheless earns
+      # nothing. That state is invisible to every health-keyed check, because health is exactly
+      # what it reports.
+      #
+      # WHY ALL TRANSACTION TYPES. Scoping to one good, or to sales alone, false-fires on a
+      # fleet that is legitimately buying and not yet selling, and misses a stall in any
+      # pipeline the filter excludes. Total silence across every transaction type is the only
+      # form of this signal that means the agent as a whole has stopped.
+      #
+      # WHY THE WINDOW IS LONG. A newly seeded era brings its full coordinator complement up
+      # before its first trade and can stay legitimately quiet for most of a working day while
+      # it scouts and repositions. That bootstrap state is byte-identical to the outage on both
+      # halves of the conjunction — same container count, same zero transactions — so no
+      # tightening of the health clause can separate them and the window itself has to clear
+      # the longest healthy bootstrap. A shorter window buys earlier detection at the cost of
+      # paging every era rollover, which trains the reader to dismiss it.
+      #
+      # WHY THE LIVENESS CLAUSE. A retired era keeps a residual container or two running
+      # indefinitely and will never transact again, so without a bound on how long ago the
+      # player last traded, every dead era pages forever. Requiring a trade inside the outer
+      # window scopes the alert to the era that is actually live, with no player id pinned
+      # here — pinning one would silently stop watching at the next rollover.
+      #
+      # The `for:` clause is debounce, not detection budget: the daemon restarts through an
+      # outage, and each restart punches a scrape gap that would otherwise chop one continuous
+      # dark period into a burst of separate alerts.
+      - alert: AgentDark
+        expr: |
+          (
+            sum by (player_id) (increase(spacetraders_daemon_transactions_total[12h])) == 0
+            and
+            sum by (player_id) (spacetraders_daemon_container_running_total) > 0
+          )
+          and on (player_id) (
+            sum by (player_id) (increase(spacetraders_daemon_transactions_total[24h])) > 0
+          )
+        for: 30m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Agent {{ $labels.player_id }} has recorded zero transactions for half a day while its coordinators keep running"
+          description: >-
+            Player {{ $labels.player_id }} has not recorded a transaction of ANY type for the
+            full detection window, while its containers are still running and reporting
+            healthy. Nothing is down, so no health-keyed recovery path will fire and nothing
+            else will notice. Runbook: check whether the coordinators are looping without
+            producing work — a satisfied-but-wrong precondition, an empty work queue, or a
+            spend guard pinned at zero will all present exactly this way. Compare against the
+            per-coordinator logs rather than the heartbeats, which will look CURRENT.

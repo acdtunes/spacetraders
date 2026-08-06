@@ -1,0 +1,68 @@
+# Isolated staging monitoring stack (sp-widl sibling): its OWN Prometheus + Grafana,
+# fully disjoint from the prod stack (docker-compose.metrics.yml). Distinct container
+# names, ports, network, and volumes — bringing it up/down never touches prod's
+# Prometheus (:9091) or Grafana (:3000).
+#   up:   docker compose -f deploy/staging/docker-compose.metrics.staging.yml up -d
+#   view: http://localhost:3001  (admin/admin) -> folder "SpaceTraders (staging)"
+#   down: docker compose -f deploy/staging/docker-compose.metrics.staging.yml down
+services:
+  staging-prometheus:
+    image: prom/prometheus:latest
+    container_name: spacetraders-prometheus-staging
+    ports:
+      - "9092:9090"   # staging Prometheus UI (prod is 9091)
+    volumes:
+      - ./monitoring/prometheus.staging.yml:/etc/prometheus/prometheus.yml:ro
+      # Same rules directory the prod stack mounts, read-only: one definition, two
+      # evaluators. Without this mount the rule_files glob in the staging config
+      # resolves to nothing and this Prometheus silently evaluates no alerts at all —
+      # a config that loads clean and watches nothing.
+      #
+      # Verifying that requires asserting the rule-file COUNT promtool reports, not its
+      # exit status: `promtool check config` exits zero and calls the config valid when
+      # the glob matches nothing at all, so a green check is not evidence any rule
+      # loaded. Assert it found the rule file; the count is the only part that moves.
+      - ../../gobot/configs/prometheus/rules:/etc/prometheus/rules:ro
+      - staging-prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+    restart: unless-stopped
+    networks:
+      - staging-metrics
+
+  staging-grafana:
+    image: grafana/grafana:latest
+    container_name: spacetraders-grafana-staging
+    ports:
+      - "3001:3000"   # staging Grafana (prod is 3000)
+    volumes:
+      - staging-grafana-data:/var/lib/grafana
+      - ./monitoring/grafana-datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+      - ./monitoring/grafana-dashboards.yml:/etc/grafana/provisioning/dashboards/dashboards.yml:ro
+      # Reuse the prod dashboard JSONs verbatim (read-only) — same panels, staging data.
+      - ../../gobot/configs/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+      # Distinct session-cookie name so staging (:3001) and prod (:3000) Grafana stay
+      # logged in simultaneously. Both are on localhost and browsers scope the session
+      # cookie by domain (not port), so a shared 'grafana_session' name clobbers the
+      # other instance's login.
+      - GF_AUTH_LOGIN_COOKIE_NAME=grafana_session_staging
+    restart: unless-stopped
+    networks:
+      - staging-metrics
+    depends_on:
+      - staging-prometheus
+
+volumes:
+  staging-prometheus-data:
+    driver: local
+  staging-grafana-data:
+    driver: local
+
+networks:
+  staging-metrics:
+    driver: bridge

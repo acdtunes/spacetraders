@@ -1,0 +1,32 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: 'spacetraders'
+    environment: 'staging'
+
+# Isolated staging Prometheus: scrapes ONLY the staging daemon (:9095), never prod
+# (:9090). Runs in its own compose/network so staging series never contaminate the
+# prod dashboards (which query bare spacetraders_* names with no instance filter).
+
+# The stack is isolated, but the alert rules are NOT duplicated: this reads the same
+# rules directory the prod Prometheus mounts, so a rule is defined once and evaluated
+# by both. Copying the file here instead would leave two definitions to drift apart,
+# and the one that stops being edited is the one still watching a live system.
+# Evaluated in-process and served on this Prometheus's own /api/v1/alerts; there is no
+# Alertmanager in this stack, and the watchkeeper polls that endpoint.
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+scrape_configs:
+  - job_name: 'spacetraders-daemon-staging'
+    static_configs:
+      - targets: ['host.docker.internal:9095']  # staging daemon metrics (prod is :9090)
+        labels:
+          service: 'daemon'
+          instance: 'staging'
+    scrape_timeout: 10s
+    metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: 'spacetraders_.*'
+        action: keep
