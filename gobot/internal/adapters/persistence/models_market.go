@@ -4,10 +4,26 @@ import (
 	"time"
 )
 
-// MarketData represents the market_data table
-// Database schema: one row per (waypoint, good) combination
-// Primary key is composite: (waypoint_symbol, good_symbol)
+// MarketData represents the market_data table: one row per
+// (player, waypoint, good). It is a cache — UpsertMarketData deletes and re-inserts a whole
+// waypoint on every scan, and a missing row fails closed as "not scanned yet".
+//
+// PRIMARY KEY is (player_id, waypoint_symbol, good_symbol), and player_id leads it
+// deliberately (sp-hdr4p). The table is player-partitioned in every other respect — every read
+// filters player_id = ?, and UpsertMarketData's DELETE is scoped
+// `player_id = ? AND waypoint_symbol = ?` — but the key used to be (waypoint_symbol,
+// good_symbol) alone. That disagreement between the DELETE's scope and the key's scope WAS a
+// bug, not a detail: waypoint symbols are regenerated on a universe reset and can recur, so a
+// dead era's row could occupy the key a live scan needed. The player-scoped DELETE could not
+// remove it, the insert violated the key, the whole transaction rolled back, and that market
+// could never be cached again — permanently, and invisibly, since a market with no rows is
+// indistinguishable from one nobody has scouted.
+//
+// Same shape as ShipyardInventoryModel below, whose key is (player_id, waypoint_symbol,
+// ship_type). Note that era_id is NOT the partition here: it is player_id that scopes the
+// DELETE and every read, so it is player_id that must be in the key for the two to agree.
 type MarketData struct {
+	PlayerID       int          `gorm:"primaryKey;index;not null"`
 	WaypointSymbol string       `gorm:"primaryKey;size:255;not null"`
 	GoodSymbol     string       `gorm:"primaryKey;size:100;not null"`
 	Supply         *string      `gorm:"size:50"`
@@ -17,7 +33,6 @@ type MarketData struct {
 	TradeVolume    int          `gorm:"not null"`
 	TradeType      *string      `gorm:"size:32"` // EXPORT, IMPORT, or EXCHANGE
 	LastUpdated    time.Time    `gorm:"index;not null"`
-	PlayerID       int          `gorm:"index;not null"`
 	Player         *PlayerModel `gorm:"foreignKey:PlayerID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;"`
 }
 

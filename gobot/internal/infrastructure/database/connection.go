@@ -193,7 +193,82 @@ func AutoMigrate(db *gorm.DB) error {
 			return err
 		}
 	}
+
+	if err := repairMarketDataPrimaryKey(db); err != nil {
+		return err
+	}
 	return nil
+}
+
+// repairMarketDataPrimaryKey widens market_data's PRIMARY KEY to
+// (player_id, waypoint_symbol, good_symbol) on a database that still carries the old
+// (waypoint_symbol, good_symbol) key (sp-hdr4p).
+//
+// This exists because GORM's AutoMigrate adds columns and indexes but will NOT alter an
+// existing table's primary key. Changing the struct tag alone therefore fixes nothing on any
+// database that already has the table: the code would claim a player-partitioned key while the
+// server kept the old one, and the collision it is meant to prevent would go on happening.
+// Running the repair here rather than leaving it to the numbered migration is what makes the
+// fix armed on deploy instead of dependent on someone remembering to run psql.
+//
+// Widening a primary key can never fail on duplicate rows: the old key is a strict subset of
+// the new one, so old-key uniqueness already implies new-key uniqueness. That is what makes
+// this safe to run unattended against a populated table. DROP and ADD are one statement so the
+// table is never momentarily unconstrained, and nothing references market_data, so no foreign
+// key depends on the key being dropped.
+//
+// Postgres only. SQLite cannot ALTER a primary key at all, and does not need to: it is used
+// for tests and local development, where AutoMigrate creates the table fresh with the correct
+// key. Idempotent — it inspects the live catalog and does nothing once the key is right.
+func repairMarketDataPrimaryKey(db *gorm.DB) error {
+	if db.Dialector.Name() != "postgres" {
+		return nil
+	}
+
+	constraint, playerScoped, err := marketDataPrimaryKey(db)
+	if err != nil {
+		return fmt.Errorf("failed to inspect market_data primary key: %w", err)
+	}
+	if constraint == "" || playerScoped {
+		return nil
+	}
+
+	stmt := fmt.Sprintf(
+		"ALTER TABLE market_data DROP CONSTRAINT %q, ADD PRIMARY KEY (player_id, waypoint_symbol, good_symbol)",
+		constraint)
+	if err := db.Exec(stmt).Error; err != nil {
+		return fmt.Errorf("failed to widen market_data primary key to include player_id: %w", err)
+	}
+	return nil
+}
+
+// marketDataPrimaryKey reads market_data's primary-key constraint name from the live catalog
+// and reports whether player_id is one of its columns. An empty name means the table has no
+// primary key the server knows about — including the case where the table does not exist yet —
+// and the caller treats that as "nothing to repair" rather than guessing a constraint name.
+func marketDataPrimaryKey(db *gorm.DB) (name string, playerScoped bool, err error) {
+	var rows []struct {
+		ConstraintName string
+		ColumnName     string
+	}
+	err = db.Raw(`
+		SELECT c.constraint_name, k.column_name
+		FROM information_schema.table_constraints c
+		JOIN information_schema.key_column_usage k
+		  ON k.constraint_name = c.constraint_name
+		 AND k.constraint_schema = c.constraint_schema
+		WHERE c.table_name = 'market_data'
+		  AND c.constraint_type = 'PRIMARY KEY'`).Scan(&rows).Error
+	if err != nil {
+		return "", false, err
+	}
+	for _, r := range rows {
+		name = r.ConstraintName
+		if r.ColumnName == "player_id" {
+			playerScoped = true
+		}
+	}
+	return name, playerScoped, nil
 }
 
 // backfillTourLegEngine attributes pre-existing tour_leg_telemetry rows from their LegIndex
