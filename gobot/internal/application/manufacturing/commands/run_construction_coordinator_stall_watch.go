@@ -92,6 +92,16 @@ func (h *RunConstructionCoordinatorHandler) watchGateProgress(
 	if started := pipeline.StartedAt(); started != nil && started.Before(measuredFrom) {
 		measuredFrom = *started
 	}
+	// CreatedAt IS THE BACKSTOP, AND WITHOUT IT THE WATCHDOG FAILS QUIET (sp-1f0ex). StartedAt is a
+	// POINTER and is nil on a pipeline that never recorded a start, so a pipeline with no start
+	// stamp and no delivery history left measuredFrom at `now` — quiet == 0 — and could never be
+	// reported however long it sat. That is the wrong direction for an alarm: a watchdog that cannot
+	// fire is indistinguishable from a healthy system, which is the whole failure this bead family
+	// exists to end. CreatedAt is non-nil by construction and persisted, so it keeps the clock
+	// restart-proof for the same reason the task history does.
+	if created := pipeline.CreatedAt(); !created.IsZero() && created.Before(measuredFrom) {
+		measuredFrom = created
+	}
 
 	observed := make([]gate.MaterialProgress, 0, len(pipeline.Materials()))
 	for _, material := range pipeline.Materials() {

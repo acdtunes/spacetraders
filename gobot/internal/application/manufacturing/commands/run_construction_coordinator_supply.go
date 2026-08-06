@@ -380,6 +380,15 @@ func (h *RunConstructionCoordinatorHandler) completeSupply(ctx context.Context, 
 	// planner's one-task-per-material and lets the fan-out re-derive parallelism from live hulls each
 	// tick, with no clone-created task rows to orphan.
 	if !ephemeral {
+		// RECORD WHAT THIS TASK ACTUALLY MOVED, before completing it (sp-1f0ex).
+		//
+		// actual_quantity was dead: SetActualQuantity had exactly one reference in the tree — its own
+		// definition — so every completed task in production persisted 0, and the sp-63r4f stall
+		// watchdog, which keys "did this material receive units" on that field, could never observe a
+		// delivery. It reported FAB_MATS stalled for 30.8 hours while the pipeline was taking 134
+		// units an hour. The number was in hand the whole time; it is the one this function already
+		// logs a line below.
+		task.SetActualQuantity(delivered)
 		if err := task.Complete(); err != nil {
 			logger.Log("WARNING", fmt.Sprintf("Could not complete construction task %s: %v", task.ID(), err), nil)
 		}

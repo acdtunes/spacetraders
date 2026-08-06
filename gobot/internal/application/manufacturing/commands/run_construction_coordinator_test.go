@@ -122,6 +122,10 @@ type persistedTask struct {
 	status     manufacturing.TaskStatus
 	retryCount int
 	deferred   bool
+	// actualQuantity is the units the completion recorded as MOVED. sp-1f0ex: this was never
+	// written by anything, so it read 0 on every row in production and the stall watchdog could
+	// never observe a delivery.
+	actualQuantity int
 }
 
 // statusOf is the terminal status the drain persisted for task id, "" when it persisted none —
@@ -182,9 +186,10 @@ func (r *drainStubTaskRepo) Update(_ context.Context, task *manufacturing.Manufa
 	}
 	r.updated[task.ID()] = task.Status()
 	r.snapshots[task.ID()] = persistedTask{
-		status:     task.Status(),
-		retryCount: task.RetryCount(),
-		deferred:   task.IsDeferredConstruction(),
+		status:         task.Status(),
+		retryCount:     task.RetryCount(),
+		deferred:       task.IsDeferredConstruction(),
+		actualQuantity: task.ActualQuantity(),
 	}
 	return nil
 }
