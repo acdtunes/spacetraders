@@ -24,6 +24,7 @@ import (
 	domainPlayer "github.com/andrescamacho/spacetraders-go/internal/domain/player"
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
+	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	appSensing "github.com/andrescamacho/spacetraders-go/internal/application/parkedsensing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	shipyardDomain "github.com/andrescamacho/spacetraders-go/internal/domain/shipyard"
@@ -110,6 +111,9 @@ func (p *WaypointCatalogPort) ListMarketWaypoints(ctx context.Context, system st
 		if hasTrait(waypoint, unchartedTrait) {
 			continue
 		}
+		// The charted-market enumeration is one of the two places the skip's premise
+		// can be refuted by live data (sp-erdz7): these rows carry real traits.
+		p.reportBarrenTypeHoldingTrait(ctx, waypoint, marketplaceTrait)
 		out = append(out, waypoint.Symbol)
 	}
 	sort.Strings(out)
@@ -138,8 +142,66 @@ func (p *WaypointCatalogPort) ListMarketWaypoints(ctx context.Context, system st
 // have shipped. Routing both reads through here means a future filter lands in
 // ONE place and applies to both, so the two can never disagree about WHICH
 // waypoints are outstanding. They are free to disagree about order — and do.
+//
+// THAT FUTURE FILTER IS NOW HERE, AND IT IS HERE PRECISELY BECAUSE THIS IS THE
+// SHARED SOURCE (sp-erdz7). Barren types are dropped from the outstanding set,
+// so the COUNT and the WORK LIST narrow together and stay two views of one set —
+// which is what makes completion still mean something. A system whose only
+// remaining waypoints are asteroids now counts ZERO outstanding and reaches a
+// terminal charted state, instead of being toured for fifty hours to discover
+// nothing. Had the filter gone in UnchartedWaypoints alone, that same system
+// would have run out of stops while the count sat non-zero forever: pinned
+// PENDING, re-dispatched probes, frontier stalled behind it. The failure mode is
+// the reason this function exists, so the fix belongs in it and nowhere else.
+//
+// The saving is not marginal: 94.1% of the fleet's remaining charting work
+// (9,637 of 10,243 uncharted waypoints in era 6) is ASTEROID, against a census
+// of 0 markets and 0 shipyards in 114,838 charted asteroids across two universes.
 func (p *WaypointCatalogPort) unchartedIn(ctx context.Context, system string) ([]*shared.Waypoint, error) {
-	return p.waypoints.ListBySystemWithTrait(ctx, system, unchartedTrait)
+	waypoints, err := p.waypoints.ListBySystemWithTrait(ctx, system, unchartedTrait)
+	if err != nil {
+		return nil, err
+	}
+	outstanding := make([]*shared.Waypoint, 0, len(waypoints))
+	for _, waypoint := range waypoints {
+		if waypoint == nil || shared.ChartSkippable(waypoint.Type) {
+			continue
+		}
+		outstanding = append(outstanding, waypoint)
+	}
+	return outstanding, nil
+}
+
+// reportBarrenTypeHoldingTrait is the SKIP'S OWN FALSIFIER (sp-erdz7).
+//
+// Skipping a type is a claim about evidence — "ASTEROID has never held a market
+// or a shipyard in 114,838 charted examples" — and a claim that nothing can
+// refute is not evidence, it is a blacklist. One counter-example refutes this
+// one, so the fleet is wired to notice it: every enumeration of a CHARTED market
+// or yard passes through here, and a barren-tier waypoint carrying either trait
+// is logged as an ERROR naming the waypoint.
+//
+// IT WORKS DESPITE THE SKIP, which is the part worth checking before trusting
+// it. The obvious objection is that we stop charting asteroids and therefore
+// stop learning about them — but this reads the traits of waypoints ALREADY
+// charted, of which there are 39,303 in the current era alone, and those rows
+// keep being synced whether or not we fly anywhere. A market appearing on any
+// one of them surfaces here without a single new flight.
+//
+// It is deliberately an ERROR and not a metric: this must never fire, and if it
+// does the correct response is a human reading the census again, not a counter
+// ticking up on a dashboard nobody is watching.
+func (p *WaypointCatalogPort) reportBarrenTypeHoldingTrait(ctx context.Context, waypoint *shared.Waypoint, trait string) {
+	if waypoint == nil || !shared.ChartSkippable(waypoint.Type) {
+		return
+	}
+	common.LoggerFromContext(ctx).Log("ERROR", fmt.Sprintf(
+		"Charting census REFUTED: %s is a %s carrying %s, but %s is skipped from charting on the claim that it never holds one. The skip is now wrong — re-count the census in domain/shared/charting.go before trusting any charting completion signal",
+		waypoint.Symbol, waypoint.Type, trait, waypoint.Type),
+		map[string]interface{}{
+			"waypoint": waypoint.Symbol, "type": waypoint.Type, "trait": trait,
+			"action": "chart_skip_premise_refuted",
+		})
 }
 
 // ListUnchartedCount reports how many of the system's waypoints are still
@@ -156,12 +218,16 @@ func (p *WaypointCatalogPort) ListUnchartedCount(ctx context.Context, system str
 // charting seed should visit them: SHIPYARD-BEARING TYPES FIRST, then
 // market-bearing ones, then the rest, alphabetically inside each tier.
 //
-// THE SET IS UNCHANGED AND THE TOUR IS STILL EXHAUSTIVE. Every uncharted
-// waypoint in the system is returned, asteroids included — this reorders the
-// same list the tour always walked. That is what keeps ListUnchartedCount above
-// a valid completion signal without any coordination between the two: they read
-// the same rows, so the count still falls to zero exactly when the tour runs
-// out of stops.
+// THE TOUR IS NO LONGER EXHAUSTIVE, AND THE COUNT MOVED WITH IT (sp-erdz7).
+// Barren types are dropped by unchartedIn, so asteroids appear in neither this
+// list nor ListUnchartedCount. What is preserved is the property that actually
+// mattered: the two remain views of ONE set, read from the same rows, so the
+// count still falls to zero exactly when the tour runs out of stops. Completion
+// is unchanged in meaning; only the set it is computed over is smaller.
+//
+// This function stays a pure ORDERING over whatever unchartedIn hands it. The
+// skip is deliberately NOT repeated here — a second copy of the predicate is
+// exactly how the list and the count would come to disagree.
 //
 // The tier is the point and the alphabet is only the tie-break. A charted
 // shipyard makes its system buyable, which funds local spares, which stage more
@@ -363,6 +429,9 @@ func (p *WaypointCatalogPort) OutstandingYards(ctx context.Context, playerID int
 		if yard == nil || held[yard.Symbol] || hasTrait(yard, unchartedTrait) {
 			continue
 		}
+		// The charted-yard enumeration is the second refutation point for the charting
+		// skip (sp-erdz7); a barren-tier waypoint holding a SHIPYARD breaks the census.
+		p.reportBarrenTypeHoldingTrait(ctx, yard, shipyardTrait)
 		system := yard.SystemSymbol
 		if system == "" {
 			system = shared.ExtractSystemSymbol(yard.Symbol)

@@ -11,16 +11,26 @@ package shared
 // The census below is the fleet's own charted history, counted over every
 // waypoint it has ever charted. It is evidence, not intuition.
 //
-//	TYPE                  CHARTED  MARKETS  SHIPYARDS
-//	ASTEROID                 3297        0          0
-//	MOON                     2144     1521         44
-//	PLANET                   1501     1252          0
-//	FUEL_STATION             1129     1129          0
-//	ORBITAL_STATION           965      873        523
-//	GAS_GIANT                 546       72          0
-//	JUMP_GATE                 373      373          0
-//	ASTEROID_BASE             345      345          0
-//	ENGINEERED_ASTEROID        22       22          0
+// IT IS COUNTED IN TWO INDEPENDENT UNIVERSES (sp-erdz7). The 2026-08-02 server
+// reset regenerated every waypoint in the game, so era 5 and era 6 are separate
+// draws from the same generator rather than one sample counted twice — which is
+// what makes this a structural fact about waypoint TYPES and not a description
+// of one map. Era 5 is the original census; era 6 re-derived it at scale.
+//
+//	TYPE                 CHARTED(e6)   MKT  YARD | CHARTED(e5)   MKT  YARD
+//	ASTEROID                   39303     0     0 |       75535     0     0
+//	MOON                        4508  2833    18 |       11516  8017    66
+//	PLANET                      3419  2722     0 |        8192  6550     0
+//	FUEL_STATION                2701  2648     0 |        5872  5604     0
+//	ORBITAL_STATION             2107  1776  1084 |        5561  4941  2932
+//	GAS_GIANT                   1154   133     0 |        3102   469     0
+//	JUMP_GATE                   1112  1112     0 |        2458  2458     0
+//	ASTEROID_BASE                919   888     0 |        1899  1795     0
+//	ENGINEERED_ASTEROID            9     9     0 |          33    33     0
+//
+// ASTEROID is 0-for-114,838 across the two. Nothing else in the table is zero
+// for anything, and no other type is close: the next-emptiest, GAS_GIANT, still
+// carries a market 11.5% of the time.
 const (
 	WaypointTypeAsteroid           = "ASTEROID"
 	WaypointTypeAsteroidBase       = "ASTEROID_BASE"
@@ -86,11 +96,12 @@ const (
 // see chartPriorityGate, which explains why the only waypoint that grows the MAP
 // outranks the ones that merely grow the trade data.
 //
-// THE TOUR REMAINS EXHAUSTIVE — this decides SEQUENCE ONLY. Every waypoint in
-// the system is still charted, asteroids included, and the set being ordered is
-// identical to the set that was toured before. Nothing is skipped and nothing is
-// hidden, so the full map still completes and uncharted_count still falls to
-// zero exactly as it always did.
+// THIS FUNCTION DECIDES SEQUENCE ONLY — it orders whatever set it is given and
+// removes nothing. Membership is ChartSkippable's question, and the adapter
+// applies that one to the count and the work list together so the two can never
+// disagree. Keeping the two questions separate is what lets the barren tier be
+// both "visited last" (here) and "not visited at all" (there) without either
+// answer being duplicated.
 //
 // WHY SEQUENCE IS WORTH ORDERING ANYWAY. The design already separates two roles
 // — ONE probe per system flying the charting errand, and SEVERAL probes parked
@@ -117,6 +128,40 @@ const (
 // work is, at 12772 of the 12945 waypoints still uncharted. Sorting it last is
 // what stops those 12772 flights from standing between the fleet and every yard
 // and market in the same system. Every one of them is still flown.
+// ChartSkippable reports whether a type may be dropped from the charting set
+// ENTIRELY rather than merely visited last (sp-erdz7).
+//
+// IT IS DERIVED FROM ChartPriority, NOT A SECOND LIST, and that is the whole of
+// its design. "Which types are barren" is already decided once, by the census
+// above, and a separate skip list would be free to drift from the ordering it is
+// supposed to agree with — so the two would eventually disagree about ASTEROID
+// with nothing to catch it. Skipping is what being in the barren tier MEANS;
+// there is no independent membership to maintain.
+//
+// THE FAIL DIRECTION IS TOWARD CHARTING. Only chartPriorityBarren is skippable,
+// and a type reaches that tier only by being observed many thousands of times
+// with nothing to show. Everything else is still flown, including:
+//
+//   - GAS_GIANT, which the bead was explicitly told not to lump in: at 133/1154
+//     it holds a market 11.5% of the time, which is rare, not never.
+//   - ANY TYPE THIS FILE DOES NOT RECOGNISE, which sorts to chartPriorityUnproven
+//     and is therefore charted. If the game adds a waypoint type tomorrow we
+//     visit it rather than silently never looking — not being recognised is not
+//     evidence of being worthless.
+//
+// THE PREMISE IS FALSIFIABLE AND IS ACTIVELY CHECKED, which is what keeps this
+// from being an unexaminable blacklist. The claim "ASTEROID never holds a market
+// or a shipyard" is refuted by a single counter-example, and the fleet is
+// positioned to find one: it still holds 39,303 already-charted asteroids whose
+// traits it can see, and every charted market and yard it enumerates is checked
+// against this predicate at the point of enumeration. If an asteroid ever turns
+// up carrying either trait, the adapter logs it as an ERROR naming the waypoint
+// (see parkedsensing.WaypointCatalogPort). Skipping is a claim about evidence,
+// so it is wired to notice the evidence changing.
+func ChartSkippable(waypointType string) bool {
+	return ChartPriority(waypointType) == chartPriorityBarren
+}
+
 func ChartPriority(waypointType string) int {
 	switch waypointType {
 	case WaypointTypeOrbitalStation:

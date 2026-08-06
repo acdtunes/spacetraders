@@ -24,6 +24,8 @@ package parkedsensing_test
 import (
 	"context"
 	"encoding/json"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -32,8 +34,29 @@ import (
 
 	adapterSensing "github.com/andrescamacho/spacetraders-go/internal/adapters/parkedsensing"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
+	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	appSensing "github.com/andrescamacho/spacetraders-go/internal/application/parkedsensing"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
+
+// captureLogger records the container log so a test can assert on a line the
+// engine emits rather than on a return value it does not have.
+type captureLogger struct {
+	mu    sync.Mutex
+	lines []string
+}
+
+func (l *captureLogger) Log(level, message string, _ map[string]interface{}) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.lines = append(l.lines, level+" "+message)
+}
+
+func (l *captureLogger) text() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return strings.Join(l.lines, "\n")
+}
 
 // marketRow writes one persisted quote. The argument names are the PERSISTED
 // column meanings — from OUR side of the trade — which is exactly the naming the
@@ -292,15 +315,21 @@ func liveShapedSystem() []persistence.WaypointModel {
 	}
 }
 
-// THE REORDER, with the whole set still present.
+// THE REORDER, AND THE SKIP (sp-erdz7).
 //
-// Both halves of this assertion matter and neither is sufficient alone. The
-// ORDER is the speedup: the station comes first because a charted yard makes
-// the system buyable, then the market types so a parked scanner can be placed
-// on them and start producing trade data while the tour continues, then the
-// rest. The COMPLETENESS is the safety: all eight uncharted waypoints are still
-// handed to the seed, so the map still finishes.
-func TestUnchartedWaypoints_OrdersByValueWithoutDroppingAnyWaypoint(t *testing.T) {
+// Both halves matter and neither is sufficient alone. The ORDER is the original
+// speedup: the station comes first because a charted yard makes the system
+// buyable, then the market types so a parked scanner can be placed on them and
+// start producing trade data while the tour continues. The SKIP is the new one:
+// the three asteroids are gone from the work list entirely, on a census of 0
+// markets and 0 shipyards in 114,838 charted asteroids across two universes.
+//
+// GAS_GIANT SURVIVING IS THE LOAD-BEARING HALF of the skip assertion. It ranks
+// BELOW every market type and above only the asteroids, so a skip implemented as
+// "drop the last tier" or "drop anything below the market tier" would take it
+// too — and at 133 markets in 1,154 charted it is rare, not never. Its presence
+// here is what distinguishes skipping the BARREN tier from skipping the tail.
+func TestUnchartedWaypoints_OrdersByValueAndDropsOnlyTheBarrenTier(t *testing.T) {
 	db := newShipPortsDB(t)
 	require.NoError(t, db.Create(liveShapedSystem()).Error)
 
@@ -308,24 +337,27 @@ func TestUnchartedWaypoints_OrdersByValueWithoutDroppingAnyWaypoint(t *testing.T
 	require.NoError(t, err)
 
 	require.Equal(t, []string{
-		"X1-AA2-Z9", // ORBITAL_STATION — 523 of the 567 shipyards ever seen
+		"X1-AA2-Z9", // ORBITAL_STATION — 1084 of the 1102 shipyards seen in era 6
 		"X1-AA2-B1", // MOON        \
 		"X1-AA2-C1", // PLANET       > market-bearing, alphabetical within the tier
-		"X1-AA2-F1", // FUEL_STATION/  (1129 of 1129 carry a market)
-		"X1-AA2-D1", // GAS_GIANT — 72 of 546, unproven
-		"X1-AA2-A1", // ASTEROID  \
-		"X1-AA2-A2", // ASTEROID   > 0 of 3297, so last — but still charted
-		"X1-AA2-A3", // ASTEROID  /
+		"X1-AA2-F1", // FUEL_STATION/
+		"X1-AA2-D1", // GAS_GIANT — 133 of 1154: RARE, so still flown
 	}, order,
-		"the station must be visited FIRST despite sorting last alphabetically, and every asteroid must still be in the list")
+		"the station must be visited FIRST despite sorting last alphabetically, the gas giant must SURVIVE the skip, and no asteroid may appear")
 
-	require.Len(t, order, 8, "the tour is still EXHAUSTIVE: reordering must never drop a waypoint from it")
+	require.NotContains(t, order, "X1-AA2-A1", "ASTEROID is 0-for-114,838 and must not be charting work")
+	require.Len(t, order, 5, "three of the eight uncharted waypoints were asteroids and are now skipped")
 }
 
-// A system of nothing but asteroids is still a full tour. Barren is a sorting
-// tier, not an exemption — this is the shape of X1-KC84 (51 asteroids) and five
-// others, and every one of those waypoints is still charted.
-func TestUnchartedWaypoints_AnAllAsteroidSystemIsStillFullyToured(t *testing.T) {
+// THE ACCEPTANCE CRITERION: a system whose only remaining work is barren reaches
+// a TERMINAL charted state instead of being toured for fifty hours.
+//
+// This is the shape of X1-KC84 (51 asteroids) and five others, and before this
+// change each of them was ~50 hours of flying at ~1.1 waypoints/hr to discover
+// nothing. The count reaching ZERO is the whole point: verdictFor will not
+// durably write a system off until it does, so an empty work list alone would
+// not finish anything — it would pin the system PENDING forever.
+func TestUnchartedWaypoints_AnAllAsteroidSystemIsAlreadyComplete(t *testing.T) {
 	db := newShipPortsDB(t)
 	require.NoError(t, db.Create(&[]persistence.WaypointModel{
 		typedWaypointRow("X1-AA3-A2", "X1-AA3", "ASTEROID", []string{"UNCHARTED"}),
@@ -335,12 +367,12 @@ func TestUnchartedWaypoints_AnAllAsteroidSystemIsStillFullyToured(t *testing.T) 
 
 	order, err := port.UnchartedWaypoints(context.Background(), "X1-AA3")
 	require.NoError(t, err)
-	require.Equal(t, []string{"X1-AA3-A1", "X1-AA3-A2"}, order,
-		"both asteroids are toured, in a deterministic order — the seed still has work here")
+	require.Empty(t, order, "there is no charting work here worth a flight — the seed must stand down, not tour two barren rocks")
 
 	count, err := port.ListUnchartedCount(context.Background(), "X1-AA3")
 	require.NoError(t, err)
-	require.Equal(t, 2, count, "and the completion signal still counts them")
+	require.Zero(t, count,
+		"and the COMPLETION SIGNAL must agree. A zero work list with a non-zero count is the pinned-PENDING failure: the tour finishes, verdictFor never writes the system off, seedlessTargets keeps sending probes, and the frontier stalls behind it forever")
 }
 
 // THE COHERENCE INVARIANT, asserted directly rather than inferred.
@@ -354,11 +386,12 @@ func TestUnchartedWaypoints_AnAllAsteroidSystemIsStillFullyToured(t *testing.T) 
 // it probes endlessly, and since only IN_SCOPE/NO_WHITELIST systems propagate
 // the frontier, expansion stalled there permanently.
 //
-// A pure reorder cannot break this — the two reads see identical rows and differ
-// only in sequence — and that is precisely why it is worth pinning: it is the
-// property that would silently die the moment anyone turned this ordering into a
-// filter.
-func TestUnchartedReads_CountAndWorkListCoverTheSameSet(t *testing.T) {
+// THE ORDERING was safe here for free — two reads of identical rows differing
+// only in sequence. THE SKIP IS NOT, and this is now the test that earns it: the
+// filter had to land in the ONE function both reads share (unchartedIn), because
+// a filter applied to the work list alone breaks exactly this equality while
+// every ordering test in this file stays green.
+func TestUnchartedReads_CountAndWorkListCoverTheSameSetAfterTheSkip(t *testing.T) {
 	db := newShipPortsDB(t)
 	require.NoError(t, db.Create(liveShapedSystem()).Error)
 	port := newCatalogPort(db)
@@ -369,8 +402,17 @@ func TestUnchartedReads_CountAndWorkListCoverTheSameSet(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Equal(t, len(order), count,
-		"the completion signal must count exactly the waypoints a seed will be sent to, and nothing else")
-	require.Equal(t, 8, count, "eight uncharted waypoints, and the tour visits all eight")
+		"the completion signal must count exactly the waypoints a seed will be sent to, and nothing else. If the skip narrowed only the work list, this reads 5 != 8 — the pinned-PENDING failure")
+	require.Equal(t, 5, count,
+		"five non-barren uncharted waypoints; the three asteroids left BOTH reads together")
+
+	// NON-VACUITY: the fixture must actually contain skipped waypoints, or this
+	// equality holds trivially and says nothing about the filter being shared.
+	var total int64
+	require.NoError(t, db.Model(&persistence.WaypointModel{}).
+		Where("system_symbol = ? AND traits LIKE ?", "X1-AA2", "%UNCHARTED%").Count(&total).Error)
+	require.Equal(t, int64(8), total,
+		"the system must hold 8 uncharted rows of which 3 are skipped; with nothing skipped this test cannot see the two reads disagree")
 }
 
 // The barren tier must match the type EXACTLY. ASTEROID_BASE and
@@ -388,8 +430,10 @@ func TestUnchartedWaypoints_AsteroidPrefixedTypesRankWithTheMarkets(t *testing.T
 
 	order, err := newCatalogPort(db).UnchartedWaypoints(context.Background(), "X1-AA4")
 	require.NoError(t, err)
-	require.Equal(t, []string{"X1-AA4-B1", "X1-AA4-E1", "X1-AA4-A1"}, order,
-		"only the bare ASTEROID is barren; its two prefix-sharing cousins always carry a market and must be reached first")
+	require.Equal(t, []string{"X1-AA4-B1", "X1-AA4-E1"}, order,
+		"only the bare ASTEROID is barren; its two prefix-sharing cousins always carry a market and must SURVIVE the skip")
+	require.NotContains(t, order, "X1-AA4-A1",
+		"and the bare ASTEROID is skipped — a prefix-matched skip would have taken all three and silently dropped 100%-market-bearing types")
 }
 
 func TestListProbeYards_PricedFirstThenTraitFallback(t *testing.T) {
@@ -717,19 +761,19 @@ func TestUnchartedWaypoints_ChartsTheJumpGateBeforeAnyMarket(t *testing.T) {
 		"X1-AA4-B1",  // MOON        \
 		"X1-AA4-C1",  // PLANET       > market-bearing, alphabetical within the tier
 		"X1-AA4-F1",  // FUEL_STATION/
-		"X1-AA4-D1",  // GAS_GIANT — unproven
-		"X1-AA4-A1",  // ASTEROID \  0 of 3297, last — but still charted
-		"X1-AA4-A2",  // ASTEROID /
+		"X1-AA4-D1",  // GAS_GIANT — unproven, so still flown
 	}, order,
 		"the jump gate must be charted straight after the shipyard: it is the only waypoint that adds new SYSTEMS")
 
-	require.Len(t, order, 8, "the tour is still EXHAUSTIVE: a reorder must never drop a waypoint")
+	require.Len(t, order, 6, "the two asteroids are skipped (sp-erdz7); everything else is still charted")
 }
 
-// The set is a property of the rows, not of the ordering. Pinned separately from
-// the order above so a future tier change cannot quietly turn the reorder into a
-// filter — the owner asked for everything charted, not only the interesting parts.
-func TestUnchartedWaypoints_TheGateTierChangesOrderNotMembership(t *testing.T) {
+// MEMBERSHIP IS NOW A PROPERTY OF THE TYPE CENSUS, AND THE TWO READS MUST AGREE
+// ON IT (sp-erdz7). The gate TIER still changes only order — what removes rows is
+// ChartSkippable, applied once in unchartedIn so the count and the work list
+// narrow together. This test is the one that would catch a tier change quietly
+// becoming a second filter.
+func TestUnchartedWaypoints_TheGateTierChangesOrderAndOnlyBarrenChangesMembership(t *testing.T) {
 	db := newShipPortsDB(t)
 	rows := gatedSystem()
 	require.NoError(t, db.Create(rows).Error)
@@ -739,11 +783,17 @@ func TestUnchartedWaypoints_TheGateTierChangesOrderNotMembership(t *testing.T) {
 	require.NoError(t, err)
 
 	want := make([]string, 0, len(rows))
+	skipped := 0
 	for _, row := range rows {
+		if shared.ChartSkippable(row.Type) {
+			skipped++
+			continue
+		}
 		want = append(want, row.WaypointSymbol)
 	}
+	require.Positive(t, skipped, "fixture is inert: with nothing skipped this cannot tell membership from ordering")
 	require.ElementsMatch(t, want, order,
-		"every uncharted waypoint must still be handed to the seed, gate tier or not")
+		"every NON-BARREN uncharted waypoint must still be handed to the seed; the gate tier changes order, never membership")
 
 	// The completion signal and the work list read the same rows with no
 	// coordination between them, so the count must still equal the tour length —
@@ -920,4 +970,51 @@ func TestLastListingScan_CatalogueOnlyWithoutAProbeIsEvidenceOfNone(t *testing.T
 	require.NoError(t, err)
 	require.True(t, known)
 	require.False(t, sellsProbe, "the catalogue is complete and it does not list a probe")
+}
+
+// THE SKIP'S FALSIFIER FIRES (sp-erdz7). Skipping a type is a claim about
+// evidence, and a claim nothing can refute is a blacklist rather than evidence.
+// One counter-example refutes this one, and the fleet must SAY SO rather than
+// quietly keep not looking.
+//
+// The refutation is reachable despite the skip because it reads waypoints
+// ALREADY charted — 39,303 asteroids in the current era carry visible traits —
+// so no new flight is needed to notice the census changing.
+func TestListMarketWaypoints_ShoutsWhenABarrenTypeTurnsUpHoldingAMarket(t *testing.T) {
+	db := newShipPortsDB(t)
+	require.NoError(t, db.Create(&[]persistence.WaypointModel{
+		typedWaypointRow("X1-AA9-A1", "X1-AA9", "ASTEROID", []string{"MARKETPLACE"}),
+		typedWaypointRow("X1-AA9-M1", "X1-AA9", "MOON", []string{"MARKETPLACE"}),
+	}).Error)
+
+	logs := &captureLogger{}
+	ctx := common.WithLogger(context.Background(), logs)
+	markets, err := newCatalogPort(db).ListMarketWaypoints(ctx, "X1-AA9")
+	require.NoError(t, err)
+
+	// The market is still RETURNED. The premise being wrong is a reason to shout,
+	// never a reason to drop a real market on the floor.
+	require.Contains(t, markets, "X1-AA9-A1", "a refuting waypoint is still a usable market")
+
+	require.Contains(t, logs.text(), "Charting census REFUTED",
+		"an ASTEROID carrying a MARKETPLACE refutes the skip's premise and must be reported loudly")
+	require.Contains(t, logs.text(), "X1-AA9-A1", "the refutation must NAME the waypoint so it can be checked")
+}
+
+// AND STAYS SILENT OTHERWISE. A falsifier that fires on ordinary traffic is
+// noise, and noise is how a real refutation goes unnoticed.
+func TestListMarketWaypoints_SaysNothingWhenTheCensusHolds(t *testing.T) {
+	db := newShipPortsDB(t)
+	require.NoError(t, db.Create(&[]persistence.WaypointModel{
+		typedWaypointRow("X1-AB1-M1", "X1-AB1", "MOON", []string{"MARKETPLACE"}),
+		typedWaypointRow("X1-AB1-F1", "X1-AB1", "FUEL_STATION", []string{"MARKETPLACE"}),
+	}).Error)
+
+	logs := &captureLogger{}
+	ctx := common.WithLogger(context.Background(), logs)
+	_, err := newCatalogPort(db).ListMarketWaypoints(ctx, "X1-AB1")
+	require.NoError(t, err)
+
+	require.NotContains(t, logs.text(), "Charting census REFUTED",
+		"market-bearing types are exactly what the census predicts; reporting them as refutations would bury a real one")
 }
