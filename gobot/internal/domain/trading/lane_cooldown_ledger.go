@@ -90,6 +90,17 @@ func (l *LaneCooldownLedger) Accrue(key LaneKey, units, tradeVolume int, now tim
 	}
 }
 
+// TrancheDebt is the debt ONE full trade-volume purchase adds — the model's own unit of
+// compression, in the same dimensionless fraction Debt returns.
+//
+// It exists so a consumer pacing its purchases has a bound to compare against without
+// inventing a number: "this source still carries more than a single tranche's worth of
+// impact that has not decayed" is a statement in the model's own terms, and it moves with
+// the era coefficients rather than drifting apart from them.
+func (l *LaneCooldownLedger) TrancheDebt() float64 {
+	return l.buyImpact + l.sellImpact
+}
+
 // Debt returns the lane's live compression debt decayed forward to `now`: the stored
 // debt times exp(-dt/tau). An untracked lane (never traded, or fully decayed and
 // pruned) returns 0. Read-only — it does not mutate the entry.

@@ -11,6 +11,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing/gate"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
 )
 
 // GateTopologyResolver resolves this era's terminal factory for a gate material — the waypoint
@@ -211,6 +212,17 @@ func (h *RunConstructionCoordinatorHandler) SetGateFactory(topology GateFactoryT
 		return
 	}
 	h.factory = &gateFactory{topology: topology, buyer: buyer, feeder: feeder}
+}
+
+// SetSourceCooldown wires the fleet-shared compression ledger so the feeding leg paces itself
+// against sources it is draining, accrued from OUR OWN traded volume and decayed over time.
+//
+// Volume, not price, is what makes it safe: a baseline derived from the ask would rise as we push
+// the ask up and the guard would stop firing. This one cannot — no observed price enters it.
+//
+// Optional collaborator, like its siblings — nil leaves the leg byte-identical.
+func (h *RunConstructionCoordinatorHandler) SetSourceCooldown(ledger *trading.LaneCooldownLedger) {
+	h.sourceCooldown = ledger
 }
 
 // gateMaterial is one gate material WITH its live market quote. The quote is carried, not

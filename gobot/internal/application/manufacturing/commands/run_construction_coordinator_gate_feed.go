@@ -12,6 +12,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing/gate"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
 )
 
 // feedGateLeg runs one FACTORY hull's leg: flush, plan, resolve, buy, feed.
@@ -140,6 +141,15 @@ func (h *RunConstructionCoordinatorHandler) feedGateLeg(
 			"good": step.Input, "source": input.WaypointSymbol, "ship": lot.ship.ShipSymbol(), "action": "buy_acquired_nothing",
 		})
 		return h.completeOrDefer(ctx, leg)
+	}
+
+	// Record what this leg took out of the source so the next leg's consult can see it. Volume
+	// against the market's own depth is the whole input — no price — which is what keeps the
+	// baseline from ratcheting as the ask we are pushing up rises.
+	if h.sourceCooldown != nil {
+		h.sourceCooldown.Accrue(
+			trading.LaneKey{Source: input.WaypointSymbol, Dest: target.WaypointSymbol, Good: step.Input},
+			result.QuantityAcquired, input.TradeVolume, h.clock.Now())
 	}
 
 	// THE INPUT LIST IS WHAT THIS LEG BOUGHT FOR THIS FACTORY — step.Input alone — and NOT the
@@ -505,6 +515,9 @@ func (h *RunConstructionCoordinatorHandler) planGateFeed(
 	units int,
 ) (gate.FeedStep, *mfgServices.MarketLocatorResult, *mfgServices.MarketLocatorResult, bool) {
 	logger := common.LoggerFromContext(ctx)
+	// Steps the pacing consult passed over, kept across every material so the fallback below can
+	// feed the least-compressed rather than letting pacing stand the leg down.
+	var yielded []yieldedStep
 
 	for _, material := range gateMaterialsNeediestFirst(pipeline) {
 		plan := gate.PlanFeed(material.TradeSymbol(), h.factory.topology, gate.DefaultFeedDepthCap)
@@ -665,8 +678,60 @@ func (h *RunConstructionCoordinatorHandler) planGateFeed(
 					continue
 				}
 			}
+			// THE PACING CONSULT. A source still carrying more than one tranche's worth of undecayed
+			// compression yields this leg to a less-drained step and recovers meanwhile: this fleet is
+			// the only large buyer of some of these exports, so their ask is not an outside condition
+			// but the trace of our own last few legs.
+			//
+			// The subject is our OWN traded volume, never the observed price. A baseline read off the
+			// ask would rise as we push the ask up, and the guard would stop firing exactly when it
+			// was most needed.
+			//
+			// IT YIELDS, IT NEVER REFUSES. The step is remembered rather than dropped, and the
+			// fallback below feeds the least-compressed when nothing else survives — so pacing can
+			// reorder a leg but can never be the reason a factory goes unfed.
+			if h.sourceCooldown != nil {
+				key := trading.LaneKey{Source: source.WaypointSymbol, Dest: target.WaypointSymbol, Good: step.Input}
+				debt := h.sourceCooldown.Debt(key, h.clock.Now())
+				if debt > h.sourceCooldown.TrancheDebt() {
+					logger.Log("INFO", fmt.Sprintf("Gate factory: yielding the %s feed for the %s factory — this fleet still has %.0f%% of a tranche's compression standing on %s, so the leg takes a less-drained step and lets it recover", step.Input, step.Target, 100*debt/h.sourceCooldown.TrancheDebt(), source.WaypointSymbol), map[string]interface{}{
+						"good": step.Input, "target": step.Target, "source": source.WaypointSymbol,
+						"debt": debt, "reason": "source_compressed", "action": "step_yielded_pacing",
+					})
+					yielded = append(yielded, yieldedStep{step: step, source: source, target: target, debt: debt})
+					continue
+				}
+			}
 			return step, source, target, true
 		}
 	}
+	// PACING IS NEVER THE REASON NOTHING IS FED. Every survivor was yielded, so there is no
+	// less-drained step to take — feed the least-compressed rather than standing the leg down.
+	if best, ok := leastCompressed(yielded); ok {
+		logger.Log("INFO", fmt.Sprintf("Gate factory: every feedable step's source is compressed, so the leg takes the least-compressed — %s for the %s factory from %s", best.step.Input, best.step.Target, best.source.WaypointSymbol), map[string]interface{}{
+			"good": best.step.Input, "target": best.step.Target, "source": best.source.WaypointSymbol,
+			"debt": best.debt, "action": "pacing_fallback_least_compressed",
+		})
+		return best.step, best.source, best.target, true
+	}
 	return gate.FeedStep{}, nil, nil, false
+}
+
+// yieldedStep is one step the pacing consult passed over, kept for the fallback below.
+type yieldedStep struct {
+	step   gate.FeedStep
+	source *mfgServices.MarketLocatorResult
+	target *mfgServices.MarketLocatorResult
+	debt   float64
+}
+
+// leastCompressed returns the yielded step carrying the least standing compression.
+func leastCompressed(yielded []yieldedStep) (yieldedStep, bool) {
+	best, found := yieldedStep{}, false
+	for _, candidate := range yielded {
+		if !found || candidate.debt < best.debt {
+			best, found = candidate, true
+		}
+	}
+	return best, found
 }

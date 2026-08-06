@@ -17,6 +17,7 @@ import (
 	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/storage"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
 )
 
 // Type aliases matching the factory coordinator's pattern (the container command factory
@@ -180,6 +181,9 @@ type RunConstructionCoordinatorHandler struct {
 	// shared pinned buy, and the feed terminal. Wired by SetGateFactory; nil leaves the feeding
 	// leg off and the drain byte-identical to before.
 	factory *gateFactory
+	// sourceCooldown paces the feeding leg against sources this fleet is draining. Shared with
+	// the trade engine so both see one compression picture. Nil → pacing inert.
+	sourceCooldown *trading.LaneCooldownLedger
 	// roleMu guards roleSince, the reallocator's DWELL LEDGER: hull -> when THIS PROCESS last
 	// changed its role.
 	//

@@ -1056,6 +1056,11 @@ func run(cfg *config.Config) error {
 		constructionExecutor,
 		constructionExecutor,
 	)
+	// Source pacing — ARMED, and sharing the trade engine's ledger rather than keeping a second
+	// one. The feeding leg is the largest buyer of some exports in the system, so its own volume is
+	// a first-class part of the fleet's compression picture; a private ledger would let the two
+	// engines drain one market while each saw only half of it.
+	constructionCoordinatorHandler.SetSourceCooldown(laneCooldownLedger)
 	if err := mediator.RegisterHandler[*goodsCmd.RunConstructionCoordinatorCommand](med, constructionCoordinatorHandler); err != nil {
 		return fmt.Errorf("failed to register ConstructionCoordinator handler: %w", err)
 	}
