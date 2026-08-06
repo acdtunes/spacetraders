@@ -113,11 +113,16 @@ type MetricsSink interface {
 	// RecordZeroEffectAlarm fires when demand persisted but the coordinator bought nothing for
 	// zero_effect_alarm_ticks consecutive ticks — a fleet-level "stuck" signal, not per-class.
 	RecordZeroEffectAlarm()
-	// RecordHeavyReserve reports the per-tick heavy-trade facts: the derived
-	// reservation, the tag-independent owned-heavy census, and the cap in force. Emitted
-	// EVERY tick, whatever happens — a reserve recorded only when something changes cannot
-	// answer "is the fleet saving for a heavy, or stuck?".
-	RecordHeavyReserve(playerID string, reserve int64, owned, cap int)
+	// RecordHeavyReserve reports the per-tick heavy-trade facts: the credits actually WITHHELD,
+	// the ask being saved TOWARD, the tag-independent owned-heavy census, and the cap in force.
+	// Emitted EVERY tick, whatever happens — a reserve recorded only when something changes
+	// cannot answer "is the fleet saving for a heavy, or stuck?".
+	//
+	// RESERVE AND TARGET ARE BOTH REQUIRED, and the gap between them is the point (sp-zg71k).
+	// Since the hold became treasury-bounded, reserve=0 has TWO meanings — "nothing to save for"
+	// and "saving toward an ask this era is nowhere near" — and target is the only thing that
+	// tells them apart. Publishing the hold alone would make the bound invisible in every gauge.
+	RecordHeavyReserve(playerID string, reserve, target int64, owned, cap int)
 	// ObserveHeavyPricePremium reports what one heavy purchase paid above the cheapest KNOWN
 	// yard ask, in percent — the measured cost of buying at the cheapest yard WITH PRESENCE.
 	ObserveHeavyPricePremium(playerID string, paid, cheapestKnown int64)
@@ -138,8 +143,15 @@ type tickInputs struct {
 	// cargo-capacity safety net). heaviesOwnedOK=false ⇒ the heavy cap guard fails CLOSED.
 	heaviesOwned   int
 	heaviesOwnedOK bool
-	// heavyReserve is the derived hold-back for the NEXT heavy, computed ONCE per tick by
-	// common.HeavyReserve so every class in the tick judges the same number.
+	// heavyTarget is the ask the fleet is SAVING TOWARD for the next heavy, derived ONCE per
+	// tick by common.HeavyReserve. It is NOT a credit count any guard may subtract — see
+	// common.HeavyReserveTarget — and it is carried here only so the tick can publish what it
+	// is saving toward beside what it actually held.
+	heavyTarget common.HeavyReserveTarget
+	// heavyReserve is the CREDITS ACTUALLY WITHHELD toward heavyTarget at this tick's treasury,
+	// resolved ONCE by HeavyReserveTarget.HoldAt so every class in the tick judges the same
+	// number. Bounded by the treasury (sp-zg71k): an ask the fleet is nowhere near reaching
+	// withholds nothing rather than pushing every non-heavy class's spendable balance negative.
 	heavyReserve int64
 }
 
@@ -158,7 +170,7 @@ func (h *RunFleetAutosizerCoordinatorHandler) readTickInputs(ctx context.Context
 	// silently drifts).
 	if h.heavyYard != nil && in.heaviesOwnedOK {
 		if target, err := h.heavyYard.HeavyTarget(ctx, playerID); err == nil {
-			in.heavyReserve = common.HeavyReserve(common.HeavyReserveInputs{
+			in.heavyTarget = common.HeavyReserve(common.HeavyReserveInputs{
 				CapabilityOpen:  target.CapabilityOpen,
 				HeaviesOwned:    in.heaviesOwned,
 				HeavyCap:        cfg.HeavyCap,
@@ -170,6 +182,14 @@ func (h *RunFleetAutosizerCoordinatorHandler) readTickInputs(ctx context.Context
 		if c, ok, err := h.treasury.Treasury(ctx, playerID); err == nil {
 			in.treasury, in.treasuryOK = c, ok
 		}
+	}
+	// The hold is resolved AFTER the treasury read, because it is a judgement about the balance
+	// we actually have rather than about the yard (sp-zg71k). An UNREADABLE treasury withholds
+	// NOTHING — the same direction every other blind input takes here, and it authorises nothing:
+	// guardAffordability refuses every buy outright on an unreadable balance (RULINGS #4), so the
+	// released reserve reaches no spender.
+	if in.treasuryOK {
+		in.heavyReserve = in.heavyTarget.HoldAt(in.treasury)
 	}
 	if h.apiUtil != nil {
 		if u, ok, err := h.apiUtil.UtilizationPct(ctx); err == nil {

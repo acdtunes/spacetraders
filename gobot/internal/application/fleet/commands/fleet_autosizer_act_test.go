@@ -69,10 +69,14 @@ type recordingMetrics struct {
 	// emission, which is the property that matters: the series only distinguishes
 	// "saving" from "stuck" if it is always present.
 	heavyReserveCalls int
-	lastReserve       int64
-	lastOwned         int
-	lastCap           int
-	pricePremiums     [][2]int64
+	// lastReserve is the credits ACTUALLY withheld; lastTarget the ask they are withheld
+	// toward. Both are captured because since sp-zg71k they diverge, and a test that watched
+	// only the hold could not tell "out of reach, holding nothing" from "nothing to save for".
+	lastReserve   int64
+	lastTarget    int64
+	lastOwned     int
+	lastCap       int
+	pricePremiums [][2]int64
 	// The master-switch gauge (sp-k4wdd). sizingStates records EVERY tick's emission in order,
 	// so a test can assert both the value and that the series is continuous across a pause.
 	sizingStates []bool
@@ -85,9 +89,9 @@ func (m *recordingMetrics) RecordBlocked(class HullClass, guard GuardName) {
 	m.blockedGuards = append(m.blockedGuards, guard)
 }
 func (m *recordingMetrics) RecordZeroEffectAlarm() { m.alarm++ }
-func (m *recordingMetrics) RecordHeavyReserve(_ string, reserve int64, owned, cap int) {
+func (m *recordingMetrics) RecordHeavyReserve(_ string, reserve, target int64, owned, cap int) {
 	m.heavyReserveCalls++
-	m.lastReserve, m.lastOwned, m.lastCap = reserve, owned, cap
+	m.lastReserve, m.lastTarget, m.lastOwned, m.lastCap = reserve, target, owned, cap
 }
 func (m *recordingMetrics) ObserveHeavyPricePremium(_ string, paid, cheapestKnown int64) {
 	m.pricePremiums = append(m.pricePremiums, [2]int64{paid, cheapestKnown})

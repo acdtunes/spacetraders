@@ -119,12 +119,18 @@ func TestGuard_TreasuryFloor_ArithmeticNamesTheHeldReserve(t *testing.T) {
 // presenting as "the buyer looks fine, it just never buys".
 func TestReconcile_HeavyReserveStandsDownLightBuying(t *testing.T) {
 	// Treasury covers the light hull comfortably on its own, but NOT once a heavy is being saved
-	// for: 2,000,000 − 50,000 floor − 1,565,500 reserve = 384,500, short of 437,000 + 200,000.
+	// for: 1,150,000 − 50,000 floor − 700,000 reserve = 400,000, short of 437,000 + 200,000.
+	//
+	// THE FIXTURE IS IN THE SATURATED REGIME ON PURPOSE (sp-zg71k). A 700,000 ask against a
+	// 1,100,000 surplus is past the entry threshold and past saturation, so the hold is the FULL
+	// ask — byte-identical to what sp-fwk8z shipped, which is the behaviour this test is about.
+	// The out-of-reach regime, where the same wiring holds nothing, has its own test below; a
+	// fixture that straddled the two would prove neither.
 	newHandler := func(owned int) (*RunFleetAutosizerCoordinatorHandler, *recordingPurchaser) {
 		h, purchaser, _, _ := armedHandler(lightShortfall())
-		h.SetTreasuryReader(&fakeTreasury{credits: 2_000_000, ok: true})
+		h.SetTreasuryReader(&fakeTreasury{credits: 1_150_000, ok: true})
 		h.SetHeavyCensusReader(&fakeHeavyCensus{owned: owned})
-		h.SetHeavyYardReader(&fakeHeavyYard{price: 1_565_500, found: true})
+		h.SetHeavyYardReader(&fakeHeavyYard{price: 700_000, found: true})
 		return h, purchaser
 	}
 	cmd := func() *RunFleetAutosizerCoordinatorCommand {
@@ -173,6 +179,43 @@ func TestReconcile_HeavyReserveIsRecordedEveryTick(t *testing.T) {
 	}
 	if metrics.lastReserve != 1_565_500 || metrics.lastOwned != 2 || metrics.lastCap != 5 {
 		t.Fatalf("recorded reserve=%d owned=%d cap=%d, want 1565500/2/5", metrics.lastReserve, metrics.lastOwned, metrics.lastCap)
+	}
+	if metrics.lastTarget != 1_565_500 {
+		t.Fatalf("recorded target=%d, want 1565500 — the ask must be published beside the hold or a bounded 0 is unreadable", metrics.lastTarget)
+	}
+}
+
+// THE AUTOSIZER HALF OF THE sp-zg71k FIX. The reservation reaches EVERY non-heavy class through
+// guardAffordability's spendable term, so an ask the fleet cannot reach froze light, explorer and
+// warehouse buying exactly as it froze probe buying — treasury − 50,000 − 1,510,645 is negative
+// against a 372,000 balance, and no class clears a negative budget.
+//
+// The pair of assertions is the whole test: the buy proceeds AND the gauge still shows what is
+// being saved toward. A fix that simply stopped deriving the reserve would pass the first half and
+// leave the operator with no way to see that a heavy yard had been priced at all.
+func TestReconcile_OutOfReachHeavyDoesNotFreezeLightBuying(t *testing.T) {
+	const era5HeavyAsk = int64(1_510_645)
+
+	h, purchaser, metrics, _ := armedHandler(lightShortfall())
+	// The live numbers: a ~372k treasury against a ~1.5M ask. The light hull at 437,000 does not
+	// fit either, so the treasury is topped up to a level where the LIGHT buy is affordable and
+	// only the reservation could block it — otherwise the test would pass for the wrong reason.
+	h.SetTreasuryReader(&fakeTreasury{credits: 800_000, ok: true})
+	h.SetHeavyCensusReader(&fakeHeavyCensus{owned: 0})
+	h.SetHeavyYardReader(&fakeHeavyYard{price: era5HeavyAsk, found: true})
+	cmd := &RunFleetAutosizerCoordinatorCommand{PlayerID: 1, ContainerID: "c1", HeavyCap: intPtr(5)}
+
+	if _, err := h.reconcileOnce(context.Background(), cmd); err != nil {
+		t.Fatalf("reconcileOnce error: %v", err)
+	}
+	if len(purchaser.orders) != 1 {
+		t.Fatalf("a heavy ask the fleet is nowhere near reaching stood down light buying (%d buys, want 1) — that is the sp-zg71k freeze", len(purchaser.orders))
+	}
+	if metrics.lastReserve != 0 {
+		t.Fatalf("withheld %d toward an out-of-reach heavy, want 0", metrics.lastReserve)
+	}
+	if metrics.lastTarget != era5HeavyAsk {
+		t.Fatalf("target gauge reads %d, want %d — a bounded hold of 0 is indistinguishable from 'no heavy yard priced' without it", metrics.lastTarget, era5HeavyAsk)
 	}
 }
 

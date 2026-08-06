@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	fleetCmd "github.com/andrescamacho/spacetraders-go/internal/application/fleet/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/application/logging"
 	shipyardQueries "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/queries"
@@ -86,7 +87,7 @@ func TestHeavyReservePort_NoAutosizerContainerReservesNothing(t *testing.T) {
 	)
 	got, err := p.Reserve(ctx, 1)
 	require.NoError(t, err)
-	require.Equal(t, int64(0), got, "no autosizer container ⇒ no heavy buyer ⇒ nothing to reserve")
+	require.Equal(t, common.HeavyReserveTarget(0), got, "no autosizer container ⇒ no heavy buyer ⇒ nothing to reserve")
 	require.Empty(t, log.lines, "an absent autosizer is an expected configuration, not a fault — it must not warn")
 }
 
@@ -100,7 +101,7 @@ func TestHeavyReservePort_AbsentCapUsesTheCompiledDefault(t *testing.T) {
 	)
 	got, err := p.Reserve(ctx, 1)
 	require.NoError(t, err)
-	require.Equal(t, int64(1_565_500), got, "one under the default cap still has room, so a heavy is reserved")
+	require.Equal(t, common.HeavyReserveTarget(1_565_500), got, "one under the default cap still has room, so a heavy is reserved")
 
 	// At the default cap there is no room and the reserve drops — proving the DEFAULT is what bound it.
 	atCap, _, ctx2 := portWith(
@@ -110,7 +111,7 @@ func TestHeavyReservePort_AbsentCapUsesTheCompiledDefault(t *testing.T) {
 	)
 	got2, err := atCap.Reserve(ctx2, 1)
 	require.NoError(t, err)
-	require.Equal(t, int64(0), got2)
+	require.Equal(t, common.HeavyReserveTarget(0), got2)
 }
 
 // LADDER 3: a present (live-tuned) heavy_cap is what binds — the whole point of reading the config.
@@ -124,7 +125,7 @@ func TestHeavyReservePort_PresentCapWins(t *testing.T) {
 	)
 	got, err := p.Reserve(ctx, 1)
 	require.NoError(t, err)
-	require.Equal(t, int64(0), got, "the tuned cap must bind, not the compiled default")
+	require.Equal(t, common.HeavyReserveTarget(0), got, "the tuned cap must bind, not the compiled default")
 }
 
 // LADDER 4: an UNREADABLE heavy_cap resolves to the DOCUMENTED DEFAULT — the same value the
@@ -151,7 +152,7 @@ func TestHeavyReservePort_UnreadableCapFallsBackToTheDocumentedDefaultAndWarns(t
 	)
 	got, err := p.Reserve(ctx, 1)
 	require.NoError(t, err, "a config read failure must not halt probe buying")
-	require.Equal(t, int64(1_565_500), got, "an unreadable cap must not silently stop the fleet saving for a heavy")
+	require.Equal(t, common.HeavyReserveTarget(1_565_500), got, "an unreadable cap must not silently stop the fleet saving for a heavy")
 	require.Len(t, log.lines, 1, "an unresolvable heavy_cap MUST still be loud — the operator has a container read to investigate")
 	require.Contains(t, log.lines[0], "heavy_cap", "the warning must name the knob that could not be resolved")
 
@@ -164,7 +165,7 @@ func TestHeavyReservePort_UnreadableCapFallsBackToTheDocumentedDefaultAndWarns(t
 	)
 	got2, err := atCap.Reserve(capCtx, 1)
 	require.NoError(t, err)
-	require.Equal(t, int64(0), got2, "the fallback must be the documented cap, not an unbounded one")
+	require.Equal(t, common.HeavyReserveTarget(0), got2, "the fallback must be the documented cap, not an unbounded one")
 }
 
 // A CANCELLED TICK IS A SHUTDOWN, NOT A FAULT — it reserves nothing and says nothing.
@@ -221,7 +222,7 @@ func TestHeavyReservePort_CancelledTickIsSilent(t *testing.T) {
 
 			got, err := p.Reserve(ctx, 1)
 			require.NoError(t, err)
-			require.Equal(t, int64(0), got, "an abandoned tick buys nothing either way, so it reserves nothing")
+			require.Equal(t, common.HeavyReserveTarget(0), got, "an abandoned tick buys nothing either way, so it reserves nothing")
 			require.Empty(t, log.lines, "abandoned work must not raise the one alarm that means the feature is broken")
 		})
 	}
@@ -255,7 +256,7 @@ func TestHeavyReservePort_CensusErrorReservesNothingAndWarns(t *testing.T) {
 	)
 	got, err := p.Reserve(ctx, 1)
 	require.NoError(t, err, "an unreadable census must not halt probe buying — the autosizer keeps spending on lights either way")
-	require.Equal(t, int64(0), got, "a blind reserve is reserve 0, not a held one")
+	require.Equal(t, common.HeavyReserveTarget(0), got, "a blind reserve is reserve 0, not a held one")
 	require.Len(t, log.lines, 1, "reserving nothing because we are BLIND must be visible — a silent zero reads as 'nothing to save for'")
 	require.Contains(t, log.lines[0], "census", "the warning must name which read went blind")
 	require.Contains(t, log.lines[0], "ships table unreadable", "the warning must carry the underlying error")
@@ -275,7 +276,7 @@ func TestHeavyReservePort_YardErrorReservesNothingAndWarns(t *testing.T) {
 	)
 	got, err := p.Reserve(ctx, 1)
 	require.NoError(t, err, "an unreadable yard surface must not halt probe buying")
-	require.Equal(t, int64(0), got)
+	require.Equal(t, common.HeavyReserveTarget(0), got)
 	require.Len(t, log.lines, 1, "a blind yard read must be visible, not a silent zero")
 	require.Contains(t, log.lines[0], "yard", "the warning must name which read went blind")
 	require.Contains(t, log.lines[0], "shipyard inventory unreadable", "the warning must carry the underlying error")
@@ -303,7 +304,7 @@ func TestHeavyReservePort_NoTargetYardReservesNothing(t *testing.T) {
 
 			got, err := p.Reserve(ctx, 1)
 			require.NoError(t, err)
-			require.Equal(t, int64(0), got)
+			require.Equal(t, common.HeavyReserveTarget(0), got)
 		})
 	}
 }
@@ -323,7 +324,7 @@ func TestHeavyReservePort_NoTargetYardReservesNothing(t *testing.T) {
 // it must drop to zero, releasing the treasury back to expansion for good.
 func TestHeavyReservePort_ReservesOneHeavyAtATimeThenReleasesAtTheCap(t *testing.T) {
 	const heavyCap = 5
-	const ask = int64(1_565_500)
+	const ask = common.HeavyReserveTarget(1_565_500)
 
 	for owned := 0; owned < heavyCap; owned++ {
 		p, _, ctx := portWith(
@@ -349,6 +350,6 @@ func TestHeavyReservePort_ReservesOneHeavyAtATimeThenReleasesAtTheCap(t *testing
 		)
 		got, err := p.Reserve(ctx, 1)
 		require.NoError(t, err)
-		require.Equal(t, int64(0), got, "owned=%d at cap %d: the reserve must release the treasury to expansion", owned, heavyCap)
+		require.Equal(t, common.HeavyReserveTarget(0), got, "owned=%d at cap %d: the reserve must release the treasury to expansion", owned, heavyCap)
 	}
 }

@@ -128,8 +128,11 @@ func (h *RunProbeSensingCoordinatorHandler) heartbeat(ctx context.Context, cmd *
 		held = "expansion switch: expansion_enabled is off, so no probe is bought"
 	case hb.buy.CapHeld:
 		held = "probe cap"
-	case hb.buy.FloorHeld && hb.buy.HeavyReserve > 0:
-		held = fmt.Sprintf("buy floor, %d reserved for the next heavy", hb.buy.HeavyReserve)
+	case hb.buy.FloorHeld && hb.buy.HeavyReserveHeld > 0:
+		// The HELD figure, never the target: since sp-zg71k the two differ, and naming the
+		// target here would tell an operator 1.5M was withheld when the floor took a fraction
+		// of it. The target is carried in the structured payload beside it.
+		held = fmt.Sprintf("buy floor, %d of a %d heavy reserved", hb.buy.HeavyReserveHeld, hb.buy.HeavyReserveTarget)
 	case hb.buy.FloorHeld:
 		held = "buy floor"
 	case hb.buy.HaltedPriceDrift:
@@ -215,11 +218,16 @@ func (h *RunProbeSensingCoordinatorHandler) heartbeat(ctx context.Context, cmd *
 			"buy_spending_paused": hb.buy.SpendingPaused,
 			"buy_cap_held":        hb.buy.CapHeld,
 			"buy_floor_held":      hb.buy.FloorHeld,
-			// Credits held back for the NEXT heavy. Non-zero beside buy_floor_held
-			// means "saving for a heavy", NOT "sensing is broken" — the one signal
-			// that tells those two apart (spec risk 3).
-			"buy_heavy_reserve": hb.buy.HeavyReserve,
-			"buy_price_drift":   hb.buy.HaltedPriceDrift,
+			// Credits ACTUALLY held back for the NEXT heavy. Non-zero beside
+			// buy_floor_held means "saving for a heavy", NOT "sensing is broken" — the
+			// one signal that tells those two apart (spec risk 3).
+			"buy_heavy_reserve": hb.buy.HeavyReserveHeld,
+			// The ask being saved TOWARD. Zero held beside a positive target is the
+			// treasury bound working (sp-zg71k): the heavy is out of reach this era, so
+			// nothing is withheld for it and probe buying runs at full speed. Without
+			// this field that state is indistinguishable from "no heavy yard is priced".
+			"buy_heavy_reserve_target": int64(hb.buy.HeavyReserveTarget),
+			"buy_price_drift":          hb.buy.HaltedPriceDrift,
 			// Claims handed back because their system lost IN_SCOPE — the other
 			// half of buy_queued, not a count of abandoned placements.
 			"buy_reaped":       hb.reap.Reaped,

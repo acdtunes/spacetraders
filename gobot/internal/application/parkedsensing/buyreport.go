@@ -1,5 +1,7 @@
 package parkedsensing
 
+import "github.com/andrescamacho/spacetraders-go/internal/application/common"
+
 // BuyStep names which half of the purchase path refused. The two are worth telling
 // apart because they fail for different reasons and call for different operator
 // responses: a QUOTE refusal is the yard (out of stock, unpriced listing, an API
@@ -74,11 +76,28 @@ type BuyReport struct {
 	// refusal. A tick with Attempts > 0 and Bought == 0 and no Refusals is a
 	// contradiction — every path that burns an attempt without buying records one.
 	Refusals []BuyRefusal
-	// HeavyReserve is the credits held back for the next heavy this tick. While a
-	// heavy accumulates probe buying stops, which on a thin treasury looks identical
-	// to sensing having died: a non-zero value here beside FloorHeld says "saving for
-	// a heavy" rather than "something is wrong".
-	HeavyReserve int64
+	// HeavyReserveTarget is the ASK the fleet is saving toward for the next heavy —
+	// what the target yard charges, not what was withheld. Published on EVERY return
+	// path, including the ones that stop before a floor is built.
+	//
+	// RENAMED FROM HeavyReserve (sp-zg71k) rather than quietly re-pointed. The field
+	// used to be both numbers at once because the hold WAS the ask; now that the hold
+	// is treasury-bounded they diverge, and every reader has to say which one it meant.
+	HeavyReserveTarget common.HeavyReserveTarget
+	// HeavyReserveHeld is the credits actually held back for the next heavy this tick —
+	// HeavyReserveTarget.HoldAt(live treasury). While a heavy accumulates probe buying
+	// stands down, which on a thin treasury looks identical to sensing having died: a
+	// non-zero value here beside FloorHeld says "saving for a heavy" rather than
+	// "something is wrong".
+	//
+	// ZERO WHILE HeavyReserveTarget IS POSITIVE is a real and expected state, not a
+	// contradiction: the ask is out of reach this era, so nothing is withheld toward it
+	// and probe buying runs at full speed. That pair is precisely what sp-zg71k exists to
+	// make visible — the alternative was a floor above the balance and a frozen fleet.
+	//
+	// It is 0 on every path that never priced a tick (paused, nothing queued, probe cap
+	// held): no floor was built, so no credits were held from anything.
+	HeavyReserveHeld int64
 	// SpendingPaused reports that the operator's expansion switch is off, so this tick
 	// made no purchase at all — see BuyKnobs.SpendEnabled.
 	//

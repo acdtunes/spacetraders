@@ -72,6 +72,6 @@ func TestObserveHeavyPricePremium_CheapestPaidIsZeroPercent(t *testing.T) {
 // (RULINGS #4 — metrics are pure observation).
 func TestHeavyMetrics_NilCollectorIsSafe(t *testing.T) {
 	var c *FleetAutosizerMetricsCollector
-	c.RecordHeavyReserve("1", 1_565_500, 2, 5)
+	c.RecordHeavyReserve("1", 1_565_500, 1_565_500, 2, 5)
 	c.ObserveHeavyPricePremium("1", 1_565_500, 1_500_000)
 }

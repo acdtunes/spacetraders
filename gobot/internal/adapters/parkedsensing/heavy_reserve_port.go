@@ -19,8 +19,15 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
-// HeavyReservePort computes the credits sensing holds back for the next heavy purchase, so probe
-// buying stands down while a heavy accumulates and resumes the moment it lands.
+// HeavyReservePort resolves the ASK sensing is saving toward for the next heavy purchase, so probe
+// buying can stand down while a heavy accumulates and resume the moment it lands.
+//
+// IT RESOLVES THE TARGET, NOT THE HOLD (sp-zg71k). The credits actually withheld are
+// common.HeavyReserveTarget.HoldAt(treasury), applied by the drain at the point the live balance
+// is known. The split is deliberate and load-bearing here: every read behind this port is a LOCAL
+// DB query, which is what lets DrainBuyQueue call it ahead of every network gate so a tick with
+// nothing to buy costs no API call. A treasury read inside this port would put a (ledger-first,
+// live-fallback) credits call on every sensing tick, including the ones that buy nothing.
 //
 // It DERIVES the answer every tick from durable facts and stores nothing — the same three tables
 // the fleet autosizer reads, plus the autosizer's own persisted heavy_cap. Reading that cap is
@@ -108,7 +115,7 @@ func NewHeavyReservePort(census heavyCensusCounter, yards heavyYardPricer, caps 
 // The error return is kept deliberately: it is the HeavyReserveReader contract, and DrainBuyQueue
 // still fails CLOSED on any reader that does surface one. This implementation simply never needs
 // to, because "cannot tell" has a well-defined answer here, and it is zero.
-func (p *HeavyReservePort) Reserve(ctx context.Context, playerID int) (int64, error) {
+func (p *HeavyReservePort) Reserve(ctx context.Context, playerID int) (common.HeavyReserveTarget, error) {
 	heavyCap, capOK := p.resolveHeavyCap(ctx, playerID)
 	if !capOK {
 		// No autosizer, or one that cannot spend ⇒ no heavy buyer ⇒ nothing to save for.

@@ -1355,17 +1355,18 @@ func TestDrain_MissingActualPriceIsNotAFreeHull(t *testing.T) {
 
 // --- the heavy reservation in the probe-buy floor (sp-fwk8z T3) ---------------
 
-// fakeHeavyReserve is the derived hold-back for the next heavy. err ⇒ unreadable ⇒ fail closed:
-// buying probes against an unknown reserve could spend the treasury a heavy is accumulating.
+// fakeHeavyReserve is the ASK the fleet is saving toward for the next heavy — the TARGET, not the
+// hold: the drain bounds it against the live treasury itself (sp-zg71k). err ⇒ unreadable ⇒ fail
+// closed: buying probes against an unknown reserve could spend the treasury a heavy is accumulating.
 type fakeHeavyReserve struct {
-	reserve int64
-	err     error
-	calls   int
+	target common.HeavyReserveTarget
+	err    error
+	calls  int
 }
 
-func (f *fakeHeavyReserve) Reserve(_ context.Context, _ int) (int64, error) {
+func (f *fakeHeavyReserve) Reserve(_ context.Context, _ int) (common.HeavyReserveTarget, error) {
 	f.calls++
-	return f.reserve, f.err
+	return f.target, f.err
 }
 
 // THE PARTITION, END TO END. This is the accumulate-then-resume cycle the whole design exists for:
@@ -1379,7 +1380,7 @@ func TestDrain_HeavyReserveRaisesTheFloorThenReleasesIt(t *testing.T) {
 	// capexKnobs floor = 750_000; treasury 780_000 − 23_540 probe = 756_460, which clears it.
 	// A 10_000 reserve lifts the floor to 760_000 and the same buy no longer clears.
 	held, _, heldPur, _ := oneFillPorts(780_000)
-	held.HeavyReserve = &fakeHeavyReserve{reserve: 10_000}
+	held.HeavyReserve = &fakeHeavyReserve{target: 10_000}
 
 	rep, err := DrainBuyQueue(context.Background(), held, testPlayerID, capexKnobs, fixedClock{time.Unix(1_700_000_000, 0)})
 	if err != nil {
@@ -1396,7 +1397,7 @@ func TestDrain_HeavyReserveRaisesTheFloorThenReleasesIt(t *testing.T) {
 	// half is what proves the treasury was never the blocker — expansion resumes, it is not
 	// permanently taxed.
 	released, _, releasedPur, _ := oneFillPorts(780_000)
-	released.HeavyReserve = &fakeHeavyReserve{reserve: 0}
+	released.HeavyReserve = &fakeHeavyReserve{target: 0}
 
 	if _, err := DrainBuyQueue(context.Background(), released, testPlayerID, capexKnobs, fixedClock{time.Unix(1_700_000_000, 0)}); err != nil {
 		t.Fatalf("DrainBuyQueue returned error: %v", err)
@@ -1411,7 +1412,7 @@ func TestDrain_HeavyReserveRaisesFloorExactly(t *testing.T) {
 	// Treasury 780_000 − 23_540 = 756_460 spendable against a 750_000 base floor: 6_460 of slack.
 	// A 6_460 reserve is exactly affordable; 6_461 is one credit too much.
 	exact, _, exactPur, _ := oneFillPorts(780_000)
-	exact.HeavyReserve = &fakeHeavyReserve{reserve: 6_460}
+	exact.HeavyReserve = &fakeHeavyReserve{target: 6_460}
 	if _, err := DrainBuyQueue(context.Background(), exact, testPlayerID, capexKnobs, fixedClock{time.Unix(1_700_000_000, 0)}); err != nil {
 		t.Fatalf("DrainBuyQueue returned error: %v", err)
 	}
@@ -1420,7 +1421,7 @@ func TestDrain_HeavyReserveRaisesFloorExactly(t *testing.T) {
 	}
 
 	oneShort, _, shortPur, _ := oneFillPorts(780_000)
-	oneShort.HeavyReserve = &fakeHeavyReserve{reserve: 6_461}
+	oneShort.HeavyReserve = &fakeHeavyReserve{target: 6_461}
 	if _, err := DrainBuyQueue(context.Background(), oneShort, testPlayerID, capexKnobs, fixedClock{time.Unix(1_700_000_000, 0)}); err != nil {
 		t.Fatalf("DrainBuyQueue returned error: %v", err)
 	}
@@ -1444,7 +1445,7 @@ func TestDrain_HeavyReserveRaisesFloorExactly(t *testing.T) {
 // unobservable from here — this test substitutes the port wholesale, so Reserve never runs.
 func TestDrain_BlindReserveReadsZeroAndBuyingProceeds(t *testing.T) {
 	ports, _, pur, _ := oneFillPorts(780_000)
-	ports.HeavyReserve = &fakeHeavyReserve{reserve: 0}
+	ports.HeavyReserve = &fakeHeavyReserve{target: 0}
 
 	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, capexKnobs, fixedClock{time.Unix(1_700_000_000, 0)})
 	if err != nil {
@@ -1453,8 +1454,8 @@ func TestDrain_BlindReserveReadsZeroAndBuyingProceeds(t *testing.T) {
 	if len(pur.buys) != 1 {
 		t.Fatalf("bought %d probes on a zero reserve, want 1 — probe buying must proceed when the reserve cannot be computed", len(pur.buys))
 	}
-	if rep.HeavyReserve != 0 {
-		t.Fatalf("report says HeavyReserve=%d, want 0 — the heartbeat must show nothing held, which is what the port's WARN explains", rep.HeavyReserve)
+	if rep.HeavyReserveTarget != 0 {
+		t.Fatalf("report says HeavyReserveTarget=%d, want 0 — the heartbeat must show nothing held, which is what the port's WARN explains", rep.HeavyReserveTarget)
 	}
 	if rep.FloorHeld {
 		t.Fatalf("a zero reserve must not hold the floor: %+v", rep)
@@ -1506,7 +1507,7 @@ func TestDrain_ReportsHeavyReserveOnEveryEarlyReturn(t *testing.T) {
 	t.Run("probe cap held", func(t *testing.T) {
 		ports, led, pur, _ := oneFillPorts(5_000_000)
 		led.owned = int64(capexKnobs.ProbeCap) // at the cap ⇒ returns before the floor is built
-		ports.HeavyReserve = &fakeHeavyReserve{reserve: 1_565_500}
+		ports.HeavyReserve = &fakeHeavyReserve{target: 1_565_500}
 
 		rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, capexKnobs, fixedClock{time.Unix(1_700_000_000, 0)})
 		if err != nil {
@@ -1518,15 +1519,15 @@ func TestDrain_ReportsHeavyReserveOnEveryEarlyReturn(t *testing.T) {
 		if len(pur.buys) != 0 {
 			t.Fatalf("bought %d probes at the probe cap, want 0", len(pur.buys))
 		}
-		if rep.HeavyReserve != 1_565_500 {
-			t.Fatalf("report says HeavyReserve=%d at the probe cap, want 1565500 — the heartbeat reads 0 while a reserve is outstanding and disagrees with the autosizer gauge", rep.HeavyReserve)
+		if rep.HeavyReserveTarget != 1_565_500 {
+			t.Fatalf("report says HeavyReserveTarget=%d at the probe cap, want 1565500 — the heartbeat reads 0 while a reserve is outstanding and disagrees with the autosizer gauge", rep.HeavyReserveTarget)
 		}
 	})
 
 	t.Run("no candidates", func(t *testing.T) {
 		ports, led, pur, _ := oneFillPorts(5_000_000)
 		led.slots = nil // nothing WANTED or QUEUED ⇒ returns before any money read
-		ports.HeavyReserve = &fakeHeavyReserve{reserve: 1_565_500}
+		ports.HeavyReserve = &fakeHeavyReserve{target: 1_565_500}
 
 		rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, capexKnobs, fixedClock{time.Unix(1_700_000_000, 0)})
 		if err != nil {
@@ -1538,8 +1539,8 @@ func TestDrain_ReportsHeavyReserveOnEveryEarlyReturn(t *testing.T) {
 		if len(pur.buys) != 0 {
 			t.Fatalf("bought %d probes with nothing queued, want 0", len(pur.buys))
 		}
-		if rep.HeavyReserve != 1_565_500 {
-			t.Fatalf("report says HeavyReserve=%d on an empty queue, want 1565500", rep.HeavyReserve)
+		if rep.HeavyReserveTarget != 1_565_500 {
+			t.Fatalf("report says HeavyReserveTarget=%d on an empty queue, want 1565500", rep.HeavyReserveTarget)
 		}
 	})
 }
@@ -1554,6 +1555,11 @@ func TestDrain_ReportsHeavyReserveOnEveryEarlyReturn(t *testing.T) {
 //     second copy fails the suite rather than the economics;
 //   - TestDrain_ReserveMatchesTheSharedPredicate — this test — pins the CALLER, so nobody can
 //     massage the number on its way into the floor.
+//
+// BOTH HALVES are pinned since sp-zg71k: the target from common.HeavyReserve and the treasury
+// bound from HeavyReserveTarget.HoldAt. Re-deriving either one here — "the ask, capped at the
+// surplus", say — is the drift these tests exist to catch, and the second half is now the one
+// carrying the money decision.
 func TestDrain_ReserveMatchesTheSharedPredicate(t *testing.T) {
 	in := common.HeavyReserveInputs{
 		CapabilityOpen:  true,
@@ -1561,17 +1567,61 @@ func TestDrain_ReserveMatchesTheSharedPredicate(t *testing.T) {
 		HeavyCap:        5,
 		TargetYardPrice: 1_565_500,
 	}
-	want := common.HeavyReserve(in)
+	target := common.HeavyReserve(in)
+	if target != 1_565_500 {
+		t.Fatalf("shared predicate returned %d, want the target yard ask 1565500", target)
+	}
+
+	// A treasury comfortably past saturation, so the hold is the whole ask and the assertion is
+	// about the WIRING rather than about the bound (the bound has its own tests).
+	const treasury = int64(10_000_000)
+	want := target.HoldAt(treasury)
 	if want != 1_565_500 {
-		t.Fatalf("shared predicate returned %d, want the target yard ask 1565500", want)
+		t.Fatalf("shared bound held %d at a %d treasury, want the full ask 1565500", want, treasury)
 	}
 
 	// The floor the queue builds with that reserve must equal the floor built by adding the
 	// shared predicate's own answer to the capex term — no scaling, no rounding, no second rule.
 	got := domainSensing.ProbeBuyFloor(common.ImmutableReserveFloor, capexKnobs.CapexReserve+want, 0, 0)
-	expected := domainSensing.ProbeBuyFloor(common.ImmutableReserveFloor, capexKnobs.CapexReserve+common.HeavyReserve(in), 0, 0)
+	expected := domainSensing.ProbeBuyFloor(common.ImmutableReserveFloor, capexKnobs.CapexReserve+common.HeavyReserve(in).HoldAt(treasury), 0, 0)
 	if got != expected {
 		t.Fatalf("floor built from the sensing path = %d, from the shared predicate = %d — the two have diverged", got, expected)
+	}
+}
+
+// THE SENSING HALF OF THE sp-zg71k FIX, end to end through the real drain: a priced heavy whose ask
+// this era cannot reach must not stop probe buying, and the floor must carry NO heavy term at all.
+//
+// The numbers are the live ones. Era-5 evidence puts a heavy at 1,510,645. Before the bound, the
+// drain added that ask verbatim to its capex term and the probe-buy floor became 2,260,645 against
+// a 780,000 treasury — every subsequent tick FloorHeld, forever, with the fleet that earns the
+// difference standing still. The freeze armed itself on SUCCESS: it needed nothing but a probe
+// landing on one of the 46 known heavy-selling yards and reading its price.
+//
+// It asserts the pair, not just the buy. HeavyReserveTarget positive beside HeavyReserveHeld zero
+// is the state the fix creates and the one an operator has to be able to read: "saving toward a
+// heavy we are nowhere near, and therefore withholding nothing for it".
+func TestDrain_OutOfReachHeavyDoesNotFreezeProbeBuying(t *testing.T) {
+	const era5HeavyAsk = common.HeavyReserveTarget(1_510_645)
+
+	ports, _, pur, _ := oneFillPorts(780_000)
+	ports.HeavyReserve = &fakeHeavyReserve{target: era5HeavyAsk}
+
+	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, capexKnobs, fixedClock{time.Unix(1_700_000_000, 0)})
+	if err != nil {
+		t.Fatalf("DrainBuyQueue returned error: %v", err)
+	}
+	if len(pur.buys) != 1 {
+		t.Fatalf("bought %d probes with an out-of-reach heavy priced, want 1 — this is the sp-zg71k freeze", len(pur.buys))
+	}
+	if rep.FloorHeld {
+		t.Fatalf("FloorHeld with an out-of-reach heavy: %+v", rep)
+	}
+	if rep.HeavyReserveTarget != era5HeavyAsk {
+		t.Fatalf("report says target %d, want %d — the ask must still be published, or the operator cannot see what is being saved toward", rep.HeavyReserveTarget, era5HeavyAsk)
+	}
+	if rep.HeavyReserveHeld != 0 {
+		t.Fatalf("report says %d held toward an ask the treasury is nowhere near, want 0", rep.HeavyReserveHeld)
 	}
 }
 

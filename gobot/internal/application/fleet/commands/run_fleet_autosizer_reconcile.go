@@ -190,7 +190,7 @@ func (h *RunFleetAutosizerCoordinatorHandler) reconcileOnce(ctx context.Context,
 	// "saving for a heavy" from "the buyer is stuck", and it is only useful if it is
 	// always present.
 	if h.metrics != nil {
-		h.metrics.RecordHeavyReserve(strconv.Itoa(cmd.PlayerID), in.heavyReserve, in.heaviesOwned, cfg.HeavyCap)
+		h.metrics.RecordHeavyReserve(strconv.Itoa(cmd.PlayerID), in.heavyReserve, int64(in.heavyTarget), in.heaviesOwned, cfg.HeavyCap)
 	}
 
 	// The heavy-yard PRICING ERRAND, run BEFORE any class sizes.

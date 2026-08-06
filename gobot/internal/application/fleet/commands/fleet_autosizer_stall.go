@@ -168,9 +168,9 @@ func (t *blockedGuardTap) RecordZeroEffectAlarm() {
 	}
 }
 
-func (t *blockedGuardTap) RecordHeavyReserve(playerID string, reserve int64, owned, capacity int) {
+func (t *blockedGuardTap) RecordHeavyReserve(playerID string, reserve, target int64, owned, capacity int) {
 	if t.inner != nil {
-		t.inner.RecordHeavyReserve(playerID, reserve, owned, capacity)
+		t.inner.RecordHeavyReserve(playerID, reserve, target, owned, capacity)
 	}
 }
 

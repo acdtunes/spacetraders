@@ -226,7 +226,7 @@ func TestBlockedGuardTapIsNilInnerSafe(t *testing.T) {
 	tap.RecordPurchase(HullClassLight)
 	tap.RecordBlocked(HullClassLight, GuardPrice)
 	tap.RecordZeroEffectAlarm()
-	tap.RecordHeavyReserve("5", 100, 0, 5)
+	tap.RecordHeavyReserve("5", 100, 1_000, 0, 5)
 	tap.ObserveHeavyPricePremium("5", 100, 90)
 }
 

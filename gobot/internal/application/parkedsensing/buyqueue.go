@@ -19,6 +19,10 @@ type drainState struct {
 	floor    int64
 	owned    int64
 	probeCap int64
+	// heavyHold is the slice of `floor` that is the heavy reservation — carried out of the
+	// pricing step so the report can publish what was actually withheld beside what the fleet is
+	// saving toward. Reporting only, never re-added to the floor.
+	heavyHold int64
 }
 
 // DrainBuyQueue fills as many wanted placements as the treasury and the probe
@@ -49,16 +53,19 @@ func DrainBuyQueue(
 		clock = shared.NewRealClock()
 	}
 
-	// The heavy reservation is read FIRST, ahead of every gate, so rep.HeavyReserve is populated on
-	// EVERY return path — including the two that stop before a floor is built (nothing queued, and
-	// the probe cap held). It is published beside the autosizer's own per-tick gauge and the two must
-	// not disagree merely because a tick took a short path. It does not break the cheapest-first
-	// ordering below: all three reads behind this port are LOCAL DB queries, never an API call.
-	heavyReserve, err := readHeavyReserve(ctx, p, playerID)
+	// The heavy TARGET is read FIRST, ahead of every gate, so rep.HeavyReserveTarget is populated
+	// on EVERY return path — including the two that stop before a floor is built (nothing queued,
+	// and the probe cap held). It is published beside the autosizer's own per-tick gauge and the two
+	// must not disagree merely because a tick took a short path. It does not break the
+	// cheapest-first ordering below: all three reads behind this port are LOCAL DB queries, never an
+	// API call — which is exactly why the treasury bound is NOT applied here. The credits actually
+	// withheld are resolved in openDrainBudget, behind the spend gate, where the live balance is
+	// already being read (sp-zg71k).
+	heavyTarget, err := readHeavyReserve(ctx, p, playerID)
 	if err != nil {
 		return rep, err
 	}
-	rep.HeavyReserve = heavyReserve
+	rep.HeavyReserveTarget = heavyTarget
 
 	// Cheapest-first gate order: the ledger reads are local, the treasury and
 	// price reads are network. A tick with nothing to buy must not cost an API call.
@@ -85,7 +92,7 @@ func DrainBuyQueue(
 	var st drainState
 	if k.SpendEnabled {
 		var capHeld bool
-		st, capHeld, err = openDrainBudget(ctx, p, playerID, k, heavyReserve, clock.Now())
+		st, capHeld, err = openDrainBudget(ctx, p, playerID, k, heavyTarget, clock.Now())
 		if err != nil {
 			return rep, err
 		}
@@ -93,6 +100,9 @@ func DrainBuyQueue(
 			rep.CapHeld = true
 			return rep, nil
 		}
+		// What the floor ACTUALLY withheld for the heavy, which is 0 on every path above: those
+		// return before a treasury is read, so no hold was ever taken from anything.
+		rep.HeavyReserveHeld = st.heavyHold
 	}
 
 	t := &drainTick{
@@ -221,7 +231,7 @@ func (t *drainTick) fundPlacement(ctx context.Context, slot QueuedSlot, now time
 	return t.rep.Bought > boughtBefore, halt, nil
 }
 
-func readHeavyReserve(ctx context.Context, p BuyPorts, playerID int) (int64, error) {
+func readHeavyReserve(ctx context.Context, p BuyPorts, playerID int) (common.HeavyReserveTarget, error) {
 	if p.HeavyReserve == nil {
 		return 0, nil
 	}
@@ -242,7 +252,7 @@ func openDrainBudget(
 	p BuyPorts,
 	playerID int,
 	k BuyKnobs,
-	heavyReserve int64,
+	heavyTarget common.HeavyReserveTarget,
 	now time.Time,
 ) (drainState, bool, error) {
 	owned, err := p.Ledger.CountOwnedProbes(ctx, playerID)
@@ -264,16 +274,25 @@ func openDrainBudget(
 		// understand the least.
 		return drainState{}, false, fmt.Errorf("cargo spend unreadable, buying nothing this tick: %w", err)
 	}
+	// THE ASK IS BOUNDED AGAINST THE BALANCE BEFORE IT REACHES THE FLOOR (sp-zg71k). HoldAt is the
+	// ONE definition of that bound, shared with the fleet autosizer, and it is the reason the
+	// treasury read sits above this line rather than inside the reserve port. Withholding the
+	// target verbatim was the defect: a ~1.5M ask against a ~372k treasury made the floor exceed
+	// the balance outright, and probe buying stopped for good the moment a heavy yard was priced.
+	// The hold can now never exceed the surplus above the immutable floor, so the reservation
+	// alone can never price the fleet out of buying.
+	heavyHold := heavyTarget.HoldAt(credits)
 	// The heavy reservation is capex in the literal sense CapexReserve documents: credits held back
 	// for capex committed elsewhere. Folding it into that term stands probe buying down while a
 	// heavy accumulates, and resumes it the moment the heavy lands.
 	return drainState{
-		credits:  credits,
-		owned:    owned,
-		probeCap: int64(k.ProbeCap),
+		credits:   credits,
+		owned:     owned,
+		probeCap:  int64(k.ProbeCap),
+		heavyHold: heavyHold,
 		floor: domainSensing.ProbeBuyFloor(
 			common.ImmutableReserveFloor,
-			k.CapexReserve+heavyReserve,
+			k.CapexReserve+heavyHold,
 			domainSensing.CargoSpendPerHour(spend),
 			k.KMilli,
 		),

@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"time"
+
+	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 )
 
 // buyports.go declares the ports and types of the spend half of the parked-probe
@@ -172,8 +174,9 @@ type BuyPorts struct {
 	// OPTIONAL: nil quotes everything.
 	ListingMemo ProbeListingMemo
 	Fleet       FleetTagger
-	// HeavyReserve reports the credits held back for the NEXT heavy purchase.
-	// OPTIONAL: a nil reader means no reserve.
+	// HeavyReserve reports the ASK the fleet is saving toward for the NEXT heavy purchase.
+	// The credits actually withheld are derived from it against the live treasury — see
+	// common.HeavyReserveTarget.HoldAt. OPTIONAL: a nil reader means no reserve.
 	//
 	// A read ERROR fails CLOSED, as DEFENCE IN DEPTH: HeavyReserveReader is an
 	// exported interface carrying an error in its contract and this field is a
@@ -207,11 +210,15 @@ type BuyPorts struct {
 	ClaimOwnerContainerID string
 }
 
-// HeavyReserveReader reports the derived hold-back for the next heavy purchase. The value is
-// computed by common.HeavyReserve — the ONE definition, shared with the fleet autosizer. This
-// port carries the answer; it must never re-derive it.
+// HeavyReserveReader reports the ask the fleet is saving toward for the next heavy purchase. The
+// value is computed by common.HeavyReserve — the ONE definition, shared with the fleet autosizer.
+// This port carries the answer; it must never re-derive it.
+//
+// A TARGET, NOT A CREDIT COUNT (sp-zg71k). The named return type is what stops it being added
+// into a spend floor: the drain must first bound it against the live treasury with
+// HeavyReserveTarget.HoldAt, and the compiler refuses every path that skips that step.
 type HeavyReserveReader interface {
-	Reserve(ctx context.Context, playerID int) (int64, error)
+	Reserve(ctx context.Context, playerID int) (common.HeavyReserveTarget, error)
 }
 
 // BuyKnobs are the operator-set economics of the queue.

@@ -32,6 +32,7 @@ type FleetAutosizerMetricsCollector struct {
 	// as a single number — an operator asking "why has nothing bought?" wants one series,
 	// not a sum over classes.
 	heavyReserveCredits *prometheus.GaugeVec
+	heavyReserveTarget  *prometheus.GaugeVec
 	heaviesOwned        *prometheus.GaugeVec
 	heavyCap            *prometheus.GaugeVec
 	heavyPricePremium   *prometheus.SummaryVec
@@ -66,7 +67,12 @@ func NewFleetAutosizerMetricsCollector() *FleetAutosizerMetricsCollector {
 		),
 		heavyReserveCredits: newGaugeVec(
 			"autosizer_heavy_reserve_credits",
-			"Credits held back for the NEXT heavy purchase, derived per tick (sp-fwk8z). A non-zero value beside stalled probe/light buying means the fleet is SAVING for a heavy, not broken — it is the series that tells accumulation from failure",
+			"Credits ACTUALLY held back for the NEXT heavy purchase, derived per tick (sp-fwk8z), treasury-bounded since sp-zg71k. A non-zero value beside stalled probe/light buying means the fleet is SAVING for a heavy, not broken — it is the series that tells accumulation from failure. Read it BESIDE autosizer_heavy_reserve_target_credits: 0 here with a positive target means the ask is out of reach this era and nothing is being withheld for it",
+			"player_id",
+		),
+		heavyReserveTarget: newGaugeVec(
+			"autosizer_heavy_reserve_target_credits",
+			"The target yard's ask the fleet is SAVING TOWARD for the next heavy (sp-zg71k) — an aspiration, not a hold. The gap between this and autosizer_heavy_reserve_credits is the treasury bound doing its job: the hold starts once the fleet holds half the ask in surplus above the immutable floor and saturates at the full ask. Without this series a bounded hold of 0 is indistinguishable from 'no heavy yard is priced'",
 			"player_id",
 		),
 		heaviesOwned: newGaugeVec(
@@ -112,6 +118,7 @@ func (c *FleetAutosizerMetricsCollector) Register() error {
 		c.demandHulls,
 		c.currentHulls,
 		c.heavyReserveCredits,
+		c.heavyReserveTarget,
 		c.heaviesOwned,
 		c.heavyCap,
 		c.heavyPricePremium,
@@ -171,16 +178,23 @@ func (c *FleetAutosizerMetricsCollector) RecordZeroEffectAlarm() {
 	c.zeroEffectTotal.Inc()
 }
 
-// RecordHeavyReserve sets the per-tick heavy-trade gauges: the derived reservation, the
-// tag-independent owned-heavy census, and the cap in force. Called once per tick, whatever the
-// outcome — a reserve that is only recorded when something happens is exactly the series an
-// operator cannot use to tell "saving" from "stuck".
-func (c *FleetAutosizerMetricsCollector) RecordHeavyReserve(playerID string, reserve int64, owned, capacity int) {
+// RecordHeavyReserve sets the per-tick heavy-trade gauges: the credits actually withheld, the ask
+// being saved toward, the tag-independent owned-heavy census, and the cap in force. Called once
+// per tick, whatever the outcome — a reserve that is only recorded when something happens is
+// exactly the series an operator cannot use to tell "saving" from "stuck".
+//
+// The hold and the target are BOTH published because the hold alone is ambiguous once it is
+// treasury-bounded (sp-zg71k): 0 means "no heavy yard is priced" and "the priced heavy is out of
+// reach this era" alike, and only the target separates them.
+func (c *FleetAutosizerMetricsCollector) RecordHeavyReserve(playerID string, reserve, target int64, owned, capacity int) {
 	if c == nil {
 		return
 	}
 	if c.heavyReserveCredits != nil {
 		c.heavyReserveCredits.WithLabelValues(playerID).Set(float64(reserve))
+	}
+	if c.heavyReserveTarget != nil {
+		c.heavyReserveTarget.WithLabelValues(playerID).Set(float64(target))
 	}
 	if c.heaviesOwned != nil {
 		c.heaviesOwned.WithLabelValues(playerID).Set(float64(owned))
@@ -244,10 +258,11 @@ func RecordAutosizerZeroEffectAlarm() {
 	}
 }
 
-// RecordAutosizerHeavyReserve sets the per-tick heavy-trade gauges (sp-fwk8z).
-func RecordAutosizerHeavyReserve(playerID string, reserve int64, owned, capacity int) {
+// RecordAutosizerHeavyReserve sets the per-tick heavy-trade gauges (sp-fwk8z): the credits
+// actually withheld and the ask they are being withheld toward (sp-zg71k).
+func RecordAutosizerHeavyReserve(playerID string, reserve, target int64, owned, capacity int) {
 	if globalFleetAutosizerCollector != nil {
-		globalFleetAutosizerCollector.RecordHeavyReserve(playerID, reserve, owned, capacity)
+		globalFleetAutosizerCollector.RecordHeavyReserve(playerID, reserve, target, owned, capacity)
 	}
 }
 

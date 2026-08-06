@@ -8,6 +8,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
+	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
 )
@@ -186,7 +187,7 @@ func TestHeavyReservePort_ConfiguredHoldReservesExactlyZero(t *testing.T) {
 
 	got, err := port.Reserve(context.Background(), pid)
 	require.NoError(t, err)
-	require.Equal(t, int64(0), got, "heavy_cap: 0 is a HOLD — sensing must reserve nothing, or expansion starves permanently for a heavy that will never be bought")
+	require.Equal(t, common.HeavyReserveTarget(0), got, "heavy_cap: 0 is a HOLD — sensing must reserve nothing, or expansion starves permanently for a heavy that will never be bought")
 }
 
 // The mirror of the above: an operator cap of 2 with 2 owned is at cap, so the reserve drops —
@@ -203,5 +204,5 @@ func TestHeavyReservePort_ConfiguredCapAtOwnedReservesZero(t *testing.T) {
 
 	got, err := port.Reserve(context.Background(), pid)
 	require.NoError(t, err)
-	require.Equal(t, int64(0), got, "at the operator's cap the autosizer refuses, so sensing must not reserve")
+	require.Equal(t, common.HeavyReserveTarget(0), got, "at the operator's cap the autosizer refuses, so sensing must not reserve")
 }

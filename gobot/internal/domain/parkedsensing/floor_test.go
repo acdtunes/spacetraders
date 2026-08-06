@@ -92,7 +92,10 @@ func TestProbeBuyFloor(t *testing.T) {
 // garbage observation upstream can only ever make the guard stricter, never
 // weaker.
 func TestProbeBuyFloor_NeverBelowImmutable(t *testing.T) {
-	capexes := []int64{-1_000_000, -1, 0, 1, 100_000}
+	// 1_510_645 is a whole heavy freighter's ask on era-5 evidence — the shape the heavy
+	// reservation puts into the capex term (sp-zg71k). It is swept here so the immutable floor is
+	// pinned across the full range the term actually takes, not just the small values.
+	capexes := []int64{-1_000_000, -1, 0, 1, 100_000, 1_510_645, math.MaxInt64}
 	cargoSpends := []int64{-1_000_000, -1, 0, 1, 300_000}
 	ks := []int{-100000, -1, 0, 1, 400, 2000}
 
@@ -118,6 +121,30 @@ func TestProbeBuyFloor_NeverBelowImmutable(t *testing.T) {
 	// rather than wrapping negative and waving a purchase through.
 	if got := ProbeBuyFloor(immutableFloor, 0, math.MaxInt64, 4); got < immutableFloor {
 		t.Errorf("ProbeBuyFloor with an overflowing runway term = %d, want >= %d", got, immutableFloor)
+	}
+}
+
+// WHERE THE AFFORDABILITY JUDGEMENT DOES *NOT* LIVE (sp-zg71k). ProbeBuyFloor adds the capex it is
+// handed, in full, and that is correct: a floor that quietly discarded part of a capex reserve
+// because the balance looked thin would be a money guard weakening itself exactly when the fleet
+// is poorest (RULINGS #4). It follows that the floor CAN exceed the live treasury, and that the
+// "is this reservation reachable?" question therefore has to be answered BEFORE the term is built
+// — which is what common.HeavyReserveTarget.HoldAt does.
+//
+// This test exists so the next reader of the sp-zg71k freeze does not try to fix it here. Making
+// this function clamp against a balance would weaken every other caller's capex reserve as a side
+// effect, which is precisely what ruling #4 forbids.
+func TestProbeBuyFloor_AddsCapexInFullEvenAboveAnyPlausibleBalance(t *testing.T) {
+	const heavyAsk = int64(1_510_645)
+
+	got := ProbeBuyFloor(immutableFloor, heavyAsk, 0, 0)
+	if want := immutableFloor + heavyAsk; got != want {
+		t.Fatalf("ProbeBuyFloor dropped part of the capex term: got %d, want %d — a floor that discards a reserve is a weakened guard", got, want)
+	}
+	// And it is emphatically NOT treasury-aware: this is the sp-zg71k freeze, reproduced, to show
+	// the floor is behaving correctly and the bound belongs upstream.
+	if era5Treasury := int64(372_000); got <= era5Treasury {
+		t.Fatalf("floor %d against a %d treasury — the fixture no longer reproduces the condition it documents", got, era5Treasury)
 	}
 }
 

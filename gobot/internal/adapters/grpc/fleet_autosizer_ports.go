@@ -313,8 +313,8 @@ func (m *autosizerMetricsSink) RecordZeroEffectAlarm() {
 	metrics.RecordAutosizerZeroEffectAlarm()
 }
 
-func (m *autosizerMetricsSink) RecordHeavyReserve(playerID string, reserve int64, owned, capacity int) {
-	metrics.RecordAutosizerHeavyReserve(playerID, reserve, owned, capacity)
+func (m *autosizerMetricsSink) RecordHeavyReserve(playerID string, reserve, target int64, owned, capacity int) {
+	metrics.RecordAutosizerHeavyReserve(playerID, reserve, target, owned, capacity)
 }
 
 func (m *autosizerMetricsSink) ObserveHeavyPricePremium(playerID string, paid, cheapestKnown int64) {
