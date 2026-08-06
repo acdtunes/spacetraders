@@ -130,6 +130,21 @@ type persistedTask struct {
 // It reads the EXISTING updated recorder rather than adding a parallel one. Note that recorder is
 // a MAP keyed by task ID, so there is no "last persisted task" to ask for: a caller must name the
 // task it staged.
+// FindByPipelineAndStatus serves the sp-63r4f progress watchdog on every drain tick. The embedded
+// interface panics rather than returning nothing, and a nil-panic in a fixture is indistinguishable
+// from a real defect in the code under test.
+func (r *drainStubTaskRepo) FindByPipelineAndStatus(_ context.Context, pipelineID string, status manufacturing.TaskStatus) ([]*manufacturing.ManufacturingTask, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []*manufacturing.ManufacturingTask
+	for _, t := range r.tasks {
+		if t != nil && t.PipelineID() == pipelineID && t.Status() == status {
+			out = append(out, t)
+		}
+	}
+	return out, nil
+}
+
 func (r *drainStubTaskRepo) statusOf(id string) string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -195,6 +210,25 @@ type drainStubPipelineRepo struct {
 	mu        sync.Mutex
 	pipelines map[string]*manufacturing.ManufacturingPipeline
 	updates   int
+}
+
+// FindByStatus serves the sp-63r4f progress watchdog, which runs on every drain tick. The embedded
+// interface would panic here rather than return nothing, and a nil-panic in a fixture is
+// indistinguishable from a real defect in the code under test.
+func (r *drainStubPipelineRepo) FindByStatus(_ context.Context, _ int, statuses []manufacturing.PipelineStatus) ([]*manufacturing.ManufacturingPipeline, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	wanted := make(map[manufacturing.PipelineStatus]bool, len(statuses))
+	for _, s := range statuses {
+		wanted[s] = true
+	}
+	var out []*manufacturing.ManufacturingPipeline
+	for _, p := range r.pipelines {
+		if p != nil && wanted[p.Status()] {
+			out = append(out, p)
+		}
+	}
+	return out, nil
 }
 
 func (r *drainStubPipelineRepo) FindByID(_ context.Context, id string) (*manufacturing.ManufacturingPipeline, error) {

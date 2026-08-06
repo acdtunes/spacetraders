@@ -18,6 +18,16 @@ import (
 type GateCommitmentMetricsCollector struct {
 	skipsTotal          *prometheus.CounterVec
 	overshootUnitsTotal *prometheus.CounterVec
+	// stallSeconds is the PROGRESS watchdog (sp-63r4f): how long an unmet gate material has gone
+	// without receiving a single unit. A GAUGE, not a counter, because the question is always "how
+	// bad is it RIGHT NOW" — a counter of stall events would tick once and tell you nothing about
+	// whether the gate is still stopped.
+	//
+	// It exists because three separate defects this week each logged something true and reassuring
+	// on every tick while the gate sat stopped for roughly 10 of 14 hours, and every one was found
+	// by a human asking why rather than by anything saying so. A log line can be true and still
+	// invisible; a gauge above zero can be alerted on.
+	stallSeconds *prometheus.GaugeVec
 }
 
 // NewGateCommitmentMetricsCollector creates the gate in-flight-commitment collector.
@@ -33,6 +43,11 @@ func NewGateCommitmentMetricsCollector() *GateCommitmentMetricsCollector {
 			"Units of a gate material recorded as purchased BEYOND its construction requirement (should stay flat at zero)",
 			"good",
 		),
+		stallSeconds: newGaugeVec(
+			"gate_material_stall_seconds",
+			"Seconds an UNMET gate material has gone with zero delivered units. 0 means progress or a satisfied bill; a sustained non-zero value means the gate is stopped, whatever the cause",
+			"good",
+		),
 	}
 }
 
@@ -41,7 +56,7 @@ func (c *GateCommitmentMetricsCollector) Register() error {
 	if Registry == nil {
 		return nil
 	}
-	return registerAll(c.skipsTotal, c.overshootUnitsTotal)
+	return registerAll(c.skipsTotal, c.overshootUnitsTotal, c.stallSeconds)
 }
 
 // RecordInFlightSkip counts one purchase declined because in-flight cargo already covers the bill.
@@ -100,5 +115,25 @@ func RecordGateInFlightSkip(good string) {
 func RecordGateOvershootUnits(good string, units int) {
 	if globalGateCommitmentCollector != nil {
 		globalGateCommitmentCollector.RecordOvershootUnits(good, units)
+	}
+}
+
+// SetStallSeconds publishes how long an unmet gate material has gone without a delivered unit.
+//
+// SET, NOT ADD, and it must be written on EVERY tick including the healthy zero. A gauge only
+// written when something is wrong keeps its last bad value forever after a recovery, so the alarm
+// never clears and the next real stall is indistinguishable from the stale one — which is the same
+// "reassuring but wrong" failure this whole watchdog exists to end.
+func (c *GateCommitmentMetricsCollector) SetStallSeconds(good string, seconds float64) {
+	if c == nil || c.stallSeconds == nil {
+		return
+	}
+	c.stallSeconds.WithLabelValues(good).Set(seconds)
+}
+
+// RecordGateStallSeconds publishes the stall gauge through the global collector.
+func RecordGateStallSeconds(good string, seconds float64) {
+	if globalGateCommitmentCollector != nil {
+		globalGateCommitmentCollector.SetStallSeconds(good, seconds)
 	}
 }

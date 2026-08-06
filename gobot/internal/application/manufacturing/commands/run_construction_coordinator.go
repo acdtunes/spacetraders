@@ -345,6 +345,13 @@ func (h *RunConstructionCoordinatorHandler) drainOnce(ctx context.Context, cmd *
 
 	h.activateConstructionTasks(ctx, cmd.PlayerID)
 
+	// THE PROGRESS WATCHDOG RUNS BEFORE THE NO-WORK RETURN, AND THAT ORDER IS THE WHOLE POINT
+	// (sp-63r4f). A stalled pipeline very often has NO ready tasks — that is what the stall looks
+	// like from here — so a watchdog placed after the early return below would be silent in exactly
+	// the case it exists to report. It reads its own persisted history and reports; it dispatches
+	// nothing and cannot affect the tick's outcome.
+	h.watchAllGateProgress(ctx, cmd.PlayerID)
+
 	tasks, err := h.readyConstructionTasks(ctx, cmd.PlayerID)
 	if err != nil {
 		return nil, err
