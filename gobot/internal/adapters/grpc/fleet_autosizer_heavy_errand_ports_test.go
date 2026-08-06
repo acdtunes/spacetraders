@@ -19,6 +19,7 @@ import (
 	navCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
 	shipyardQueries "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/queries"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	domainScouting "github.com/andrescamacho/spacetraders-go/internal/domain/scouting"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
@@ -80,12 +81,27 @@ func errandHull(t *testing.T, symbol string, playerID int, waypoint, fleet strin
 	return ship
 }
 
+// fakeScoutPostRoster is the live scout-post read the errand consults so it never takes a probe a
+// post already owns.
+type fakeScoutPostRoster struct {
+	posts []*domainScouting.ScoutPost
+	err   error
+}
+
+func (f *fakeScoutPostRoster) ListActive(_ context.Context, _ int) ([]*domainScouting.ScoutPost, error) {
+	return f.posts, f.err
+}
+
+// emptyRoster is the "no post mans anything" case, stated explicitly rather than left nil — a nil
+// roster REFUSES, and a test that leaned on nil would be testing the refusal by accident.
+func emptyRoster() *fakeScoutPostRoster { return &fakeScoutPostRoster{} }
+
 // --- ErrandHulls -------------------------------------------------------------------------------
 
-// THE ADAPTER FILTERS NOTHING, ON PURPOSE. Eligibility — trade-dedicated, cargo-capable, idle, not
-// already flying — is the application layer's rule, and it is the rule that keeps a parked sensing
-// probe off an errand. Pre-filtering here would move that rule out of reach of the tests pinning it,
-// so a MIS-TAGGED probe must still appear in this list, with the zero hold that gets it refused.
+// THE ADAPTER FILTERS NOTHING, ON PURPOSE. Eligibility — a spare parked probe, unclaimed by any
+// scout post, idle, not already flying — is the application layer's rule. Pre-filtering here would
+// move that rule out of reach of the tests pinning it, so every hull must appear in this list
+// carrying the raw facts that get it chosen or refused.
 func TestErrandHulls_ReportsRawFactsForEveryHullAndPreFiltersNothing(t *testing.T) {
 	inTransit := errandHull(t, "TR-2", 1, "X1-HOME-A1", "trade", 40)
 	inTransit.SetNavStatus(navigation.NavStatusInOrbit)
@@ -93,11 +109,14 @@ func TestErrandHulls_ReportsRawFactsForEveryHullAndPreFiltersNothing(t *testing.
 	require.NoError(t, err)
 	require.NoError(t, inTransit.StartTransit(destination))
 
-	e := &autosizerPricingErrand{shipRepo: &fakeHeavyShipRepo{all: []*navigation.Ship{
-		errandHull(t, "TR-1", 1, "X1-HOME-A1", "trade", 40),
-		inTransit,
-		errandHull(t, "PROBE-9", 1, "X1-DARK-A1", "trade", 0), // a mis-tagged probe: right tag, zero hold
-	}}}
+	e := &autosizerPricingErrand{
+		shipRepo: &fakeHeavyShipRepo{all: []*navigation.Ship{
+			errandHull(t, "TR-1", 1, "X1-HOME-A1", "trade", 40),
+			inTransit,
+			errandHull(t, "PROBE-9", 1, "X1-DARK-A1", "sensing_parked", 0),
+		}},
+		posts: emptyRoster(),
+	}
 
 	hulls, err := e.ErrandHulls(context.Background(), 1)
 	require.NoError(t, err)
@@ -109,6 +128,7 @@ func TestErrandHulls_ReportsRawFactsForEveryHullAndPreFiltersNothing(t *testing.
 	require.True(t, hulls[0].Idle)
 	require.False(t, hulls[0].InTransit)
 	require.Equal(t, 40, hulls[0].CargoCapacity)
+	require.False(t, hulls[0].MannedScoutPost)
 
 	require.Equal(t, "TR-2", hulls[1].Symbol)
 	require.True(t, hulls[1].InTransit)
@@ -116,24 +136,80 @@ func TestErrandHulls_ReportsRawFactsForEveryHullAndPreFiltersNothing(t *testing.
 		"a hull in transit reports its DESTINATION — that is what lets 'an errand is already under way' be a pure read")
 
 	require.Equal(t, "PROBE-9", hulls[2].Symbol)
+	require.Equal(t, "sensing_parked", hulls[2].Fleet)
 	require.Zero(t, hulls[2].CargoCapacity,
-		"a zero hold must reach the policy: it is the second, independent lock that refuses a mis-tagged probe")
+		"a probe's zero hold must still reach the policy verbatim — the read reports facts, it does not judge them")
+}
+
+// THE STANDING OWNER RULE'S EVIDENCE (sp-gmfvw). The errand now draws from the SAME probe pool the
+// scout coordinator mans its posts from, so the fleet tag no longer separates a spare hull from a
+// working one. A hull a live post names — in its primary slot OR in any extra slot of a multi-hull
+// post — must arrive at the policy marked, or the errand will take a working scout off station in
+// the idle gap between two of its tours.
+func TestErrandHulls_MarksEveryHullALiveScoutPostNames(t *testing.T) {
+	e := &autosizerPricingErrand{
+		shipRepo: &fakeHeavyShipRepo{all: []*navigation.Ship{
+			errandHull(t, "PROBE-PRIMARY", 1, "X1-AA11-A1", "sensing_parked", 0),
+			errandHull(t, "PROBE-EXTRA", 1, "X1-AA11-B2", "sensing_parked", 0),
+			errandHull(t, "PROBE-FREE", 1, "X1-BB22-C3", "sensing_parked", 0),
+		}},
+		posts: &fakeScoutPostRoster{posts: []*domainScouting.ScoutPost{
+			{
+				SystemSymbol: "X1-AA11",
+				Hulls:        2,
+				AssignedHull: "PROBE-PRIMARY",
+				ExtraSlots:   []domainScouting.ScoutPostSlot{{AssignedHull: "PROBE-EXTRA"}},
+			},
+			{SystemSymbol: "X1-CC33"}, // a declared post with nobody on it reserves no hull
+			nil,                       // a torn row must not panic the read
+		}},
+	}
+
+	hulls, err := e.ErrandHulls(context.Background(), 1)
+	require.NoError(t, err)
+	require.Len(t, hulls, 3)
+
+	require.True(t, hulls[0].MannedScoutPost, "the hull in the post's PRIMARY slot is that post's")
+	require.True(t, hulls[1].MannedScoutPost,
+		"a multi-hull post's EXTRA slot owns its probe just as much — reading only the scalar column leaves every extra slot exposed")
+	require.False(t, hulls[2].MannedScoutPost, "a probe no post names is genuinely spare")
 }
 
 // An unreadable fleet REFUSES. An empty hull list is not the same fact: it reads as "no carrier is
 // free", which the coordinator logs as a benign wait and retries forever without ever saying the
 // fleet could not be read.
 func TestErrandHulls_AnUnreadableFleetRefusesInsteadOfReportingNoCarriers(t *testing.T) {
-	broken := &autosizerPricingErrand{shipRepo: &fakeHeavyShipRepo{err: errors.New("db down")}}
+	broken := &autosizerPricingErrand{shipRepo: &fakeHeavyShipRepo{err: errors.New("db down")}, posts: emptyRoster()}
 	hulls, err := broken.ErrandHulls(context.Background(), 1)
 	require.Error(t, err)
 	require.Nil(t, hulls)
 
-	valid := &autosizerPricingErrand{shipRepo: &fakeHeavyShipRepo{all: []*navigation.Ship{
-		errandHull(t, "TR-1", 1, "X1-HOME-A1", "trade", 40),
-	}}}
+	valid := &autosizerPricingErrand{
+		shipRepo: &fakeHeavyShipRepo{all: []*navigation.Ship{errandHull(t, "TR-1", 1, "X1-HOME-A1", "trade", 40)}},
+		posts:    emptyRoster(),
+	}
 	hulls, err = valid.ErrandHulls(context.Background(), 0) // an invalid player is not a player with no hulls
 	require.Error(t, err)
+	require.Nil(t, hulls)
+}
+
+// AN UNREADABLE — OR UNWIRED — SCOUT-POST ROSTER REFUSES THE WHOLE READ, and that direction is the
+// point. Reporting the fleet with MannedScoutPost false everywhere reads to the policy as "no post
+// mans anything", which is the single reading that authorises taking a working scout off station.
+// A refusal costs one tick of waiting and says so in the log.
+func TestErrandHulls_AnUnreadableScoutPostRosterRefusesInsteadOfReportingEveryHullFree(t *testing.T) {
+	fleet := &fakeHeavyShipRepo{all: []*navigation.Ship{
+		errandHull(t, "PROBE-1", 1, "X1-AA11-A1", "sensing_parked", 0),
+	}}
+
+	unreadable := &autosizerPricingErrand{shipRepo: fleet, posts: &fakeScoutPostRoster{err: errors.New("db down")}}
+	hulls, err := unreadable.ErrandHulls(context.Background(), 1)
+	require.Error(t, err, "a roster that cannot be read must refuse, never report every probe unclaimed")
+	require.Nil(t, hulls)
+
+	unwired := &autosizerPricingErrand{shipRepo: fleet}
+	hulls, err = unwired.ErrandHulls(context.Background(), 1)
+	require.Error(t, err, "an unwired roster is not evidence that no post mans anything")
 	require.Nil(t, hulls)
 }
 

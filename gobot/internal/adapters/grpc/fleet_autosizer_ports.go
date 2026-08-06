@@ -94,7 +94,11 @@ func NewFleetAutosizerCoordinatorHandler(
 	if scannedYards != nil {
 		if ranker, ok := scannedYards.(heavyYardRanker); ok {
 			h.SetHeavyYardCatalogReader(&autosizerHeavyYardCatalog{ranker: ranker, shipRepo: shipRepo})
-			h.SetHeavyPricingErrandPort(&autosizerPricingErrand{med: med, shipRepo: shipRepo})
+			// The errand now draws its carrier from the PARKED SENSING pool (sp-gmfvw), which it
+			// SHARES with the scout coordinator — so it must also see which probes a live scout
+			// post already owns. The constructor takes the server and reads the roster off its
+			// connection, which is what keeps that read from being something this line can omit.
+			h.SetHeavyPricingErrandPort(newAutosizerPricingErrand(server, med, shipRepo))
 		} else {
 			log.Printf("WARNING: fleet autosizer heavy-yard pricing errand UNWIRED — the yard ranker cannot list availability-only rows, so a known-but-unpriced heavy yard is never priced and no heavy reservation can form")
 		}

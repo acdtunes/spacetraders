@@ -24,6 +24,7 @@ import (
 	shipyardQueries "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/queries"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
 )
 
 // fakeCensusShipRepo is a ship repository that DOES carry the tag-independent heavy census — the
@@ -62,8 +63,12 @@ func wiredPort(t *testing.T, h *fleetCmd.RunFleetAutosizerCoordinatorHandler, fi
 // other argument is nil on purpose: nothing here performs I/O, so a handler built this way exercises
 // the wiring decisions and nothing else.
 func buildAutosizerHandler(shipRepo navigation.ShipRepository, scannedYards scannedYardRanker, heavyYards heavyYardInventory) *fleetCmd.RunFleetAutosizerCoordinatorHandler {
+	return buildAutosizerHandlerOn(&DaemonServer{}, shipRepo, scannedYards, heavyYards)
+}
+
+func buildAutosizerHandlerOn(server *DaemonServer, shipRepo navigation.ShipRepository, scannedYards scannedYardRanker, heavyYards heavyYardInventory) *fleetCmd.RunFleetAutosizerCoordinatorHandler {
 	return NewFleetAutosizerCoordinatorHandler(
-		&DaemonServer{}, nil, nil, shipRepo, nil, nil, nil, nil, scannedYards, heavyYards,
+		server, nil, nil, shipRepo, nil, nil, nil, nil, scannedYards, heavyYards,
 	)
 }
 
@@ -112,6 +117,39 @@ func TestAutosizerWiring_HeavyYardReaderFollowsTheSharedTarget(t *testing.T) {
 	absent := buildAutosizerHandler(&fakeCensusShipRepo{}, nil, nil)
 	require.False(t, wiredPort(t, absent, "heavyYard"),
 		"no shared target means no reservation port at all, never a port that reports a phantom 0 price")
+}
+
+// THE SCOUT-POST ROSTER MUST COME OFF THE DAEMON'S CONNECTION (sp-gmfvw).
+//
+// The errand draws its carrier from the parked-sensing pool, which it SHARES with the scout
+// coordinator, so it can only tell a spare probe from a working one by reading the posts. Without
+// the roster the errand refuses every tick — fail-closed and correct, and therefore invisible:
+// exactly the class of permanently-silent stall this bead was filed for.
+//
+// The composition cannot omit the roster because it never passes one: it passes the server, and
+// newAutosizerPricingErrand takes the roster off it. This pins that constructor's contract in both
+// polarities, which is what makes the omission unexpressible rather than merely unlikely.
+func TestAutosizerWiring_PricingErrandReadsTheScoutPostRoster(t *testing.T) {
+	db, err := database.NewTestConnection()
+	require.NoError(t, err)
+
+	live := newAutosizerPricingErrand(&DaemonServer{db: db}, nil, &fakeCensusShipRepo{})
+	require.NotNil(t, live.posts,
+		"a daemon with a connection must yield an errand that can read the scout posts — without it every tick refuses, silently and forever")
+
+	// PROOF THE ASSERTION HAS TEETH: no connection leaves the roster nil, and the resulting errand
+	// is still a usable port — the refusal happens at read time, not at boot.
+	for _, server := range []*DaemonServer{{}, nil} {
+		dry := newAutosizerPricingErrand(server, nil, &fakeCensusShipRepo{})
+		require.NotNil(t, dry, "a connectionless daemon must still yield a port, not a nil one")
+		require.Nil(t, dry.posts)
+		_, rerr := dry.ErrandHulls(context.Background(), 1)
+		require.Error(t, rerr, "an errand with no roster must REFUSE the read rather than report every probe unclaimed")
+	}
+
+	// And the real composition still installs the port, so the two halves meet.
+	installed := buildAutosizerHandlerOn(&DaemonServer{db: db}, &fakeCensusShipRepo{}, &fakeFullYardFinder{}, nil)
+	require.True(t, wiredPort(t, installed, "heavyErrand"))
 }
 
 // PROOF THE PROBE HAS TEETH: the port reader must be able to tell a wired port from an unwired one

@@ -4,12 +4,14 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	fleetCmd "github.com/andrescamacho/spacetraders-go/internal/application/fleet/commands"
 	navCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
 	shipyardQueries "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/queries"
 	"github.com/andrescamacho/spacetraders-go/internal/application/system/gategraph"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	domainScouting "github.com/andrescamacho/spacetraders-go/internal/domain/scouting"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	shipyardDomain "github.com/andrescamacho/spacetraders-go/internal/domain/shipyard"
 )
@@ -140,19 +142,55 @@ func (c *autosizerHeavyYardCatalog) KnownHeavyYards(ctx context.Context, playerI
 	return out, nil
 }
 
+// scoutPostRoster is the narrow read the errand needs of the scout-post table: every post LIVE in
+// the open era, so the hulls those posts name can be marked and left alone. Satisfied by
+// *persistence.GormScoutPostRepository, whose ListActive is already era-scoped — a dead era's post
+// must not reserve a hull that is genuinely free now.
+type scoutPostRoster interface {
+	ListActive(ctx context.Context, playerID int) ([]*domainScouting.ScoutPost, error)
+}
+
 // autosizerPricingErrand reads the fleet for the errand policy and flies the chosen hull.
 //
 // ErrandHulls deliberately reports EVERY hull with its raw facts and filters nothing: the
-// eligibility rule — trade-dedicated, cargo-capable, idle, not already flying — is the application
-// layer's, and it is the rule that keeps a parked sensing probe out. Pre-filtering here would move
-// that rule where the tests pinning it cannot reach.
+// eligibility rule — a spare parked probe, unclaimed by any scout post, idle, not already flying —
+// is the application layer's. Pre-filtering here would move that rule where the tests pinning it
+// cannot reach.
+//
+// The scout-post roster is read HERE rather than judged here for the same reason: "a live post
+// names this hull" is a durable fact of the scout_posts table, and the refusal it earns is the
+// policy's to make.
 type autosizerPricingErrand struct {
 	med      common.Mediator
 	shipRepo navigation.ShipRepository
+	posts    scoutPostRoster
+}
+
+// newAutosizerPricingErrand builds the errand with its scout-post roster taken off the daemon's own
+// connection, the way bootstrap_ports builds its era repository.
+//
+// IT TAKES THE SERVER RATHER THAN THE ROSTER SO THE WIRING CANNOT FORGET THE ROSTER. Without it the
+// errand refuses on every tick — fail-closed and correct, and therefore invisible, which is the
+// precise failure class sp-gmfvw was filed for. Handing this constructor the object the composition
+// already holds makes the omission unexpressible instead of merely tested for.
+//
+// A nil server or a nil connection leaves the roster nil ON PURPOSE: the errand then refuses at
+// READ time (see mannedScoutPostHulls) rather than selecting hulls it cannot prove are free, and
+// the port itself stays wired so the boot-time wiring probe still reports the errand as present.
+func newAutosizerPricingErrand(server *DaemonServer, med common.Mediator, shipRepo navigation.ShipRepository) *autosizerPricingErrand {
+	e := &autosizerPricingErrand{med: med, shipRepo: shipRepo}
+	if server != nil && server.db != nil {
+		e.posts = persistence.NewGormScoutPostRepository(server.db)
+	}
+	return e
 }
 
 func (e *autosizerPricingErrand) ErrandHulls(ctx context.Context, playerID int) ([]fleetCmd.PricingErrandHull, error) {
 	pid, err := shared.NewPlayerID(playerID)
+	if err != nil {
+		return nil, err
+	}
+	manned, err := e.mannedScoutPostHulls(ctx, playerID)
 	if err != nil {
 		return nil, err
 	}
@@ -172,21 +210,57 @@ func (e *autosizerPricingErrand) ErrandHulls(ctx context.Context, playerID int) 
 			at = loc.Symbol
 		}
 		out = append(out, fleetCmd.PricingErrandHull{
-			Symbol:        sh.ShipSymbol(),
-			Fleet:         sh.DedicatedFleet(),
-			Location:      at,
-			Idle:          sh.IsIdle(),
-			InTransit:     sh.IsInTransit(),
-			CargoCapacity: sh.CargoCapacity(),
+			Symbol:          sh.ShipSymbol(),
+			Fleet:           sh.DedicatedFleet(),
+			Location:        at,
+			Idle:            sh.IsIdle(),
+			InTransit:       sh.IsInTransit(),
+			CargoCapacity:   sh.CargoCapacity(),
+			MannedScoutPost: manned[sh.ShipSymbol()],
 		})
 	}
 	return out, nil
+}
+
+// mannedScoutPostHulls indexes every hull a live scout post NAMES, across all of its manning slots.
+//
+// AN UNREADABLE ROSTER REFUSES, and an unwired one refuses too. Reporting the fleet with this fact
+// zeroed would reach the policy as "no post mans anything" — the single reading that lets the
+// errand take a working scout off station, which is precisely what the roster exists to prevent.
+// The whole errand then waits a tick and says so, which costs nothing.
+//
+// Primary AND extra slots, via MannedHulls: a multi-hull post's second probe is no more available
+// than its first, and reading only the scalar column would leave every extra slot exposed.
+func (e *autosizerPricingErrand) mannedScoutPostHulls(ctx context.Context, playerID int) (map[string]bool, error) {
+	if e.posts == nil {
+		return nil, fmt.Errorf("the scout-post roster is unwired, so no hull can be shown free of a post")
+	}
+	posts, err := e.posts.ListActive(ctx, playerID)
+	if err != nil {
+		return nil, fmt.Errorf("read the scout posts to leave manned hulls alone: %w", err)
+	}
+	manned := make(map[string]bool, len(posts))
+	for _, p := range posts {
+		if p == nil {
+			continue
+		}
+		for _, hull := range p.MannedHulls() {
+			manned[hull] = true
+		}
+	}
+	return manned, nil
 }
 
 // SendToYard navigates the hull to the yard. NAVIGATION ONLY — presence in orbit is enough for a
 // shipyard listing to price, and the purchase path docks on its own account, so the errand never
 // docks, never quotes and never spends. It reuses the same route+refuel command the bootstrap
 // cold-yard positioner and every other repositioning path use.
+//
+// NO RETURN TRIP IS ISSUED, and that is a deliberate boundary rather than an oversight. The hull
+// arrives idle and the sensing engine's own placement passes own where a spare probe belongs next;
+// a return leg written here would be a second placement authority for the same pool. What this
+// engine owes the sensing engine is restraint in the SELECTION (one hull at a time, never a hull a
+// live post names) — see pricingErrandCarrier — not a competing itinerary.
 func (e *autosizerPricingErrand) SendToYard(ctx context.Context, playerID int, shipSymbol, waypointSymbol string) error {
 	pid, err := shared.NewPlayerID(playerID)
 	if err != nil {
