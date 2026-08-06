@@ -157,21 +157,16 @@ type SensingEnginePorts struct {
 	// rather than a widening of it, because Gates is a pure store read by contract and asked of every
 	// known system on every tick.
 	//
-	// Deliberately NOT in the ready() check below, for the same reason OffGate is not: the rest of
-	// the tick must keep running on a daemon whose gate resolver is absent, and the pass is inert
-	// until it is present. The daemon wires it unconditionally.
+	// Deliberately NOT in the ready() check below: the rest of the tick must keep running on a
+	// daemon whose gate resolver is absent, and the pass is inert until it is present. The daemon
+	// wires it unconditionally.
 	GateRead  parkedsensing.GateReader
 	Uncharted parkedsensing.UnchartedCatalog
-	// OffGate is the warp-expansion slice: the ports that raise explorer demand onto the fleet
-	// autosizer's buy bridge and warp an explorer past a sealed gate frontier. Deliberately NOT in
-	// the ready() check below — the gate passes must keep running on a daemon whose off-gate
-	// collaborators are absent, and the slice is inert until all four are present.
-	OffGate  parkedsensing.OffGatePorts
-	SeedShip parkedsensing.SeedCommander
-	Scan     parkedsensing.MarketScanRunner
-	SpreadOf parkedsensing.SpreadObserver
-	Home     HomeSystemReader
-	Budget   BudgetRateReader
+	SeedShip  parkedsensing.SeedCommander
+	Scan      parkedsensing.MarketScanRunner
+	SpreadOf  parkedsensing.SpreadObserver
+	Home      HomeSystemReader
+	Budget    BudgetRateReader
 	// UnpricedPool is the sensing surge's work list: the charted systems the fleet
 	// holds no price for (sp-zvywu). REQUIRED, and checked in ready() below rather
 	// than nil-tolerated: a nil-tolerant pool read is what a dormant feature looks
@@ -360,7 +355,6 @@ func (p SensingEnginePorts) expandPorts(playerID int, whitelist map[string]bool)
 		// and never stage onto one the memo has already answered probe-less. Without this
 		// line the engine below has no evidence to rank on and behaves as it did before.
 		ListingMemo: p.ListingMemo,
-		OffGate:     p.OffGate,
 		Screen: func(ctx context.Context, system string) (parkedsensing.ScreenResult, error) {
 			return parkedsensing.ScreenSystem(ctx, screen, playerID, system, whitelist)
 		},

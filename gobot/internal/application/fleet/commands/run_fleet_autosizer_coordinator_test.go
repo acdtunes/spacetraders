@@ -65,31 +65,6 @@ func TestReconcile_LiveByDefault_EvaluatesProviders(t *testing.T) {
 	}
 }
 
-// Explorer is OPT-IN (not live-by-default): the explorer provider is skipped unless
-// explorer_hulls_enabled is set.
-func TestReconcile_ExplorerOptIn(t *testing.T) {
-	ex := &fakeDemandProvider{class: HullClassExplorer, demand: ClassDemand{Demand: 1, Current: 0, Readable: true}}
-
-	// Default (disabled): skipped.
-	h := newHandlerWith(ex)
-	if _, err := h.reconcileOnce(context.Background(), &RunFleetAutosizerCoordinatorCommand{ContainerID: "c1"}); err != nil {
-		t.Fatalf("reconcileOnce error: %v", err)
-	}
-	if ex.calls != 0 {
-		t.Fatalf("explorer provider must be skipped when explorer_hulls_enabled is unset, got %d", ex.calls)
-	}
-
-	// Enabled: evaluated.
-	ex2 := &fakeDemandProvider{class: HullClassExplorer, demand: ClassDemand{Demand: 1, Current: 0, Readable: true}}
-	h2 := newHandlerWith(ex2)
-	if _, err := h2.reconcileOnce(context.Background(), &RunFleetAutosizerCoordinatorCommand{ExplorerHullsEnabled: true, ContainerID: "c1"}); err != nil {
-		t.Fatalf("reconcileOnce error: %v", err)
-	}
-	if ex2.calls != 1 {
-		t.Fatalf("explorer provider must run when explorer_hulls_enabled=true, got %d", ex2.calls)
-	}
-}
-
 // A provider infra error must not abort the whole tick — the other classes still size.
 func TestReconcile_ProviderError_DoesNotAbortTick(t *testing.T) {
 	broken := &fakeDemandProvider{class: HullClassLight, err: errors.New("db down")}

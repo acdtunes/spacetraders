@@ -31,11 +31,10 @@ import (
 // read in production ("marginal rate unreadable/zero — cannot prove payback"), so it refused every
 // buy unconditionally rather than refusing bad ones. realized_rate refused on a declining aggregate
 // rate while its own detail conceded the case did not apply (hull concentration, not absorption
-// saturation — the next hull flies a fresh lane). explorer_exempt existed solely to cancel those two
-// for one class and could never itself block. The autosizer therefore no longer forms an opinion on
-// whether a hull will EARN; it judges whether the fleet can afford it and has room for it. Demand
-// shortfall — which for heavies IS the unserved profitable-lane count — is the remaining economic
-// input, and it must be > 0.
+// saturation — the next hull flies a fresh lane). The autosizer therefore no longer forms an
+// opinion on whether a hull will EARN; it judges whether the fleet can afford it and has room for
+// it. Demand shortfall — which for heavies IS the unserved profitable-lane count — is the
+// remaining economic input, and it must be > 0.
 //
 // class_ceiling IS GONE (sp-r7eiu, Admiral's order). It was a flat per-class POOL-SIZE cap —
 // fleet_ceiling_{lights,heavies} — that refused a purchase purely for being the Nth hull, with no
@@ -50,8 +49,6 @@ import (
 //	every class — demand (no shortfall, no buy), affordability, per_tick_cap (1/tick), price, api_util
 //	heavy       — heavy_cap, the fleet-wide heavy-HULL census (capital exposure), plus the
 //	              3-tick anti-thrash streak on its unserved-lane shortfall
-//	explorer    — its HARD CAP of 1, enforced in the demand provider itself (ExplorerDemandProvider
-//	              clamps want to MaxExplorerHulls), so the class stays capped without this guard
 //	light       — the factory-chain rotation math ALONE (ceil(chains × rotation_slots) + vacancies).
 //	              There is no light pool cap left. This is a DELIBERATE consequence of the removal,
 //	              not an oversight: the operator was told, and the money guards below are what hold.
@@ -244,7 +241,7 @@ func guardDemand(req PurchaseRequest) GuardVerdict {
 //
 // It is HEAVY-SCOPED: every other class passes untouched, because the census it reads
 // (HeaviesOwned) counts heavy hulls fleet-wide and would otherwise starve the light
-// worker pool and the explorer for reasons that have nothing to do with them.
+// worker pool for reasons that have nothing to do with it.
 //
 // Written >= so an over-cap fleet (a heavy acquired outside this path, or the cap
 // tuned down below what is already owned) also blocks. A cap of 0 is a legitimate

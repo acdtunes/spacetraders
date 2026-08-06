@@ -50,11 +50,6 @@ const (
 	stallReasonPlacementRefused health.StallReason = "placement_refused"
 	// stallReasonExpansionError: the expansion pass could not complete.
 	stallReasonExpansionError health.StallReason = "expansion_error"
-	// stallReasonOffGateNoTarget: THE MEASURED PRODUCTION FAILURE. The gate-reachable frontier is
-	// exhausted — there IS charting work and not one target is within gate reach — and no warp
-	// target could be selected either. The fleet is sealed in whatever pocket it currently holds,
-	// and every layer reports it as "0 discovered".
-	stallReasonOffGateNoTarget health.StallReason = "off_gate_no_target"
 	// stallReasonExpansionSkippedPrefix labels a pass held by its own gate. The sentinel is
 	// appended (expansion_budget), so the reason stays stable tick to tick and can escalate.
 	//
@@ -89,15 +84,15 @@ type sensingTickTally struct {
 }
 
 // anyEffect reports whether the tick moved ANYTHING: a system screened, a hull adopted, flown,
-// bought or re-tasked, a claim reaped, a placement advanced, a frontier system discovered, a warp
-// dispatched. The rotation size is deliberately NOT an effect — a steady rotation is what an idle
+// bought or re-tasked, a claim reaped, a placement advanced, a frontier system discovered. The
+// rotation size is deliberately NOT an effect — a steady rotation is what an idle
 // tick looks like.
 func (t sensingTickTally) anyEffect() bool {
 	return t.cutover > 0 || t.screened > 0 || t.adopted > 0 || t.dispatched > 0 || t.surged > 0 ||
 		t.reap.Reaped > 0 ||
 		t.buy.Bought > 0 || t.buy.Reused > 0 || t.buy.Footholds > 0 || t.buy.Queued > 0 ||
 		t.place.Actions > 0 ||
-		t.expand.Actions > 0 || t.expand.Discovered > 0 || t.expand.OffGateWarped > 0
+		t.expand.Actions > 0 || t.expand.Discovered > 0
 }
 
 // buyWedged reports the drain trying and failing for a reason that is not a money guard. CapHeld
@@ -163,12 +158,13 @@ func sensingTickVerdict(t sensingTickTally) health.TickOutcome {
 	return health.TickIdle()
 }
 
-// expansionStallVerdict maps one off-gate/expansion pass to its verdict.
+// expansionStallVerdict maps one expansion pass to its verdict: failures first, then progress,
+// then idle.
 //
-// The off-gate no-target case is checked AFTER progress for the same reason failures are: a
-// frontier that is still charting is not sealed, whatever the warp selector did. It is checked
-// BEFORE idle because "demand raised, no target found" is the exact shape that reads as a fully
-// charted galaxy while a jump gate sits unread.
+// A sealed gate frontier is now a PERMANENT, DELIBERATE state — the gate network is the reachable
+// universe (sp-mn3it) — so a pass with nothing left to do reads IDLE rather than blocked. There is
+// no action left to take, and a verdict that reported that condition BLOCKED on every tick would
+// be a standing false alarm.
 func expansionStallVerdict(rep parkedsensing.ExpandReport, err error) health.TickOutcome {
 	if err != nil {
 		return health.TickBlocked(stallReasonExpansionError, err.Error())
@@ -177,12 +173,8 @@ func expansionStallVerdict(rep parkedsensing.ExpandReport, err error) health.Tic
 		return health.TickBlocked(health.StallReason(stallReasonExpansionSkippedPrefix+rep.Skipped),
 			fmt.Sprintf("the expansion pass was held by its %s gate", rep.Skipped))
 	}
-	if rep.Actions > 0 || rep.Discovered > 0 || rep.OffGateWarped > 0 || rep.SeedsRequested > 0 || rep.SeedsClaimed > 0 || rep.MarketsFound > 0 {
+	if rep.Actions > 0 || rep.Discovered > 0 || rep.SeedsRequested > 0 || rep.SeedsClaimed > 0 || rep.MarketsFound > 0 {
 		return health.TickProgress()
-	}
-	if rep.OffGateDemanded && rep.OffGateTarget == "" {
-		return health.TickBlocked(stallReasonOffGateNoTarget,
-			"the gate-reachable frontier is exhausted and NO warp target could be selected — the fleet is sealed in the systems it already holds, and every layer reports this as '0 discovered'")
 	}
 	return health.TickIdle()
 }

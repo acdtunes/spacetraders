@@ -114,8 +114,8 @@ func TestGuard_TreasuryFloor_ArithmeticNamesTheHeldReserve(t *testing.T) {
 // h.heavyYard nil, and the pure-guard tests set PurchaseRequest.HeavyReserve directly, bypassing
 // buildPurchaseRequest entirely.
 //
-// The production regression would be silent and total: the reserve reads 0 for every class, light
-// and explorer buying never stands down, treasury never accumulates, and the heavy never lands —
+// The production regression would be silent and total: the reserve reads 0 for every class, the
+// non-heavy pools never stand down, treasury never accumulates, and the heavy never lands —
 // presenting as "the buyer looks fine, it just never buys".
 func TestReconcile_HeavyReserveStandsDownLightBuying(t *testing.T) {
 	// Treasury covers the light hull comfortably on its own, but NOT once a heavy is being saved

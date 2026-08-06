@@ -1,6 +1,9 @@
 package parkedsensing
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // expansion_reach_test.go pins the seed's REACH: how far from a system we hold a
 // charting target may be and still be served.
@@ -411,5 +414,70 @@ func TestAdvanceExpansion_AnIntermediateOutsideTheLedgerIsReadOnceForTheTick(t *
 		t.Fatalf("gate store read %d times, want at most %d — an intermediate outside the ledger is "+
 			"being re-read for every origin that routes through it, and that cost grows with the "+
 			"frontier exactly as the frontier succeeds", h.gates.calls, budget)
+	}
+}
+
+// A GATE READ THAT FAILS MID-SEARCH FAILS THE TICK, and commands no hull.
+//
+// THIS IS THE FALLBACK'S OWN FAILURE PATH, and it is reachable only in this one shape.
+// readNeighbours asks the store for the ledger's systems and the parked spares' systems, and
+// nothing else; gateReach.adjacent is the only other reader, and it goes to the store ONLY for a
+// system that map does not cover. So a fake that fails every read aborts the tick up in
+// readNeighbours — or earlier still at PassableGraph — and never reaches this code at all. X1-MID
+// is deliberately absent from the ledger for exactly that reason: it is discovered mid-search, in
+// the second ring, which is the only way the store read under test happens.
+//
+// WHAT MAKES IT WORTH A TEST rather than a defensive nicety: reach.go documents this read as the
+// one that "decides whether a hull is dispatched at all". An empty reach read permissively is
+// INDISTINGUISHABLE from a genuinely isolated system — the fleet would conclude X1-FAR is
+// unreachable, and the failure mode is silent. The fake answers with a populated neighbour list
+// alongside the error, so a walker that swallows it does not merely misreport: it walks on into
+// X1-GHOST, a system no fixture's graph contains, and stages a seed against topology it never read.
+//
+// THE ERROR MUST NAME X1-MID, and that assertion is load-bearing rather than decorative.
+// frontier.go:59 wraps its own failure with a byte-identical message, so matching the text alone
+// would pass just as well if the tick had died up in readNeighbours and this path had never run.
+// The SYSTEM is the discriminator: X1-MID is a system readNeighbours never asks about.
+func TestAdvanceExpansion_AFailedMidSearchGateReadFailsTheTick(t *testing.T) {
+	h := newExpandHarness()
+	// One origin we hold, routing to the target through an intermediate the ledger has never
+	// heard of. X1-MID is NOT an ExpandSystem — that absence is the fixture.
+	h.ledger.systems = []ExpandSystem{
+		{System: "X1-HOME", Verdict: VerdictInScope},
+		{System: "X1-FAR", Verdict: VerdictPending, UnchartedCount: 3},
+	}
+	h.gates.adjacency = map[string][]string{
+		"X1-HOME": {"X1-MID"},
+		"X1-MID":  {"X1-FAR"},
+		"X1-FAR":  {},
+	}
+	h.gates.failOn = map[string]bool{"X1-MID": true}
+	h.yards.bySystem = map[string][]string{"X1-HOME": {"X1-HOME-YARD"}}
+	h.ledger.slots = []QueuedSlot{staffedYardRow("X1-HOME", "X1-HOME-YARD")}
+
+	rep, err := h.run(t, nil)
+	if err == nil {
+		t.Fatalf("the tick returned nil error with report %+v — an unreadable intermediate was "+
+			"swallowed, and a reach answer nobody read decides whether a probe flies", rep)
+	}
+	if !strings.Contains(err.Error(), "X1-MID") {
+		t.Fatalf("error = %q, want it to name X1-MID — readNeighbours never asks for X1-MID, so an "+
+			"error that does not name it means the tick died before the mid-search read and this "+
+			"path was never exercised", err)
+	}
+	if !strings.Contains(err.Error(), "gate store unhappy") {
+		t.Fatalf("error = %q, want the store's own failure wrapped rather than replaced — a guard "+
+			"that discards the cause leaves an operator no way to tell a broken table from an "+
+			"exhausted frontier", err)
+	}
+
+	// The fail-closed half: doubt resolves toward NOT committing a hull.
+	if len(h.ledger.setSeeds) != 0 {
+		t.Fatalf("stamped %v on a tick whose gate read failed", h.ledger.setSeeds)
+	}
+	for _, slot := range h.ledger.upsertedSlots {
+		if slot.Kind == SlotKindSpare {
+			t.Fatalf("wrote a seed want %v against topology the tick could not read", slot)
+		}
 	}
 }

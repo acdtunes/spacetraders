@@ -433,7 +433,7 @@ func TestAdvanceExpansion_AnUnchartedGateIsSkippedWithoutFailingTheTickOrTheRead
 // The distinction is why the pass matches gategraph.ErrGateUnreadable with errors.Is instead of
 // reading a status or a message: a store fault, an expired token or a 5xx is NOT the API saying "this
 // gate needs a probe", and treating it as ordinary would mask it forever. It is still not worth
-// failing a tick that commands hulls, spends credits and drives the off-gate fallback — this pass
+// failing a tick that commands hulls, spends credits and stages the seed machinery — this pass
 // writes no ledger row and moves nothing, so a lost read costs information and nothing else, and the
 // next tick re-derives and retries for free.
 func TestAdvanceExpansion_AGateReadFaultIsCountedAndDoesNotFailTheTickOrTheReadsBehindIt(t *testing.T) {
@@ -454,7 +454,7 @@ func TestAdvanceExpansion_AGateReadFaultIsCountedAndDoesNotFailTheTickOrTheReads
 	if err != nil {
 		t.Fatalf("a single failed gate read failed the whole tick: %v — this pass writes no ledger "+
 			"row and moves no hull, so one bad gate must never stop the seed machinery, the spare "+
-			"claim and the off-gate fallback", err)
+			"claim or the counter-staffing hop", err)
 	}
 	if rep.GatesRead != 1 || gates.readCount("X1-B2") != 1 {
 		t.Fatalf("GatesRead = %d and reads were %v, want X1-B2 still read behind the failure",
@@ -537,7 +537,7 @@ func TestAdvanceExpansion_AnUnreadableGateMappingFailsTheGateReadTick(t *testing
 }
 
 // WITH NO READER WIRED THE TICK IS EXACTLY WHAT IT WAS. A nil port is a wiring gap, not a switch, and
-// the pass degrades to doing nothing rather than panicking — the same contract OffGatePorts carries.
+// the pass degrades to doing nothing rather than panicking.
 //
 // It also pins the cost: with no reader there is nothing to build a candidate set for, so the pass
 // must not spend a per-system Mapped read on the whole ledger either.

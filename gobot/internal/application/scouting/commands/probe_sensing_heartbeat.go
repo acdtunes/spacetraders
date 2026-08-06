@@ -418,7 +418,7 @@ func expansionSummary(rep parkedsensing.ExpandReport) string {
 			rep.SeedsUnstaged, rep.CountersStaffed)
 	}
 	if rep.SpendingPaused {
-		return summary + " (spending paused: no seed purchase, no explorer demand)"
+		return summary + " (spending paused: no seed purchase)"
 	}
 	return summary
 }

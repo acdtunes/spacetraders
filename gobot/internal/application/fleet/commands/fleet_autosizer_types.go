@@ -7,7 +7,7 @@
 // Shape mirrors run_siting_coordinator.go: a registered singleton handler with optional
 // setter-collaborators, one infinite reconcile loop in Handle(), resolveFleetAutosizerConfig()
 // resolving every <=0 knob to a documented protective default (RULINGS #5). One coordinator,
-// N pluggable demand providers (lights, heavies, explorer) — the vdld pluggable-provider idiom.
+// N pluggable demand providers (lights, heavies) — the vdld pluggable-provider idiom.
 package commands
 
 import "github.com/andrescamacho/spacetraders-go/internal/domain/hullbuy"
@@ -24,11 +24,6 @@ const (
 	HullClassLight = hullbuy.HullClassLight
 	// HullClassHeavy is the trade-tour pool (DedicatedFleet "trade"), sized to trade demand.
 	HullClassHeavy = hullbuy.HullClassHeavy
-	// HullClassExplorer is sized to slice-B off-gate demand and runs the SAME guard stack as every
-	// other class — there is no class-gated carve-out. Its ~819k spend is bounded by the demand
-	// gate, a HARD CAP of 1 (the class fleet ceiling) and a price ceiling. Opt-IN
-	// (explorer_hulls_enabled, default OFF) and double-gated, so a bare deploy buys nothing.
-	HullClassExplorer = hullbuy.HullClassExplorer
 	// HullClassContractDelivery is the capacity reconciler's contract-delivery capital pool. The
 	// reconciler EMITS its tier-4 gap into this class via the ContractDeliveryDemandBridge, so
 	// arming it routes ROUTINE early-game hauler scaling through this coordinator's SINGLE

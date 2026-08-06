@@ -56,7 +56,7 @@ func TestStallMetrics_StreakGaugeTracksTheLiveStreak(t *testing.T) {
 
 	c.RecordStallStreak("parked_sensing", "", "ports_unwired", 1)
 	c.RecordStallStreak("parked_sensing", "", "ports_unwired", 2)
-	c.RecordStallStreak("off_gate_expansion", "", "off_gate_no_target", 3)
+	c.RecordStallStreak("parked_sensing", "", "expansion_error", 3)
 	c.RecordStallStreak("parked_sensing", "", "ports_unwired", 0) // cleared
 
 	const name = "spacetraders_daemon_coordinator_stall_streak"
@@ -66,7 +66,7 @@ func TestStallMetrics_StreakGaugeTracksTheLiveStreak(t *testing.T) {
 		want   float64
 	}{
 		{"cleared sensing block drains to 0", map[string]string{"coordinator": "parked_sensing", "scope": "", "reason": "ports_unwired"}, 0},
-		{"live off-gate block holds its streak", map[string]string{"coordinator": "off_gate_expansion", "scope": "", "reason": "off_gate_no_target"}, 3},
+		{"live expansion block holds its streak", map[string]string{"coordinator": "parked_sensing", "scope": "", "reason": "expansion_error"}, 3},
 	}
 	for _, tc := range cases {
 		got, ok := gatherGauge(t, Registry, name, tc.labels)

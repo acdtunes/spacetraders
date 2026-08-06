@@ -21,8 +21,7 @@ const (
 	defaultPurchaseCapPerTick   = 1
 
 	// There are no per-class pool ceilings — see fleet_autosizer_guards.go for what bounds each
-	// class. defaultFleetCeilingExplorer below is the explorer's demand-side hard cap, NOT a
-	// guard input.
+	// class.
 
 	defaultPurchaseMarginOverFloor     = 200000
 	defaultLightRotationSlots          = 3.5
@@ -42,15 +41,6 @@ const (
 	defaultShipTypeLights  = "SHIP_LIGHT_HAULER"
 	defaultShipTypeHeavies = "SHIP_HEAVY_FREIGHTER"
 
-	// Explorer class. Opt-IN (default OFF, arming knob). The HARD CAP is 1; the
-	// PRICE CEILING defaults to ~819k SHIP_EXPLORER + a premium (a REAL default, never 0=off — the
-	// explorer's price ceiling is a required guard); the 25%-treasury big-ticket affordability rule
-	// applies (the explorer buys an ~819k hull).
-	defaultFleetCeilingExplorer           = 1
-	defaultExplorerTreasuryPctPerPurchase = 25
-	defaultMaxPriceExplorer               = 900000
-	defaultShipTypeExplorer               = "SHIP_EXPLORER"
-
 	// The autosizer carries no contract-delivery class defaults — the dedicated scaler owns
 	// contract-fleet capacity. The HullClassContractDelivery enum + the
 	// "contract" dedication mapping the scaler reuses stay.
@@ -63,12 +53,6 @@ const (
 type DemandParams struct {
 	// LightRotationSlots is the C3 rotation divisor inverted: K chains need K × this workers.
 	LightRotationSlots float64
-	// ExplorerHullsEnabled ARMS the explorer class. Default false (opt-in): when false the
-	// explorer provider emits ZERO demand unconditionally, so a bare deploy buys no explorer.
-	ExplorerHullsEnabled bool
-	// MaxExplorerHulls is the explorer HARD CAP (the class fleet ceiling, default 1): the provider
-	// never wants more than this regardless of the off-gate signal's count.
-	MaxExplorerHulls int
 }
 
 // ClassDemandProvider reads one hull class's demand each tick (the pluggable-provider seam,
@@ -120,15 +104,6 @@ type RunFleetAutosizerCoordinatorCommand struct {
 	ShipTypeHeavies string
 
 	ZeroEffectAlarmTicks int
-
-	// Explorer class. ExplorerHullsEnabled is the opt-IN arming knob (default OFF
-	// — nothing boot-arms it). FleetCeilingExplorer is the HARD CAP (default 1); MaxPriceExplorer is
-	// the price ceiling (default ~819k+premium); ExplorerTreasuryPctPerPurchase is the 25% rule.
-	ExplorerHullsEnabled           bool
-	FleetCeilingExplorer           int
-	ExplorerTreasuryPctPerPurchase int
-	MaxPriceExplorer               int64
-	ShipTypeExplorer               string
 
 	// No contract-delivery class knobs here: the dedicated scaler owns contract capacity.
 }
@@ -310,16 +285,12 @@ func (h *RunFleetAutosizerCoordinatorHandler) coordinatorState(containerID strin
 	return st
 }
 
-// classDisabled reports whether a class is frozen by config. Lights/heavies are LIVE BY DEFAULT
-// and unconditionally run; explorer is opt-IN (only runs when armed).
+// classDisabled reports whether a class is frozen by config. Lights and heavies are LIVE BY
+// DEFAULT and unconditionally run; every other class is unknown here and never acts.
 func (c autosizerRunConfig) classDisabled(class HullClass) bool {
 	switch class {
 	case HullClassLight, HullClassHeavy:
 		return false
-	case HullClassExplorer:
-		// Opt-IN arming: the explorer class runs ONLY when explicitly armed, so a bare
-		// deploy skips it entirely and buys no ~819k ROI-exempt hull.
-		return !c.ExplorerHullsEnabled
 	default:
 		// HullClassContractDelivery falls here — never sized by the autosizer (the dedicated scaler
 		// owns it). "unknown class: never act".

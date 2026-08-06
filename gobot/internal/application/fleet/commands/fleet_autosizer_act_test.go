@@ -466,9 +466,9 @@ func TestReconcile_TradeHullFallback_StillRunsEveryGuard(t *testing.T) {
 }
 
 func TestReconcile_TradeHullFallback_DoesNotSubstituteForNonTradeClasses(t *testing.T) {
-	// The fallback is TRADE-scoped. The explorer buys REACH — a substituted freighter cannot
-	// warp off the gate network — and the light pool's own type is already priceable, so
-	// neither may ever be silently swapped. An unpriceable light simply does not buy.
+	// The fallback is TRADE-scoped. The light pool's own type is already priceable, so it has
+	// no stall to clear and may never be silently swapped — a pool must stay made of the hull
+	// the operator configured. An unpriceable light simply does not buy.
 	h, purchaser, _, _ := armedHandler(lightShortfall())
 	yards := &fakeTypedYardPrice{byType: map[string]int64{"SHIP_HEAVY_FREIGHTER": 2000000}}
 	h.SetYardPriceReader(yards)

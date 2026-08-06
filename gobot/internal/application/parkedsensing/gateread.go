@@ -181,7 +181,7 @@ func orderUnreadGatesByFrontier(
 // cannot answer for, nearest-first, up to MaxGateReads in one tick.
 //
 // A NIL READER IS A WIRING GAP, NOT A SWITCH, and the pass then costs literally nothing — not even the
-// per-system mapping sweep. That is the same contract OffGatePorts carries.
+// per-system mapping sweep.
 //
 // NO FAILURE HERE FAILS THE TICK, a deliberate asymmetry with the passes around it: those command
 // hulls and write ledger rows, while this one writes nothing, moves nothing and spends nothing, so a

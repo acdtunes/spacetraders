@@ -80,11 +80,6 @@ var fleetAutosizerConfigKeys = []string{
 	"autosizer_ship_type_lights",
 	"autosizer_ship_type_heavies",
 	"autosizer_zero_effect_alarm_ticks",
-	"autosizer_explorer_hulls_enabled",
-	"autosizer_fleet_ceiling_explorer",
-	"autosizer_explorer_treasury_pct_per_purchase",
-	"autosizer_max_price_explorer",
-	"autosizer_ship_type_explorer",
 }
 
 // resolveFleetAutosizerConfig makes config.yaml the single LIVE source of truth for the
@@ -157,23 +152,6 @@ func (s *DaemonServer) injectFleetAutosizerConfig(config map[string]interface{})
 	if fa.ZeroEffectAlarmTicks != 0 {
 		config["autosizer_zero_effect_alarm_ticks"] = fa.ZeroEffectAlarmTicks
 	}
-	// Explorer class. The opt-in arming bool is written ONLY when true (an absent key reads
-	// as DISARMED, so nothing boot-arms it — mirrors warehouse_hulls_enabled).
-	if fa.ExplorerHullsEnabled {
-		config["autosizer_explorer_hulls_enabled"] = true
-	}
-	if fa.FleetCeilingExplorer != 0 {
-		config["autosizer_fleet_ceiling_explorer"] = fa.FleetCeilingExplorer
-	}
-	if fa.ExplorerTreasuryPctPerPurchase != 0 {
-		config["autosizer_explorer_treasury_pct_per_purchase"] = fa.ExplorerTreasuryPctPerPurchase
-	}
-	if fa.MaxPriceExplorer != 0 {
-		config["autosizer_max_price_explorer"] = int(fa.MaxPriceExplorer)
-	}
-	if fa.ShipTypeExplorer != "" {
-		config["autosizer_ship_type_explorer"] = fa.ShipTypeExplorer
-	}
 	// sp-y2ptq: the autosizer's contract-delivery class was removed (dedicated scaler owns it) — no
 	// autosizer_contract_delivery_* keys are injected.
 }
@@ -210,12 +188,6 @@ func buildFleetAutosizerCommand(cfg *configReader, playerID int, containerID str
 		ShipTypeHeavies: cfg.OptionalString("autosizer_ship_type_heavies"),
 
 		ZeroEffectAlarmTicks: cfg.OptionalInt("autosizer_zero_effect_alarm_ticks", 0),
-
-		ExplorerHullsEnabled:           cfg.OptionalBool("autosizer_explorer_hulls_enabled"),
-		FleetCeilingExplorer:           cfg.OptionalInt("autosizer_fleet_ceiling_explorer", 0),
-		ExplorerTreasuryPctPerPurchase: cfg.OptionalInt("autosizer_explorer_treasury_pct_per_purchase", 0),
-		MaxPriceExplorer:               int64(cfg.OptionalInt("autosizer_max_price_explorer", 0)),
-		ShipTypeExplorer:               cfg.OptionalString("autosizer_ship_type_explorer"),
 		// sp-y2ptq: autosizer contract-delivery class removed — no autosizer_contract_delivery_* reads.
 	}
 	// Default-TRUE bool: present-vs-absent is what carries the default, so read it as a *bool.

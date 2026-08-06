@@ -97,7 +97,15 @@ func (f *fakeSeedCommander) countOf(verb string) int {
 type fakeGates struct {
 	adjacency map[string][]string
 	err       error
-	calls     int
+	// failOn breaks the per-system read for the NAMED systems only, leaving
+	// PassableGraph and every other system answering normally. It exists because err
+	// cannot express this shape: err fails EVERY read including the bulk graph, so the
+	// tick aborts at PassableGraph and never reaches gateReach.adjacent's store
+	// fallback — which fires only for a system the tick's neighbour map does not cover,
+	// i.e. an intermediate discovered mid-search. A nil map fails nothing, so every
+	// fixture that does not set it is unaffected.
+	failOn map[string]bool
+	calls  int
 }
 
 func (f *fakeGates) Neighbours(_ context.Context, system string) ([]string, error) {
@@ -106,6 +114,12 @@ func (f *fakeGates) Neighbours(_ context.Context, system string) ([]string, erro
 		// Adversarial: a populated frontier alongside the error, so an engine
 		// that ignores it walks straight into unfunded expansion.
 		return []string{"X1-GHOST"}, f.err
+	}
+	if f.failOn[system] {
+		// Adversarial for the same reason and aimed at the mid-search fallback: a
+		// walker that swallows this error walks on into a reach answer it never read,
+		// and X1-GHOST is a neighbour no fixture's graph contains.
+		return []string{"X1-GHOST"}, errors.New("gate store unhappy for " + system)
 	}
 	return f.adjacency[system], nil
 }

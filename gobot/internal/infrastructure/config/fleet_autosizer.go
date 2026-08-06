@@ -25,7 +25,6 @@ type FleetAutosizerConfig struct {
 	// A `fleet_ceiling_lights`/`fleet_ceiling_heavies` key left behind in an existing config.yaml is
 	// simply IGNORED on read — viper's non-strict unmarshal (config.go's plain v.Unmarshal, no
 	// ErrorUnused) drops keys with no matching field, so a stale config.yaml still boots.
-	// FleetCeilingExplorer SURVIVES below: it is the explorer's demand-side hard cap, not a guard input.
 
 	// --- treasury guard ---
 
@@ -95,30 +94,6 @@ type FleetAutosizerConfig struct {
 	// attempted (a guard blocking every tick, or an unwired purchaser), emit ONE edge-triggered
 	// WARN naming the persistent blocker (the f5pr lesson). 0/absent → 4.
 	ZeroEffectAlarmTicks int `mapstructure:"zero_effect_alarm_ticks"`
-
-	// --- explorer hull class (sp-a3yn slice C of sp-4imi) ---
-	//
-	// The explorer auto-buys an ~819k SHIP_EXPLORER for REACH, not income (it charts new systems so
-	// the cheap probe frontier resumes). Because that spend is large and captain-reviewed, it is
-	// DEPLOY-INERT: ExplorerHullsEnabled defaults OFF and NOTHING boot-arms it — the buy requires BOTH
-	// (a) this flag armed AND (b) slice-B off-gate demand firing. Config+restart arming (not a live
-	// `tune`) is deliberate: a runtime tune cannot flip it. It is the sole opt-IN autosizer class.
-
-	// ExplorerHullsEnabled ARMS the explorer class. Absent/false = DISARMED (the class emits zero
-	// demand and buys nothing). Set true ONLY after the captain/human review signs off.
-	ExplorerHullsEnabled bool `mapstructure:"explorer_hulls_enabled"`
-	// FleetCeilingExplorer is the explorer HARD CAP (never own more than this). 0/absent → 1.
-	FleetCeilingExplorer int `mapstructure:"fleet_ceiling_explorer"`
-	// ExplorerTreasuryPctPerPurchase is the 25% big-ticket affordability rule for the ~819k buy.
-	// 0/absent → 25.
-	ExplorerTreasuryPctPerPurchase int `mapstructure:"explorer_treasury_pct_per_purchase"`
-	// MaxPriceExplorer is the explorer PRICE CEILING (~819k SHIP_EXPLORER + premium). Unlike
-	// MaxPrice{Lights,Heavies} it resolves to a REAL default (never 0=no-cap): the ceiling is a
-	// required guard on this large buy. 0/absent → 900000.
-	MaxPriceExplorer int64 `mapstructure:"max_price_explorer"`
-	// ShipTypeExplorer is the shipyard ship-type bought for the explorer class. 0/absent →
-	// "SHIP_EXPLORER" (the only warp-drive-carrying hull).
-	ShipTypeExplorer string `mapstructure:"ship_type_explorer"`
 
 	// sp-y2ptq: the autosizer's demand-driven contract-delivery hull class
 	// was REMOVED with the capacity reconciler that fed it — the dedicated contract scaler now owns

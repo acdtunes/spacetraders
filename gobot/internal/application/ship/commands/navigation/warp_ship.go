@@ -33,7 +33,7 @@ type WarpDestinationSource interface {
 // WarpShipCommand is a one-shot off-gate move: warp ShipSymbol to Destination, a
 // waypoint in another system reachable without a jump gate. It is the operator-facing
 // primitive behind `spacetraders ship warp` — until it existed a warp could only
-// happen as a side effect of the frontier explorer dispatcher choosing to send a hull
+// happen as a side effect of any coordinator choosing to send a hull
 // off-gate, so warp could not be commanded and therefore could not be measured.
 type WarpShipCommand struct {
 	ShipSymbol  string

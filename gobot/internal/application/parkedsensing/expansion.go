@@ -213,11 +213,8 @@ type ExpandPorts struct {
 	// A SECOND port beside Gates rather than a widening of it, because Gates is a
 	// pure store read by contract and must stay one. A nil reader is a WIRING GAP,
 	// not a feature switch: the pass does nothing and the rest of the tick is
-	// unaffected, in the same spirit as OffGatePorts.
+	// unaffected.
 	GateRead GateReader
-	// OffGate is the warp-expansion slice: the ports that raise explorer demand and
-	// warp an explorer past a sealed gate frontier. See offgate.go.
-	OffGate OffGatePorts
 }
 
 // ExpandKnobs are the operator-set controls on expansion.
@@ -226,8 +223,8 @@ type ExpandKnobs struct {
 	// the engine off, and the difference is the whole point of the field: paused, the
 	// engine still records frontier systems and reads charted jump gates — both free,
 	// and both what keep already-bought hulls supplied with somewhere to go. What it
-	// does not do is command a hull, write a SPARE want or emit off-gate demand, the
-	// three ways this engine can reach the treasury (all through another engine).
+	// does not do is command a hull or write a SPARE want, the two ways this engine can
+	// reach the treasury (both through another engine).
 	//
 	// THE SAME OPERATOR SWITCH ALSO REACHES THE BUY QUEUE, and it has to: this field
 	// stops only the REQUESTS, and the queue that pays them is the larger spender.
@@ -302,16 +299,6 @@ type ExpandReport struct {
 	// (MaxGateReads). Sharing one budget would let routine seed steps crowd out the one pass that can
 	// tell the fleet it is not actually sealed inside a pocket of under-construction exits.
 	GatesRead, GatesUnread, GatesUnreadable, GatesFailed int
-	// OffGateDemanded reports that the gate-reachable frontier was exhausted this tick and explorer
-	// demand was raised; OffGateTarget names the system selected to warp to (empty when none was
-	// reachable), and OffGateWarped counts warps actually dispatched.
-	//
-	// A warp is NOT charged against MaxExpansionActions either: a dispatch is one command handed to a
-	// background goroutine at most once per tick and gated on owning an idle explorer at all, so
-	// charging it would let the rarest action in the engine be crowded out by routine seed steps.
-	OffGateDemanded bool
-	OffGateTarget   string
-	OffGateWarped   int
 }
 
 // AdvanceExpansion runs one expansion tick. budgetRate is the sensing residual in
@@ -328,10 +315,9 @@ type ExpandReport struct {
 //     we hold or can read without a hull, both write nothing but topology, and
 //     together they keep the placement machine supplied with somewhere to put the
 //     probes we have already bought.
-//   - SPEND-INTENT, run only when SpendEnabled: the seed machinery and the off-gate
-//     fallback. None spends a credit DIRECTLY, but each asks an engine that can —
-//     requestSeeds writes a SPARE want the buy queue funds, advanceOffGate raises
-//     explorer demand the autosizer funds, and claimSpares deletes a placement row,
+//   - SPEND-INTENT, run only when SpendEnabled: the seed machinery. It spends no credit
+//     DIRECTLY, but it asks engines that can —
+//     requestSeeds writes a SPARE want the buy queue funds, and claimSpares deletes a placement row,
 //     which is a deliberate UNDER-count of the probe fleet and therefore cap headroom
 //     that authorises a purchase (advanceSeeds sustains that under-count for as long
 //     as an errand runs). Under RULINGS #4 the doubt resolves toward NOT spending.
@@ -407,10 +393,6 @@ func AdvanceExpansion(
 	// a ship, write a SPARE want, delete a placement row, or emit demand, it goes
 	// below. If it only reads stored facts and records topology, it may go above.
 	if !k.SpendEnabled {
-		// RETRACTED, NOT MERELY UNRAISED. The explorer-demand bridge latches, so a
-		// pause that merely stopped calling advanceOffGate would leave the last
-		// `Demanded: true` standing forever and the autosizer buying against it.
-		retractOffGateDemand(p, playerID)
 		rep.SpendingPaused = true
 		return rep, nil
 	}
@@ -462,15 +444,6 @@ func AdvanceExpansion(
 		return rep, err
 	}
 
-	// OFF-GATE, LAST, and only once the gate passes have had their turn. Warp is the expensive
-	// fallback — a heavy hull and a multi-system flight against a probe that walks a gate for free —
-	// so a single gate-reachable target suppresses it. A read failure fails the tick rather than
-	// reading as "the frontier is exhausted", which would raise explorer demand off a DB hiccup.
-	gateReachable, err := reach.reachesAny(ctx, targets, book)
-	if err != nil {
-		return rep, err
-	}
-	advanceOffGate(ctx, p, playerID, targets, gateReachable, &rep)
 	return rep, nil
 }
 

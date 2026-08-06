@@ -41,13 +41,6 @@ type autosizerRunConfig struct {
 
 	ZeroEffectAlarmTicks int
 
-	// Explorer class.
-	ExplorerHullsEnabled           bool
-	FleetCeilingExplorer           int
-	ExplorerTreasuryPctPerPurchase int
-	MaxPriceExplorer               int64
-	ShipTypeExplorer               string
-
 	// No contract-delivery class fields: the dedicated scaler owns contract capacity.
 }
 
@@ -67,12 +60,6 @@ func resolveFleetAutosizerConfig(cmd *RunFleetAutosizerCoordinatorCommand) autos
 		ShipTypeLights:              cmd.ShipTypeLights,
 		ShipTypeHeavies:             cmd.ShipTypeHeavies,
 		ZeroEffectAlarmTicks:        cmd.ZeroEffectAlarmTicks,
-
-		ExplorerHullsEnabled:           cmd.ExplorerHullsEnabled,
-		FleetCeilingExplorer:           cmd.FleetCeilingExplorer,
-		ExplorerTreasuryPctPerPurchase: cmd.ExplorerTreasuryPctPerPurchase,
-		MaxPriceExplorer:               cmd.MaxPriceExplorer,
-		ShipTypeExplorer:               cmd.ShipTypeExplorer,
 	}
 
 	if c.Tick <= 0 {
@@ -107,21 +94,6 @@ func resolveFleetAutosizerConfig(cmd *RunFleetAutosizerCoordinatorCommand) autos
 	}
 	if c.ZeroEffectAlarmTicks <= 0 {
 		c.ZeroEffectAlarmTicks = defaultZeroEffectAlarmTicks
-	}
-	// Explorer defaults. ExplorerHullsEnabled has NO fallback — its false zero value IS the
-	// default (disarmed), so nothing boot-arms it. MaxPriceExplorer resolves to a REAL default (never
-	// 0=off, unlike MaxPrice{Lights,Heavies}) because the explorer's price ceiling is a required guard.
-	if c.FleetCeilingExplorer <= 0 {
-		c.FleetCeilingExplorer = defaultFleetCeilingExplorer
-	}
-	if c.ExplorerTreasuryPctPerPurchase <= 0 {
-		c.ExplorerTreasuryPctPerPurchase = defaultExplorerTreasuryPctPerPurchase
-	}
-	if c.MaxPriceExplorer <= 0 {
-		c.MaxPriceExplorer = defaultMaxPriceExplorer
-	}
-	if c.ShipTypeExplorer == "" {
-		c.ShipTypeExplorer = defaultShipTypeExplorer
 	}
 	// PreferDemandProximalYard defaults TRUE: nil (unset) → true; the *bool distinguishes an
 	// explicit false from "not configured".
@@ -204,9 +176,7 @@ func (h *RunFleetAutosizerCoordinatorHandler) reconcileOnce(ctx context.Context,
 	// The live-resolved params every provider reads this tick (the live-config discipline): the
 	// providers are constructed once at boot but see the current config.yaml value through here.
 	params := DemandParams{
-		LightRotationSlots:   cfg.LightRotationSlots,
-		ExplorerHullsEnabled: cfg.ExplorerHullsEnabled,
-		MaxExplorerHulls:     cfg.FleetCeilingExplorer,
+		LightRotationSlots: cfg.LightRotationSlots,
 	}
 
 	// No contract-delivery graduation gate here: the dedicated scaler owns contract capacity and

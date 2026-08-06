@@ -33,7 +33,6 @@ import (
 	goodsCmd "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/commands"
 	goodsServices "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/services"
 	"github.com/andrescamacho/spacetraders-go/internal/application/mediator"
-	parkedsensing "github.com/andrescamacho/spacetraders-go/internal/application/parkedsensing"
 	playerCmd "github.com/andrescamacho/spacetraders-go/internal/application/player/commands"
 	playerQuery "github.com/andrescamacho/spacetraders-go/internal/application/player/queries"
 	scoutingCmd "github.com/andrescamacho/spacetraders-go/internal/application/scouting/commands"
@@ -328,11 +327,6 @@ type sensingWiring struct {
 	unpricedPool *parkedSensingAdapters.UnpricedPoolPort
 	remoteMarket *parkedSensingAdapters.RemoteMarketPort
 
-	offGateSelect *expansionAdapters.OffGateWarpTargetSelector
-	offGateDemand *expansionAdapters.ExplorerOffGateBridge
-	idleExplorer  *expansionAdapters.IdleExplorerPort
-	explorerWarp  *expansionAdapters.ExplorerWarpDispatcher
-
 	db              *gorm.DB
 	med             mediator.Mediator
 	apiClient       *api.SpaceTradersClient
@@ -382,15 +376,6 @@ func (s sensingWiring) enginePorts(
 		Ledger:    s.ledger,
 		Waypoints: catalog,
 		Uncharted: catalog,
-		// Off-gate warp expansion (write side of the explorer demand bridge). Wired
-		// unconditionally rather than behind a knob: a separately-armed expansion engine
-		// just sits dormant, so this one drives the live tick.
-		OffGate: parkedsensing.OffGatePorts{
-			Select:   s.offGateSelect,
-			Demand:   s.offGateDemand,
-			Explorer: s.idleExplorer,
-			Warp:     s.explorerWarp,
-		},
 		// The same catalog instance again: it owns the shipyard_inventory reads,
 		// so the yard lookup and the listing memo read one store.
 		ListingMemo: catalog,
@@ -1162,13 +1147,13 @@ func run(cfg *config.Config) error {
 		chartGateOnArrival: defaultOn(cfg.Routing.ChartGateOnArrival),
 	}
 
-	// Off-gate warp support (slice A): attach the warp-execute +
+	// Off-gate warp support: attach the warp-execute +
 	// chart-on-arrival capability to the route executor now that gateGraphService
 	// exists (WithWarpSupport mutates the same *RouteExecutor the nav handlers
 	// already hold, so no re-wiring is needed). The charter reuses the SAME gate
 	// graph, market scanner, and shipyard scanner the gate-nav path uses, plus the
-	// graph provider as its waypoint source. Its callers are the frontier explorer
-	// dispatcher and the `ship warp` verb wired just below.
+	// graph provider as its waypoint source. Its caller is the `ship warp` verb wired just
+	// below.
 	// The onward-viability reader answers the one strand question the API does not:
 	// whether a system a warp lands in can be LEFT again. It reuses the SAME
 	// fetch-through waypoint source (so an uncharted destination answers truthfully
@@ -1211,36 +1196,6 @@ func run(cfg *config.Config) error {
 	// The ReachableYardFinder is the heavy branch's yard-price FALLBACK — scout-scanned
 	// yards ranked by stored-gate-graph hops then price. Signal-only: with no scan data the price
 	// guard fails closed exactly as before, and every other guard still gates the buy.
-	// The cross-coordinator off-gate demand bridge the FLEET autosizer's explorer BUY path
-	// reads. Its only writer is the probe-sensing expansion pass: see offGateSelector /
-	// idleExplorerPort / explorerWarpDispatcher below, handed to the sensing coordinator's
-	// SensingEnginePorts.OffGate. Leave the bridge without a writer and it never sees a first
-	// emit, so it reads UNREADABLE (ok=false), the explorer buy fails closed, and the whole
-	// path goes dormant without a single error.
-	explorerOffGateBridge := expansionAdapters.NewExplorerOffGateBridge()
-
-	// OFF-GATE WARP EXPANSION, write side. The fleet's 56-system ledger sits behind 50 outbound
-	// gate edges of which ALL 50 are under construction, so gate expansion is finished and warp is
-	// the only exit.
-	//
-	//   - offGateSelector ranks gate-unreachable systems by exploration value against warp fuel,
-	//     joining the universe roster against the stored gate graph. Its roster read is a cached
-	//     whole-universe crawl (long TTL), NOT a per-tick fetch.
-	//   - idleExplorerPort finds the bought+dedicated explorer to warp — idle-only, which is what
-	//     makes the dispatch idempotent without any cross-tick state.
-	//   - explorerWarpDispatcher resolves an arrival waypoint FIRST (fail-closed: an uncharted
-	//     destination warps nothing) and then runs the warp on a background goroutine, so the
-	//     sensing tick never waits out a flight.
-	//
-	// The dispatcher is handed the daemon's lifetime context by the sensing coordinator, so a warp
-	// survives the tick that launched it and is cancelled only on shutdown.
-	offGateSelector := expansionAdapters.NewOffGateWarpTargetSelector(
-		expansionAdapters.NewUniverseSystemsCache(apiClient, playerRepo, nil, 0),
-		gateGraphService,
-	)
-	idleExplorerPort := expansionAdapters.NewIdleExplorerPort(shipRepo)
-	explorerWarpDispatcher := expansionAdapters.NewExplorerWarpDispatcher(routeExecutor, shipRepo, warpWaypointSource)
-
 	reachableYardFinder := shipyardQuery.NewReachableYardFinder(shipyardInventoryRepo, gateGraphService)
 
 	// THE SHARED HEAVY TARGET (sp-fwk8z). ONE instance, two consumers: the fleet autosizer (which
@@ -1259,8 +1214,7 @@ func run(cfg *config.Config) error {
 		daemonServer, apiClient, ledgerTreasury, shipRepo, med, waypointRepo, captainEventRepo,
 		marketRepo,
 		reachableYardFinder,
-		explorerOffGateBridge, // Explorer demand provider reads off-gate demand through this bridge
-		heavyTargetFinder,     // sp-fwk8z: the SHARED heavy target — the reservation price term, one definition
+		heavyTargetFinder, // sp-fwk8z: the SHARED heavy target — the reservation price term, one definition
 	)
 	if err := mediator.RegisterHandler[*fleetCmd.RunFleetAutosizerCoordinatorCommand](med, fleetAutosizerHandler); err != nil {
 		return fmt.Errorf("failed to register FleetAutosizerCoordinator handler: %w", err)
@@ -1461,11 +1415,6 @@ func run(cfg *config.Config) error {
 		marketGoods:  sensingMarketGoods,
 		unpricedPool: sensingUnpricedPool,
 		remoteMarket: remoteMarketPort,
-
-		offGateSelect: offGateSelector,
-		offGateDemand: explorerOffGateBridge,
-		idleExplorer:  idleExplorerPort,
-		explorerWarp:  explorerWarpDispatcher,
 
 		db:              db,
 		med:             med,

@@ -63,7 +63,7 @@ func wiredPort(t *testing.T, h *fleetCmd.RunFleetAutosizerCoordinatorHandler, fi
 // the wiring decisions and nothing else.
 func buildAutosizerHandler(shipRepo navigation.ShipRepository, scannedYards scannedYardRanker, heavyYards heavyYardInventory) *fleetCmd.RunFleetAutosizerCoordinatorHandler {
 	return NewFleetAutosizerCoordinatorHandler(
-		&DaemonServer{}, nil, nil, shipRepo, nil, nil, nil, nil, scannedYards, nil, heavyYards,
+		&DaemonServer{}, nil, nil, shipRepo, nil, nil, nil, nil, scannedYards, heavyYards,
 	)
 }
 

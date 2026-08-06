@@ -30,8 +30,7 @@ type agentReader interface {
 }
 
 // NewFleetAutosizerCoordinatorHandler assembles the autosizer handler (sp-1txd M6), wiring every
-// concrete port to the daemon's live collaborators and registering the light + heavy demand
-// providers (and the opt-in explorer class).
+// concrete port to the daemon's live collaborators and registering the light + heavy demand providers.
 func NewFleetAutosizerCoordinatorHandler(
 	server *DaemonServer,
 	apiClient *api.SpaceTradersClient,
@@ -42,7 +41,6 @@ func NewFleetAutosizerCoordinatorHandler(
 	eventStore captain.EventStore,
 	marketRepo market.MarketRepository,
 	scannedYards scannedYardRanker,
-	offGateDemand fleetCmd.OffGateDemandSource,
 	heavyYards heavyYardInventory,
 ) *fleetCmd.RunFleetAutosizerCoordinatorHandler {
 	h := fleetCmd.NewRunFleetAutosizerCoordinatorHandler(nil)
@@ -60,13 +58,6 @@ func NewFleetAutosizerCoordinatorHandler(
 		shipRepo:   shipRepo,
 		laneReader: tradingQueries.NewProfitableLaneReader(marketRepo),
 	}))
-
-	// Explorer class (slice C): reads slice-B off-gate demand through the cross-coordinator
-	// bridge (offGateDemand) and the live explorer-pool count (dedicate-at-purchase "explorer" fleet).
-	// DORMANT until BOTH armed (explorer_hulls_enabled, default off — classDisabled skips it otherwise)
-	// AND the frontier raises off-gate demand into the bridge, so registering it here changes no live
-	// behaviour and nothing auto-buys. The frontier warps the bought hull (SetExplorerDispatchPort).
-	h.AddDemandProvider(fleetCmd.NewExplorerDemandProvider(offGateDemand, &autosizerExplorerFleetSource{shipRepo: shipRepo}))
 
 	// Buy-path readers + writers.
 	h.SetTreasuryReader(&autosizerTreasuryReader{api: apiClient, ledger: ledgerTreasury})

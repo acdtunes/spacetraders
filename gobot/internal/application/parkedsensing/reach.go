@@ -282,23 +282,3 @@ func (r *gateReach) originsWithin(ctx context.Context, candidates []string, targ
 	}
 	return out, nil
 }
-
-// reachesAny reports whether ANY outstanding charting target is within this walker's reach of a
-// system we hold — the discriminator that keeps warp a fallback. It reuses the tick's gateReach memo
-// and heldSystems index, so it costs no store read the tick was not already making and can never
-// disagree with the reach the seed machinery applies: same forward BFS, same bound, same origins.
-func (r *gateReach) reachesAny(ctx context.Context, targets []ExpandSystem, book *slotBook) (bool, error) {
-	held := book.heldSystems()
-	for _, target := range targets {
-		for _, origin := range held {
-			within, err := r.canReach(ctx, origin, target.System)
-			if err != nil {
-				return false, err
-			}
-			if within {
-				return true, nil
-			}
-		}
-	}
-	return false, nil
-}

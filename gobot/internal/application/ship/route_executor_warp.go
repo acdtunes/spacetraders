@@ -12,8 +12,8 @@ import (
 
 // ExecuteWarpLeg warps a ship to a single destination waypoint in ANOTHER system,
 // off the jump-gate network, and charts that system on arrival. This is
-// the clean, callable entrypoint slice B (off-gate target selection) and slice C
-// (the explorer hull) invoke with a chosen target waypoint + ship.
+// the clean, callable entrypoint a caller invokes with a chosen target waypoint + ship —
+// today the manual 'ship warp' verb (shipNav.WarpLegExecutor).
 //
 // It fails closed when the ship has no warp drive, and refuses (without any warp
 // API call) a destination the ship could never leave again. On success the ship
@@ -33,7 +33,7 @@ func (e *RouteExecutor) ExecuteWarpLeg(
 
 // ExecuteWarpRoute executes an ordered sequence of warp legs, refueling between
 // them. A far target off the gate network may be out of a single tank's
-// range; slice B hands the ordered intermediate targets here and this drives each
+// range; a caller hands the ordered intermediate targets here and this drives each
 // hop - checking onward viability, topping off at any waypoint that sells fuel
 // before the next warp, and charting every system on arrival. The warp-drive check
 // runs once up front; the first leg refused aborts the route with that leg's

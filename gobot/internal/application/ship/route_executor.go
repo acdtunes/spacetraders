@@ -104,7 +104,7 @@ func NewRouteExecutor(
 // constructed executor and returns it for chaining. It is deliberately separate
 // from the constructor so the eight-arg NewRouteExecutor signature - and every
 // existing call site - stays untouched; warp is an additive capability, inert
-// until a caller (slice C's explorer) invokes ExecuteWarpRoute.
+// until a caller invokes ExecuteWarpRoute - and none does today (sp-bwzy3).
 //
 // warpNavigator is the API boundary a warp leg crosses; escapeReader answers whether
 // a destination system can be LEFT again, and a nil one refuses every warp (a safety

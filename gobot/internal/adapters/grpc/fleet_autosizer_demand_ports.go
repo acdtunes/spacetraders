@@ -121,18 +121,6 @@ func distinctShipSystems(ships []*navigation.Ship) []string {
 	return out
 }
 
-// autosizerExplorerFleetSource counts the player's explorer-dedicated hulls (DedicatedFleet
-// "explorer", stamped by dedicate-at-purchase). It is the hard-cap basis and the shortfall's Current
-// the ExplorerDemandProvider reads; a read failure fails the class CLOSED (an unknowable pool must
-// never buy, lest it breach the hard cap of 1).
-type autosizerExplorerFleetSource struct{ shipRepo navigation.ShipRepository }
-
-func (s *autosizerExplorerFleetSource) ExplorerCount(ctx context.Context, playerID int) (int, error) {
-	return countShips(ctx, s.shipRepo, playerID, func(sh *navigation.Ship) bool {
-		return sh.DedicatedFleet() == "explorer"
-	})
-}
-
 func countShips(ctx context.Context, shipRepo navigation.ShipRepository, playerID int, pred func(*navigation.Ship) bool) (int, error) {
 	pid, err := shared.NewPlayerID(playerID)
 	if err != nil {

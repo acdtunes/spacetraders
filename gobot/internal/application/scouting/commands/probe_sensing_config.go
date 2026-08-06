@@ -97,8 +97,8 @@ type sensingConfig struct {
 	ProbeCap          int
 	// ExpansionSpend is whether this coordinator may spend on hulls at all. It
 	// feeds BOTH engines that can: the expansion pass, which asks other engines to
-	// buy (a charting seed from the buy queue, an explorer from the autosizer), and
-	// the buy queue itself, which is what actually pays for a coverage probe.
+	// buy (a charting seed from the buy queue), and the buy queue itself, which is
+	// what actually pays for a coverage probe.
 	//
 	// FEEDING ONLY THE FIRST WAS THE DEFECT. Half of it was the NAME: a switch
 	// called `Expansion` reads as the engine being off while what the operator

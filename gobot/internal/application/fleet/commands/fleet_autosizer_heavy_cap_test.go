@@ -2,8 +2,8 @@ package commands
 
 import "testing"
 
-// passingHeavyRequest is a HEAVY candidate where every guard passes, including the new heavy cap.
-// The heavy class runs the FULL income guards (no explorer exemption), so the rate fields matter.
+// passingHeavyRequest is a HEAVY candidate where every guard passes, including the heavy cap.
+// The heavy class runs the same guard stack as every other class; only heavy_cap is class-scoped.
 func passingHeavyRequest() PurchaseRequest {
 	r := passingRequest()
 	r.Class = HullClassHeavy
@@ -11,10 +11,8 @@ func passingHeavyRequest() PurchaseRequest {
 	r.Price = 1_565_500 // the live cheapest heavy ask (spec C4)
 	r.CheapestKnownPrice = 1_565_500
 	r.LiveTreasury = 20_000_000
-	// A 1.57M hull only clears the era-payback guard with a marginal rate high enough to
-	// repay it before the era resets: price <= rate × hoursToEraEnd × safety, i.e.
-	// rate >= 1_565_500 / (20h × 0.5) ≈ 156_550/hr. The fixture sits comfortably above
-	// that so this file pins the CAP, not the payback arithmetic.
+	// A 20M treasury clears the 25%-per-buy affordability rule on a 1.57M hull with room to
+	// spare, so this file pins the CAP and never trips a money guard by accident.
 	r.HeaviesOwned = 1 // heavy HULLS owned
 	r.HeavyCap = 5     // heavy_cap — since sp-r7eiu the ONLY count-based bound
 	r.HeaviesOwnedReadable = true
@@ -52,17 +50,14 @@ func TestGuard_HeavyCap_ZeroIsALegitimateHold(t *testing.T) {
 	assertBlockedBy(t, r, GuardHeavyCap)
 }
 
-// The heavy cap is HEAVY-SCOPED: it must never block a light or explorer buy, whatever the heavy
-// census says. Folding it into the shared ceiling guard would starve the worker pool.
+// The heavy cap is HEAVY-SCOPED: it must never block a light buy, whatever the heavy census says.
+// Folding it into the shared ceiling guard would starve the worker pool.
 func TestGuard_HeavyCap_DoesNotApplyToOtherClasses(t *testing.T) {
-	for _, class := range []HullClass{HullClassLight, HullClassExplorer} {
+	for _, class := range []HullClass{HullClassLight} {
 		r := passingRequest()
 		r.Class = class
 		r.HeaviesOwned = 99 // far over any cap
 		r.HeavyCap = 5
-		if class == HullClassExplorer {
-			r.MaxPriceClass = 900000
-		}
 		d := EvaluateGuards(r)
 		if !d.Approved {
 			t.Fatalf("class %s must ignore the heavy cap, got blocked by %q; arithmetic: %s", class, d.BlockedBy, d.Arithmetic())

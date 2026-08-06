@@ -11,10 +11,9 @@ import (
 )
 
 // ErrShipHasNoWarpDrive is returned (fail-closed) when a warp is requested for a
-// ship with no MODULE_WARP_DRIVE_* installed. Only a SHIP_EXPLORER
-// carries the drive; refusing here keeps the executor from emitting a warp the
-// live API would reject, and gives slice B/C a typed signal to pick a warp-capable
-// hull instead.
+// ship with no MODULE_WARP_DRIVE_* installed. Refusing here keeps the executor from
+// emitting a warp the live API would reject, and gives the caller a typed signal to
+// pick a warp-capable hull instead.
 type ErrShipHasNoWarpDrive struct {
 	ShipSymbol string
 }

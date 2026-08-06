@@ -185,11 +185,8 @@ func (h *RunFleetAutosizerCoordinatorHandler) readTickInputs(ctx context.Context
 	return in
 }
 
-// classGuardConfig resolves the per-class guard knobs from the run config.
-//
-// There is no class ceiling here. The explorer's HARD CAP of 1 is not missing: that cap lives
-// in ExplorerDemandProvider, which clamps its want to MaxExplorerHulls, so the class is capped
-// by its demand.
+// classGuardConfig resolves the per-class guard knobs from the run config. There is no class
+// ceiling here: a class is bounded by its demand, its affordability and its price cap.
 func classGuardConfig(class HullClass, cfg autosizerRunConfig) (shipType string, maxPrice int64, treasuryPct int) {
 	switch class {
 	case HullClassLight:
@@ -198,12 +195,6 @@ func classGuardConfig(class HullClass, cfg autosizerRunConfig) (shipType string,
 		return cfg.ShipTypeLights, cfg.MaxPriceLights, 0
 	case HullClassHeavy:
 		return cfg.ShipTypeHeavies, cfg.MaxPriceHeavies, cfg.HeavyTreasuryPctPerPurchase
-	case HullClassExplorer:
-		// The explorer's ship type (SHIP_EXPLORER), its price ceiling (~819k+premium — a REAL cap,
-		// not 0=off), and the 25% big-ticket affordability rule. The realized-$/hr payback exemption
-		// is applied class-gated INSIDE EvaluateGuards, not here — every knob returned here is a REAL
-		// guard bound the explorer must still clear.
-		return cfg.ShipTypeExplorer, cfg.MaxPriceExplorer, cfg.ExplorerTreasuryPctPerPurchase
 	default:
 		// HullClassContractDelivery has no guard config here — the dedicated contract scaler owns
 		// that capacity. An unhandled class yields no buy config.
@@ -403,9 +394,9 @@ func (h *RunFleetAutosizerCoordinatorHandler) buildPurchaseRequest(
 // per-tick cap — judges the substitute exactly as it judges the preferred hull. If they then refuse the cheaper hull on economics, that refusal
 // stands: this function has no power to approve anything.
 //
-// TRADE-SCOPED, DELIBERATELY. The explorer buys REACH — a freighter cannot warp off the
-// gate network, so substituting one would silently defeat the class — and the light
-// worker pool's own type is priceable. Only HullClassHeavy substitutes.
+// TRADE-SCOPED, DELIBERATELY. Only HullClassHeavy substitutes: it is the only pool whose
+// preferred hull no reachable yard sells, which is the stall this exists to clear. Widening
+// it would let a pool quietly stop being made of the hull the operator configured.
 //
 // SELF-CORRECTING: the preferred type is asked FIRST every tick, and
 // shipyard.TradeHullPreferenceOrder lists the heavy classes ahead of the light one, so

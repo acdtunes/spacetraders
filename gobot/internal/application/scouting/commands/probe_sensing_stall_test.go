@@ -148,13 +148,11 @@ func TestSensingReportsIdleOnAQuietButHealthyWorld(t *testing.T) {
 	}
 }
 
-// THE OFF-GATE PRODUCTION FAILURE, and the rest of the expansion pass's verdict table.
+// The expansion pass's verdict table.
 //
 // Driven against the pass's REPORT rather than through a synthesised 400-line expansion fixture:
 // the report is the DTO the engine hands the coordinator, and the behaviour under test is the
-// coordinator's projection of it. Reaching OffGateDemanded through the real engine would require
-// standing up a ledger, a gate graph, a slot book and a target ordering — i.e. testing the
-// expansion engine, which owns its own tests, rather than this mapping.
+// coordinator's projection of it, not the expansion engine — which owns its own tests.
 func TestExpansionStallVerdictTable(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -164,24 +162,8 @@ func TestExpansionStallVerdictTable(t *testing.T) {
 		wantReason health.StallReason
 	}{
 		{
-			name:       "sealed pocket: demand raised, no warp target — the 33-system region behind an unread gate",
-			rep:        parkedsensing.ExpandReport{OffGateDemanded: true},
-			wantStatus: health.StallBlocked,
-			wantReason: stallReasonOffGateNoTarget,
-		},
-		{
-			name:       "off-gate demand WITH a target is not a stall — the fleet has somewhere to go",
-			rep:        parkedsensing.ExpandReport{OffGateDemanded: true, OffGateTarget: "X1-QQ9"},
-			wantStatus: health.StallIdle,
-		},
-		{
-			name:       "a dispatched warp is progress",
-			rep:        parkedsensing.ExpandReport{OffGateDemanded: true, OffGateTarget: "X1-QQ9", OffGateWarped: 1},
-			wantStatus: health.StallProgress,
-		},
-		{
-			name:       "charting progress outranks a failed selector — a moving frontier is not sealed",
-			rep:        parkedsensing.ExpandReport{Discovered: 2, OffGateDemanded: true},
+			name:       "charting progress is progress — a moving frontier is not idle",
+			rep:        parkedsensing.ExpandReport{Discovered: 2},
 			wantStatus: health.StallProgress,
 		},
 		{

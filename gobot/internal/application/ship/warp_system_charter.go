@@ -8,8 +8,8 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 )
 
-// SystemCharter charts a whole star system on warp arrival. When a
-// SHIP_EXPLORER warps into a fresh cluster off the jump-gate network, this is
+// SystemCharter charts a whole star system on warp arrival. When a warp-capable
+// hull arrives in a fresh cluster off the jump-gate network, this is
 // what makes the destination discoverable to the rest of the fleet: it persists
 // the new system's jump-gate edges (so the cheap gate-hopping probe frontier -
 // growFrontierGraph / gategraph - can resume expanding from the new
