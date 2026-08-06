@@ -58,6 +58,39 @@ func (r *ContainerRepositoryGORM) ListByStatus(
 	return models, nil
 }
 
+// FindByIDAcrossPlayers returns the container with this id whichever player owns it, or
+// (nil, nil) when there is none — the same absent-is-not-an-error convention Get uses.
+//
+// It exists because the worker start and recovery paths know a container id but not a player id,
+// so they cannot use the player-scoped Get. Before sp-72gmi they called ListAll(ctx, nil) and
+// linear-scanned the result in Go: every worker start loaded the ENTIRE containers table into
+// memory to find one row. That table has no retention policy, and the sp-20eyn crash loop had
+// pushed it to 34,279 FAILED rows alone — so the loop's own wreckage made every subsequent worker
+// start more expensive, on precisely the path that was already failing.
+//
+// A single indexed read replaces it. The primary key is (id, player_id) and id LEADS it, so
+// `WHERE id = ?` is a prefix match the primary-key index serves directly — no separate index is
+// needed, and the cost stops depending on the size of the table.
+func (r *ContainerRepositoryGORM) FindByIDAcrossPlayers(
+	ctx context.Context,
+	containerID string,
+) (*ContainerModel, error) {
+	var model ContainerModel
+
+	result := r.db.WithContext(ctx).
+		Where("id = ?", containerID).
+		First(&model)
+
+	if result.Error != nil {
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to find container %s: %w", containerID, result.Error)
+	}
+
+	return &model, nil
+}
+
 // ListAll lists all containers, optionally filtered by player
 func (r *ContainerRepositoryGORM) ListAll(
 	ctx context.Context,

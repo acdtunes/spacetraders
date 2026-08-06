@@ -44,19 +44,21 @@ func (s *DaemonServer) requireIdleHull(ctx context.Context, shipSymbol string, p
 	return nil
 }
 
-// findContainerModelByID linear-scans every container for one with the given ID. The
-// worker start/recovery paths reach it without a playerID, so they cannot use the
-// indexed Get; this is the shared form of the ListAll-then-scan the gas and scouting
-// start paths each inlined. Returns a not-found error if absent.
+// findContainerModelByID returns the container with this ID. The worker start/recovery paths
+// reach it without a playerID, so they cannot use the player-scoped Get; this is the shared form
+// of the lookup the gas and scouting start paths each inlined. Returns a not-found error if
+// absent.
+//
+// It used to call ListAll(ctx, nil) and scan the result in Go, which loaded the whole containers
+// table on every worker start (sp-72gmi). The repository now does one indexed read against the
+// primary key, whose leading column is id.
 func (s *DaemonServer) findContainerModelByID(ctx context.Context, containerID string) (*persistence.ContainerModel, error) {
-	allContainers, err := s.containerRepo.ListAll(ctx, nil)
+	model, err := s.containerRepo.FindByIDAcrossPlayers(ctx, containerID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list containers: %w", err)
+		return nil, err
 	}
-	for _, c := range allContainers {
-		if c.ID == containerID {
-			return c, nil
-		}
+	if model == nil {
+		return nil, fmt.Errorf("container %s not found", containerID)
 	}
-	return nil, fmt.Errorf("container %s not found", containerID)
+	return model, nil
 }
