@@ -1886,3 +1886,117 @@ func TestFeedGateLeg_DeclinesWhenEvenTheMinimumTrancheBreaches(t *testing.T) {
 		t.Fatalf("no %q line: 'no size of this step is affordable' must not share wording with an ordinary decline:\n%s", want, f.logLines())
 	}
 }
+
+// ---------------------------------------------------------------------------------------------
+// sp-55erc: DO NOT HAUL AN INPUT THE FACTORY IS ALREADY ABUNDANT OF
+//
+// The output-side ABUNDANT fail-safe reads the factory's EXPORT supply of its own OUTPUT, so it
+// answers "does this factory need feeding at all" and never "does it need THIS input". Live, F45 was
+// SCARCE of its FAB_MATS output (so the step passed), the ranking declined IRON as unaffordable, and
+// the walk fell through to QUARTZ_SAND — which F45 was ABUNDANT of. Fifteen consecutive deliveries
+// into a full warehouse, every individual decision correct.
+// ---------------------------------------------------------------------------------------------
+
+// CRITERION 1: an input the factory is ABUNDANT of is declined, and the walk considers the next step.
+func TestFeedGateLeg_DeclinesAnInputTheFactoryIsAlreadyAbundantOf(t *testing.T) {
+	f := newGateFactoryHandler(t)
+	f.topo.importSupply = map[string]string{
+		importSupplyKey(gateFactoryWaypoint, "QUARTZ_SAND"): "ABUNDANT",
+		importSupplyKey(gateFactoryWaypoint, "IRON"):        "SCARCE",
+	}
+
+	f.runFeed(t, "GF-1")
+
+	feeds := f.feeder.feeds()
+	if len(feeds) != 1 {
+		t.Fatalf("feeds = %+v, want exactly one", feeds)
+	}
+	if named := strings.Join(feeds[0].inputs, ","); named == "QUARTZ_SAND" {
+		t.Fatal("hauled QUARTZ_SAND into a factory that is ABUNDANT of it — this is the fifteen-pointless-deliveries defect")
+	}
+	if want := "already ABUNDANT of QUARTZ_SAND"; !strings.Contains(f.logLines(), want) {
+		t.Fatalf("no %q line: the decline must name the input and its level, or a pointless haul and a skipped one look the same:\n%s", want, f.logLines())
+	}
+}
+
+// CRITERION 3, THE ONE THAT MATTERS: the scarce input is unaffordable AND the abundant one is
+// unnecessary, so EVERY step declines. The leg must end cleanly — no pointless feed, no spin, and a
+// logged no-feedable-step.
+//
+// This is the exact live composition: IRON declined for cost, QUARTZ_SAND declined for abundance.
+// Before this change the leg fed quartz; the correct outcome is that it feeds nothing and says so.
+func TestFeedGateLeg_EndsCleanlyWhenTheScarceInputIsUnaffordableAndTheRestAreAbundant(t *testing.T) {
+	f := newGateFactoryHandler(t)
+	f.topo.priceByGood = map[string]int{"IRON": 3480}
+	f.topo.volumeByGood = map[string]int{"IRON": 60}
+	f.buyer.spendHeadroom = 1_000 // not even the minimum IRON tranche fits
+	f.topo.importSupply = map[string]string{
+		importSupplyKey(gateFactoryWaypoint, "IRON"):        "SCARCE",
+		importSupplyKey(gateFactoryWaypoint, "QUARTZ_SAND"): "ABUNDANT",
+	}
+	// The depth-2 step's own destination is abundant of its input too, so nothing at all is feedable.
+	f.topo.importSupply[importSupplyKey("IRON-EXPORTER", "IRON_ORE")] = "ABUNDANT"
+
+	if drained := f.runFeed(t, "GF-1"); drained {
+		t.Fatal("a leg that fed nothing must not report a drain")
+	}
+
+	if feeds := f.feeder.feeds(); len(feeds) != 0 {
+		t.Fatalf("fed %+v — with the scarce input unaffordable and the rest abundant there is NOTHING worth hauling, and feeding anyway is the defect", feeds)
+	}
+	if bought := f.buyer.goods(); len(bought) != 0 {
+		t.Fatalf("bought %v when no step was worth taking", bought)
+	}
+	if want := "found no feedable step this leg"; !strings.Contains(f.logLines(), want) {
+		t.Fatalf("no %q line: the leg must END and SAY SO rather than spin or feed pointlessly:\n%s", want, f.logLines())
+	}
+	if status := f.taskRepo.statusOf(f.lastLot.task.ID()); status == "" {
+		t.Fatal("the task was left EXECUTING — a leg that can do nothing must still park through the shared completion machinery, or the ready queue drains silently")
+	}
+}
+
+// CRITERION 4: UNREADABLE IS NOT ABUNDANT. Absence of evidence must not decline the step, or a
+// factory whose listing we happen not to hold silently stops being fed.
+func TestFeedGateLeg_AnUnreadableInputSupplyDoesNotDeclineTheStep(t *testing.T) {
+	f := newGateFactoryHandler(t)
+	// importSupply deliberately unset for IRON: unscanned, so `known` is false.
+	f.topo.importSupply = map[string]string{}
+
+	f.runFeed(t, "GF-1")
+
+	if feeds := f.feeder.feeds(); len(feeds) != 1 {
+		t.Fatalf("feeds = %+v; an unreadable import listing means 'no basis to judge', never 'abundant'. Declining here stops feeding any factory whose listing we do not hold", feeds)
+	}
+	if strings.Contains(f.logLines(), "already ABUNDANT of") {
+		t.Fatalf("an unreadable listing was reported as abundant:\n%s", f.logLines())
+	}
+}
+
+// CRITERION 2 + 5: TOP OF THE LADDER AND NOTHING ELSE. Every non-ABUNDANT level is still fed — this
+// is a fail-safe, not a threshold, and HIGH is the level a threshold would most likely swallow.
+func TestFeedGateLeg_FeedsEveryNonAbundantLevelIncludingHigh(t *testing.T) {
+	for _, level := range []string{"SCARCE", "LIMITED", "MODERATE", "HIGH"} {
+		t.Run(level, func(t *testing.T) {
+			f := newGateFactoryHandler(t)
+			// The co-inputs are ABUNDANT so they are declined, leaving IRON as the ONLY candidate.
+			// That isolates the question this test asks — "is `level` still feedable at all?" — from
+			// the sp-q9um6 RANKING, which may legitimately prefer a scarcer or unknown input over a
+			// HIGH one. Ordering is not this bead's subject; membership is.
+			f.topo.importSupply = map[string]string{
+				importSupplyKey(gateFactoryWaypoint, "IRON"):        level,
+				importSupplyKey(gateFactoryWaypoint, "QUARTZ_SAND"): "ABUNDANT",
+				importSupplyKey("IRON-EXPORTER", "IRON_ORE"):        "ABUNDANT",
+			}
+
+			f.runFeed(t, "GF-1")
+
+			feeds := f.feeder.feeds()
+			if len(feeds) != 1 {
+				t.Fatalf("feeds = %+v; %s is not the top of the ladder and must still be fed. Declining it would make this a threshold, which the sibling fail-safe's own comment rules out", feeds, level)
+			}
+			if named := strings.Join(feeds[0].inputs, ","); named != "IRON" {
+				t.Fatalf("fed %q instead of the %s IRON, the only non-abundant input available", named, level)
+			}
+		})
+	}
+}

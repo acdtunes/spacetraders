@@ -525,13 +525,18 @@ func (h *RunConstructionCoordinatorHandler) planGateFeed(
 				})
 				continue
 			}
-			// THE ABUNDANT FAIL-SAFE. A factory already at the top of the supply ladder does not
-			// need feedstock; buying into a full warehouse burns treasury for nothing. Deliberately
-			// the ladder's TOP and nothing else — a threshold here would be a knob, and this phase
-			// adds none.
+			// THE OUTPUT-SIDE ABUNDANT FAIL-SAFE. A factory already at the top of the supply ladder
+			// does not need feedstock; buying into a full warehouse burns treasury for nothing.
+			// Deliberately the ladder's TOP and nothing else — a threshold here would be a knob, and
+			// this phase adds none.
 			//
 			// It precedes the SOURCE lookup, so a declined step never prices an input it will not
 			// buy.
+			//
+			// IT ANSWERS "DOES THIS FACTORY NEED FEEDING AT ALL", NOT "DOES IT NEED THIS INPUT"
+			// (sp-55erc). target.Supply is the factory's EXPORT supply of its own OUTPUT, so a
+			// factory starved of its output passes here even when the specific input this step would
+			// deliver is already piled up. The input-side check below is the other half.
 			if shared.ParseSupplyLevel(target.Supply) == shared.SupplyLevelAbundant {
 				logger.Log("INFO", fmt.Sprintf("Gate factory: the %s factory at %s is already ABUNDANT — declining its %s feed rather than buying into a full warehouse", step.Target, target.WaypointSymbol, step.Input), map[string]interface{}{
 					"good": step.Input, "target": step.Target, "factory": target.WaypointSymbol, "reason": "target_abundant",
@@ -539,6 +544,34 @@ func (h *RunConstructionCoordinatorHandler) planGateFeed(
 				continue
 			}
 			supply, known := h.factory.topology.ImportSupply(ctx, target.WaypointSymbol, step.Input, cmd.PlayerID)
+			// THE INPUT-SIDE ABUNDANT FAIL-SAFE (sp-55erc). The same intent as the output-side check
+			// above, applied to the quantity that actually answers the question: this factory's own
+			// IMPORT supply of THIS input.
+			//
+			// Live, the two came apart exactly as designed to and produced fifteen consecutive
+			// pointless deliveries. F45 was SCARCE of its FAB_MATS output, so the check above
+			// correctly let the step through; the ranking then declined IRON as unaffordable and
+			// fell through to QUARTZ_SAND, which F45 was ABUNDANT of. Every individual decision was
+			// right and the composition hauled quartz into a full warehouse fifteen times while the
+			// gate sat stalled — and the logs read as healthy activity throughout.
+			//
+			// TOP OF THE LADDER AND NOTHING ELSE, matching its sibling. Any non-ABUNDANT level is
+			// still feedable: a threshold here would be a knob, and the seam that reads this value
+			// (sp-q9um6) was built to ORDER by scarcity, which already prefers the scarcer input
+			// without refusing the merely-adequate one.
+			//
+			// UNREADABLE DOES NOT DECLINE. `known` is false for an unscanned market, an absent
+			// listing, a non-IMPORT listing or a null supply, and every one of those means "no basis
+			// to judge" — never "abundant". Declining on absence of evidence would silently stop
+			// feeding any factory whose listing we happen not to hold, which is the same fallback
+			// direction the ranking established.
+			if known && shared.ParseSupplyLevel(supply) == shared.SupplyLevelAbundant {
+				logger.Log("INFO", fmt.Sprintf("Gate factory: the %s factory at %s is already ABUNDANT of %s — declining to haul more of an input it is not short of, even though the factory itself needs feeding", step.Target, target.WaypointSymbol, step.Input), map[string]interface{}{
+					"good": step.Input, "target": step.Target, "factory": target.WaypointSymbol,
+					"input_supply": supply, "reason": "input_abundant_at_target",
+				})
+				continue
+			}
 			candidates = append(candidates, gateFeedCandidate{
 				step: step, target: target, supply: supply, known: known,
 				rank: scarcityRank(supply, known),
