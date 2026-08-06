@@ -51,9 +51,6 @@ type LaneCooldownLedger struct {
 	// activity resolves a market's observed activity tier, for the decay rate. Nil leaves every
 	// key on tau, which is what every caller that does not wire it sees.
 	activity func(waypoint, good string) (string, bool)
-	// persist durably records a FULL-LANE entry as it is accrued. Nil (the default) keeps the
-	// ledger purely in-memory, which is what every caller that does not wire it sees.
-	persist func(key LaneKey, debt float64, at time.Time)
 }
 
 // cooldownEntry is one lane's accumulated compression debt as of a timestamp. Storing a
@@ -99,20 +96,10 @@ func (l *LaneCooldownLedger) Accrue(key LaneKey, units, tradeVolume int, now tim
 	addend := (l.buyImpact + l.sellImpact) * x
 
 	l.mu.Lock()
-	entry := cooldownEntry{
+	defer l.mu.Unlock()
+	l.entries[key] = cooldownEntry{
 		debt: l.decayLocked(key, now) + addend,
 		at:   now,
-	}
-	l.entries[key] = entry
-	persist := l.persist
-	l.mu.Unlock()
-
-	// Write through OUTSIDE the lock, and only for a full lane. This mutex is shared with the
-	// construction gate feed's live Debt reads, so a sink invoked while it is held would put a
-	// database round-trip on that guard's hot path, and a sink that reads the ledger back would
-	// deadlock the daemon. Nothing here needs the lock: the entry is already committed to the map.
-	if persist != nil && key.Dest != "" {
-		persist(key, entry.debt, entry.at)
 	}
 }
 
@@ -203,46 +190,4 @@ func (l *LaneCooldownLedger) SetActivityResolver(resolve func(waypoint, good str
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.activity = resolve
-}
-
-// SetDebtPersister wires the durable sink a FULL-LANE accrual is written through to, so the trade
-// engine's compression debt survives a restart (RULINGS #2 names cooldown clocks). Nil (the
-// default) leaves the ledger purely in-memory, so every caller that does not wire it — every test,
-// every tool — behaves exactly as before.
-//
-// ONLY FULL-LANE KEYS ARE WRITTEN THROUGH, and the asymmetry is not an oversight. A source-drain
-// key is already reconstructible from the purchase rows (see the cooldownreplay package): the
-// durable record exists, so persisting it would create a second copy of the same truth, free to
-// drift from it. A full-lane key is NOT reconstructible — a purchase row records where the buy
-// happened and a sale row where the sale happened, and no row carries the pair, so the lane
-// identity the trade engine keys on exists nowhere but here. Persisting is the only way it can
-// survive, which is why it is the one shape that is.
-func (l *LaneCooldownLedger) SetDebtPersister(persist func(key LaneKey, debt float64, at time.Time)) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.persist = persist
-}
-
-// Restore seeds a key's stored debt as of `at`, for the boot reload of what SetDebtPersister wrote.
-// It reports whether the entry was taken.
-//
-// IT REFUSES A KEY THAT ALREADY CARRIES DEBT, the same structural idempotence the purchase replay
-// has: a restore that added to live debt would inflate it, which is the failure that arrives
-// through the fix rather than the bug. Ordering it before the coordinators start is still right;
-// this is what makes the correctness independent of that ordering.
-//
-// It does not decay on the way in. The entry is stamped with the `at` it was accrued at, so the
-// first Debt read decays it forward exactly as an in-memory entry of the same age would — a restart
-// is invisible to the decay, rather than resetting its clock to boot time.
-func (l *LaneCooldownLedger) Restore(key LaneKey, debt float64, at time.Time) bool {
-	if debt <= 0 || at.IsZero() {
-		return false
-	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if entry, ok := l.entries[key]; ok && entry.debt > 0 {
-		return false
-	}
-	l.entries[key] = cooldownEntry{debt: debt, at: at}
-	return true
 }

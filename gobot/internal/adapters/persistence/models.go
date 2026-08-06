@@ -37,6 +37,5 @@ func AllModels() []any {
 		&SystemCoordModel{},
 		&SensingSystemModel{},
 		&SensingSlotModel{},
-		&LaneCooldownDebtModel{},
 	}
 }
