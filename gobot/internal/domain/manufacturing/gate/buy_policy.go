@@ -79,6 +79,9 @@ type Decision struct {
 	Paused      bool
 	BuyFloor    shared.SupplyLevel
 	ResumeFloor shared.SupplyLevel
+	// PausedFor is how long the current pause has held at ANY supply level. Distinct from
+	// HeldAtBuyFloor: a market below the buy floor accumulates this and not that.
+	PausedFor time.Duration
 	// HeldAtBuyFloor is how long supply has sat AT OR ABOVE the buy floor while still paused. It is
 	// the quantity the deadlock is made of, and it was not previously observable at all: the pause
 	// logged the same reassuring line whether it had held for one tick or seven hours.
@@ -96,6 +99,13 @@ type Decision struct {
 // in a metadata map: the container log renderer drops the map, so a decision that
 // reported itself only in metadata would be exactly as invisible as one that said nothing.
 func (d Decision) LogLine() string {
+	if d.Paused && d.SuspectedStuck && d.Supply.Order() < d.BuyFloor.Order() {
+		// BELOW the buy floor: waiting is CORRECT policy, so this is a visibility line and not an
+		// accusation. It says the gate is not moving and names the lever, because the automatic
+		// release deliberately does not cross the buy floor (sp-vrnjx).
+		return fmt.Sprintf("Gate delivery PAUSE SUSPECTED STUCK on %s at %s: supply %s has been BELOW the %s buy floor for %s, so buying is correctly withheld and the gate is making no progress on this material. Nothing will release this automatically — the market must recover, or an operator must lower the buy floor",
+			d.Good, d.Factory, d.Supply, d.BuyFloor, d.PausedFor.Round(time.Minute))
+	}
 	if d.Paused && d.SuspectedStuck {
 		return fmt.Sprintf("Gate delivery PAUSE SUSPECTED STUCK on %s at %s: supply %s has been AT OR ABOVE the %s buy floor for %s but has never reached the %s resume floor — this is no longer patience, the market has plateaued inside the hysteresis gap and delivery is making no progress",
 			d.Good, d.Factory, d.Supply, d.BuyFloor, d.HeldAtBuyFloor.Round(time.Minute), d.ResumeFloor)
@@ -147,6 +157,16 @@ type BuyPolicy struct {
 	// market that has genuinely climbed to a level we are configured to buy at, and HELD it, can
 	// spend the timeout down.
 	heldAtBuyFloorSince map[string]time.Time
+	// pausedSince is good -> when the CURRENT pause began, at ANY supply level.
+	//
+	// IT ANCHORS ON THE PAUSE, NOT ON REACHING THE BUY FLOOR, and that difference is the whole of
+	// sp-vrnjx. heldAtBuyFloorSince above only runs while supply is AT OR ABOVE the buy floor, so a
+	// market sitting strictly BELOW it never anchored anything: F45 FAB_MATS sat SCARCE against a
+	// LIMITED floor for three and a half hours with suspected_stuck and resumed_by_timeout both
+	// reading exactly zero. The pause was not merely unbounded, it was INVISIBLE.
+	//
+	// It drives the ESCALATION ONLY, never the release. See SuspectedStuck.
+	pausedSince map[string]time.Time
 }
 
 // NewBuyPolicy builds the policy from the live floors. Unset floors resolve to the armed
@@ -179,6 +199,7 @@ func NewBuyPolicyWithClock(buyFloor, resumeFloor shared.SupplyLevel, clock share
 		clock:               clock,
 		paused:              make(map[string]bool),
 		heldAtBuyFloorSince: make(map[string]time.Time),
+		pausedSince:         make(map[string]time.Time),
 	}
 }
 
@@ -245,20 +266,51 @@ func (p *BuyPolicy) Decide(good, factory string, supply shared.SupplyLevel) Deci
 	}
 	p.paused[good] = !buy
 	if buy {
-		// A resumed material starts its next pause with a fresh clock.
+		// A resumed material starts its next pause with fresh clocks.
 		delete(p.heldAtBuyFloorSince, good)
+		delete(p.pausedSince, good)
+	}
+
+	// THE PAUSE CLOCK, ANCHORED AFTER THE RULING RATHER THAN BEFORE IT.
+	//
+	// Read before p.paused is updated it would anchor a TICK LATE — the tick that begins a pause
+	// still sees the old "not paused" state, so the clock started on the SECOND tick and every
+	// duration was short by one interval. Anchoring here means a pause is zero seconds old on the
+	// tick it starts, which is what it is.
+	if !p.paused[good] {
+		delete(p.pausedSince, good)
+	} else if _, running := p.pausedSince[good]; !running {
+		p.pausedSince[good] = now
+	}
+	var pausedFor time.Duration
+	if since, running := p.pausedSince[good]; running {
+		pausedFor = now.Sub(since)
 	}
 
 	return Decision{
-		Good:             good,
-		Factory:          factory,
-		Supply:           supply,
-		Buy:              buy,
-		Paused:           !buy,
-		BuyFloor:         p.buyFloor,
-		ResumeFloor:      p.resumeFloor,
-		HeldAtBuyFloor:   held,
-		SuspectedStuck:   !buy && held >= SuspectedStuckAfter,
+		Good:           good,
+		Factory:        factory,
+		Supply:         supply,
+		Buy:            buy,
+		Paused:         !buy,
+		BuyFloor:       p.buyFloor,
+		ResumeFloor:    p.resumeFloor,
+		PausedFor:      pausedFor,
+		HeldAtBuyFloor: held,
+		// ESCALATION IS ANCHORED ON THE PAUSE; THE RELEASE ABOVE IS NOT (sp-vrnjx).
+		//
+		// Keyed on `held` this could not fire below the buy floor, which is how a three-and-a-half
+		// hour pause produced zero of both signals. Keyed on pausedFor it fires at ANY supply level,
+		// because "the fleet has been paused an hour and the gate has not moved" is worth saying
+		// regardless of why.
+		//
+		// A FLAPPING MARKET DOES accumulate this, deliberately. Criterion 4's anti-chatter property
+		// protects the RELEASE — a spend decision, which must not be triggered by a market bouncing
+		// across the floor — and the release is still anchored on heldAtBuyFloorSince, which resets
+		// on every dip. A market that has flapped for an hour while the gate stands still is exactly
+		// something an operator should be told about; suppressing that would rebuild the invisible
+		// pause one level down.
+		SuspectedStuck:   !buy && pausedFor >= SuspectedStuckAfter,
 		ResumedByTimeout: resumedByTimeout,
 	}
 }
