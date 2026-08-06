@@ -143,7 +143,7 @@ func TestBuyAtTerminalFactory_BuysAtThePinnedSourceWithoutConsultingTheSelector(
 	executor, repo, mediator := newPinnedSourceExecutor(t, nil)
 
 	result, err := executor.BuyAtTerminalFactory(context.Background(), repo.buildShip(),
-		dockRaceGood, pinnedSource(), 30, "X1-DR", 1, nil)
+		dockRaceGood, pinnedSource(), 30, "X1-DR", 1, nil, SinkFactoryFeed)
 	if err != nil {
 		t.Fatalf("BuyAtTerminalFactory returned error: %v", err)
 	}
@@ -168,7 +168,7 @@ func TestBuyAtTerminalFactory_NeverBuysPastTheUnitsItWasGiven(t *testing.T) {
 	executor, repo, mediator := newPinnedSourceExecutor(t, nil)
 
 	result, err := executor.BuyAtTerminalFactory(context.Background(), repo.buildShip(),
-		dockRaceGood, pinnedSource(), 12, "X1-DR", 1, nil)
+		dockRaceGood, pinnedSource(), 12, "X1-DR", 1, nil, SinkFactoryFeed)
 	if err != nil {
 		t.Fatalf("BuyAtTerminalFactory returned error: %v", err)
 	}
@@ -201,7 +201,7 @@ func TestBuyAtTerminalFactory_StopsWhenTheNextTrancheWouldBreachTheSpendFloor(t 
 	ctx := common.WithLogger(common.WithPlayerToken(context.Background(), "TOKEN-GATE-BUY"), logger)
 
 	result, err := executor.BuyAtTerminalFactory(ctx, repo.buildShip(),
-		dockRaceGood, pinnedSource(), 40, "X1-DR", 1, nil)
+		dockRaceGood, pinnedSource(), 40, "X1-DR", 1, nil, SinkFactoryFeed)
 	if err != nil {
 		t.Fatalf("BuyAtTerminalFactory returned error: %v", err)
 	}
@@ -231,7 +231,7 @@ func TestBuyAtTerminalFactory_ParksWhenTheConcurrentSpendCapRefuses(t *testing.T
 	ctx := common.WithLogger(common.WithPlayerToken(context.Background(), "TOKEN-GATE-BUY"), logger)
 
 	result, err := executor.BuyAtTerminalFactory(ctx, repo.buildShip(),
-		dockRaceGood, pinnedSource(), 40, "X1-DR", 1, nil)
+		dockRaceGood, pinnedSource(), 40, "X1-DR", 1, nil, SinkFactoryFeed)
 	if err != nil {
 		t.Fatalf("a cap-parked gate buy must be graceful, not an error: got %v", err)
 	}
@@ -285,7 +285,7 @@ func TestBuyAtTerminalFactory_StopsWhenThePinnedSourceLaddersPastThePriceCeiling
 	}
 
 	result, err := executor.BuyAtTerminalFactory(ctx, shipRepo.buildShip(),
-		dockRaceGood, pinnedLadder, 40, "X1-DR", 1, nil)
+		dockRaceGood, pinnedLadder, 40, "X1-DR", 1, nil, SinkFactoryFeed)
 	if err != nil {
 		t.Fatalf("BuyAtTerminalFactory returned error: %v", err)
 	}
@@ -313,7 +313,7 @@ func TestBuyAtTerminalFactory_RefusesAnUnbuyableSource(t *testing.T) {
 	zeroVolume := pinnedSource()
 	zeroVolume.TradeVolume = 0
 	if _, err := executor.BuyAtTerminalFactory(context.Background(), repo.buildShip(),
-		dockRaceGood, zeroVolume, 30, "X1-DR", 1, nil); err == nil {
+		dockRaceGood, zeroVolume, 30, "X1-DR", 1, nil, SinkFactoryFeed); err == nil {
 		t.Fatal("BuyAtTerminalFactory accepted a source with trade_volume 0; want a refusal")
 	}
 	if mediator.purchaseAttempts() != 0 {
@@ -340,7 +340,7 @@ func TestBuyAtTerminalFactory_RefusesANilSourceOrANonPositiveAllocation(t *testi
 			executor, repo, mediator := newPinnedSourceExecutor(t, nil)
 
 			result, err := executor.BuyAtTerminalFactory(context.Background(), repo.buildShip(),
-				dockRaceGood, tc.source, tc.units, "X1-DR", 1, nil)
+				dockRaceGood, tc.source, tc.units, "X1-DR", 1, nil, SinkFactoryFeed)
 			if err == nil {
 				t.Fatalf("BuyAtTerminalFactory accepted %s; want a refusal, never a self-resolved fallback (got %+v)", tc.name, result)
 			}

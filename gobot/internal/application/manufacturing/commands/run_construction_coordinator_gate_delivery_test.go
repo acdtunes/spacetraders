@@ -251,6 +251,11 @@ type countingGateBuyer struct {
 	attempts map[string]int
 	seen     int
 	err      error
+	// sinks records the TrancheSink each call declared, so a test can assert the delivery fleet
+	// buys as a CONSTRUCTION sink rather than inheriting the factory fleet's saturation floor
+	// (sp-lpy9i). Recorded per call rather than as a single value: a leg makes one buy per stop,
+	// and every one of them must declare the same sink.
+	sinks []mfgServices.TrancheSink
 	// acquireZero models the money/price guards stopping the fill: the buy is ATTEMPTED and returns
 	// a zero-quantity result, which is the shape fillFromSource produces when spendFloorBreached or
 	// the price ceiling trips. Deliberately distinct from err, which is a failed CALL — a caller
@@ -300,9 +305,10 @@ func (b *countingGateBuyer) resultFor(units int) *mfgServices.ProductionResult {
 	return &mfgServices.ProductionResult{QuantityAcquired: units}
 }
 
-func (b *countingGateBuyer) BuyAtTerminalFactory(_ context.Context, _ *navigation.Ship, good string, source *mfgServices.MarketLocatorResult, units int, _ string, _ int, _ *shared.OperationContext) (*mfgServices.ProductionResult, error) {
+func (b *countingGateBuyer) BuyAtTerminalFactory(_ context.Context, _ *navigation.Ship, good string, source *mfgServices.MarketLocatorResult, units int, _ string, _ int, _ *shared.OperationContext, sink mfgServices.TrancheSink) (*mfgServices.ProductionResult, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	b.sinks = append(b.sinks, sink)
 	b.seen++
 	if b.attempts == nil {
 		b.attempts = make(map[string]int)
@@ -340,6 +346,13 @@ func (b *countingGateBuyer) goods() map[string]int {
 		out[good] = units
 	}
 	return out
+}
+
+// declaredSinks is every TrancheSink this leg's buys declared, in call order (sp-lpy9i).
+func (b *countingGateBuyer) declaredSinks() []mfgServices.TrancheSink {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]mfgServices.TrancheSink(nil), b.sinks...)
 }
 
 // attemptsFor is how many times the leg CALLED the buyer for good, whatever the outcome.
@@ -708,6 +721,30 @@ func TestDeliverGateLeg_OnePausedMaterialStillDepartsWithTheOther(t *testing.T) 
 	}
 	if bought[gateMaterialPrimary] != 0 {
 		t.Fatalf("the PAUSED material was bought: %v", bought)
+	}
+}
+
+// sp-lpy9i: THE DELIVERY FLEET BUYS AS A CONSTRUCTION SINK, and this is a WIRING pin — the floor
+// itself is proved in the services package, but a correct floor reached with the wrong sink is the
+// exact defect this bead exists for, and it would be invisible there.
+//
+// The zero value is SinkFactoryFeed, so a call site that simply forgets the argument compiles,
+// runs, and silently re-inherits the factory's saturation floor. That is why this asserts the
+// declared value rather than merely that a buy happened.
+func TestDeliverGateLeg_BuysAsAConstructionSinkNotAFactoryFeed(t *testing.T) {
+	f := newGateDeliveryHandler(t)
+	f.topo.supply = "HIGH"
+
+	f.run(t, "GATE-7")
+
+	sinks := f.buyer.declaredSinks()
+	if len(sinks) == 0 {
+		t.Fatal("the leg made no buys at all, so this pin cannot observe which sink it declared")
+	}
+	for i, sink := range sinks {
+		if sink != mfgServices.SinkConstructionSite {
+			t.Fatalf("buy %d of %d declared sink %v, want SinkConstructionSite. This hold is delivered to a construction site and consumed against a bill — a factory's activity-saturation floor does not apply to it, and inheriting it refused 52 buys over 2h33m with 80 units left", i+1, len(sinks), sink)
+		}
 	}
 }
 

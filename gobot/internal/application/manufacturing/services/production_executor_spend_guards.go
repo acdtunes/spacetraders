@@ -256,6 +256,96 @@ const minViableTrancheUnits = defaultFeedSaturationMinUnits
 // planner priced a FULL 60-unit tranche, refused, and the sizing-down below never ran.
 const MinViableTrancheUnits = minViableTrancheUnits
 
+// TrancheSink names what the goods being bought are FOR, because the two sinks fillFromSource
+// serves have different physics and the shrink floor is a property of the sink, not of the loop
+// (sp-lpy9i).
+//
+// THE DEFECT THIS TYPE EXISTS TO END: sp-xcjuy floored every shrink at minViableTrancheUnits, a
+// number justified ENTIRELY by factory activity saturation ("<25u moves activity nothing"). That
+// reasoning is sound when the goods are SOLD INTO a factory's import listing. It is meaningless
+// when they are DELIVERED TO A CONSTRUCTION SITE: a gate has no activity to move, it has a BILL,
+// and 17 units toward a 1600-unit bill is 17 units of permanent, irreversible progress. Live, that
+// mismatch refused 52 buys over 2h33m with 80 units left to deliver and 17 affordable throughout.
+//
+// IT IS A PARAMETER, NOT A CONTEXT VALUE, DELIBERATELY — the same argument GateBuyer makes for
+// carrying its probe on the interface. An ambient marker is inherited by whoever forgets to stamp
+// it, which is EXACTLY how this defect arose: BuyAtTerminalFactory grew a second caller with a
+// different sink and silently kept the first one's floor. A parameter makes the sink a
+// compile-time obligation, so a third caller cannot inherit physics it never chose.
+type TrancheSink int
+
+const (
+	// SinkFactoryFeed sells the goods into a factory's import listing, where the delivery must be
+	// large enough to move that factory's activity to be worth the hull-hours. ZERO VALUE, so any
+	// caller that does not choose keeps today's stricter floor rather than the looser one.
+	SinkFactoryFeed TrancheSink = iota
+	// SinkConstructionSite delivers the goods to a jump-gate construction site, which consumes them
+	// against a fixed bill. Every unit counts; there is no saturation threshold to clear.
+	SinkConstructionSite
+)
+
+// constructionMinHullFraction bounds how far a construction leg may under-fill its hull before the
+// trip stops being worth flying: the floor is one EIGHTH of the hold.
+//
+// WHY A HULL FRACTION AND NOT A CONSTANT, AND NOT THE MARKET. The hull round trip is the unit of
+// work a floor here is rationing, so the hold is the honest denominator, and deriving from it scales
+// with the fleet instead of pinning a magic number that a bigger hauler would silently invalidate.
+// It is explicitly NOT read off the market's trade_volume: sp-jt14b was filed believing the floor
+// tracked depth, and a floor that DID would make a healthier market harder to buy from, which is
+// backwards.
+//
+// WHY ONE EIGHTH. It is a trip-count bound and that is the whole of its justification: at worst a
+// bill is cleared in 8x the legs a full hull would take, which is a real cost but a bounded one,
+// against the alternative of making NO progress while capital recovers. Fuel cannot set this bound
+// — at a 2,519 ask a single unit already dwarfs a leg's fuel — and gate materials are consumed
+// rather than resold, so there is no margin to price the leg against either. The binding cost is
+// hull-time, and 8x is the trip inflation this accepts. Named rather than buried so the next person
+// re-tunes a number with a stated consequence instead of guessing at intent.
+const constructionMinHullFraction = 8
+
+// minTrancheUnitsFor resolves the smallest shrunken buy worth a leg for this sink (sp-lpy9i).
+//
+// IT ONLY EVER LOWERS A FLOOR, AND ONLY FOR A CONSTRUCTION SINK (RULINGS #4). The factory path
+// returns minViableTrancheUnits unchanged, byte-identical to sp-xcjuy. Nothing here decides a
+// spend: the caller re-runs spendFloorBreached on whatever size it proposes, so this can admit a
+// SMALLER buy for consideration and never a larger one, and never one the reserve refuses.
+//
+// IT DELIBERATELY DOES NOT TAKE THE REMAINING REQUIREMENT, and that is worth stating because the
+// obvious clamp — "never floor higher than what is left of the bill", so a nearly-finished material
+// can be closed in one small leg — is PROVABLY INERT here, and pinned as such by
+// TestMinTrancheUnitsFor_AClampToTheRemainingBillCouldNotChangeAnyOutcome.
+//
+// The proof: this is only ever consulted after a breach, and a breach means trancheQty*ask >
+// headroom, so affordableTrancheUnits (min(want, headroom/ask)) necessarily returns something
+// STRICTLY BELOW trancheQty, which is itself <= tripTarget. So whenever tripTarget is small enough
+// for the clamp to bind (tripTarget <= the hull-fraction floor), the clamped floor is tripTarget
+// and affordable is already below it — the buy declines either way. The clamp can lower the floor
+// but can never admit a buy the unclamped floor refuses.
+//
+// Shipping it anyway would add a branch that reads as protective, tests green, and changes no
+// outcome — which is the failure this bead's own family is made of. A small bill is still bought
+// normally: the floor is consulted ONLY on a breach, so an affordable 3-unit remainder is purchased
+// outright without ever reaching this function.
+func minTrancheUnitsFor(sink TrancheSink, capacity int) int {
+	if sink != SinkConstructionSite {
+		return minViableTrancheUnits
+	}
+	floor := capacity / constructionMinHullFraction
+	if floor < 1 {
+		floor = 1 // a hull too small to divide still buys something, or it could never buy at all
+	}
+	// THE CAP IS THE RULINGS #4 GUARANTEE, AND IT IS NOT DECORATIVE. A hull fraction is unbounded
+	// above: at a 400-unit hauler one eighth is 50, which would put the CONSTRUCTION floor ABOVE the
+	// factory floor it is supposed to relax, and this change would then REFUSE buys that work today
+	// on exactly the fleets best able to make them. Caught by
+	// TestMinTrancheUnitsFor_OnlyEverLowersAndOnlyForConstruction rather than in production, which
+	// is the only reason it is a comment and not a second bead.
+	if floor > minViableTrancheUnits {
+		floor = minViableTrancheUnits
+	}
+	return floor
+}
+
 // affordableTrancheUnits is the largest tranche of `want` units at `ask` that the working-capital
 // reserve can absorb right now, or 0 when even one unit cannot fit (sp-xcjuy).
 //

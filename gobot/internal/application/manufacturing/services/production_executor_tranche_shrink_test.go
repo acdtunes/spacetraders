@@ -43,7 +43,7 @@ func TestFillFromSource_ShrinksABreachingTrancheInsteadOfKillingTheFill(t *testi
 	ctx := common.WithLogger(common.WithPlayerToken(context.Background(), "TOKEN-SHRINK"), logger)
 
 	result, err := executor.BuyAtTerminalFactory(ctx, repo.buildShip(),
-		dockRaceGood, liveStallSource(), 40, "X1-DR", 1, nil)
+		dockRaceGood, liveStallSource(), 40, "X1-DR", 1, nil, SinkFactoryFeed)
 	if err != nil {
 		t.Fatalf("BuyAtTerminalFactory returned error: %v", err)
 	}
@@ -72,7 +72,7 @@ func TestFillFromSource_SizesDownButNeverPastTheGuard(t *testing.T) {
 	ctx := common.WithLogger(common.WithPlayerToken(context.Background(), "TOKEN-NOROOM"), logger)
 
 	result, err := executor.BuyAtTerminalFactory(ctx, repo.buildShip(),
-		dockRaceGood, liveStallSource(), 60, "X1-DR", 1, nil)
+		dockRaceGood, liveStallSource(), 60, "X1-DR", 1, nil, SinkFactoryFeed)
 	if err != nil {
 		t.Fatalf("BuyAtTerminalFactory returned error: %v", err)
 	}
@@ -94,13 +94,38 @@ func TestFillFromSource_NamesTheDeclineWhenEvenTheMinimumTrancheCannotFit(t *tes
 	ctx := common.WithLogger(common.WithPlayerToken(context.Background(), "TOKEN-MIN"), logger)
 
 	if _, err := executor.BuyAtTerminalFactory(ctx, repo.buildShip(),
-		dockRaceGood, liveStallSource(), 60, "X1-DR", 1, nil); err != nil {
+		dockRaceGood, liveStallSource(), 60, "X1-DR", 1, nil, SinkFactoryFeed); err != nil {
 		t.Fatalf("BuyAtTerminalFactory returned error: %v", err)
 	}
 
 	text := dwellLogText(logger)
-	if want := "UNAFFORDABLE EVEN AT THE MINIMUM TRANCHE"; !strings.Contains(text, want) {
+	// The wording moved in sp-lpy9i so the two deciding numbers lead the line rather than trailing
+	// it (a 140-char truncation of the old phrasing read as though the ATTEMPTED tranche were the
+	// minimum, and that misreading became sp-jt14b). The pin is unchanged in substance: this
+	// decline must still be distinguishable from the ordinary tranche stop.
+	if want := "below the"; !strings.Contains(text, want) {
 		t.Fatalf("no %q line — this decline is a statement about the TREASURY, not about this buy, and must not share wording with the ordinary tranche stop:\n%s", want, text)
+	}
+	// AND it must not read like the ordinary stop, whose whole text is the breach arithmetic.
+	if ordinary := "would breach working-capital reserve"; strings.Contains(text, ordinary) {
+		t.Fatalf("the too-tight decline is using the ORDINARY stop's wording (%q); conflating them is how the 78-minute stall read as routine tranche accounting:\n%s", ordinary, text)
+	}
+	// CRITERION 5: the two numbers that decide the outcome must appear before any truncation.
+	// Measured WITHIN the decline's own line — a truncation is applied per line, so an offset taken
+	// across the whole captured log would count unrelated preceding lines and fail for the wrong
+	// reason (it did, at char 216, on its first run).
+	var decline string
+	for _, line := range strings.Split(text, "\n") {
+		if strings.Contains(line, "Parked input purchase") {
+			decline = line
+			break
+		}
+	}
+	if decline == "" {
+		t.Fatalf("no 'Parked input purchase' line to measure:\n%s", text)
+	}
+	if idx := strings.Index(decline, "below the"); idx < 0 || idx > 140 {
+		t.Fatalf("the binding constraint appears at char %d of its own line, past the 140-char truncation that produced sp-jt14b's false premise:\n%s", idx, decline)
 	}
 	if !strings.Contains(text, "spend_floor_below_min_tranche") && !strings.Contains(text, "minimum") {
 		t.Fatalf("the decline does not name the minimum-tranche reason:\n%s", text)
@@ -117,7 +142,7 @@ func TestFillFromSource_AnAffordableTrancheIsUnchangedAndNeverResized(t *testing
 	ctx := common.WithLogger(common.WithPlayerToken(context.Background(), "TOKEN-RICH"), logger)
 
 	result, err := executor.BuyAtTerminalFactory(ctx, repo.buildShip(),
-		dockRaceGood, liveStallSource(), 40, "X1-DR", 1, nil)
+		dockRaceGood, liveStallSource(), 40, "X1-DR", 1, nil, SinkFactoryFeed)
 	if err != nil {
 		t.Fatalf("BuyAtTerminalFactory returned error: %v", err)
 	}

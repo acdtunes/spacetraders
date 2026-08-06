@@ -239,7 +239,9 @@ func (e *ProductionExecutor) buyGood(
 		return parked, nil
 	}
 
-	return e.fillFromSource(ctx, ship, node.Good, marketResult, systemSymbol, playerID, mode)
+	// The SELECTED-source path feeds a factory: its buys are sold into an import listing, so the
+	// min-effective-delivery floor is the right one and is unchanged (sp-lpy9i).
+	return e.fillFromSource(ctx, ship, node.Good, marketResult, systemSymbol, playerID, mode, SinkFactoryFeed)
 }
 
 // fillFromSource navigates to source, makes room, and runs the tranche loop until the hold,
@@ -253,6 +255,10 @@ func (e *ProductionExecutor) buyGood(
 //
 // Behaviour is unchanged from the inline version: same order, same guards, same stop
 // conditions. Only the caller's source resolution moved out.
+//
+// sink names what the goods are FOR, and is the ONLY thing that differs between the two callers'
+// physics (sp-lpy9i). It selects the shrink floor and nothing else — every money guard below runs
+// identically for both sinks, in the same order, and still fails closed.
 func (e *ProductionExecutor) fillFromSource(
 	ctx context.Context,
 	ship *navigation.Ship,
@@ -261,6 +267,7 @@ func (e *ProductionExecutor) fillFromSource(
 	systemSymbol string,
 	playerID int,
 	mode inputSourceMode,
+	sink TrancheSink,
 ) (*ProductionResult, error) {
 	logger := common.LoggerFromContext(ctx)
 	playerIDValue := shared.MustNewPlayerID(playerID)
@@ -332,12 +339,19 @@ func (e *ProductionExecutor) fillFromSource(
 				break
 			}
 			affordable := e.affordableTrancheUnits(ctx, playerID, ask, trancheQty)
-			if affordable < minViableTrancheUnits {
-				// Below the min-effective delivery a leg buys a dribble the feed side has already
-				// measured as moving a factory's activity nothing. Logged DISTINCTLY from the
-				// ordinary stop so "the reserve is genuinely too tight for a useful buy" and "the
-				// full tranche happened not to fit" are never the same line again.
-				logSpendFloorTooTightToShrink(ctx, good, source.WaypointSymbol, fill.acquired, trancheQty, affordable, projectedCost, enforcedFloor)
+			// THE FLOOR IS THE SINK'S, NOT THE LOOP'S (sp-lpy9i). Feeding a factory it is the
+			// min-effective delivery, below which a leg buys a dribble the feed side has already
+			// measured as moving a factory's activity nothing. Delivering to a construction site
+			// there is no such threshold — the site consumes against a bill — so the floor is a
+			// trip-economics bound instead, and a nearly-finished material is never held hostage to
+			// a floor larger than what is left of it.
+			//
+			minUnits := minTrancheUnitsFor(sink, fill.capacity)
+			if affordable < minUnits {
+				// Logged DISTINCTLY from the ordinary stop so "the reserve is genuinely too tight
+				// for a useful buy" and "the full tranche happened not to fit" are never the same
+				// line again.
+				logSpendFloorTooTightToShrink(ctx, good, source.WaypointSymbol, fill.acquired, trancheQty, affordable, minUnits, projectedCost, enforcedFloor)
 				break
 			}
 			logSpendFloorShrink(ctx, good, source.WaypointSymbol, trancheQty, affordable, projectedCost, enforcedFloor)
@@ -699,12 +713,20 @@ func logSpendFloorShrink(ctx context.Context, good, waypoint string, wanted, shr
 // stop means "the next tranche did not fit"; this means "no USEFUL tranche fits at all", which is a
 // statement about the treasury rather than about this buy — and conflating them is how the 78-minute
 // stall looked like routine tranche accounting.
-func logSpendFloorTooTightToShrink(ctx context.Context, good, waypoint string, acquired, wanted, affordable, wantedCost, enforcedFloor int) {
+// THE BINDING CONSTRAINT LEADS THE MESSAGE (sp-lpy9i criterion 5), and that ordering is not
+// cosmetic. This line previously opened with the ATTEMPTED tranche and named the two numbers that
+// actually decide the outcome — what the reserve affords, and the minimum it must clear — only
+// after ~140 characters. A reader who truncated the line saw "59 units would cost 148621 against a
+// reserve of" and reasonably concluded 59 WAS the minimum, i.e. that the floor tracked the market's
+// trade_volume. That misreading became sp-jt14b, a P2 filed on a mechanism that does not exist.
+// A log line whose verdict sits past the point where anyone reads it is a legibility defect, so the
+// affordable/minimum pair now leads and the tranche arithmetic follows.
+func logSpendFloorTooTightToShrink(ctx context.Context, good, waypoint string, acquired, wanted, affordable, minUnits, wantedCost, enforcedFloor int) {
 	common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf(
-		"Parked input purchase of %s at %s — UNAFFORDABLE EVEN AT THE MINIMUM TRANCHE: %d units would cost %d against a reserve of %d, and the reserve leaves room for only %d units against a %d-unit minimum. %d already aboard",
-		good, waypoint, wanted, wantedCost, enforcedFloor, affordable, minViableTrancheUnits, acquired), map[string]interface{}{
+		"Parked input purchase of %s at %s — reserve affords only %d units, below the %d-unit minimum for this sink: the %d-unit tranche would have cost %d against a reserve of %d. %d already aboard",
+		good, waypoint, affordable, minUnits, wanted, wantedCost, enforcedFloor, acquired), map[string]interface{}{
 		"good": good, "market": waypoint, "wanted_units": wanted, "affordable_units": affordable,
-		"min_units": minViableTrancheUnits, "projected_cost": wantedCost, "reserve": enforcedFloor,
+		"min_units": minUnits, "projected_cost": wantedCost, "reserve": enforcedFloor,
 		"acquired": acquired,
 		"action":   "factory_parked", "reason": "spend_floor_below_min_tranche",
 	})

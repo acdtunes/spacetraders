@@ -40,6 +40,11 @@ import (
 // Refuses (error, nil result) on a nil or unnamed source, a non-positive allocation, or a
 // source with no transaction size. Each is a caller bug, and the alternative — resolving a
 // source here — is precisely the pinning this method exists to preserve.
+// sink names what these goods are FOR, and the caller MUST choose (sp-lpy9i). This method serves
+// both gate fleets — the delivery fleet, whose purchases are consumed by a construction site against
+// a bill, and the factory fleet, whose purchases are sold into a factory's import listing — and only
+// the second has a saturation threshold to clear. It was the absence of this parameter that let the
+// factory fleet's floor govern construction buys for as long as both callers existed.
 func (e *ProductionExecutor) BuyAtTerminalFactory(
 	ctx context.Context,
 	ship *navigation.Ship,
@@ -49,6 +54,7 @@ func (e *ProductionExecutor) BuyAtTerminalFactory(
 	systemSymbol string,
 	playerID int,
 	opContext *shared.OperationContext,
+	sink TrancheSink,
 ) (*ProductionResult, error) {
 	if source == nil {
 		return nil, fmt.Errorf("cannot buy %s: no terminal factory was resolved — refusing to pick a source here", good)
@@ -74,5 +80,5 @@ func (e *ProductionExecutor) BuyAtTerminalFactory(
 
 	// sourceModeEligible keeps the per-tranche price-ceiling re-check live, exactly as it is on
 	// the selected-source path. Passing a weaker mode would disable an existing guard.
-	return e.fillFromSource(ctx, ship, good, source, systemSymbol, playerID, sourceModeEligible)
+	return e.fillFromSource(ctx, ship, good, source, systemSymbol, playerID, sourceModeEligible, sink)
 }

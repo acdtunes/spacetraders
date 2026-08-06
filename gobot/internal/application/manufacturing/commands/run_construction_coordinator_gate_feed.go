@@ -127,7 +127,10 @@ func (h *RunConstructionCoordinatorHandler) feedGateLeg(
 	}
 
 	// THE SAME pinned buy the delivery fleet uses, with every money guard unchanged.
-	result, berr := h.factory.buyer.BuyAtTerminalFactory(ctx, lot.ship, step.Input, input, capacity, systemSymbol, cmd.PlayerID, h.operationContext(cmd))
+	// SinkFactoryFeed: this hold is SOLD INTO the target factory's import listing, where a delivery
+	// below the min-effective size moves its activity nothing. The saturation floor is correct here
+	// and is unchanged (sp-lpy9i) — see the explicit non-claim on that bead before re-tuning it.
+	result, berr := h.factory.buyer.BuyAtTerminalFactory(ctx, lot.ship, step.Input, input, capacity, systemSymbol, cmd.PlayerID, h.operationContext(cmd), mfgServices.SinkFactoryFeed)
 	if berr != nil {
 		logger.Log("WARNING", fmt.Sprintf("Gate factory: buying %s at %s for the %s factory failed: %v", step.Input, input.WaypointSymbol, step.Target, berr), map[string]interface{}{
 			"good": step.Input, "target": step.Target, "source": input.WaypointSymbol,

@@ -37,8 +37,12 @@ type GateTopologyResolver interface {
 // Putting it on the BUYER rather than beside it also keeps the pre-dispatch answer and the
 // commit-time answer sourced from the SAME object: the thing that will refuse the spend is the
 // thing asked to predict it.
+// The sink parameter is on this interface for the same reason the probe below is: a floor that
+// depends on what the goods are FOR must be a compile-time obligation of being a GateBuyer, not an
+// ambient value a new caller inherits without choosing. sp-lpy9i is what happens when it is not —
+// the delivery fleet ran for as long as it existed under the factory fleet's saturation floor.
 type GateBuyer interface {
-	BuyAtTerminalFactory(ctx context.Context, ship *navigation.Ship, good string, source *mfgServices.MarketLocatorResult, units int, systemSymbol string, playerID int, opContext *shared.OperationContext) (*mfgServices.ProductionResult, error)
+	BuyAtTerminalFactory(ctx context.Context, ship *navigation.Ship, good string, source *mfgServices.MarketLocatorResult, units int, systemSymbol string, playerID int, opContext *shared.OperationContext, sink mfgServices.TrancheSink) (*mfgServices.ProductionResult, error)
 	// SpendFloorWouldBreach reports whether committing projectedCost right now would drop treasury
 	// below the reserve, and returns the reserve enforced. A PURE READ that spends, reserves and
 	// releases nothing — it can only DECLINE a step earlier, never admit one the commit-time guard
@@ -528,7 +532,9 @@ func (h *RunConstructionCoordinatorHandler) deliverGateLeg(
 	}
 	tripUnits := 0 // units of ANY gate material this leg moved, for the honest trip summary
 	for _, stop := range trip.Stops {
-		result, berr := h.gate.buyer.BuyAtTerminalFactory(ctx, lot.ship, stop.Good, sources[stop.Good], stop.Units, systemSymbol, cmd.PlayerID, h.operationContext(cmd))
+		// SinkConstructionSite: this hold is delivered to the gate and consumed against its bill, so
+		// the buy is floored on trip economics rather than on a factory's saturation point.
+		result, berr := h.gate.buyer.BuyAtTerminalFactory(ctx, lot.ship, stop.Good, sources[stop.Good], stop.Units, systemSymbol, cmd.PlayerID, h.operationContext(cmd), mfgServices.SinkConstructionSite)
 		if berr != nil {
 			logger.Log("WARNING", fmt.Sprintf("Gate delivery: buying %d %s at %s failed; delivering what is aboard: %v", stop.Units, stop.Good, sources[stop.Good].WaypointSymbol, berr), nil)
 			continue
