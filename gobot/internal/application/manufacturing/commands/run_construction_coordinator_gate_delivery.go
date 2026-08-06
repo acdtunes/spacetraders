@@ -22,10 +22,27 @@ type GateTopologyResolver interface {
 	TerminalFactory(ctx context.Context, good, systemSymbol string, playerID int) (*mfgServices.MarketLocatorResult, error)
 }
 
-// GateBuyer buys a gate material at a PINNED terminal factory.
-// *services.ProductionExecutor satisfies it via BuyAtTerminalFactory.
+// GateBuyer buys a gate material at a PINNED terminal factory, and answers whether a spend of a
+// given size would breach the working-capital reserve.
+// *services.ProductionExecutor satisfies it via BuyAtTerminalFactory and SpendFloorWouldBreach.
+//
+// THE PROBE IS ON THE BUYER, AND ON THIS INTERFACE, DELIBERATELY (sp-9eor3). It could have been a
+// separate seam reached by type assertion, and that shape is exactly what makes a fix dormant: an
+// assertion that fails leaves the precheck silently absent, the leg behaves as it did before, and
+// nothing anywhere reports that the guard is not being consulted. Declaring it HERE makes it a
+// compile-time obligation of being a GateBuyer at all — every buyer has one, no wiring step can
+// omit it, and there is no arming seam between the fix and the running fleet.
+//
+// Putting it on the BUYER rather than beside it also keeps the pre-dispatch answer and the
+// commit-time answer sourced from the SAME object: the thing that will refuse the spend is the
+// thing asked to predict it.
 type GateBuyer interface {
 	BuyAtTerminalFactory(ctx context.Context, ship *navigation.Ship, good string, source *mfgServices.MarketLocatorResult, units int, systemSymbol string, playerID int, opContext *shared.OperationContext) (*mfgServices.ProductionResult, error)
+	// SpendFloorWouldBreach reports whether committing projectedCost right now would drop treasury
+	// below the reserve, and returns the reserve enforced. A PURE READ that spends, reserves and
+	// releases nothing — it can only DECLINE a step earlier, never admit one the commit-time guard
+	// would refuse.
+	SpendFloorWouldBreach(ctx context.Context, playerID, projectedCost int) (bool, int)
 }
 
 // gateDelivery is the drain's delivery-fleet collaborator set plus the live buy policy.

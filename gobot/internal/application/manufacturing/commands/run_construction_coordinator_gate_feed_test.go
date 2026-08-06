@@ -33,7 +33,12 @@ type stubFactoryTopology struct {
 	mineable     map[string]bool
 	supplyByGood map[string]string
 	errByGood    map[string]error
-	asked        []string
+	// priceByGood overrides the default ask per good, so a fixture can reproduce the price SPREAD
+	// that the affordability decline turns on. A single flat price cannot: every step would cost the
+	// same, and "declined the expensive one" would be indistinguishable from "declined the first
+	// one", which is the very confusion sp-9eor3 is about.
+	priceByGood map[string]int
+	asked       []string
 }
 
 func newStubFactoryTopology() *stubFactoryTopology {
@@ -79,13 +84,20 @@ func (s *stubFactoryTopology) TerminalFactory(_ context.Context, good, _ string,
 	if level, ok := s.supplyByGood[good]; ok {
 		supply = level
 	}
+	price := gateTestInputPrice
+	if quote, ok := s.priceByGood[good]; ok {
+		price = quote
+	}
 	return &mfgServices.MarketLocatorResult{
 		WaypointSymbol: good + "-EXPORTER",
 		Supply:         supply,
-		Price:          100,
+		Price:          price,
 		TradeVolume:    gateTestTradeVolume,
 	}, nil
 }
+
+// gateTestInputPrice is the default ask every input quotes in this fixture.
+const gateTestInputPrice = 100
 
 func (s *stubFactoryTopology) goodsAsked() []string {
 	s.mu.Lock()
@@ -343,6 +355,237 @@ func TestFeedGateLeg_SkipsAStepWhoseSourceCannotBeResolvedAndTakesTheNextOne(t *
 	// deleted entirely.
 	if want := "nothing in " + gateTestSystem + " exports IRON"; !strings.Contains(f.logLines(), want) {
 		t.Fatalf("the declined IRON step is invisible in the log: no %q line, and the bare symbol is already there from the plan's own summary:\n%s", want, f.logLines())
+	}
+}
+
+// ---------------------------------------------------------------------------------------------
+// sp-9eor3: AN UNAFFORDABLE STEP IS A DECLINE, NOT THE END OF THE LEG
+//
+// planGateFeed RETURNS the first passing step, so a condition it does not test as a `continue` ends
+// the leg from the head of the line. Live, IRON's source resolved, its destination resolved and its
+// destination was MODERATE rather than ABUNDANT — so IRON was selected every leg, refused every leg
+// by the reserve, and QUARTZ_SAND (the next step, and the input its factory was actually starved
+// of) was never reached for seven hours.
+// ---------------------------------------------------------------------------------------------
+
+// gateUnaffordableFixture stages the live shape: an EXPENSIVE first step and a CHEAP second one,
+// with headroom in between. The prices are the incident's own — IRON laddering to ~3480 at a
+// SCARCE export while QUARTZ_SAND sat at ~23 on an exchange.
+//
+// It sets a price SPREAD rather than one flat price on purpose. With a single price every step
+// costs the same, so "declined the unaffordable step" and "declined the first step" become the same
+// observation — and telling those two apart is the entire bead.
+func gateUnaffordableFixture(t *testing.T) *gateFeedFixture {
+	t.Helper()
+	f := newGateFactoryHandler(t)
+	f.topo.priceByGood = map[string]int{"IRON": 3480, "QUARTZ_SAND": 23}
+	// One tranche is min(hold, trade volume) = 20 units: IRON costs 69,600 and QUARTZ_SAND 460, so
+	// this headroom sits strictly between them and separates the two by affordability alone.
+	f.buyer.spendHeadroom = 10_000
+	return f
+}
+
+// assertIronIsPlannedBeforeQuartz is the non-vacuity every test in this cluster needs: the block is
+// only a block if the expensive step really is planned FIRST. If PlanFeed's order ever changes,
+// these tests would pass for a leg with no affordability rule at all.
+func assertIronIsPlannedBeforeQuartz(t *testing.T, f *gateFeedFixture) {
+	t.Helper()
+	plan := gate.PlanFeed(gateMaterialPrimary, f.topo, gate.DefaultFeedDepthCap)
+	iron, quartz := -1, -1
+	for i, step := range plan.Steps {
+		switch step.Input {
+		case "IRON":
+			if iron < 0 {
+				iron = i
+			}
+		case "QUARTZ_SAND":
+			if quartz < 0 {
+				quartz = i
+			}
+		}
+	}
+	if iron < 0 || quartz < 0 || iron > quartz {
+		t.Fatalf("fixture is inert: IRON is planned at index %d and QUARTZ_SAND at %d (steps=%+v). The head-of-line block only exists when the expensive step is planned FIRST", iron, quartz, plan.Steps)
+	}
+}
+
+// THE BEAD. An unaffordable step must be passed over, not allowed to end the leg. Against the
+// unmodified planner this fails: IRON resolves on both sides and is not ABUNDANT, so it is selected
+// and QUARTZ_SAND is never reached.
+func TestFeedGateLeg_TakesTheNextAffordableStepWhenTheFirstOneBreachesTheReserve(t *testing.T) {
+	f := gateUnaffordableFixture(t)
+	assertIronIsPlannedBeforeQuartz(t, f)
+
+	f.runFeed(t, "GF-1")
+
+	bought := f.buyer.goods()
+	if _, boughtIron := bought["IRON"]; boughtIron {
+		t.Fatalf("bought IRON (%v) at 3480/unit against %d headroom — the step the reserve refuses must be declined, not selected", bought, f.buyer.spendHeadroom)
+	}
+	if _, boughtQuartz := bought["QUARTZ_SAND"]; !boughtQuartz {
+		t.Fatalf("bought %v; QUARTZ_SAND is affordable and planned right behind IRON, so an unaffordable IRON must not stand the whole leg down. THIS IS THE HEAD-OF-LINE BLOCK", bought)
+	}
+
+	feeds := f.feeder.feeds()
+	if len(feeds) != 1 {
+		t.Fatalf("feeds = %+v, want exactly one factory fed — the leg must still feed, just not with IRON", feeds)
+	}
+	if named := strings.Join(feeds[0].inputs, ","); named != "QUARTZ_SAND" {
+		t.Fatalf("fed %q, want QUARTZ_SAND — the leg must deliver the step it actually afforded", named)
+	}
+
+	// ONE BUY PER LEG SURVIVES THE FIX. Skipping to the next step must not become a per-step buy
+	// loop: an INPUT has no bill, so the call count is the only bound on factory-fleet spend.
+	if calls := f.buyer.calls(); calls != 1 {
+		t.Fatalf("BuyAtTerminalFactory called %d time(s); declining a step must SKIP it, never retry the buy — the call count is the only cap on factory-fleet spend", calls)
+	}
+}
+
+// THE DECLINE NAMES ITSELF AND ITS NUMBERS, like every other decline in this walk. The function's
+// own contract is that a declined step is legible; a silent skip would make a starved factory and a
+// satisfied one look the same.
+func TestFeedGateLeg_LogsWhyAnUnaffordableStepWasDeclined(t *testing.T) {
+	f := gateUnaffordableFixture(t)
+	assertIronIsPlannedBeforeQuartz(t, f)
+
+	f.runFeed(t, "GF-1")
+
+	// The precheck must have actually RUN. Every assertion below is also satisfied by a leg that
+	// declined IRON for some unrelated reason, so without this the test cannot tell the affordability
+	// rule from any other skip.
+	if probes := f.buyer.probed(); len(probes) == 0 {
+		t.Fatal("the planner never priced a single step: affordability was not evaluated at all, so any decline below came from another rule")
+	}
+
+	lines := f.logLines()
+	// THE DECLINE'S OWN PHRASE, not a shared word. "reserve" now also appears in the
+	// no-feedable-step catch-all, so matching that alone would survive deleting this line outright.
+	if want := "declining the IRON feed for the " + gateMaterialPrimary + " factory"; !strings.Contains(lines, want) {
+		t.Fatalf("no %q line: the skipped step is invisible, which is the log archaeology this bead was filed out of:\n%s", want, lines)
+	}
+	// THE NUMBERS IN THE MESSAGE. The container log renderer drops metadata maps and this leg emits
+	// no metric — the log line IS the counter — so a decline whose cost lives only in metadata is one
+	// no operator can size.
+	if want := "would cost about 69600 against a reserve of 100000"; !strings.Contains(lines, want) {
+		t.Fatalf("the decline does not price itself in the MESSAGE (want %q); metadata maps are dropped by the renderer, so the numbers would be lost:\n%s", want, lines)
+	}
+	// DISTINCT FROM THE ON-ARRIVAL REFUSAL (criterion 4). "no hull was sent" and "a hull flew and was
+	// refused" must be tellable apart without log archaeology.
+	if strings.Contains(lines, "acquired nothing of IRON") {
+		t.Fatalf("the skipped step logged the ON-ARRIVAL refusal phrase; a leg that was never dispatched must not be reported as one that flew and was refused:\n%s", lines)
+	}
+}
+
+// A LEG ENDS WITH NO FEED ONLY WHEN EVERY STEP DECLINES. The fix must not turn "this step is
+// unaffordable" into "this leg is over" for the remaining steps too.
+func TestFeedGateLeg_ParksOnlyWhenEveryStepIsUnaffordable(t *testing.T) {
+	f := newGateFactoryHandler(t)
+	f.topo.priceByGood = map[string]int{"IRON": 3480, "QUARTZ_SAND": 23}
+	// Below even the cheapest step: 20 QUARTZ_SAND is 460, so nothing in the plan clears this.
+	f.buyer.spendHeadroom = 100
+
+	if drained := f.runFeed(t, "GF-1"); drained {
+		t.Fatal("a leg that fed nothing must not report a drain")
+	}
+
+	if bought := f.buyer.goods(); len(bought) != 0 {
+		t.Fatalf("bought %v; every step breaches the reserve, so nothing may be purchased", bought)
+	}
+	if calls := f.buyer.calls(); calls != 0 {
+		t.Fatalf("BuyAtTerminalFactory called %d time(s); when every step is predicted unaffordable no hull should be dispatched at all", calls)
+	}
+	if feeds := f.feeder.feeds(); len(feeds) != 0 {
+		t.Fatalf("fed %+v with nothing bought", feeds)
+	}
+	// NON-VACUITY, and it is what separates this from a leg that fell over early: EVERY step must
+	// have been priced and rejected, not just the first.
+	probes := f.buyer.probed()
+	if len(probes) < 2 {
+		t.Fatalf("only %d step(s) priced (%v); a leg that stopped at the first decline would produce exactly this park, so this test must see the walk continue past it", len(probes), probes)
+	}
+	if want := "found no feedable step this leg"; !strings.Contains(f.logLines(), want) {
+		t.Fatalf("no %q line: the park came from some other exit:\n%s", want, f.logLines())
+	}
+	if status := f.taskRepo.statusOf(f.lastLot.task.ID()); status == "" {
+		t.Fatal("the task was left EXECUTING; a silently-drained ready queue is indistinguishable from a finished gate")
+	}
+}
+
+// REGRESSION (RULINGS #4). An AFFORDABLE fill behaves exactly as it did before the precheck existed:
+// same step chosen, one buy, one feed. The precheck may only ever DECLINE earlier — it must never
+// change what an affordable leg does.
+func TestFeedGateLeg_AnAffordableStepDispatchesExactlyAsBefore(t *testing.T) {
+	f := newGateFactoryHandler(t)
+	f.topo.priceByGood = map[string]int{"IRON": 3480, "QUARTZ_SAND": 23}
+	// Generous: 20 IRON at 3480 is 69,600, comfortably inside this.
+	f.buyer.spendHeadroom = 1_000_000
+
+	f.runFeed(t, "GF-1")
+
+	// NON-VACUITY: the floor must have been CONSULTED and passed, not absent. With spendHeadroom
+	// left at zero the probe is permissive and this test would prove nothing about an affordable
+	// step — only about an unwired one.
+	if probes := f.buyer.probed(); len(probes) == 0 {
+		t.Fatal("no step was priced: the floor was never consulted, so this is not a test of an AFFORDABLE step")
+	}
+	bought := f.buyer.goods()
+	if _, boughtIron := bought["IRON"]; !boughtIron {
+		t.Fatalf("bought %v; IRON is the first planned step and it IS affordable here, so the leg must still choose it. A precheck that declines an affordable step has weakened nothing but broken everything", bought)
+	}
+	if calls := f.buyer.calls(); calls != 1 {
+		t.Fatalf("BuyAtTerminalFactory called %d time(s), want exactly 1", calls)
+	}
+	feeds := f.feeder.feeds()
+	if len(feeds) != 1 || strings.Join(feeds[0].inputs, ",") != "IRON" {
+		t.Fatalf("feeds = %+v, want exactly one IRON feed — an affordable leg is unchanged", feeds)
+	}
+	if strings.Contains(f.logLines(), "declining the IRON feed") {
+		t.Fatalf("an affordable step was logged as declined:\n%s", f.logLines())
+	}
+}
+
+// THE PRECHECK DOES NOT REPLACE THE COMMIT-TIME GUARD (RULINGS #4). It reads a CACHED quote; only
+// the per-tranche guard sees the live ask. A step that passes the prediction and is then refused on
+// arrival must still fail closed exactly as before — no feed, no workaround.
+func TestFeedGateLeg_StillFailsClosedWhenAPredictedAffordableBuyIsRefusedOnArrival(t *testing.T) {
+	f := newGateFactoryHandler(t)
+	f.buyer.spendHeadroom = 1_000_000 // the prediction passes...
+	f.buyer.acquireZero = true        // ...and the live guard refuses anyway
+
+	f.runFeed(t, "GF-1")
+
+	// Non-vacuity FIRST: a leg that never reached the buy also feeds nothing.
+	if calls := f.buyer.calls(); calls != 1 {
+		t.Fatalf("the leg made %d buy attempt(s); with none, 'did not feed' says nothing about honouring a refused fill", calls)
+	}
+	if probes := f.buyer.probed(); len(probes) == 0 {
+		t.Fatal("no step was priced, so this test is not exercising a PREDICTED-affordable step at all")
+	}
+	if feeds := f.feeder.feeds(); len(feeds) != 0 {
+		t.Fatalf("flew to %+v with nothing aboard; the commit-time refusal stands whatever the prediction said", feeds)
+	}
+	if want := "acquired nothing of"; !strings.Contains(f.logLines(), want) {
+		t.Fatalf("no %q line: the on-arrival refusal must still be recorded loudly:\n%s", want, f.logLines())
+	}
+}
+
+// AN UNPRICED INPUT IS NOT AN UNAFFORDABLE ONE. With no cached quote there is nothing to predict, so
+// the step proceeds and the commit-time guard decides on arrival as it always has.
+//
+// DIRECTIONAL GUARD, not a bead reproduction: it passes against the unmodified planner too (which
+// had no precheck at all). It exists to pin the precheck's failure DIRECTION — rejecting on the
+// ABSENCE of a quote would let a cold or unscanned price cache freeze the whole feed, which is a
+// deadlock that appears exactly when the fleet is coldest and every quote is missing.
+func TestFeedGateLeg_AnUnpricedInputIsNotTreatedAsUnaffordable(t *testing.T) {
+	f := newGateFactoryHandler(t)
+	f.topo.priceByGood = map[string]int{"IRON": 0} // never scanned
+	f.buyer.spendHeadroom = 100                    // and there is almost no headroom
+
+	f.runFeed(t, "GF-1")
+
+	bought := f.buyer.goods()
+	if _, boughtIron := bought["IRON"]; !boughtIron {
+		t.Fatalf("bought %v; IRON has NO cached quote, so there is no prediction to make and the step must proceed to the commit-time guard. Declining on a missing price deadlocks a cold cache", bought)
 	}
 }
 
@@ -693,7 +936,7 @@ func TestFeedGateLeg_DeliversAFullHoldEvenWhenNoInputSourceResolves(t *testing.T
 	if err != nil {
 		t.Fatalf("reading the fixture pipeline: %v", err)
 	}
-	if _, _, _, planned := f.handler.planGateFeed(f.ctx(), gateTestCmd(), gateTestSystem, billSource); planned {
+	if _, _, _, planned := f.handler.planGateFeed(f.ctx(), gateTestCmd(), gateTestSystem, billSource, gateTestHoldCapacity); planned {
 		t.Fatal("fixture is inert: the buy-side planner still found a step, so this test cannot see a hold path that wrongly demands a source")
 	}
 

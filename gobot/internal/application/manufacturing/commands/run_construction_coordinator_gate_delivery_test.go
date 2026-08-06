@@ -256,6 +256,40 @@ type countingGateBuyer struct {
 	// the price ceiling trips. Deliberately distinct from err, which is a failed CALL — a caller
 	// that conflates the two cannot honour a refusal differently from an outage.
 	acquireZero bool
+	// spendHeadroom is the largest projected cost SpendFloorWouldBreach will admit — treasury minus
+	// reserve, expressed directly so a test states the headroom instead of staging a balance.
+	//
+	// ZERO MEANS PERMISSIVE, not broke. That is the real probe's fail-OPEN direction when no
+	// treasury source is wired (the optional-port contract these fixtures rely on), and it is what
+	// keeps every test written before the precheck existed behaving exactly as it did.
+	spendHeadroom int
+	// probes records every projected cost the planner asked about, so a test can prove the precheck
+	// ran AT ALL rather than inferring it from an outcome a broken leg also produces.
+	probes []int
+}
+
+// gateTestReserve is the floor countingGateBuyer reports alongside a refusal. Its only job is to be
+// a recognisable non-zero number in the decline's log line.
+const gateTestReserve = 100_000
+
+// SpendFloorWouldBreach is the fake's pre-dispatch floor test: it refuses anything past
+// spendHeadroom. It spends nothing and records nothing but the question, mirroring the real probe,
+// which is a pure read of treasury against the reserve.
+func (b *countingGateBuyer) SpendFloorWouldBreach(_ context.Context, _ int, projectedCost int) (bool, int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.probes = append(b.probes, projectedCost)
+	if b.spendHeadroom <= 0 {
+		return false, gateTestReserve
+	}
+	return projectedCost > b.spendHeadroom, gateTestReserve
+}
+
+// probed returns every projected cost the planner priced this run.
+func (b *countingGateBuyer) probed() []int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]int(nil), b.probes...)
 }
 
 // resultFor is the acquisition this buyer reports for a requested lot.
@@ -321,6 +355,7 @@ func (b *countingGateBuyer) reset() {
 	b.seen = 0
 	b.bought = nil
 	b.attempts = nil
+	b.probes = nil
 }
 
 // gateLegFixture is one wired delivery-fleet drain plus every seam a test needs to assert on.

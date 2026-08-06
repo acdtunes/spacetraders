@@ -113,9 +113,13 @@ func (h *RunConstructionCoordinatorHandler) feedGateLeg(
 		return h.feedGateLegFromHold(ctx, cmd, systemSymbol, leg, billSource)
 	}
 
-	step, input, target, planned := h.planGateFeed(ctx, cmd, systemSymbol, billSource)
+	// The SAME capacity the buy is sized with is what the plan prices its affordability against
+	// (sp-9eor3). Passing the hold rather than letting the planner guess is what keeps the
+	// prediction and the purchase talking about one quantity: a planner sizing against some other
+	// number would decline steps the buy would have afforded, or admit ones it would not.
+	step, input, target, planned := h.planGateFeed(ctx, cmd, systemSymbol, billSource, capacity)
 	if !planned {
-		logger.Log("WARNING", fmt.Sprintf("Gate factory: %s found no feedable step this leg — every gate material is either satisfied, already ABUNDANT at its factory, or has no resolvable source and destination", lot.ship.ShipSymbol()), map[string]interface{}{
+		logger.Log("WARNING", fmt.Sprintf("Gate factory: %s found no feedable step this leg — every gate material is either satisfied, already ABUNDANT at its factory, has no resolvable source and destination, or costs more than the working-capital reserve allows", lot.ship.ShipSymbol()), map[string]interface{}{
 			"ship": lot.ship.ShipSymbol(), "action": "no_feed_step",
 		})
 		return h.completeOrDefer(ctx, leg)
@@ -392,15 +396,33 @@ func gateMaterialsNeediestFirst(pipeline *manufacturing.ManufacturingPipeline) [
 }
 
 // planGateFeed picks THIS leg's single feed step: walk each outstanding gate material neediest
-// first, and take the first step whose input source AND destination factory both resolve.
+// first, and take the first step whose input source AND destination factory both resolve AND whose
+// first tranche this treasury can actually pay for.
 //
 // Every declined step is logged with its reason. A walk that declines silently rebuilds the exact
 // opacity this design exists to remove — a starved factory and a satisfied one would look the same.
+//
+// AFFORDABILITY IS A DECLINE, NOT AN ABORT (sp-9eor3), and that distinction is the whole bead. The
+// walk RETURNS the first step that passes, so any condition it does not test as a `continue` is one
+// that ends the leg from the head of the line: the step is selected, the buy is refused downstream,
+// and feedGateLeg parks WITHOUT ever considering step 2. Live, that made the FAB_MATS plan
+// (IRON->FAB_MATS, QUARTZ_SAND->FAB_MATS, IRON_ORE->IRON) unable to reach QUARTZ_SAND at all: IRON's
+// source resolved, its destination resolved, and its destination was MODERATE rather than ABUNDANT
+// so the fail-safe above did not fire — so IRON was selected on every leg, refused on every leg for
+// ~209,000 credits against the reserve, and QUARTZ_SAND went unbought for seven hours while the
+// factory that needed it read SCARCE. The failure did not self-clear: the only escape was IRON
+// reaching ABUNDANT, which required buying the very IRON the guard was refusing.
+//
+// Being a fourth `continue` rather than a retry at the buy site is what keeps ONE BUY PER LEG — the
+// only bound on factory-fleet spend, since an INPUT has no bill (see this file's header, and
+// TestFeedGateLeg_BuysExactlyOnceEvenThoughThePlanHasSeveralSteps, which pins the call count).
+// It also keeps this function's own contract: a declined step names its reason.
 func (h *RunConstructionCoordinatorHandler) planGateFeed(
 	ctx context.Context,
 	cmd *RunConstructionCoordinatorCommand,
 	systemSymbol string,
 	pipeline *manufacturing.ManufacturingPipeline,
+	units int,
 ) (gate.FeedStep, *mfgServices.MarketLocatorResult, *mfgServices.MarketLocatorResult, bool) {
 	logger := common.LoggerFromContext(ctx)
 
@@ -439,6 +461,44 @@ func (h *RunConstructionCoordinatorHandler) planGateFeed(
 					"good": step.Input, "target": step.Target, "reason": "no_input_source",
 				})
 				continue
+			}
+			// THE AFFORDABILITY DECLINE. Everything this needs is known here — the market, the good,
+			// its cached ask, the per-transaction volume and the free hold — so a step the reserve
+			// will refuse is passed over for one it will not, instead of being selected and taking
+			// the leg down with it.
+			//
+			// THE SUBJECT IS THE FIRST TRANCHE, not the whole hull-load, and matching the guard's own
+			// subject is what keeps this from over-declining. fillFromSource buys in tranches of
+			// min(free hold, trade volume, trip target) and re-checks the floor before EACH one, so a
+			// fill is refused OUTRIGHT — QuantityAcquired 0, the condition that ends the leg — only
+			// when the FIRST tranche breaches. Pricing the full hold instead would decline steps that
+			// would have partially filled and fed the factory perfectly well, which is a second way to
+			// starve the walk wearing the fix's clothes.
+			//
+			// AN UNKNOWN PRICE IS NOT AN UNAFFORDABLE ONE. With no cached quote there is no prediction
+			// to make, so the step proceeds and the commit-time guard decides on arrival as it always
+			// has. Declining here instead would let a cold or unscanned price cache freeze the entire
+			// feed — refusing on ABSENCE of evidence rather than on evidence, which deadlocks exactly
+			// when the fleet is coldest.
+			if source.Price > 0 && source.TradeVolume > 0 {
+				tranche := min(units, source.TradeVolume)
+				projected := tranche * source.Price
+				if breached, reserve := h.factory.buyer.SpendFloorWouldBreach(ctx, cmd.PlayerID, projected); breached {
+					// THE NUMBERS GO IN THE MESSAGE. The container log renderer drops metadata maps,
+					// and this leg emits no metric — the log line IS the counter — so a decline whose
+					// cost and reserve live only in metadata is a decline nobody can size.
+					//
+					// Distinct wording from the on-arrival "acquired nothing" refusal ON PURPOSE
+					// (criterion 4): one says a hull flew and was refused, the other says no hull was
+					// ever sent. Collapsing them into one phrase rebuilds the log archaeology this
+					// bead was filed out of.
+					logger.Log("WARNING", fmt.Sprintf("Gate factory: declining the %s feed for the %s factory — %d units at %s would cost about %d against a reserve of %d, so this leg takes the next affordable step instead of stalling on this one", step.Input, step.Target, tranche, source.WaypointSymbol, projected, reserve), map[string]interface{}{
+						"good": step.Input, "target": step.Target, "source": source.WaypointSymbol,
+						"units": tranche, "projected_cost": projected, "reserve": reserve,
+						"reason": "unaffordable_input", "action": "step_skipped_unaffordable",
+					})
+					continue
+				}
 			}
 			return step, source, target, true
 		}

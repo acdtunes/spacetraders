@@ -236,6 +236,32 @@ func (e *ProductionExecutor) spendFloorBreached(ctx context.Context, playerID, p
 	return false, reserve
 }
 
+// SpendFloorWouldBreach exports the floor test above so a PLANNER can ask it before choosing a
+// step, and returns the reserve actually enforced so the caller names the real number rather than
+// re-deriving a base the capital budget may have raised.
+//
+// IT IS THE SAME GUARD, NOT A SECOND COPY (RULINGS #4). It delegates to spendFloorBreached and adds
+// no arithmetic of its own, which is the entire reason it exists as a delegation rather than as a
+// treasury read the caller does for itself. A planner that re-implemented "credits minus cost
+// against a floor" would be free to drift from this one silently — same failure mode fillFromSource
+// was extracted to prevent — and the drift would be invisible, because a precheck that is merely
+// WRONG still returns a plausible boolean.
+//
+// IT IS A PURE READ. It buys nothing, reserves nothing and releases nothing: no tranche is sized,
+// no reservation is taken in the concurrent-spend ledger, and nothing here can let a spend through
+// that the per-tranche guard would refuse. The live per-tranche check still runs unchanged on every
+// tranche after it, so this is strictly a chance to DECLINE EARLIER and never a substitute for the
+// commit-time guard — the pre-dispatch answer is derived from a CACHED quote, and only the
+// commit-time guard sees the live ask.
+//
+// It inherits the guard's directions verbatim, and both are the ones a planner wants: FAIL CLOSED
+// on an unreadable treasury (report breached, so the caller declines the step and dispatches
+// nothing it cannot pay for), and fail OPEN when no treasury source is wired at all (the
+// optional-port contract the package's fixtures rely on, never the daemon).
+func (e *ProductionExecutor) SpendFloorWouldBreach(ctx context.Context, playerID, projectedCost int) (bool, int) {
+	return e.spendFloorBreached(ctx, playerID, projectedCost)
+}
+
 // reserveConcurrentSpendOrPark records this input buy's spend intent in the shared ledger
 // and reports whether it must PARK because the COMBINED in-flight factory spend would
 // breach the reserve. On the proceed path it returns the reservation id the
