@@ -27,6 +27,19 @@ type APIBudgetTracker struct {
 	events           []apibudget.Event
 	clock            shared.Clock
 	ceilingReqPerSec float64
+	// startedAt is when this tracker began observing, and it is what keeps the reported rate honest
+	// while the tracker is younger than its widest window (sp-fr19d).
+	//
+	// The events slice cannot supply it. An empty-then-busy tracker and a five-minute-idle-then-busy
+	// tracker hold identical events, yet the first has observed almost nothing and the second has
+	// observed five minutes of genuine quiet — and quiet belongs in the denominator. Only the
+	// construction time distinguishes them.
+	//
+	// This state is per-PROCESS and in-memory by nature: the tracker is rebuilt on every daemon
+	// start, so its observation window genuinely restarts. That is precisely why it must be
+	// recorded rather than assumed — the assumption that it had always been running is what
+	// reported 7.7% against a saturated account.
+	startedAt time.Time
 }
 
 // NewAPIBudgetTracker constructs a tracker against the given rate-limiter
@@ -39,6 +52,7 @@ func NewAPIBudgetTracker(ceilingReqPerSec float64, clock shared.Clock) *APIBudge
 	return &APIBudgetTracker{
 		clock:            clock,
 		ceilingReqPerSec: ceilingReqPerSec,
+		startedAt:        clock.Now(),
 	}
 }
 
@@ -114,7 +128,7 @@ func (t *APIBudgetTracker) Report() apibudget.DualReport {
 	// ComputeDualReport takes a snapshot copy implicitly since apibudget.Event
 	// is a value type iterated by value inside ComputeReport; t.events is not
 	// mutated by the call.
-	return apibudget.ComputeDualReport(t.events, now, t.ceilingReqPerSec)
+	return apibudget.ComputeDualReport(t.events, now, t.ceilingReqPerSec, t.startedAt)
 }
 
 // pruneLocked drops events older than retentionWindow. Caller must hold t.mu.

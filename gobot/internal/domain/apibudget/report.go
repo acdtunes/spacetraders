@@ -111,11 +111,50 @@ const rolling5mWindow = 5 * time.Minute
 
 // ComputeDualReport computes both the current and rolling-5m windows from the
 // same event slice.
-func ComputeDualReport(events []Event, now time.Time, ceilingReqPerSec float64) DualReport {
+//
+// observedSince is when the observer STARTED COLLECTING, and passing it is the whole of sp-fr19d.
+// A rate is a count divided by a span, and the only defensible span is the one actually observed:
+// dividing by a 5-minute window an in-memory observer has only been alive 23 seconds for reports
+// 7.7% while the account sits at 100%, because 46 real requests are spread across 300 seconds of
+// which 277 never happened. That was not a rounding error — it is a 13x understatement, it lasts for
+// a full window after every process start, and it is permanent under a restart loop.
+//
+// It is the caller's start time rather than the oldest retained EVENT deliberately. The oldest event
+// looks like the same quantity and is not: after an idle stretch it is recent, so a single request
+// two seconds ago would divide by two seconds and report 25% off one call. Idle time is real
+// observed time and must stay in the denominator; only unobserved time may leave it.
+//
+// A zero observedSince means "start unknown" and yields the FULL window — the pre-existing
+// behaviour — so a caller that cannot say when it started is never handed a fabricated denominator.
+func ComputeDualReport(events []Event, now time.Time, ceilingReqPerSec float64, observedSince time.Time) DualReport {
 	return DualReport{
-		Current:   ComputeReport(events, now, currentWindow, ceilingReqPerSec),
-		Rolling5m: ComputeReport(events, now, rolling5mWindow, ceilingReqPerSec),
+		Current:   ComputeReport(events, now, observedWindow(currentWindow, now, observedSince), ceilingReqPerSec),
+		Rolling5m: ComputeReport(events, now, observedWindow(rolling5mWindow, now, observedSince), ceilingReqPerSec),
 	}
+}
+
+// observedWindow narrows a nominal window to the span actually observed, and never widens it.
+//
+// THE NARROWING ONLY EVER RAISES THE REPORTED RATE. A smaller denominator over the same events is a
+// higher req/s and so a higher UtilizationPct, which makes every consumer of this figure STRICTER —
+// the api_util money guard refuses growth sooner, never later (RULINGS #4). There is no input for
+// which this returns a window wider than the nominal one, so no traffic can be diluted into looking
+// affordable.
+//
+// Every degenerate input falls back to the nominal window rather than to a small one: an unknown
+// start, a clock that went backwards, and a span already past the window all return `window`. The
+// failure direction matters — inventing a SMALL denominator here would spike utilization toward
+// infinity and wedge the fleet, so the fallbacks deliberately err toward the old, permissive
+// behaviour rather than toward a spurious block.
+func observedWindow(window time.Duration, now, observedSince time.Time) time.Duration {
+	if observedSince.IsZero() {
+		return window
+	}
+	elapsed := now.Sub(observedSince)
+	if elapsed <= 0 || elapsed >= window {
+		return window
+	}
+	return elapsed
 }
 
 // ComputeReport prunes events older than `window` relative to `now` and

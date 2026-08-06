@@ -167,8 +167,11 @@ func TestComputeDualReport_ReturnsCurrentAndRolling5mWindows(t *testing.T) {
 		evt("HULL-1", PurposePoll, 4*time.Minute, false), // outside "current", inside 5m
 	}
 
-	dual := ComputeDualReport(events, fixedNow, 2.0)
+	// Observing for an hour, so both nominal windows are fully covered and neither is narrowed.
+	dual := ComputeDualReport(events, fixedNow, 2.0, fixedNow.Add(-time.Hour))
 
 	assert.Equal(t, 1, dual.Current.TotalRequests, "current window is narrow (10s)")
 	assert.Equal(t, 2, dual.Rolling5m.TotalRequests, "rolling window is 5 minutes")
+	assert.Equal(t, float64(10), dual.Current.WindowSeconds, "a warm observer uses the full nominal window")
+	assert.Equal(t, float64(300), dual.Rolling5m.WindowSeconds, "a warm observer uses the full nominal window")
 }
