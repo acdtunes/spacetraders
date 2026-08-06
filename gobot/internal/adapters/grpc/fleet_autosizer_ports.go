@@ -70,7 +70,10 @@ func NewFleetAutosizerCoordinatorHandler(
 
 	// Buy-path readers + writers.
 	h.SetTreasuryReader(&autosizerTreasuryReader{api: apiClient, ledger: ledgerTreasury})
-	h.SetAPIUtilizationReader(&autosizerAPIUtilReader{reporter: metrics.GetGlobalAPIBudgetTracker()})
+	// The tracker is RESOLVED PER READ, not captured here (sp-a75fz). Passing
+	// metrics.GetGlobalAPIBudgetTracker itself — the function, uncalled — is what makes the
+	// wiring order stop mattering; see autosizerAPIUtilReader.
+	h.SetAPIUtilizationReader(&autosizerAPIUtilReader{resolve: globalAPIBudgetReporter})
 	// The concrete waypoint repo is assigned only when non-nil: a typed-nil
 	// pointer inside the interface field would defeat the reader's nil guard
 	// (fail-closed on an unwired waypoint surface) with a runtime panic instead.
@@ -172,13 +175,57 @@ type apiBudgetReporter interface {
 // tracker, or an unconfigured/zero ceiling): a guard that cannot read its bound never permits growth
 // (RULINGS #4). In the daemon the tracker is wired unconditionally at startup, so the normal case is
 // readable; blocking only occurs on real saturation or a genuinely-absent metrics subsystem.
-type autosizerAPIUtilReader struct{ reporter apiBudgetReporter }
+// THE TRACKER IS RESOLVED AT READ TIME, NOT CAPTURED AT WIRING TIME (sp-a75fz).
+//
+// It used to hold the pointer that metrics.GetGlobalAPIBudgetTracker() returned during wiring. That
+// was correct ONLY because main.go happens to construct the tracker (:778) before it wires the
+// autosizer (:1196), and nothing enforced, tested or documented that ordering.
+//
+// REVERSE IT AND THE FLEET STOPS GROWING, SILENTLY AND FOREVER. The captured pointer would be nil,
+// the nil guard below would fail CLOSED — which is correct, and is exactly why nobody would find
+// it — so GuardAPIUtil would refuse every hull purchase, everywhere, with no error and no metric.
+// It would read as "the autosizer decided not to grow". That is the sp-ps2oc failure shape: a
+// wiring assumption nothing pins, whose breach is invisible.
+//
+// A resolver function makes the ordering irrelevant rather than merely checked. The field can no
+// longer HOLD a tracker, so there is no wiring-time capture left to get wrong — the bug is
+// unexpressible in this type rather than absent from this instance. It also degrades better in the
+// world where the order does reverse: a nil read is TRANSIENT and self-heals on the next tick once
+// the global is set, where a captured nil was permanent for the life of the process.
+//
+// The per-read cost is one package-variable load on a reconcile tick that already does database and
+// API work — not a hot path, and the guard is consulted once per sizing decision.
+//
+// Fails CLOSED (readable=false) when no live surface exists: no resolver, a resolver returning
+// nothing, or an unconfigured/zero ceiling. A guard that cannot read its bound never permits growth
+// (RULINGS #4). In the daemon the tracker is wired unconditionally at startup, so the normal case is
+// readable and blocking only occurs on real saturation or a genuinely-absent metrics subsystem.
+type autosizerAPIUtilReader struct{ resolve func() apiBudgetReporter }
+
+// globalAPIBudgetReporter adapts the package-level accessor to the reader's narrow interface.
+//
+// THE TYPED-NIL CONVERSION IS DELIBERATE AND MUST STAY EXPLICIT. GetGlobalAPIBudgetTracker returns a
+// *metrics.APIBudgetTracker; assigning a nil one into an interface yields a NON-nil interface
+// holding a nil pointer, which sails past `== nil`. Returning the untyped nil instead keeps the
+// reader's own nil check meaningful rather than leaving it to the nil-receiver Report() one layer
+// down. Both paths fail closed — this one just fails closed legibly.
+func globalAPIBudgetReporter() apiBudgetReporter {
+	tracker := metrics.GetGlobalAPIBudgetTracker()
+	if tracker == nil {
+		return nil
+	}
+	return tracker
+}
 
 func (r *autosizerAPIUtilReader) UtilizationPct(ctx context.Context) (float64, bool, error) {
-	if r == nil || r.reporter == nil {
+	if r == nil || r.resolve == nil {
 		return 0, false, nil // no utilization surface wired → unreadable → guard fails CLOSED
 	}
-	rolling := r.reporter.Report().Rolling5m
+	reporter := r.resolve()
+	if reporter == nil {
+		return 0, false, nil // resolved to nothing this tick → unreadable → guard fails CLOSED
+	}
+	rolling := reporter.Report().Rolling5m
 	if rolling.CeilingReqPerSec <= 0 {
 		// A typed-nil tracker's nil-safe Report() (or a tracker built with no ceiling) yields a
 		// zero-value report; without a ceiling there is no meaningful utilization → fail CLOSED
