@@ -464,7 +464,7 @@ func (s sensingWiring) enginePorts(
 		HeavyReserve: parkedSensingAdapters.NewHeavyReservePort(
 			parkedSensingAdapters.NewShipRepoCensus(s.shipRepo),
 			heavyTargetFinder,
-			parkedSensingAdapters.NewAutosizerCapPort(s.db),
+			parkedSensingAdapters.NewHeavyBuyerCapPort(s.db),
 		),
 		// The budget the whole model is sized against: sensing is the RESIDUAL
 		// consumer, so it reads how much of the ceiling everyone else is using.

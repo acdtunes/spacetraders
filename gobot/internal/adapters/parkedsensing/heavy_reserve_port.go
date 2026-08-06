@@ -6,6 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"slices"
+	"sort"
+	"strings"
 
 	"gorm.io/gorm"
 
@@ -30,8 +33,8 @@ import (
 // live-fallback) credits call on every sensing tick, including the ones that buy nothing.
 //
 // It DERIVES the answer every tick from durable facts and stores nothing — the same three tables
-// the fleet autosizer reads, plus the autosizer's own persisted heavy_cap. Reading that cap is
-// reading a durable fact, exactly like reading the ledger for heaviesOwned; it is NOT a
+// the heavy buyer reads, plus the buyer's own persisted heavy_cap. Reading that cap is reading a
+// durable fact, exactly like reading the ledger for heaviesOwned; it is NOT a
 // cross-container write protocol, which is the shape spec §3 rejected. Sensing deliberately does
 // NOT own a heavy_cap of its own: two dials for one decision is how the reservation ends up
 // computed against a cap nobody is enforcing.
@@ -62,9 +65,9 @@ type heavyYardPricer interface {
 	HeavyTarget(ctx context.Context, playerID int) (shipyardQueries.HeavyTarget, error)
 }
 
-// heavyCapSource resolves the autosizer's heavy_cap. It reports three things separately because
-// each maps to a different rung of the fallback ladder: whether the autosizer container exists at
-// all, whether the knob is set on it, and its value.
+// heavyCapSource resolves the heavy buyer's heavy_cap. It reports three things separately because
+// each maps to a different rung of the fallback ladder: whether a heavy buyer exists at all,
+// whether the knob is set on it, and its value.
 type heavyCapSource interface {
 	HeavyCap(ctx context.Context, playerID int) (value int, present bool, containerExists bool, err error)
 }
@@ -118,7 +121,7 @@ func NewHeavyReservePort(census heavyCensusCounter, yards heavyYardPricer, caps 
 func (p *HeavyReservePort) Reserve(ctx context.Context, playerID int) (common.HeavyReserveTarget, error) {
 	heavyCap, capOK := p.resolveHeavyCap(ctx, playerID)
 	if !capOK {
-		// No autosizer, or one that cannot spend ⇒ no heavy buyer ⇒ nothing to save for.
+		// Nothing owns heavy buying, or the owner cannot spend ⇒ nothing to save for.
 		return 0, nil
 	}
 
@@ -209,7 +212,7 @@ func (p *HeavyReservePort) resolveHeavyCap(ctx context.Context, playerID int) (i
 		// UNSET cap resolves to, one rung below.
 		//
 		// Reserving nothing here would be a real divergence rather than a stylistic
-		// choice: the fleet autosizer, reading THE SAME KNOB from THE SAME TABLE, explicitly
+		// choice: the heavy buyer, reading THE SAME KNOB from THE SAME TABLE, explicitly
 		// refuses to read a failed read as zero — liveHeavyCap falls back to its launch value on a
 		// snapshot error, documented as "NEVER 0, which would read as an operator hold and
 		// silently stop all heavy buying". Sensing doing the opposite would leave the two consumers
@@ -219,7 +222,7 @@ func (p *HeavyReservePort) resolveHeavyCap(ctx context.Context, playerID int) (i
 		// It cannot wrongly hold treasury for long. The census and the yard reads that
 		// follow hit the SAME database, so a persistent database fault
 		// still reserves zero through them; the only window this rung changes is the narrow one
-		// where the containers table alone is unreadable — and in that window the autosizer is
+		// where the containers table alone is unreadable — and in that window the buyer is
 		// itself running on its compiled default, so agreeing with it is the correct answer.
 		//
 		// No money guard is touched (RULINGS #4): this predicate authorises no spend, it only
@@ -237,7 +240,7 @@ func (p *HeavyReservePort) resolveHeavyCap(ctx context.Context, playerID int) (i
 		// LOUD, and not optional. An un-held or wrongly-held reserve is invisible: the fleet looks
 		// healthy either way.
 		logging.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf(
-			"Sensing heavy reserve: could not resolve the autosizer's heavy_cap (%v) — falling back to the documented default %d, the same value the autosizer itself resolves to when its own read fails, so the two cannot disagree about the cap. Investigate the container config read.",
+			"Sensing heavy reserve: could not resolve the heavy buyer's heavy_cap (%v) — falling back to the documented default %d, the same value the buyer itself resolves to when its own read fails, so the two cannot disagree about the cap. Investigate the container config read.",
 			err, documentedCap,
 		), map[string]interface{}{
 			"action":    "sensing_heavy_cap_unresolved",
@@ -246,12 +249,13 @@ func (p *HeavyReservePort) resolveHeavyCap(ctx context.Context, playerID int) (i
 		})
 		return documentedCap, true
 	case !containerExists:
-		// No autosizer, or one that cannot spend (terminal) ⇒ no heavy buyer ⇒ nothing to save
-		// for. Both are expected configurations rather than faults, so this rung is deliberately
-		// SILENT: every probe-only deployment would otherwise warn every tick.
+		// Nothing owns heavy buying, or the owner cannot spend (terminal) ⇒ nothing to save for.
+		// Both are expected configurations rather than faults, so this rung is deliberately
+		// SILENT: every probe-only deployment would otherwise warn every tick. A buyer whose type
+		// nothing declares does NOT land here — the cap read resolves it off its knob, loudly.
 		return 0, false
 	case !present:
-		// The knob is unset on a live autosizer, so both sides resolve the SAME documented
+		// The knob is unset on a live buyer, so both sides resolve the SAME documented
 		// default and cannot disagree about a cap.
 		return documentedCap, true
 	default:
@@ -259,99 +263,202 @@ func (p *HeavyReservePort) resolveHeavyCap(ctx context.Context, playerID int) (i
 	}
 }
 
-// AutosizerCapPort resolves heavy_cap from the fleet autosizer's own persisted container config —
-// the SINGLE source, so sensing's reservation can never be computed against a cap the autosizer is
-// not enforcing.
+// HeavyBuyerCapPort resolves heavy_cap from the persisted container config of WHOEVER OWNS HEAVY
+// BUYING — the SINGLE source, so sensing's reservation can never be computed against a cap the
+// buyer is not enforcing.
 //
-// It reads BOTH of the autosizer's keys, in the autosizer's own precedence. Reading only one is a
-// live bug, not a simplification: config.yaml writes ONLY the prefixed key and `tune` writes ONLY
-// the bare one, so either half alone makes an operator's cap invisible. The exact ladder, and why
-// each rung is shaped the way it is, is on the HeavyCap method below — read it before changing
-// anything here.
-type AutosizerCapPort struct {
+// It names no coordinator, which is what lets the cap survive heavy buying changing hands. The
+// owner is found by DECLARATION (hullbuy.HeavyBuyerContainers) and, failing that, by the KNOB: a
+// live container carrying a heavy cap key is a heavy buyer whose type nothing declares, and that
+// resolves loudly rather than reading as "no buyer exists".
+//
+// It reads BOTH of the buyer's keys, in the buyer's own precedence. Reading only one is a live bug,
+// not a simplification: config.yaml writes ONLY the prefixed key and `tune` writes ONLY the bare
+// one, so either half alone makes an operator's cap invisible. The exact ladder, and why each rung
+// is shaped the way it is, is on the HeavyCap method below — read it before changing anything here.
+type HeavyBuyerCapPort struct {
 	db *gorm.DB
 }
 
-// NewAutosizerCapPort wires the autosizer-config-backed heavy_cap read.
-func NewAutosizerCapPort(db *gorm.DB) *AutosizerCapPort { return &AutosizerCapPort{db: db} }
+// NewHeavyBuyerCapPort wires the container-config-backed heavy_cap read.
+func NewHeavyBuyerCapPort(db *gorm.DB) *HeavyBuyerCapPort { return &HeavyBuyerCapPort{db: db} }
 
-// HeavyCap reports the autosizer's effective cap, whether the knob is set, and whether an
-// autosizer exists at all — three answers because each maps to a different rung of the reserve's
+// HeavyCap reports the heavy buyer's effective cap, whether the knob is set, and whether a heavy
+// buyer exists at all — three answers because each maps to a different rung of the reserve's
 // fallback ladder.
 //
-// It MIRRORS the autosizer's own two-key ladder exactly, and must continue to:
+// It MIRRORS the buyer's own two-key ladder exactly, and must continue to:
 //
 //  1. the BARE "heavy_cap" key when POSITIVE — the live-tuned override (liveHeavyCap), which
-//     survives a rebuild because it is not in the cleared autosizer_* set;
-//  2. otherwise the PREFIXED "autosizer_heavy_cap" key with present-vs-absent semantics — the
-//     operator's config.yaml value (presentIntPtr → resolveHeavyCap). An explicit 0 here is a
-//     HOLD, not an absence, and must be reported as present so it propagates;
-//  3. otherwise present=false, so the caller applies the same compiled default the autosizer
+//     survives a rebuild because it is not in the cleared launch-key set;
+//  2. otherwise the coordinator-prefixed LAUNCH key, matched on its shared "_heavy_cap" suffix so
+//     the prefix travels with its owner, with present-vs-absent semantics — the operator's
+//     config.yaml value. An explicit 0 here is a HOLD, not an absence, and must be reported as
+//     present so it propagates;
+//  3. otherwise present=false, so the caller applies the same compiled default the buyer
 //     resolves to.
 //
 // Reading only the bare key is the bug this ladder exists to prevent: config.yaml writes ONLY the
-// prefixed key, so an operator setting heavy_cap: 0 (the documented hold) would leave the autosizer
+// prefixed key, so an operator setting heavy_cap: 0 (the documented hold) would leave the buyer
 // refusing every heavy while sensing reserved for one forever — permanent expansion starvation
 // from the conservative-seeming action.
 //
 // A NEGATIVE value resolves to the default (present=false), matching resolveHeavyCap: a typo must
 // not read as an intentional hold.
 //
-// Only a container that CAN BUY counts: an autosizer that buys nothing is not a heavy buyer, so
-// holding treasury for it would starve expansion for a purchase that cannot happen. A TERMINAL
-// autosizer is the one shape that takes — excluded by the status filter in the query. A live
-// autosizer always spends when its guard stack clears; there is no observe-only mode to exclude.
+// Only a container that CAN BUY counts: a buyer that buys nothing is not a heavy buyer, so holding
+// treasury for it would starve expansion for a purchase that cannot happen. A TERMINAL container is
+// the one shape that takes — excluded by the status filter in the query. A live buyer always spends
+// when its guard stack clears; there is no observe-only mode to exclude.
 //
 // Selection is DETERMINISTIC — RUNNING before PENDING, then by id — because during a restart a
-// PENDING replacement can sit beside the RUNNING autosizer and an arbitrary winner would make the
-// cap flap between ticks.
-func (p *AutosizerCapPort) HeavyCap(ctx context.Context, playerID int) (int, bool, bool, error) {
+// PENDING replacement can sit beside the RUNNING buyer and an arbitrary winner would make the cap
+// flap between ticks. A DECLARED owner outranks any knob-carrying stranger, so a tune landing on
+// the wrong container cannot capture the cap while a real owner is live.
+func (p *HeavyBuyerCapPort) HeavyCap(ctx context.Context, playerID int) (int, bool, bool, error) {
 	if p.db == nil {
 		return 0, false, false, fmt.Errorf("database not configured")
 	}
+	declared := hullbuy.HeavyBuyerContainers()
+	declaredTypes := make([]string, 0, len(declared))
+	for _, t := range declared {
+		declaredTypes = append(declaredTypes, string(t))
+	}
 	var models []persistence.ContainerModel
 	err := p.db.WithContext(ctx).
-		Where("player_id = ? AND container_type = ? AND status IN ?",
+		Where("player_id = ? AND status IN ? AND (container_type IN ? OR config LIKE ?)",
 			playerID,
-			string(container.ContainerTypeFleetAutosizer),
 			[]string{string(container.ContainerStatusRunning), string(container.ContainerStatusPending)},
+			declaredTypes,
+			"%"+heavyCapKey+"%",
 		).
 		// EXPLICIT precedence, not an alphabetical accident: "PENDING" actually sorts BEFORE
-		// "RUNNING", so ordering by status would pick the replacement over the live autosizer.
+		// "RUNNING", so ordering by status would pick the replacement over the live buyer.
 		// RUNNING wins; id breaks any remaining tie so the same container wins every tick.
 		Order("CASE status WHEN 'RUNNING' THEN 0 ELSE 1 END, id ASC").
 		Find(&models).Error
 	if err != nil {
-		return 0, false, false, fmt.Errorf("read autosizer container for heavy_cap: %w", err)
-	}
-	if len(models) == 0 {
-		return 0, false, false, nil // no autosizer ⇒ no heavy buyer
+		return 0, false, false, fmt.Errorf("read heavy buyer container for heavy_cap: %w", err)
 	}
 
-	// ONE authoritative container, read through the whole ladder. Scanning several and taking
-	// the first that happens to carry a key would let a container WITHOUT the knob shadow one
-	// that has it, purely on ordering.
-	authoritative := models[0]
+	// ONE authoritative container, read through the whole ladder. Scanning several and taking the
+	// first that happens to carry a key would let a container WITHOUT the knob shadow one that has
+	// it, purely on ordering.
+	authoritative, knobbed, knobbedCfg := selectHeavyBuyer(models, declaredTypes)
+	if authoritative == nil {
+		if knobbed == nil {
+			return 0, false, false, nil // nothing owns heavy buying ⇒ nothing to save for
+		}
+		warnUndeclaredHeavyBuyer(ctx, playerID, knobbed)
+		value, present := heavyCapFromConfig(knobbedCfg)
+		return value, present, true, nil
+	}
 	if authoritative.Config == "" {
 		return 0, false, true, nil
 	}
 	cfg := map[string]interface{}{}
 	if err := json.Unmarshal([]byte(authoritative.Config), &cfg); err != nil {
-		return 0, false, true, fmt.Errorf("parse autosizer container %s config: %w", authoritative.ID, err)
+		return 0, false, true, fmt.Errorf("parse heavy buyer container %s config: %w", authoritative.ID, err)
 	}
+	value, present := heavyCapFromConfig(cfg)
+	return value, present, true, nil
+}
+
+// selectHeavyBuyer picks the authoritative DECLARED owner, and separately the best knob-carrying
+// stranger, from rows already in precedence order.
+//
+// The stranger is a FALLBACK only, so the scan stops at the first declared owner: while one is
+// live it is the authority, whatever else carries a key. A stranger's config is returned with it
+// because the LIKE filter that fetched it is a substring test over the whole config blob and only
+// a parse can tell a real cap key from a value that merely contains the words.
+func selectHeavyBuyer(models []persistence.ContainerModel, declaredTypes []string) (authoritative, knobbed *persistence.ContainerModel, knobbedCfg map[string]interface{}) {
+	for i := range models {
+		m := &models[i]
+		if slices.Contains(declaredTypes, m.ContainerType) {
+			return m, nil, nil
+		}
+		if knobbed == nil {
+			if cfg, ok := capCarryingConfig(m.Config); ok {
+				knobbed, knobbedCfg = m, cfg
+			}
+		}
+	}
+	return nil, knobbed, knobbedCfg
+}
+
+// capCarryingConfig parses a container config and reports whether it actually carries a heavy cap
+// key under either rung of the ladder.
+func capCarryingConfig(raw string) (map[string]interface{}, bool) {
+	if raw == "" {
+		return nil, false
+	}
+	cfg := map[string]interface{}{}
+	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
+		return nil, false
+	}
+	if _, ok := cfg[heavyCapKey]; ok {
+		return cfg, true
+	}
+	for key := range cfg {
+		if strings.HasSuffix(key, launchHeavyCapSuffix) {
+			return cfg, true
+		}
+	}
+	return nil, false
+}
+
+// heavyCapFromConfig walks the two-key ladder over one container's config.
+func heavyCapFromConfig(cfg map[string]interface{}) (int, bool) {
 	// Rung 1: the live-tuned bare key, positive only (its own revert semantics).
 	if v, ok := configInt(cfg[heavyCapKey]); ok && v > 0 {
-		return v, true, true, nil
+		return v, true
 	}
 	// Rung 2: the operator's config.yaml value. Present-and-zero is a HOLD and must survive;
 	// present-and-negative is a typo and defers to the default.
-	if v, ok := configInt(cfg[prefixedHeavyCapKey]); ok {
+	if v, ok := launchCapValue(cfg); ok {
 		if v < 0 {
-			return 0, false, true, nil
+			return 0, false
 		}
-		return v, true, true, nil
+		return v, true
 	}
-	return 0, false, true, nil // autosizer present, knob unset ⇒ the documented default applies
+	return 0, false // knob unset ⇒ the documented default applies
+}
+
+// launchCapValue reads the coordinator-prefixed launch key. It matches on the suffix rather than on
+// one coordinator's prefix so the key travels with whoever owns heavy buying; the keys are sorted
+// so that a container carrying two prefixes resolves the same way on every tick.
+func launchCapValue(cfg map[string]interface{}) (int, bool) {
+	keys := make([]string, 0, 1)
+	for key := range cfg {
+		if strings.HasSuffix(key, launchHeavyCapSuffix) {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		if v, ok := configInt(cfg[key]); ok {
+			return v, true
+		}
+	}
+	return 0, false
+}
+
+// warnUndeclaredHeavyBuyer announces that the cap was resolved off a container no declaration
+// claims — heavy buying has changed hands and hullbuy.HeavyBuyerContainers has not.
+//
+// LOUD, and only on this rung. A declared owner and an empty deployment are both expected
+// configurations that must stay silent; this shape is the one that means the buyer and the
+// withholder can drift apart with nothing in any gauge or heartbeat to say so.
+func warnUndeclaredHeavyBuyer(ctx context.Context, playerID int, m *persistence.ContainerModel) {
+	logging.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf(
+		"Sensing heavy reserve: heavy_cap resolved from container %s of type %s, which no heavy-buyer declaration claims — the reservation is being sized against a cap nothing is known to enforce. Declare this container type as a heavy buyer.",
+		m.ID, m.ContainerType,
+	), map[string]interface{}{
+		"action":         "sensing_heavy_cap_undeclared_buyer",
+		"player_id":      playerID,
+		"container_id":   m.ID,
+		"container_type": m.ContainerType,
+	})
 }
 
 // configInt decodes every numeric shape a persisted container config carries: native ints on the
@@ -371,12 +478,12 @@ func configInt(raw interface{}) (int, bool) {
 	return 0, false
 }
 
-// heavyCapKey is the BARE tune key the autosizer's LIVE cap is stored under (survives a rebuild).
-// prefixedHeavyCapKey is the LAUNCH key config.yaml is injected into (cleared and re-injected on
-// every rebuild). The autosizer reads BOTH; so must this.
+// heavyCapKey is the BARE tune key a LIVE cap is stored under (survives a rebuild).
+// launchHeavyCapSuffix ends the coordinator-prefixed LAUNCH key config.yaml is injected into
+// (cleared and re-injected on every rebuild). A heavy buyer reads BOTH; so must this.
 const (
-	heavyCapKey         = "heavy_cap"
-	prefixedHeavyCapKey = "autosizer_heavy_cap"
+	heavyCapKey          = "heavy_cap"
+	launchHeavyCapSuffix = "_heavy_cap"
 )
 
 // heavyHullRepo is the concrete ship-repository capability the census needs. It is asserted

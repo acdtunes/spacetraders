@@ -8,6 +8,8 @@
 // plus one policy switch — no database, no mediator, no API — so any layer may import it.
 package hullbuy
 
+import "github.com/andrescamacho/spacetraders-go/internal/domain/container"
+
 // HullClass identifies a hull pool a purchase can be made for: what the hull is bought TO BE, which
 // is what fixes its dedicate-at-purchase tag. The demand model, ceiling and ship type a class also
 // carries are the buying coordinator's business, not the vocabulary's.
@@ -61,3 +63,14 @@ func DedicatedFleet(class HullClass) string {
 // Both fall back to this value when the operator knob is unset or unreadable, so one compile-time
 // source is what keeps the withholder and the spender saving toward the same cap.
 const DefaultHeavyCap = 5
+
+// HeavyBuyerContainers declares WHICH COORDINATORS BUY HEAVY HULLS, and sits beside the cap they
+// resolve because owning heavy buying and owning the cap are one fact: the reservation withholds
+// treasury toward a heavy only while one of these is live, and reads the cap off whichever it finds.
+//
+// A coordinator that buys heavies and is missing here has no declared cap, so nothing is saved
+// toward its purchases. Declare it in the same change that gives it a heavy buy path. An EMPTY list
+// leaves the reservation resolving by knob alone, which is loud but not authoritative.
+func HeavyBuyerContainers() []container.ContainerType {
+	return []container.ContainerType{container.ContainerTypeFleetAutosizer}
+}

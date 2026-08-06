@@ -56,3 +56,12 @@ func TestHullClass_SymbolsAreStable(t *testing.T) {
 		}
 	}
 }
+
+// AN EMPTY DECLARATION IS A SILENT FLEET-WIDE STAND-DOWN. Sensing withholds treasury toward a
+// heavy only while a declared owner is live, so a list emptied by a coordinator retirement leaves
+// every deployment saving nothing, with the rung that answers deliberately silent.
+func TestHeavyBuyerContainers_DeclaresAnOwner(t *testing.T) {
+	if len(HeavyBuyerContainers()) == 0 {
+		t.Fatal("no container type declares heavy buying — the heavy reservation resolves to nothing fleet-wide")
+	}
+}
