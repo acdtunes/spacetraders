@@ -2,6 +2,7 @@ package grpc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand"
@@ -250,7 +251,30 @@ func (r *ContainerRunner) Stop() error {
 	r.mu.Lock()
 	if err := r.containerEntity.Stop(); err != nil {
 		r.mu.Unlock()
-		return err
+		// A stop refused because the container is ALREADY TERMINAL is not a failure — the work is
+		// over. But the one cleanup it still owes is releaseShipAssignments, which is the LAST
+		// statement of this function, so returning the error here skipped it: the hull stayed
+		// pinned to a dead container with assignment_status='active', the coordinator skipped it
+		// as busy, and the watchdog re-attempted the same impossible kill every ~31s for 19
+		// minutes while the hull sat laden (sp-vz8hj).
+		//
+		// Release and report success. It is safe precisely BECAUSE the container is terminal: it
+		// is running nothing, so it cannot be mid-flight with the hull. releaseShipAssignments is
+		// itself idempotent — it releases only hulls still assigned to THIS container and skips
+		// any that moved on (RULINGS #7) — so repeating it costs nothing.
+		//
+		// EVERY OTHER stop failure still returns, unchanged. That container may genuinely still be
+		// flying the hull, and releasing it there is the failure this narrow branch must not
+		// become — see TestTradeWatchdog_KillFails_NoRelaunch for the property at the caller.
+		//
+		// The terminal status is deliberately NOT rewritten: no MarkStopped, no UpdateStatus. A
+		// COMPLETED container that ran to completion must not be relabelled STOPPED just because
+		// something asked it to stop afterwards.
+		if !errors.Is(err, container.ErrContainerAlreadyTerminal) {
+			return err
+		}
+		r.releaseShipAssignments("stopped")
+		return nil
 	}
 	r.mu.Unlock()
 

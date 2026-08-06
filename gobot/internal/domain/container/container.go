@@ -1,11 +1,24 @@
 package container
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
+
+// ErrContainerAlreadyTerminal marks a stop refused because the container has ALREADY reached a
+// terminal state (COMPLETED or STOPPED). It is a distinct condition from every other stop failure
+// and callers must be able to tell them apart, because the two demand opposite responses: a stop
+// that failed against a LIVE container leaves it running and still holding its resources, so the
+// caller must back off; a stop refused because the container is already terminal means the work is
+// done and the resources are owed back — backing off there strands them (sp-vz8hj).
+//
+// Wrapped rather than returned bare so the message keeps its "cannot stop container in %s state"
+// prefix: an existing caller matches on that substring, and a typed error that silently changed
+// the text would break it while every test still passed.
+var ErrContainerAlreadyTerminal = errors.New("container is already in a terminal state")
 
 // ContainerStatus represents the lifecycle state of a container
 type ContainerStatus string
@@ -350,7 +363,7 @@ func (c *Container) Fail(err error) error {
 func (c *Container) Stop() error {
 	status := c.Status()
 	if status == ContainerStatusCompleted || status == ContainerStatusStopped {
-		return fmt.Errorf("cannot stop container in %s state", status)
+		return fmt.Errorf("cannot stop container in %s state: %w", status, ErrContainerAlreadyTerminal)
 	}
 
 	// First go to STOPPING to signal graceful shutdown
