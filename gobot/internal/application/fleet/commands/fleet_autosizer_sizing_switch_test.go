@@ -34,12 +34,10 @@ type countingPorts struct {
 	census    int
 	heavyYard int
 	yardPrice int
-	catalogue int
-	errand    int
 }
 
 func (c *countingPorts) total() int {
-	return c.treasury + c.apiUtil + c.census + c.heavyYard + c.yardPrice + c.catalogue + c.errand
+	return c.treasury + c.apiUtil + c.census + c.heavyYard + c.yardPrice
 }
 
 type countingTreasury struct{ c *countingPorts }
@@ -78,21 +76,6 @@ func (f *countingYardPrice) PriceFor(context.Context, int, HullClass, string, bo
 	f.c.yardPrice++
 	return 437_000, 400_000, "KA42-A2", true, nil
 }
-
-type countingCatalogue struct{ c *countingPorts }
-
-func (f *countingCatalogue) KnownHeavyYards(context.Context, int) ([]KnownHeavyYard, error) {
-	f.c.catalogue++
-	return nil, nil
-}
-
-type countingErrand struct{ c *countingPorts }
-
-func (f *countingErrand) ErrandHulls(context.Context, int) ([]PricingErrandHull, error) {
-	f.c.errand++
-	return nil, nil
-}
-func (f *countingErrand) SendToYard(context.Context, int, string, string) error { return nil }
 
 // mutableLiveConfig is a live-config reader whose snapshot can be changed BETWEEN ticks, which is
 // how the "re-read live, no restart" property is tested: one handler, one command, two ticks.
@@ -176,8 +159,6 @@ func switchHandler(cfg liveconfig.Reader) (*RunFleetAutosizerCoordinatorHandler,
 	h.SetHeavyCensusReader(&countingCensus{c: ports})
 	h.SetHeavyYardReader(&countingHeavyYard{c: ports})
 	h.SetYardPriceReader(&countingYardPrice{c: ports})
-	h.SetHeavyYardCatalogReader(&countingCatalogue{c: ports})
-	h.SetHeavyPricingErrandPort(&countingErrand{c: ports})
 	purchaser := &recordingPurchaser{}
 	metrics := &recordingMetrics{}
 	stall := &recordingStall{}
@@ -210,8 +191,8 @@ func TestSizingSwitch_On_FixtureActuallyReachesTheReadsAndTheBuy(t *testing.T) {
 		t.Fatal("FIXTURE IS NOT SATURATED: the shipyard price walk was never reached with the switch ON, " +
 			"so every 'zero reads when off' assertion in this file would pass without the switch existing")
 	}
-	if ports.treasury == 0 || ports.apiUtil == 0 || ports.census == 0 || ports.catalogue == 0 {
-		t.Fatalf("FIXTURE IS NOT SATURATED: tick inputs/errand not all reached with the switch ON: %+v", *ports)
+	if ports.treasury == 0 || ports.apiUtil == 0 || ports.census == 0 {
+		t.Fatalf("FIXTURE IS NOT SATURATED: the shared tick inputs were not all reached with the switch ON: %+v", *ports)
 	}
 	if len(purchaser.orders) != 1 {
 		t.Fatalf("expected the armed fixture to buy once with the switch ON, got %d", len(purchaser.orders))
@@ -266,11 +247,7 @@ func TestSizingSwitch_Off_StopsTheReads_NotJustTheBuy(t *testing.T) {
 			"This is the trap this bead exists to avoid — resolveHullPrice runs BEFORE EvaluateGuards, "+
 			"so gating the purchase leaves every Get Shipyard call in place and reclaims no API at all", ports.yardPrice)
 	}
-	// The demand reads and the pricing errand are API traffic too, and are equally not-a-purchase.
-	if ports.catalogue != 0 || ports.errand != 0 {
-		t.Fatalf("the heavy pricing errand ran with sizing_enabled=2 (catalogue=%d errand=%d) — "+
-			"it spends no credits, so a spend-only gate would leave it running", ports.catalogue, ports.errand)
-	}
+	// The shared tick inputs are API traffic too, and are equally not-a-purchase.
 	if ports.treasury != 0 || ports.apiUtil != 0 || ports.census != 0 || ports.heavyYard != 0 {
 		t.Fatalf("the shared tick inputs were read with sizing_enabled=2: %+v", *ports)
 	}

@@ -287,6 +287,11 @@ func pricingErrandCarrier(hulls []PricingErrandHull) (string, bool) {
 // runHeavyPricingErrand is the tick step: read the catalogue, read the fleet, and send at most one
 // hull to at most one unpriced heavy yard.
 //
+// IT HANGS OFF THE FLEET'S HEAVY BUYER, and off exactly one of them. The errand exists to make a
+// heavy's ask readable, so it belongs wherever the heavy purchase does; a second driver would be a
+// second opinion about the one-hull-at-a-time bound, and two coordinators each believing no errand
+// was in flight is how a bound of one becomes a convoy.
+//
 // GATED ON WANTING A HEAVY AT ALL. An unreadable census, or a fleet already at its heavy cap,
 // sends nothing: the errand costs a market's freshness while its probe is away and an API read, and
 // buying information about a purchase that cannot happen is pure loss. This mirrors the
@@ -296,11 +301,11 @@ func pricingErrandCarrier(hulls []PricingErrandHull) (string, bool) {
 // simply does not dispatch, and the next tick tries again — the same shape the bootstrap errand
 // takes, and for the same reason: nothing here spends money, so nothing here needs to fail closed
 // against a spend.
-func (h *RunFleetAutosizerCoordinatorHandler) runHeavyPricingErrand(
+func (h *RunFleetGrowthCoordinatorHandler) runHeavyPricingErrand(
 	ctx context.Context,
-	cmd *RunFleetAutosizerCoordinatorCommand,
-	cfg autosizerRunConfig,
-	in tickInputs,
+	cmd *RunFleetGrowthCoordinatorCommand,
+	cfg growthRunConfig,
+	in growthTickInputs,
 ) {
 	heavyPricingErrandTick(ctx, cmd.ContainerID, cmd.PlayerID,
 		in.heaviesOwned, in.heaviesOwnedOK, cfg.HeavyCap, h.heavyYardCatalog, h.heavyErrand)

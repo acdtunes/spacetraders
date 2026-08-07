@@ -87,22 +87,10 @@ func NewFleetAutosizerCoordinatorHandler(
 	} else {
 		log.Printf("WARNING: fleet autosizer heavy-yard reader UNWIRED — the heavy reservation will always be 0, so expansion spending is never held back for a heavy")
 	}
-	// The heavy-yard PRICING ERRAND. A shipyard prices its hulls only while a ship stands there,
-	// so a heavy yard discovered without presence carries an availability-only row and can never
-	// feed the reservation. Unwired ⇒ no errand and no reservation ever forms from such a yard,
-	// which is exactly the state this warns about.
-	if scannedYards != nil {
-		if ranker, ok := scannedYards.(heavyYardRanker); ok {
-			h.SetHeavyYardCatalogReader(&autosizerHeavyYardCatalog{ranker: ranker, shipRepo: shipRepo})
-			// The errand now draws its carrier from the PARKED SENSING pool (sp-gmfvw), which it
-			// SHARES with the scout coordinator — so it must also see which probes a live scout
-			// post already owns. The constructor takes the server and reads the roster off its
-			// connection, which is what keeps that read from being something this line can omit.
-			h.SetHeavyPricingErrandPort(newAutosizerPricingErrand(server, med, shipRepo))
-		} else {
-			log.Printf("WARNING: fleet autosizer heavy-yard pricing errand UNWIRED — the yard ranker cannot list availability-only rows, so a known-but-unpriced heavy yard is never priced and no heavy reservation can form")
-		}
-	}
+	// No heavy-yard pricing errand here: the errand hangs off the fleet's heavy BUYER, and the
+	// growth coordinator is it. Two drivers would each read the same in-flight bound and each
+	// conclude no errand was under way, which is how a bound of one becomes a convoy.
+
 	// heavy_cap is the autosizer's ONE live-tunable knob (Pattern-C hot reload).
 	h.SetHeavyCapReader(NewContainerConfigReader(server.containerRepo))
 	h.SetPurchaser(&autosizerPurchaser{med: med, shipRepo: shipRepo})

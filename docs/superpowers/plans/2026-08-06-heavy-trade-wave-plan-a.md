@@ -2600,8 +2600,10 @@ Retarget the adapter in `gobot/internal/adapters/grpc/fleet_autosizer_heavy_port
 ```bash
 cd /Users/andres.dandrea/IdeaProjects/cities/spacetraders/gobot
 go build ./... && go vet ./...
-go test ./internal/application/fleet/commands/ -run 'TestPricingErrand|TestHeavyPricing|TestErrand' -v 2>&1 | grep -E '^(---|FAIL|ok|PASS)' | head -40
+go test ./internal/application/fleet/commands/ -v 2>&1 | grep -E '^(---|FAIL|ok)' | head -60
 ```
+
+Run the package UNFILTERED. A `-run` on the errand's own words under-selects its file badly: eight of its tests name neither "Errand" nor "Pricing", including both carrier-eligibility tests, so a filtered run reads green while the rule that keeps the errand out of the trade pool is not being exercised at all.
 
 Expected: **every pre-existing errand test passes with its assertions unchanged.** An assertion that had to be edited means this was not a move.
 
@@ -2610,14 +2612,19 @@ Expected: **every pre-existing errand test passes with its assertions unchanged.
 ```bash
 cd /Users/andres.dandrea/IdeaProjects/cities/spacetraders/gobot
 F=internal/application/fleet/commands/heavy_pricing_errand.go
+echo "PRECHECK_DIRTY=[$(git status --porcelain)]" && \
 cp $F /tmp/hpe.orig && \
-sed -i '' 's|const heavyPricingErrandFleet = parkedsensing.SensingParkedFleetTag|const heavyPricingErrandFleet = "trade"|' $F && \
-grep -q 'heavyPricingErrandFleet = "trade"' $F && echo "MUTATION APPLIED" && \
-go test ./internal/application/fleet/commands/ -run 'Errand|Pricing' 2>&1 | grep -E '^(---|FAIL|ok)' ; \
-cp /tmp/hpe.orig $F && go test ./internal/application/fleet/commands/ -run 'Errand|Pricing' 2>&1 | tail -2
+sed -i '' 's|const heavyPricingErrandFleet = parkedsensing.SensingParkedFleetTag|const heavyPricingErrandFleet = parkedsensing.SensingParkedFleetTag + "_MUTANT"|' $F && \
+grep -q 'SensingParkedFleetTag + "_MUTANT"' $F && echo "MUTATION APPLIED" && \
+go test ./internal/application/fleet/commands/ 2>&1 | grep -E '^(---|FAIL|ok)' > /tmp/hpe.mut ; \
+echo "MUT_TEST_RC=$?" ; grep -c FAIL /tmp/hpe.mut ; grep -E '^--- FAIL' /tmp/hpe.mut ; \
+cp /tmp/hpe.orig $F && go test ./internal/application/fleet/commands/ 2>&1 | tail -2 && \
+echo "RESTORED_DIRTY=[$(git status --porcelain)]"
 ```
 
-Expected: kills the carrier-eligibility tests. If it kills nothing, the tests do not hold the one rule that keeps the errand out of the trade pool — fix the fixture before proceeding.
+Two things this probe gets right that the obvious version does not. It mutates the constant's VALUE rather than replacing it with `"trade"` — replacing it orphans the `parkedsensing` import, so the package does not build and a build failure is not a mutation kill. And it runs the package UNFILTERED, because the carrier-eligibility tests do not match a `-run` on the errand's own words.
+
+Expected: kills the carrier-eligibility tests by name. If it kills nothing, the fixtures are tagging their carriers from the same symbol the predicate reads — the allowlist is being compared against itself, and a drift between it and the tag-writer would empty the eligible set with the suite still green. Fix the fixture (tag from the writer's symbol, and pin the wire value as a literal in at least one) before proceeding.
 
 - [ ] **Step 6: Commit**
 

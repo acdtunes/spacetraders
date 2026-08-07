@@ -3,10 +3,13 @@ package commands
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/application/logging"
+	"github.com/andrescamacho/spacetraders-go/internal/application/parkedsensing"
 )
 
 // The heavy-yard PRICING ERRAND suite.
@@ -20,6 +23,7 @@ import (
 //	B5 candidate ordering is deterministic and stable
 //	B6 the errand stands down when no heavy is wanted / everything is priced
 //	B7 every decline STATES ITS REASON — the errand is never silent
+//	B8 exactly ONE coordinator drives it, and it drives it on the PROBE wave
 //
 // Every test enters through reconcileOnce (the coordinator's driving port) or through the pure
 // policy, and asserts at the dispatch port — never on internal call counts.
@@ -60,15 +64,20 @@ func (f *recordingErrandPort) SendToYard(_ context.Context, _ int, shipSymbol, w
 // spareParkedProbe is THE eligible carrier: a zero-hold satellite in the parked-sensing pool,
 // standing still, and named by no scout post. Zero cargo is the production shape of every probe —
 // a fixture with a hold would let a re-introduced cargo predicate pass unnoticed.
+//
+// IT TAGS THE HULL FROM THE WRITER'S SYMBOL, NOT THE READER'S. Tagging from the allowlist const
+// would compare the predicate against itself: the fixture would co-vary with any re-spelling and
+// the entire eligibility suite would stay green while the eligible set emptied in production.
+// Sourcing the tag from the side that STAMPS it makes the two independent, so a drift fails here.
 func spareParkedProbe(symbol, at string) PricingErrandHull {
-	return PricingErrandHull{Symbol: symbol, Fleet: heavyPricingErrandFleet, Location: at, Idle: true, CargoCapacity: 0}
+	return PricingErrandHull{Symbol: symbol, Fleet: parkedsensing.SensingParkedFleetTag, Location: at, Idle: true, CargoCapacity: 0}
 }
 
 // mannedScoutProbe is the probe the standing owner rule forbids taking: same pool, same idle look —
 // but a live scout post names it, so it belongs to the scout coordinator between tours as much as
 // during one.
 func mannedScoutProbe(symbol, at string) PricingErrandHull {
-	return PricingErrandHull{Symbol: symbol, Fleet: heavyPricingErrandFleet, Location: at, Idle: true, MannedScoutPost: true}
+	return PricingErrandHull{Symbol: symbol, Fleet: parkedsensing.SensingParkedFleetTag, Location: at, Idle: true, MannedScoutPost: true}
 }
 
 // idleTradeHull is a WORKING hull that happens to be free this instant — cargo-capable, idle,
@@ -80,7 +89,7 @@ func idleTradeHull(symbol, at string) PricingErrandHull {
 
 // runErrandTick drives one reconcile with a capturing logger and hands back what it said, so a test
 // can assert on the DECLINE REASON as well as on the dispatch.
-func runErrandTick(t *testing.T, h *RunFleetAutosizerCoordinatorHandler, cmd *RunFleetAutosizerCoordinatorCommand) *capturingLogger {
+func runErrandTick(t *testing.T, h *RunFleetGrowthCoordinatorHandler, cmd *RunFleetGrowthCoordinatorCommand) *capturingLogger {
 	t.Helper()
 	logger := &capturingLogger{}
 	if _, err := h.reconcileOnce(logging.WithLogger(context.Background(), logger), cmd); err != nil {
@@ -102,16 +111,40 @@ func unpricedYard(waypoint string, hops int) KnownHeavyYard {
 	}
 }
 
+// errandReserveSink captures the reservation the tick derived. It overrides ONE method of the
+// no-op sink so an un-recorded call cannot pass as a zero reserve.
+type errandReserveSink struct {
+	noopGrowthSink
+	lastReserve int64
+}
+
+func (s *errandReserveSink) RecordHeavyReserve(_ string, reserve, _ int64, _, _ int) {
+	s.lastReserve = reserve
+}
+
 // errandHandler wires a coordinator whose every buy-path reader is healthy, plus the errand ports.
-func errandHandler(catalog *fakeHeavyYardCatalog, errand *recordingErrandPort) (*RunFleetAutosizerCoordinatorHandler, *recordingMetrics) {
-	h, _, metrics, _ := armedHandler()
+//
+// It builds the FLEET-GROWTH coordinator because that is the fleet's heavy buyer and therefore the
+// errand's one driver. Nothing about the errand's policy is expressed here — only which tick loop
+// calls it — which is what makes the assertions below transfer unread.
+func errandHandler(catalog *fakeHeavyYardCatalog, errand *recordingErrandPort) (*RunFleetGrowthCoordinatorHandler, *errandReserveSink) {
+	h := NewRunFleetGrowthCoordinatorHandler(nil)
+	h.SetTreasuryReader(&fakeTreasury{credits: 5000000, ok: true})
+	h.SetAPIUtilizationReader(&fakeAPIUtil{pct: 40, ok: true})
+	h.SetYardPriceReader(&fakeYardPrice{price: 437000, cheapest: 400000, yard: "KA42-A2", ok: true})
+	// The owned-heavy census must be READABLE or the errand stands down on a blind census before
+	// any of the yard rules is reached. The harness owns no heavy hull, so the cap has room and
+	// each test keeps pinning the rule it is about.
+	h.SetHeavyCensusReader(&fakeHeavyCensus{owned: 0})
+	metrics := &errandReserveSink{}
+	h.SetMetricsSink(metrics)
 	h.SetHeavyYardCatalogReader(catalog)
 	h.SetHeavyPricingErrandPort(errand)
 	return h, metrics
 }
 
-func errandCmd() *RunFleetAutosizerCoordinatorCommand {
-	return &RunFleetAutosizerCoordinatorCommand{PlayerID: 5, ContainerID: "autosizer-1", HeavyCap: intPtr(5)}
+func errandCmd() *RunFleetGrowthCoordinatorCommand {
+	return &RunFleetGrowthCoordinatorCommand{PlayerID: 5, ContainerID: "growth-1", HeavyCap: intPtr(5)}
 }
 
 // B1 — THE PRODUCTION REGRESSION.
@@ -204,7 +237,7 @@ func TestReconcile_ErrandAlreadyInFlight_SendsNothingElse(t *testing.T) {
 	}}
 	errand := &recordingErrandPort{hulls: []PricingErrandHull{
 		// Flying to the SECOND candidate: a hull's location is its destination while in transit.
-		{Symbol: "PROBE-A", Fleet: heavyPricingErrandFleet, Location: "X1-QR78-FE8C", Idle: true, InTransit: true},
+		{Symbol: "PROBE-A", Fleet: parkedsensing.SensingParkedFleetTag, Location: "X1-QR78-FE8C", Idle: true, InTransit: true},
 		spareParkedProbe("PROBE-B", "X1-HOME-A1"),
 		spareParkedProbe("PROBE-C", "X1-HOME-A1"),
 	}}
@@ -264,7 +297,13 @@ func TestReconcile_EveryTradeHullBusy_SendsASpareParkedProbe(t *testing.T) {
 		{Symbol: "TORWIND-5", Fleet: "trade", Location: "X1-KP46-A2", Idle: false, CargoCapacity: 80}, // docked mid-tour
 		// The spare pool nobody was looking at.
 		spareParkedProbe("PROBE-M", "X1-KP23-C38"),
-		spareParkedProbe("PROBE-B", "X1-KP46-A2"),
+		// THE WINNER CARRIES THE TAG AS A LITERAL — the exact string the parked-sensing engine
+		// stamps into dedicated_fleet the instant it buys a probe. Every other carrier fixture in
+		// this suite names a const, so a re-spelling of the shared tag would move both sides
+		// together and be invisible; this hull is the one that is independent of both. Rename the
+		// tag and it stops being eligible, the errand falls to PROBE-M, and the assertion below
+		// fires — which is what a value written into a live column deserves.
+		{Symbol: "PROBE-B", Fleet: "sensing_parked", Location: "X1-KP46-A2", Idle: true, CargoCapacity: 0},
 	}}
 	h, _ := errandHandler(catalog, errand)
 	h.SetHeavyYardReader(&fakeHeavyYard{found: false})
@@ -278,7 +317,9 @@ func TestReconcile_EveryTradeHullBusy_SendsASpareParkedProbe(t *testing.T) {
 			"This is the sp-gmfvw stall: a carrier pool that is never spare means the yard is never priced", len(errand.sent))
 	}
 	if errand.sent[0].Ship != "PROBE-B" {
-		t.Fatalf("the carrier must be the lowest-symbol SPARE PROBE (deterministic tie-break), got %q", errand.sent[0].Ship)
+		t.Fatalf("the carrier must be the lowest-symbol SPARE PROBE (deterministic tie-break), got %q. "+
+			"PROBE-B is tagged with the literal wire value, so losing it means the allowlist no longer "+
+			"matches the tag production writes and the eligible set is empty on the live fleet", errand.sent[0].Ship)
 	}
 	if errand.sent[0].Yard != "X1-RX81-B7" {
 		t.Fatalf("the errand must fly to the nearest unpriced heavy yard, got %q", errand.sent[0].Yard)
@@ -296,10 +337,10 @@ func TestReconcile_EveryTradeHullBusy_SendsASpareParkedProbe(t *testing.T) {
 func TestReconcile_NeverTakesAProbeThatMansAScoutPostOrIsAlreadyFlying(t *testing.T) {
 	catalog := &fakeHeavyYardCatalog{yards: []KnownHeavyYard{unpricedYard("X1-QR78-AE4F", 3)}}
 	errand := &recordingErrandPort{hulls: []PricingErrandHull{
-		mannedScoutProbe("PROBE-1", "X1-BA69-D10D"),                                                              // a post names it — idle between tours
-		mannedScoutProbe("PROBE-2", "X1-MY3-FE7D"),                                                               // and so does another
-		{Symbol: "PROBE-3", Fleet: heavyPricingErrandFleet, Location: "X1-MC90-B4", Idle: true, InTransit: true}, // already flying somewhere else
-		{Symbol: "PROBE-4", Fleet: heavyPricingErrandFleet, Location: "X1-MC90-B4", Idle: false},                 // working
+		mannedScoutProbe("PROBE-1", "X1-BA69-D10D"), // a post names it — idle between tours
+		mannedScoutProbe("PROBE-2", "X1-MY3-FE7D"),  // and so does another
+		{Symbol: "PROBE-3", Fleet: parkedsensing.SensingParkedFleetTag, Location: "X1-MC90-B4", Idle: true, InTransit: true}, // already flying somewhere else
+		{Symbol: "PROBE-4", Fleet: parkedsensing.SensingParkedFleetTag, Location: "X1-MC90-B4", Idle: false},                 // working
 	}}
 	h, _ := errandHandler(catalog, errand)
 	h.SetHeavyYardReader(&fakeHeavyYard{found: false})
@@ -336,13 +377,18 @@ func TestReconcile_AMannedProbeIsSkipped_NotTreatedAsTheWinner(t *testing.T) {
 // not have. Every hull here is ineligible for a different reason, so no single relaxation of the
 // predicate would let the errand through — and the trade hull is idle and cargo-capable on purpose,
 // because "free right now" is not the same as "spare".
+//
+// The near-miss hull is here because the allowlist is an EXACT match on the tag, never a prefix or
+// a contains: a pool named for the sensing one is a DIFFERENT pool, and admitting it would take a
+// hull this engine does not own. Written as a literal so the property survives a rename of the tag.
 func TestReconcile_NoSpareProbe_SendsNothing(t *testing.T) {
 	catalog := &fakeHeavyYardCatalog{yards: []KnownHeavyYard{unpricedYard("X1-QR78-AE4F", 3)}}
 	errand := &recordingErrandPort{hulls: []PricingErrandHull{
 		idleTradeHull("TORWIND-A", "X1-HOME-A1"),                                                       // earning, even when momentarily idle
 		{Symbol: "HAULER-C", Fleet: "contract", Location: "X1-HOME-A1", Idle: true, CargoCapacity: 80}, // another fleet's hull
 		{Symbol: "SPARE-D", Fleet: "", Location: "X1-HOME-A1", Idle: true, CargoCapacity: 80},          // undedicated: not ours to take
-		{Symbol: "", Fleet: heavyPricingErrandFleet, Location: "X1-HOME-A1", Idle: true},               // a torn row names no ship
+		{Symbol: "PROBE-E", Fleet: "sensing_parked_v2", Location: "X1-HOME-A1", Idle: true},            // a near-miss tag is another fleet
+		{Symbol: "", Fleet: parkedsensing.SensingParkedFleetTag, Location: "X1-HOME-A1", Idle: true},   // a torn row names no ship
 	}}
 	h, _ := errandHandler(catalog, errand)
 	h.SetHeavyYardReader(&fakeHeavyYard{found: false})
@@ -447,15 +493,20 @@ func TestReconcile_PricingErrandStandsDownWhenThereIsNothingToPrice(t *testing.T
 }
 
 // Unwired ports must leave the coordinator exactly as it was before the errand existed: a tick
-// with no catalogue and no errand port sizes classes normally and never panics.
+// with no catalogue and no errand port buys normally and never panics.
 func TestReconcile_PricingErrandUnwired_TickIsUnaffected(t *testing.T) {
-	h, purchaser, _, _ := armedHandler(lightShortfall())
-	res, err := h.reconcileOnce(context.Background(), errandCmd())
+	buyer := &growthPurchaseRecorder{}
+	h := newGrowthHandlerWith(t, growthFixture{
+		lanes: &fakeLanes{count: 9, readable: true}, treasury: 12_000_000, yardAsk: 1_000_000, streak: 3,
+	})
+	h.SetPurchaser(buyer)
+
+	res, err := h.reconcileOnce(context.Background(), growthCmd())
 	if err != nil {
 		t.Fatalf("reconcileOnce error: %v", err)
 	}
-	if res.Purchased != 1 || len(purchaser.orders) != 1 {
-		t.Fatalf("an unwired errand must not disturb the sizing tick: purchased=%d orders=%d", res.Purchased, len(purchaser.orders))
+	if res.Purchased != 1 || buyer.calls != 1 {
+		t.Fatalf("an unwired errand must not disturb the buying tick: purchased=%d orders=%d", res.Purchased, buyer.calls)
 	}
 }
 
@@ -620,5 +671,101 @@ func TestReconcile_ADispatchAnnouncesTheHullAndTheYard(t *testing.T) {
 	line := logger.joined()
 	if !strings.Contains(line, "PROBE-A") || !strings.Contains(line, "X1-RX81-B7") {
 		t.Fatalf("the dispatch line must name the hull and the yard. Lines seen:\n%s", line)
+	}
+}
+
+// B8 — EXACTLY ONE COORDINATOR DRIVES THE ERRAND.
+//
+// The errand's whole policy — one hull in flight fleet-wide, one spare probe, never a manned one —
+// is stated once and derived from ship rows every tick. Two coordinators holding the ports would
+// each read the same durable facts, each conclude nothing was in flight, and each dispatch: the
+// bound of one becomes a bound of one PER DRIVER. So ownership is asserted structurally rather than
+// left to the reader of two tick loops.
+func TestPricingErrand_HasExactlyOneDriver(t *testing.T) {
+	for _, port := range []string{"heavyYardCatalog", "heavyErrand"} {
+		if reflect.ValueOf(&RunFleetAutosizerCoordinatorHandler{}).Elem().FieldByName(port).IsValid() {
+			t.Fatalf("the autosizer still holds the %q port — two heavy-pricing drivers is two opinions "+
+				"about the one-hull-at-a-time bound", port)
+		}
+		if !reflect.ValueOf(&RunFleetGrowthCoordinatorHandler{}).Elem().FieldByName(port).IsValid() {
+			t.Fatalf("the fleet's heavy buyer must hold the %q port — unheld, no yard is ever priced "+
+				"and no heavy can ever be bought", port)
+		}
+	}
+}
+
+// THE ERRAND RUNS ON THE PROBE WAVE, and that is not incidental — it is what lets the wave ever
+// flip. Before any heavy is priced there is no target, so the predicate is PROBE; if the errand
+// only ran on HEAVY, no yard would ever be priced and no HEAVY wave could ever occur.
+func TestPricingErrand_RunsOnTheProbeWave(t *testing.T) {
+	catalog := &fakeHeavyYardCatalog{yards: []KnownHeavyYard{unpricedYard("X1-AA-YARD", 1)}}
+	errand := &recordingErrandPort{hulls: []PricingErrandHull{spareParkedProbe("PROBE-A", "X1-HOME-A1")}}
+	h, _ := errandHandler(catalog, errand)
+	h.SetHeavyYardReader(&fakeHeavyYard{found: false})
+	// Every profitable lane is served, so the wave is PROBE for the plainest possible reason.
+	h.SetUnservedLaneReader(&fakeLanes{count: 0, readable: true})
+
+	wave := &recordingWaveSink{}
+	h.SetMetricsSink(wave)
+
+	if _, err := h.reconcileOnce(context.Background(), errandCmd()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(wave.waves) != 1 || wave.waves[0] != common.WaveProbe {
+		t.Fatalf("the fixture must produce a PROBE wave or this test proves nothing, got %v", wave.waves)
+	}
+	if len(errand.sent) != 1 {
+		t.Fatalf("the errand must run on a PROBE wave, got %d dispatches", len(errand.sent))
+	}
+}
+
+// It spends nothing and buys nothing — it makes a LATER tick's price readable, which is why it
+// weakens no money guard by running before one can pass.
+func TestPricingErrand_SpendsNothing(t *testing.T) {
+	catalog := &fakeHeavyYardCatalog{yards: []KnownHeavyYard{unpricedYard("X1-AA-YARD", 1)}}
+	errand := &recordingErrandPort{hulls: []PricingErrandHull{spareParkedProbe("PROBE-A", "X1-HOME-A1")}}
+	h, _ := errandHandler(catalog, errand)
+	h.SetHeavyYardReader(&fakeHeavyYard{found: false})
+	h.SetUnservedLaneReader(&fakeLanes{count: 0, readable: true})
+
+	buyer := &growthPurchaseRecorder{}
+	h.SetPurchaser(buyer)
+
+	if _, err := h.reconcileOnce(context.Background(), errandCmd()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(errand.sent) != 1 {
+		t.Fatalf("the fixture must dispatch or this test proves nothing, got %d", len(errand.sent))
+	}
+	if buyer.calls != 0 {
+		t.Fatalf("the errand must spend nothing, got %d buys", buyer.calls)
+	}
+}
+
+// THE MASTER SWITCH REACHES THE ERRAND. The errand spends no credits, so a gate placed on the
+// PURCHASE would leave it running: it would keep reading the catalogue and the fleet and keep
+// flying probes for a coordinator the operator has switched off. Off must stop the reads.
+func TestReconcile_GrowthSwitchedOff_RunsNoErrand(t *testing.T) {
+	catalog := &fakeHeavyYardCatalog{yards: []KnownHeavyYard{unpricedYard("X1-QR78-AE4F", 3)}}
+	errand := &recordingErrandPort{hulls: []PricingErrandHull{spareParkedProbe("PROBE-A", "X1-HOME-A1")}}
+	h, _ := errandHandler(catalog, errand)
+	h.SetHeavyYardReader(&fakeHeavyYard{found: false})
+
+	// SATURATION FIRST: the same fixture with the switch ON must dispatch, or the assertion below
+	// would hold with the switch deleted entirely.
+	if _, err := h.reconcileOnce(context.Background(), errandCmd()); err != nil {
+		t.Fatalf("reconcileOnce error: %v", err)
+	}
+	if len(errand.sent) != 1 {
+		t.Fatalf("FIXTURE IS NOT SATURATED: the switch ON must dispatch, got %d", len(errand.sent))
+	}
+
+	h.SetGrowthConfigReader(stubGrowthConfig{growthEnabledKey: growthDisabled})
+	errand.sent = nil
+	if _, err := h.reconcileOnce(context.Background(), errandCmd()); err != nil {
+		t.Fatalf("a paused tick must not error: %v", err)
+	}
+	if len(errand.sent) != 0 {
+		t.Fatalf("a switched-off coordinator must fly no pricing errand, got %+v", errand.sent)
 	}
 }

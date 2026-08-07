@@ -1,13 +1,13 @@
 package grpc
 
-// Tests for the heavy-money WIRING in NewFleetAutosizerCoordinatorHandler — the two capability
-// assertions and the nil check that decide, at boot, whether heavy buying can happen at all.
+// Tests for the heavy-money WIRING in NewFleetAutosizerCoordinatorHandler — the capability
+// assertion and the nil check that decide, at boot, what the autosizer can read about heavies.
+// The pricing errand's own wiring belongs to the fleet's heavy buyer and is pinned beside it.
 //
 // Each of them fails SILENTLY except for a log.Printf nobody reads: an unwired census makes the
-// heavy_cap guard fail closed and no heavy is ever bought; an unwired heavy-yard reader leaves the
-// reservation permanently 0 so expansion never holds credits back for a heavy; an unwired ranker
-// means a known-but-unpriced yard is never priced, so no reservation can ever form. All three are
-// the CORRECT fail-closed direction, which is exactly why nothing ever notices they happened.
+// heavy_cap guard fail closed, and an unwired heavy-yard reader leaves the reservation permanently
+// 0 so expansion never holds credits back for a heavy. Both are the CORRECT fail-closed direction,
+// which is exactly why nothing ever notices they happened.
 //
 // The assertions read the constructed handler's port fields by name. That coupling is deliberate:
 // the wiring outcome IS the behaviour under test, and the ports are unexported in the coordinator's
@@ -24,7 +24,6 @@ import (
 	shipyardQueries "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/queries"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
-	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
 )
 
 // fakeCensusShipRepo is a ship repository that DOES carry the tag-independent heavy census — the
@@ -85,27 +84,6 @@ func TestAutosizerWiring_HeavyCensusFollowsTheRepositoryCapability(t *testing.T)
 		"a repository WITHOUT CountHeavyHulls must leave the census unwired (fail closed), never wire a port that silently counts zero")
 }
 
-// THE RANKER ASSERTION, BOTH POLARITIES. The errand's catalogue and its dispatch are wired together
-// or not at all: a catalogue with no way to fly to what it finds, or a dispatcher with nothing to
-// aim at, is not a half-working errand — it is a broken one.
-func TestAutosizerWiring_PricingErrandFollowsTheAvailabilityOnlyRankCapability(t *testing.T) {
-	full := buildAutosizerHandler(&fakeCensusShipRepo{}, &fakeFullYardFinder{}, nil)
-	require.True(t, wiredPort(t, full, "heavyYardCatalog"),
-		"a ranker that can list availability-only rows must wire the catalogue")
-	require.True(t, wiredPort(t, full, "heavyErrand"),
-		"the catalogue and the dispatch are wired together — a catalogue with no way to fly there prices nothing")
-
-	pricedOnly := buildAutosizerHandler(&fakeCensusShipRepo{}, &fakeScannedYards{}, nil)
-	require.False(t, wiredPort(t, pricedOnly, "heavyYardCatalog"),
-		"a priced-only ranker cannot see unpriced yards, so the catalogue must stay unwired rather than report a catalogue that can never contain the row the errand acts on")
-	require.False(t, wiredPort(t, pricedOnly, "heavyErrand"),
-		"no catalogue means no errand: a dispatcher with nothing to aim at must not be wired")
-
-	unwired := buildAutosizerHandler(&fakeCensusShipRepo{}, nil, nil)
-	require.False(t, wiredPort(t, unwired, "heavyYardCatalog"))
-	require.False(t, wiredPort(t, unwired, "heavyErrand"))
-}
-
 // THE SHARED-TARGET NIL CHECK, BOTH POLARITIES. Absent, the reservation is permanently 0 and
 // expansion spending is never held back for a heavy — the fleet looks healthy and simply never
 // accumulates one.
@@ -117,39 +95,6 @@ func TestAutosizerWiring_HeavyYardReaderFollowsTheSharedTarget(t *testing.T) {
 	absent := buildAutosizerHandler(&fakeCensusShipRepo{}, nil, nil)
 	require.False(t, wiredPort(t, absent, "heavyYard"),
 		"no shared target means no reservation port at all, never a port that reports a phantom 0 price")
-}
-
-// THE SCOUT-POST ROSTER MUST COME OFF THE DAEMON'S CONNECTION (sp-gmfvw).
-//
-// The errand draws its carrier from the parked-sensing pool, which it SHARES with the scout
-// coordinator, so it can only tell a spare probe from a working one by reading the posts. Without
-// the roster the errand refuses every tick — fail-closed and correct, and therefore invisible:
-// exactly the class of permanently-silent stall this bead was filed for.
-//
-// The composition cannot omit the roster because it never passes one: it passes the server, and
-// newAutosizerPricingErrand takes the roster off it. This pins that constructor's contract in both
-// polarities, which is what makes the omission unexpressible rather than merely unlikely.
-func TestAutosizerWiring_PricingErrandReadsTheScoutPostRoster(t *testing.T) {
-	db, err := database.NewTestConnection()
-	require.NoError(t, err)
-
-	live := newAutosizerPricingErrand(&DaemonServer{db: db}, nil, &fakeCensusShipRepo{})
-	require.NotNil(t, live.posts,
-		"a daemon with a connection must yield an errand that can read the scout posts — without it every tick refuses, silently and forever")
-
-	// PROOF THE ASSERTION HAS TEETH: no connection leaves the roster nil, and the resulting errand
-	// is still a usable port — the refusal happens at read time, not at boot.
-	for _, server := range []*DaemonServer{{}, nil} {
-		dry := newAutosizerPricingErrand(server, nil, &fakeCensusShipRepo{})
-		require.NotNil(t, dry, "a connectionless daemon must still yield a port, not a nil one")
-		require.Nil(t, dry.posts)
-		_, rerr := dry.ErrandHulls(context.Background(), 1)
-		require.Error(t, rerr, "an errand with no roster must REFUSE the read rather than report every probe unclaimed")
-	}
-
-	// And the real composition still installs the port, so the two halves meet.
-	installed := buildAutosizerHandlerOn(&DaemonServer{db: db}, &fakeCensusShipRepo{}, &fakeFullYardFinder{}, nil)
-	require.True(t, wiredPort(t, installed, "heavyErrand"))
 }
 
 // PROOF THE PROBE HAS TEETH: the port reader must be able to tell a wired port from an unwired one

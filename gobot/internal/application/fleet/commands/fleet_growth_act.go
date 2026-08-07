@@ -360,16 +360,3 @@ func (h *RunFleetGrowthCoordinatorHandler) resolveHullPrice(
 	}
 	return preferred, 0, 0, "", false
 }
-
-// runHeavyPricingErrand is the growth coordinator's half of the heavy-yard pricing errand: it holds
-// the ports and hands the tick's facts to the shared, coordinator-neutral tick step, so the errand's
-// policy has exactly one implementation whichever coordinator drives it.
-func (h *RunFleetGrowthCoordinatorHandler) runHeavyPricingErrand(
-	ctx context.Context,
-	cmd *RunFleetGrowthCoordinatorCommand,
-	cfg growthRunConfig,
-	in growthTickInputs,
-) {
-	heavyPricingErrandTick(ctx, cmd.ContainerID, cmd.PlayerID,
-		in.heaviesOwned, in.heaviesOwnedOK, cfg.HeavyCap, h.heavyYardCatalog, h.heavyErrand)
-}
