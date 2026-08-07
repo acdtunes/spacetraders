@@ -158,6 +158,61 @@ func TestStoredHopDistances_StoreFailureFailsClosed(t *testing.T) {
 	}
 }
 
+// The origin resolves at ZERO hops when it is among the targets, and does so on any topology the
+// store can hold. This is the same-system answer, and a caller that prices or admits a pair by its
+// hop count reads a missing origin as an unproven crossing — so a system's own pairs would be
+// refused wholesale, silently, in the direction no fixture with two distinct systems can see.
+//
+// Neither an empty gate cache nor a stale one withdraws it: standing in a system is not a crossing,
+// so nothing about its gates has to be verified for the distance to it to be nothing.
+func TestStoredHopDistances_ResolvesTheOriginAtZeroHopsOnAnyTopology(t *testing.T) {
+	for _, c := range []struct {
+		name      string
+		adjacency map[string][]system.GateEdge
+	}{
+		{name: "the origin has no stored gate at all", adjacency: map[string][]system.GateEdge{}},
+		{name: "the origin's own topology is stale", adjacency: map[string][]system.GateEdge{
+			"X1-ORIGIN": staleEdgesTo("X1-TARGET"),
+		}},
+		{name: "the origin's only exit crosses an unbuilt gate", adjacency: map[string][]system.GateEdge{
+			"X1-ORIGIN": {{ConnectedSystem: "X1-TARGET", UnderConstruction: true}},
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			svc := NewService(&adjStore{adjacency: c.adjacency}, nil, nil, nil)
+
+			got, err := svc.StoredHopDistances(context.Background(), "X1-ORIGIN", []string{"X1-ORIGIN", "X1-TARGET"}, MaxJumpPath)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			hops, resolved := got["X1-ORIGIN"]
+			if !resolved || hops != 0 {
+				t.Fatalf("the origin must resolve at 0 hops from itself; got %v", got)
+			}
+			if _, crossed := got["X1-TARGET"]; crossed {
+				t.Fatalf("calibration: no crossing is provable on this topology, so the answer must be the origin ALONE; got %v", got)
+			}
+		})
+	}
+}
+
+// An origin the caller did not ask about stays out of the answer — the result reports the targets
+// requested, not the walk's own starting point.
+func TestStoredHopDistances_OmitsAnUnrequestedOrigin(t *testing.T) {
+	svc := NewService(&adjStore{adjacency: spurredChain("X1-ORIGIN", 0, 2)}, nil, nil, nil)
+
+	got, err := svc.StoredHopDistances(context.Background(), "X1-ORIGIN", []string{"X1-TARGET"}, MaxJumpPath)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, present := got["X1-ORIGIN"]; present {
+		t.Fatalf("X1-ORIGIN was not a requested target and must be absent, got %v", got)
+	}
+	if got["X1-TARGET"] != 2 {
+		t.Fatalf("calibration: the requested target still resolves, got %v", got)
+	}
+}
+
 // A non-positive bound degrades to MaxJumpPath rather than searching zero jumps, mirroring the
 // other bounded resolvers — a mis-wired caller gets the strict default, never silent blindness.
 func TestStoredHopDistances_NonPositiveBoundDegradesToMaxJumpPath(t *testing.T) {

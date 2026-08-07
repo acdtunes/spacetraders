@@ -1,6 +1,10 @@
 package common
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/andrescamacho/spacetraders-go/internal/domain/hullbuy"
+)
 
 // heavyTarget is spelled long because this package's other tests bind a local named target; a
 // package-level func of that name would be shadowed by them and a later call would fail as
@@ -73,6 +77,43 @@ func TestDeriveWave_LanesServed_IsProbe(t *testing.T) {
 	in.UnservedLanes = 0
 	if w, reason := DeriveWave(in); w != WaveProbe || reason != WaveProbeReasonLanesServed {
 		t.Fatalf("expected PROBE/lanes_served, got %q/%q", w, reason)
+	}
+}
+
+// THE LANE CLAUSE IS A THRESHOLD AT ONE, NOT A MAGNITUDE, and that is the whole of what a bigger
+// lane count does to the regime. The census that feeds it now counts every reachable circuit rather
+// than one best lane per good per system, so the number it reports is an order of magnitude larger
+// — and the wave cannot tell those apart. One unserved lane already pauses probe buying; the only
+// road back to PROBE is the trade pool covering EVERY lane. Nothing here rate-limits that: this
+// pins the behaviour so it is stated rather than inferred.
+func TestDeriveWave_LaneClauseIsAThresholdNotAMagnitude(t *testing.T) {
+	for _, lanes := range []int{1, 8, 500} {
+		in := heavyInputs()
+		in.UnservedLanes = lanes
+		if w, reason := DeriveWave(in); w != WaveHeavy || reason != WaveProbeReasonNone {
+			t.Fatalf("%d unserved lanes gave %q/%q, want HEAVY — every positive count is one regime", lanes, w, reason)
+		}
+	}
+}
+
+// AND THE PAUSE IT OPENS IS BOUNDED BY THE HEAVY CAP. A large unserved count holds the lane clause
+// open for good, so the only remaining road back to PROBE is the reservation standing down — and it
+// does, at the cap, whatever the census reports and however rich the fleet is. Probe buying resumes
+// after at most DefaultHeavyCap heavies rather than never, which is the difference between a regime
+// that saves for a hull and one that starves coverage growth permanently.
+func TestDeriveWave_ProbePauseIsBoundedByTheHeavyCap(t *testing.T) {
+	in := heavyInputs()
+	in.UnservedLanes = 900
+	in.HighWaterTreasury = 1_000_000_000
+	in.Target = HeavyReserve(HeavyReserveInputs{
+		CapabilityOpen:  true,
+		HeaviesOwned:    hullbuy.DefaultHeavyCap,
+		HeavyCap:        hullbuy.DefaultHeavyCap,
+		TargetYardPrice: 1_000_000,
+	})
+
+	if w, reason := DeriveWave(in); w != WaveProbe || reason != WaveProbeReasonUnreachable {
+		t.Fatalf("at the heavy cap with %d unserved lanes the wave gave %q/%q, want PROBE/unreachable — the pause must end at the cap", in.UnservedLanes, w, reason)
 	}
 }
 

@@ -15,17 +15,16 @@ const tradeFleetTag = "trade"
 // ProfitableLaneCounter counts the profitable, feasible lanes ranked across the given systems,
 // read-only, off the persisted market cache. Satisfied by ProfitableLaneReader.
 type ProfitableLaneCounter interface {
-	CountProfitableLanes(ctx context.Context, playerID int, systems []string) (count int, readable bool, err error)
+	CountProfitableLanes(ctx context.Context, playerID int, systems []string) (census LaneCensus, readable bool, err error)
 }
 
 // UnservedLaneReader surfaces the trade solver's profitable-but-unflown lane count: the number
 // of profitable, feasible lanes the player's trading grounds rank BEYOND the current trade-hull
 // pool. That surplus IS the capacity-short signal.
 //
-// ONE INSTANCE, TWO CONSUMERS. The fleet-growth coordinator's heavy demand and the sensing
-// drain's wave gate both read this. It is constructed once at the composition root precisely so
-// a second one is conspicuous: two readers of one quantity is how the spender and the
-// withholder end up disagreeing about whether the fleet is capacity-short.
+// ONE INSTANCE, TWO CONSUMERS. The fleet-growth coordinator's heavy demand and the sensing drain's
+// wave gate both read this. It is constructed once at the composition root precisely so a second one
+// is conspicuous: two readers of one quantity is how a spender and a withholder end up disagreeing.
 //
 // READ-ONLY: it never perturbs the trade coordinator — it consumes the same pure ranking off
 // the market cache that the trade circuit itself uses.
@@ -41,11 +40,10 @@ func NewUnservedLaneReader(ships navigation.ShipRepository, lanes ProfitableLane
 
 // UnservedLaneCount reports profitable lanes beyond the trade pool, floored at 0.
 //
-// It fails CLOSED (readable=false) on a genuine ship or market read failure: acting on a
-// capacity signal nobody could read is exactly the runaway the guard stacks exist to prevent.
-// A READABLE zero — an empty cache, or no lane clearing the profit floor — is a genuine zero
-// and is reported as such, because a fleet with nothing to fly must not be indistinguishable
-// from a fleet whose sensors are down.
+// It fails CLOSED (readable=false) on a genuine ship or market read failure: acting on a capacity
+// signal nobody could read is the runaway the guard stacks exist to prevent. A READABLE zero — an
+// empty cache, or no lane clearing the floor — is a genuine zero and reported as such, or a fleet
+// with nothing to fly is indistinguishable from one whose sensors are down.
 func (r *UnservedLaneReader) UnservedLaneCount(ctx context.Context, playerID int) (int, bool, error) {
 	label := strconv.Itoa(playerID)
 	pid, err := shared.NewPlayerID(playerID)
@@ -54,7 +52,7 @@ func (r *UnservedLaneReader) UnservedLaneCount(ctx context.Context, playerID int
 	}
 	ships, err := r.ships.FindAllByPlayer(ctx, pid)
 	if err != nil {
-		metrics.RecordGrowthLaneSurface(label, 0, 0, 0, 0, false)
+		metrics.RecordGrowthLaneSurface(label, metrics.LaneSurface{})
 		return 0, false, err
 	}
 	systems := distinctShipSystems(ships)
@@ -64,16 +62,27 @@ func (r *UnservedLaneReader) UnservedLaneCount(ctx context.Context, playerID int
 			pool++
 		}
 	}
-	profitable, readable, err := r.lanes.CountProfitableLanes(ctx, playerID, systems)
+	census, readable, err := r.lanes.CountProfitableLanes(ctx, playerID, systems)
 	if err != nil || !readable {
-		metrics.RecordGrowthLaneSurface(label, 0, 0, pool, len(systems), false)
+		metrics.RecordGrowthLaneSurface(label, metrics.LaneSurface{TradePool: pool, SystemsScanned: len(systems)})
 		return 0, false, err
 	}
-	unserved := profitable - pool
+	unserved := census.Profitable - pool
 	if unserved < 0 {
 		unserved = 0
 	}
-	metrics.RecordGrowthLaneSurface(label, unserved, profitable, pool, len(systems), true)
+	// The census terms travel UNCHANGED: they explain the count taken on this tick, or nothing.
+	metrics.RecordGrowthLaneSurface(label, metrics.LaneSurface{
+		Unserved:            unserved,
+		Profitable:          census.Profitable,
+		TradePool:           pool,
+		SystemsScanned:      len(systems),
+		CrossSystem:         census.CrossSystem,
+		AbsorbableUnits:     census.AbsorbableUnits,
+		RejectedUnreachable: census.RejectedUnreachable,
+		RejectedJumpCost:    census.RejectedJumpCost,
+		Readable:            true,
+	})
 	return unserved, true, nil
 }
 

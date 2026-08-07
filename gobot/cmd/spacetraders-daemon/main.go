@@ -1235,8 +1235,10 @@ func run(cfg *config.Config) error {
 	fleetAutosizerHandler := grpc.NewFleetAutosizerCoordinatorHandler(
 		daemonServer, apiClient, ledgerTreasury, shipRepo, med, waypointRepo, captainEventRepo,
 		marketRepo,
+		gateGraphService,
 		reachableYardFinder,
 		heavyTargetFinder, // sp-fwk8z: the SHARED heavy target — the reservation price term, one definition
+		cfg.Trading.RankerAgeCapMinutes.Resolved(),
 	)
 	if err := mediator.RegisterHandler[*fleetCmd.RunFleetAutosizerCoordinatorCommand](med, fleetAutosizerHandler); err != nil {
 		return fmt.Errorf("failed to register FleetAutosizerCoordinator handler: %w", err)
@@ -1247,7 +1249,10 @@ func run(cfg *config.Config) error {
 	// quantity is how the spender and the withholder end up disagreeing about whether the fleet is
 	// capacity-short. Constructed here, at the composition root, precisely so a second one is
 	// conspicuous.
-	unservedLaneReader := tradingQueries.NewUnservedLaneReader(shipRepo, tradingQueries.NewProfitableLaneReader(marketRepo))
+	// Same freshness table as the trade ranker, or the census counts lanes the ranker already dropped.
+	profitableLaneCensus := tradingQueries.NewProfitableLaneReader(marketRepo, gateGraphService)
+	profitableLaneCensus.SetRankerAgeCaps(cfg.Trading.RankerAgeCapMinutes.Resolved())
+	unservedLaneReader := tradingQueries.NewUnservedLaneReader(shipRepo, profitableLaneCensus)
 
 	// The fleet-growth coordinator: the fleet's ONLY heavy buyer. It reuses the autosizer's whole
 	// port set — treasury, API utilization, the shipyard price walk, the heavy census and target,

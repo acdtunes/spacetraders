@@ -97,6 +97,33 @@ func (l ArbitrageLane) ClearsFloor() bool {
 	return l.SpreadPerUnit >= MinBidMargin
 }
 
+// ClearsFloorAfterGates reports whether ONE revenue-earning trip down this lane is work once every
+// gate crossing it pays for is charged against it. The trip grosses SpreadPerUnit × VolumeCap, pays
+// one perGateFee PER CROSSING, and what remains must still clear MinBidMargin over every unit it
+// moved.
+//
+// The CALLER states how many crossings, because that depends on what the trip is: a hull dedicated
+// to a lane re-crosses to re-buy, and the fee is charged per ORIGIN gate, so its round trip is
+// billed for the return leg at the same rate as the outbound one.
+//
+// Charging the crossing against the FLOOR rather than against break-even is what makes this a
+// census guard and not an accounting note. A trip that merely out-earns its gates leaves a realised
+// per-unit margin the executor refuses on sight, so counting it demands a hull for work that will
+// not be flown. MinBidMargin is not lowered here; it is applied to a net quantity.
+//
+// A sink that absorbs nothing is refused outright: zero units earn zero at any spread, and the
+// inequality alone would read that as clearing a zero floor. Impossible inputs (negative hops or
+// fee) fail closed rather than letting two negatives multiply into a phantom credit inside a money
+// guard, and the arithmetic widens to int64 before multiplying so a deep lane cannot overflow into
+// a negative gross. gateCrossings is 0 within one system, where this reduces exactly to ClearsFloor.
+func (l ArbitrageLane) ClearsFloorAfterGates(gateCrossings int, perGateFee int64) bool {
+	if gateCrossings < 0 || perGateFee < 0 || l.VolumeCap <= 0 {
+		return false
+	}
+	net := int64(l.SpreadPerUnit)*int64(l.VolumeCap) - int64(gateCrossings)*perGateFee
+	return net >= int64(MinBidMargin)*int64(l.VolumeCap)
+}
+
 // FirstDisciplinedLane returns the highest-ranked lane whose per-unit spread clears
 // the bid-floor discipline (ClearsFloor), or ok=false when no lane does. The input
 // must be RankSpreads-ordered, so the walk yields the DEEPEST volume-capped lane the
@@ -131,13 +158,7 @@ func FirstDisciplinedLane(lanes []ArbitrageLane) (ArbitrageLane, bool) {
 // no positive-spread pair are omitted. Output is ordered by CappedSpread desc,
 // then SpreadPerUnit desc, then good symbol asc for stable ranking.
 func RankSpreads(listings []GoodListing) []ArbitrageLane {
-	byGood := make(map[string][]GoodListing)
-	for _, l := range listings {
-		if l.IsCrossed() {
-			continue
-		}
-		byGood[l.Good] = append(byGood[l.Good], l)
-	}
+	byGood := tradeableByGood(listings)
 
 	lanes := make([]ArbitrageLane, 0, len(byGood))
 	for good, markets := range byGood {
@@ -146,6 +167,57 @@ func RankSpreads(listings []GoodListing) []ArbitrageLane {
 		}
 	}
 
+	sortLanes(lanes)
+	return lanes
+}
+
+// EnumerateLanes returns EVERY flyable (source, dest) pair of every good in the listings — a
+// CENSUS of the profitable work on offer, where RankSpreads is a SELECTION over the same pairs.
+//
+// The two answer different questions and are not interchangeable. "Which lane should this hull
+// fly" wants one lane per good; "how much profitable work exists" wants all of them, and counting
+// with the selector silently collapses each good's whole lane set to its single best member.
+//
+// Callers pooling listings from several systems get cross-system lanes here, which RankSpreads
+// would also collapse. Whether a hull can REACH the far end is the caller's constraint to apply:
+// this is a pure price census and knows nothing about routes.
+func EnumerateLanes(listings []GoodListing) []ArbitrageLane {
+	var lanes []ArbitrageLane
+	WalkLanes(listings, func(l ArbitrageLane) { lanes = append(lanes, l) })
+
+	sortLanes(lanes)
+	return lanes
+}
+
+// WalkLanes visits the same lanes EnumerateLanes returns without ever holding them all — the shape
+// a caller that only counts or folds its survivors wants, since the pair count is QUADRATIC in the
+// listings and pooling several systems' markets is what makes that bite.
+//
+// Goods are visited one at a time and CONTIGUOUSLY, so per-good bookkeeping can be scoped to the
+// good in hand. Order is otherwise unspecified; a caller needing a ranking wants EnumerateLanes.
+func WalkLanes(listings []GoodListing, visit func(ArbitrageLane)) {
+	for good, markets := range tradeableByGood(listings) {
+		walkLaneCandidates(good, markets, visit)
+	}
+}
+
+// tradeableByGood groups listings by good, dropping the crossed quotes that are impossible data
+// rather than bargains (IsCrossed).
+func tradeableByGood(listings []GoodListing) map[string][]GoodListing {
+	byGood := make(map[string][]GoodListing)
+	for _, l := range listings {
+		if l.IsCrossed() {
+			continue
+		}
+		byGood[l.Good] = append(byGood[l.Good], l)
+	}
+	return byGood
+}
+
+// sortLanes orders lanes by volume-capped spread desc, then per-unit spread desc, then good asc;
+// the waypoint tie-break makes a census of several lanes per good deterministic despite the map
+// iteration that produced it.
+func sortLanes(lanes []ArbitrageLane) {
 	sort.SliceStable(lanes, func(i, j int) bool {
 		if lanes[i].CappedSpread != lanes[j].CappedSpread {
 			return lanes[i].CappedSpread > lanes[j].CappedSpread
@@ -153,10 +225,14 @@ func RankSpreads(listings []GoodListing) []ArbitrageLane {
 		if lanes[i].SpreadPerUnit != lanes[j].SpreadPerUnit {
 			return lanes[i].SpreadPerUnit > lanes[j].SpreadPerUnit
 		}
-		return lanes[i].Good < lanes[j].Good
+		if lanes[i].Good != lanes[j].Good {
+			return lanes[i].Good < lanes[j].Good
+		}
+		if lanes[i].SourceWaypoint != lanes[j].SourceWaypoint {
+			return lanes[i].SourceWaypoint < lanes[j].SourceWaypoint
+		}
+		return lanes[i].DestWaypoint < lanes[j].DestWaypoint
 	})
-
-	return lanes
 }
 
 // RankSpreadsForHold ranks lanes exactly as RankSpreads does, then re-orders them
@@ -251,13 +327,28 @@ func reorderByHoldFit(lanes []ArbitrageLane, shipCapacity int) []ArbitrageLane {
 // returns ok=false when the good trades in fewer than two distinct markets or no
 // pair yields a positive per-unit spread (destBid − sourceAsk > 0).
 //
-// Markets per good are few, so the O(n²) pair scan is trivial and lets volume —
-// which interacts non-monotonically with per-unit spread — decide the winner
-// rather than assuming cheapest-ask × richest-bid is always deepest.
+// Volume — which interacts non-monotonically with per-unit spread — decides the
+// winner, rather than assuming cheapest-ask × richest-bid is always deepest.
 func bestLaneForGood(good string, markets []GoodListing) (ArbitrageLane, bool) {
 	var best ArbitrageLane
 	found := false
 
+	walkLaneCandidates(good, markets, func(candidate ArbitrageLane) {
+		if !found || betterLane(candidate, best) {
+			best = candidate
+			found = true
+		}
+	})
+
+	return best, found
+}
+
+// walkLaneCandidates visits every ordered (source, dest) pair for one good that a hull could fly:
+// distinct waypoints, an eligible sink, and a positive per-unit spread. It is the single statement
+// of what makes a pair tradeable, shared by lane selection and the lane census so the two cannot
+// come to disagree about which pairs exist. A visitor rather than a slice because the pair count is
+// quadratic and a census over pooled markets must not hold it.
+func walkLaneCandidates(good string, markets []GoodListing, visit func(ArbitrageLane)) {
 	for si := range markets {
 		source := markets[si]
 		for di := range markets {
@@ -283,9 +374,8 @@ func bestLaneForGood(good string, markets []GoodListing) (ArbitrageLane, bool) {
 			if dest.Volume < volumeCap {
 				volumeCap = dest.Volume
 			}
-			cappedSpread := spreadPerUnit * volumeCap
 
-			candidate := ArbitrageLane{
+			visit(ArbitrageLane{
 				Good:           good,
 				SourceWaypoint: source.Waypoint,
 				DestWaypoint:   dest.Waypoint,
@@ -295,17 +385,10 @@ func bestLaneForGood(good string, markets []GoodListing) (ArbitrageLane, bool) {
 				DestActivity:   dest.Activity,
 				SpreadPerUnit:  spreadPerUnit,
 				VolumeCap:      volumeCap,
-				CappedSpread:   cappedSpread,
-			}
-
-			if !found || betterLane(candidate, best) {
-				best = candidate
-				found = true
-			}
+				CappedSpread:   spreadPerUnit * volumeCap,
+			})
 		}
 	}
-
-	return best, found
 }
 
 // betterLane reports whether a should outrank b for the same good: deeper

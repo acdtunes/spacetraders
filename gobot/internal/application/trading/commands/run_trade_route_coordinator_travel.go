@@ -859,17 +859,15 @@ func estimatedCircuitSeconds(crossSystem bool) float64 {
 // invalidates every time charting finds another market.
 
 // partitionListingsByAge splits listings into those still fresh and those stale,
-// preserving input order in each. Each listing is measured against ITS OWN activity's
-// freshness cap: caps.For(l.Activity) — a WEAK market stays eligible for
-// hours, a STRONG one only ~30 min — instead of one flat threshold, because the
-// analyst's era3/4 fit shows staleness cost is activity-dependent. A listing with a
-// zero ObservedAt is treated as FRESH — an unknown age is not evidence of staleness,
-// and callers that never populate the timestamp (older tests, non-cache sources)
-// must rank unchanged. Pure and now-injected so the age gate is unit-testable without
-// a clock; scanLanes supplies h.clock.Now() and h.rankerAgeCaps.
+// preserving input order in each. The per-listing verdict is RankerAgeCaps.Fresh —
+// each listing measured against ITS OWN activity's cap, a WEAK market eligible for
+// hours where a STRONG one lasts ~30 min, because the analyst's era3/4 fit shows
+// staleness cost is activity-dependent. That predicate is shared with the
+// profitable-lane census so both drop the same rows. Pure and now-injected so the age
+// gate is unit-testable without a clock; scanLanes supplies h.clock.Now().
 func partitionListingsByAge(listings []trading.GoodListing, now time.Time, caps trading.RankerAgeCaps) (fresh, stale []trading.GoodListing) {
 	for _, l := range listings {
-		if !l.ObservedAt.IsZero() && now.Sub(l.ObservedAt) > caps.For(l.Activity) {
+		if !caps.Fresh(l, now) {
 			stale = append(stale, l)
 			continue
 		}

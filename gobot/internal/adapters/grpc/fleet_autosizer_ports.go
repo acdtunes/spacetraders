@@ -21,12 +21,19 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
 )
 
 // agentReader is the narrow slice of *api.SpaceTradersClient the money guards need (treasury).
 // Declared here so the ports depend on behaviour, not the whole client.
 type agentReader interface {
 	GetAgent(ctx context.Context, token string) (*player.AgentData, error)
+}
+
+// laneReachability is the profitable-lane census's slice of *gategraph.Service: stored-adjacency
+// gate-hop distances, no fetch-through.
+type laneReachability interface {
+	StoredHopDistances(ctx context.Context, fromSystem string, targets []string, maxJumps int) (map[string]int, error)
 }
 
 // NewFleetAutosizerCoordinatorHandler assembles the autosizer handler (sp-1txd M6), wiring every
@@ -40,8 +47,10 @@ func NewFleetAutosizerCoordinatorHandler(
 	waypointRepo *persistence.GormWaypointRepository,
 	eventStore captain.EventStore,
 	marketRepo market.MarketRepository,
+	gateGraph laneReachability,
 	scannedYards scannedYardRanker,
 	heavyYards heavyYardInventory,
+	rankerAgeCaps trading.RankerAgeCaps,
 ) *fleetCmd.RunFleetAutosizerCoordinatorHandler {
 	h := fleetCmd.NewRunFleetAutosizerCoordinatorHandler(nil)
 
@@ -49,14 +58,17 @@ func NewFleetAutosizerCoordinatorHandler(
 	h.AddDemandProvider(fleetCmd.NewLightDemandProvider(&autosizerLightSources{
 		shipRepo: shipRepo, server: server,
 	}))
-	// HEAVIES ARE NOW LIVE: the unserved-lane signal reads the profitable-lane surface
-	// off the persisted market cache (tradingQueries.ProfitableLaneReader, read-only — the same pure
-	// trading.RankSpreads ranking the trade circuit uses, no coordinator perturbation), and the
-	// realized tour-rate reads persisted tour telemetry. Both fail closed on a genuine read failure,
-	// so the guard stack still gates every heavy buy; the seam only makes the demand READABLE.
+	// HEAVIES ARE NOW LIVE: the unserved-lane signal reads the profitable-lane surface off the
+	// persisted market cache (read-only, same pure domain lane primitives the trade circuit uses),
+	// bounded by the gate graph to lanes a hull can actually reach. Every read fails closed, so the
+	// guard stack still gates each heavy buy; the seam only makes the demand READABLE.
+	// The census runs the caller's resolved freshness table, not the fitted defaults: a census that
+	// keeps rows the trade ranker drops counts lanes nothing will fly and demands a heavy for each.
+	profitableLaneCensus := tradingQueries.NewProfitableLaneReader(marketRepo, gateGraph)
+	profitableLaneCensus.SetRankerAgeCaps(rankerAgeCaps)
 	h.AddDemandProvider(fleetCmd.NewHeavyDemandProvider(&autosizerHeavySources{
 		shipRepo: shipRepo,
-		unserved: tradingQueries.NewUnservedLaneReader(shipRepo, tradingQueries.NewProfitableLaneReader(marketRepo)),
+		unserved: tradingQueries.NewUnservedLaneReader(shipRepo, profitableLaneCensus),
 	}))
 
 	// Buy-path readers + writers.

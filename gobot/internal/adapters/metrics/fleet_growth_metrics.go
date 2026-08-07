@@ -136,7 +136,7 @@ func NewFleetGrowthMetricsCollector() *FleetGrowthMetricsCollector {
 		),
 		laneSurface: newGaugeVec(
 			"growth_lane_surface",
-			"The wave's deciding input, published in PARTS. component=unserved is the number DeriveWave actually tests (profitable minus trade_pool, floored at 0); component=profitable is the ranked floor-clearing lane count; component=trade_pool is the hulls tagged 'trade' that subtract from it; component=systems_scanned is how many systems the ranking covered; component=readable is 1 when the surface was read at all. Publishing only the difference is what made a PROBE wave unexplainable: probe_reason=lanes_served fires whenever unserved<=0, and a correct zero, an under-scoped ranking (within-system pairs only) and a narrow system sweep all print identically. READ readable BESIDE THE COUNTS: on an unreadable surface the counts are published as 0, and a 0 with readable=0 is a blind read, never a verdict",
+			"The wave's deciding input, published in PARTS. component=unserved is the number DeriveWave actually tests (profitable minus trade_pool, floored at 0); component=profitable is the counted floor-clearing lane count; component=trade_pool is the hulls tagged 'trade' that subtract from it; component=systems_scanned is how many systems the census covered; component=readable is 1 when the surface was read at all. The census terms explain that count: component=cross_system is how many counted lanes have their ends in DIFFERENT systems, and component=rejected_unreachable / component=rejected_jump_cost are the candidate lanes the two narrowing guards refused — no proven gate route, and a round trip that stops clearing the floor once its gates are paid for. BOTH rejection terms count only pairs that WOULD have been work with nothing to cross, so neither is inflated by markets that were never going to pay. component=absorbable_units is what the counted lanes can move in one trip, summed: unserved asks for ONE HULL PER LANE, so read absorbable_units/profitable against a hull's hold before believing that demand — a surface of one-unit lanes is a lane count, not that many hulls of work. Publishing only the difference is what made a PROBE wave unexplainable: probe_reason=lanes_served fires whenever unserved<=0, and a correct zero, an under-scoped census (within-system pairs only) and a narrow system sweep all print identically. READ THE TERMS BESIDE profitable: a thin surface with rejected_unreachable large is a reachability failure, not a poor market, and cross_system at 0 while the fleet spans systems is that same failure seen from the other side. READ readable BESIDE THE COUNTS: on an unreadable surface every count is published as 0, and a 0 with readable=0 is a blind read, never a verdict",
 			"player_id", "component",
 		),
 		growthEnabled: newGaugeVec(
@@ -209,17 +209,36 @@ func (c *FleetGrowthMetricsCollector) RecordWave(playerID, reader string, heavy 
 	c.waveProbeReason.WithLabelValues(playerID, reader, label).Set(1)
 }
 
+// LaneSurface is ONE tick's reading of the lane census — the wave's deciding input and the census
+// terms that explain it. Its ZERO VALUE is the blind read: every component is rewritten on every
+// call, so no term outlives the tick it explains.
+type LaneSurface struct {
+	Unserved            int
+	Profitable          int
+	TradePool           int
+	SystemsScanned      int
+	CrossSystem         int
+	AbsorbableUnits     int
+	RejectedUnreachable int
+	RejectedJumpCost    int
+	Readable            bool
+}
+
 // RecordLaneSurface publishes the capacity-short signal in parts. No reader label: both wave
 // consumers share ONE UnservedLaneReader, so neither computes this and neither can disagree.
-func (c *FleetGrowthMetricsCollector) RecordLaneSurface(playerID string, unserved, profitable, tradePool, systemsScanned int, readable bool) {
+func (c *FleetGrowthMetricsCollector) RecordLaneSurface(playerID string, s LaneSurface) {
 	readableValue := 0.0
-	if readable {
+	if s.Readable {
 		readableValue = 1
 	}
-	c.laneSurface.WithLabelValues(playerID, "unserved").Set(float64(unserved))
-	c.laneSurface.WithLabelValues(playerID, "profitable").Set(float64(profitable))
-	c.laneSurface.WithLabelValues(playerID, "trade_pool").Set(float64(tradePool))
-	c.laneSurface.WithLabelValues(playerID, "systems_scanned").Set(float64(systemsScanned))
+	c.laneSurface.WithLabelValues(playerID, "unserved").Set(float64(s.Unserved))
+	c.laneSurface.WithLabelValues(playerID, "profitable").Set(float64(s.Profitable))
+	c.laneSurface.WithLabelValues(playerID, "trade_pool").Set(float64(s.TradePool))
+	c.laneSurface.WithLabelValues(playerID, "systems_scanned").Set(float64(s.SystemsScanned))
+	c.laneSurface.WithLabelValues(playerID, "cross_system").Set(float64(s.CrossSystem))
+	c.laneSurface.WithLabelValues(playerID, "absorbable_units").Set(float64(s.AbsorbableUnits))
+	c.laneSurface.WithLabelValues(playerID, "rejected_unreachable").Set(float64(s.RejectedUnreachable))
+	c.laneSurface.WithLabelValues(playerID, "rejected_jump_cost").Set(float64(s.RejectedJumpCost))
 	c.laneSurface.WithLabelValues(playerID, "readable").Set(readableValue)
 }
 
@@ -300,9 +319,9 @@ func RecordFleetGrowthWave(playerID, reader string, heavy bool, reason string) {
 
 // RecordGrowthLaneSurface publishes the lane surface globally, on EVERY read: a series that stops on
 // a failed read leaves the last good numbers standing and makes a blind tick look like a quiet one.
-func RecordGrowthLaneSurface(playerID string, unserved, profitable, tradePool, systemsScanned int, readable bool) {
+func RecordGrowthLaneSurface(playerID string, s LaneSurface) {
 	if globalFleetGrowthCollector != nil {
-		globalFleetGrowthCollector.RecordLaneSurface(playerID, unserved, profitable, tradePool, systemsScanned, readable)
+		globalFleetGrowthCollector.RecordLaneSurface(playerID, s)
 	}
 }
 

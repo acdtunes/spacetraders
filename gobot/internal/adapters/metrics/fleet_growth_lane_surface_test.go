@@ -6,11 +6,29 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
+// readSurface is one tick's reading with every field distinct, so a component wired to the wrong
+// field reads as a wrong NUMBER rather than passing on a coincidence.
+func readSurface() LaneSurface {
+	return LaneSurface{
+		Unserved:            3,
+		Profitable:          12,
+		TradePool:           9,
+		SystemsScanned:      4,
+		CrossSystem:         7,
+		AbsorbableUnits:     264,
+		RejectedUnreachable: 21,
+		RejectedJumpCost:    5,
+		Readable:            true,
+	}
+}
+
 // unserved=0 is reached both by "nothing profitable" and by "the pool covers everything", and those
 // call for opposite actions — so the parts must be readable separately, not just the difference.
+// The census terms are here for the same reason one layer down: a thin surface and a reachability
+// failure both print as a small profitable count and differ only in what was refused.
 func TestRecordLaneSurfacePublishesEachComponent(t *testing.T) {
 	c := NewFleetGrowthMetricsCollector()
-	c.RecordLaneSurface("1", 3, 12, 9, 4, true)
+	c.RecordLaneSurface("1", readSurface())
 
 	for _, tc := range []struct {
 		component string
@@ -20,6 +38,10 @@ func TestRecordLaneSurfacePublishesEachComponent(t *testing.T) {
 		{"profitable", 12},
 		{"trade_pool", 9},
 		{"systems_scanned", 4},
+		{"cross_system", 7},
+		{"absorbable_units", 264},
+		{"rejected_unreachable", 21},
+		{"rejected_jump_cost", 5},
 		{"readable", 1},
 	} {
 		if got := testutil.ToFloat64(c.laneSurface.WithLabelValues("1", tc.component)); got != tc.want {
@@ -30,7 +52,7 @@ func TestRecordLaneSurfacePublishesEachComponent(t *testing.T) {
 
 func TestRecordLaneSurfaceMarksAnUnreadableSurface(t *testing.T) {
 	c := NewFleetGrowthMetricsCollector()
-	c.RecordLaneSurface("1", 0, 0, 9, 4, false)
+	c.RecordLaneSurface("1", LaneSurface{TradePool: 9, SystemsScanned: 4})
 
 	if got := testutil.ToFloat64(c.laneSurface.WithLabelValues("1", "readable")); got != 0 {
 		t.Errorf("readable = %v on an unreadable surface, want 0", got)
@@ -40,23 +62,44 @@ func TestRecordLaneSurfaceMarksAnUnreadableSurface(t *testing.T) {
 	}
 }
 
+// A term left standing from the last readable tick is WORSE than no term: it explains a count that
+// is no longer published, next to readable=0 saying nobody looked. Every component is rewritten on
+// every call or the blindness the parts remove comes back through the terms.
+func TestLaneSurfaceTermsDoNotSurviveABlindRead(t *testing.T) {
+	c := NewFleetGrowthMetricsCollector()
+	c.RecordLaneSurface("1", readSurface())
+	c.RecordLaneSurface("1", LaneSurface{TradePool: 9, SystemsScanned: 4})
+
+	for _, component := range []string{"cross_system", "absorbable_units", "rejected_unreachable", "rejected_jump_cost"} {
+		if got := testutil.ToFloat64(c.laneSurface.WithLabelValues("1", component)); got != 0 {
+			t.Errorf("component %q = %v after a blind read, want 0 — a term from the previous tick is standing", component, got)
+		}
+	}
+}
+
 // The reader calls the package-level function, and a nil global is the metrics-disabled daemon.
 func TestRecordGrowthLaneSurfaceGlobalPath(t *testing.T) {
 	prior := globalFleetGrowthCollector
 	t.Cleanup(func() { SetGlobalFleetGrowthCollector(prior) })
 
 	SetGlobalFleetGrowthCollector(nil)
-	RecordGrowthLaneSurface("1", 3, 12, 9, 4, true)
+	RecordGrowthLaneSurface("1", readSurface())
 
 	c := NewFleetGrowthMetricsCollector()
 	SetGlobalFleetGrowthCollector(c)
-	RecordGrowthLaneSurface("1", 3, 12, 9, 4, true)
+	RecordGrowthLaneSurface("1", readSurface())
 
-	if got := testutil.ToFloat64(c.laneSurface.WithLabelValues("1", "profitable")); got != 12 {
-		t.Errorf("profitable = %v through the global path, want 12", got)
-	}
-	if got := testutil.ToFloat64(c.laneSurface.WithLabelValues("1", "trade_pool")); got != 9 {
-		t.Errorf("trade_pool = %v through the global path, want 9", got)
+	for _, tc := range []struct {
+		component string
+		want      float64
+	}{
+		{"profitable", 12},
+		{"trade_pool", 9},
+		{"rejected_unreachable", 21},
+	} {
+		if got := testutil.ToFloat64(c.laneSurface.WithLabelValues("1", tc.component)); got != tc.want {
+			t.Errorf("component %q = %v through the global path, want %v", tc.component, got, tc.want)
+		}
 	}
 }
 
@@ -65,10 +108,10 @@ func TestRecordGrowthLaneSurfaceGlobalPath(t *testing.T) {
 func TestLaneSurfaceReadableSeparatesGenuineZeroFromBlindRead(t *testing.T) {
 	c := NewFleetGrowthMetricsCollector()
 
-	c.RecordLaneSurface("1", 0, 0, 9, 4, true)
+	c.RecordLaneSurface("1", LaneSurface{TradePool: 9, SystemsScanned: 4, Readable: true})
 	genuine := testutil.ToFloat64(c.laneSurface.WithLabelValues("1", "readable"))
 
-	c.RecordLaneSurface("1", 0, 0, 9, 4, false)
+	c.RecordLaneSurface("1", LaneSurface{TradePool: 9, SystemsScanned: 4})
 	blind := testutil.ToFloat64(c.laneSurface.WithLabelValues("1", "readable"))
 
 	if genuine == blind {

@@ -37,9 +37,9 @@ type fakeLaneCounter struct {
 	gotSystems []string
 }
 
-func (f *fakeLaneCounter) CountProfitableLanes(ctx context.Context, playerID int, systems []string) (int, bool, error) {
+func (f *fakeLaneCounter) CountProfitableLanes(ctx context.Context, playerID int, systems []string) (tradingQueries.LaneCensus, bool, error) {
 	f.gotSystems = systems
-	return f.count, f.readable, f.err
+	return tradingQueries.LaneCensus{Profitable: f.count}, f.readable, f.err
 }
 
 // tradeShipAt builds a trade-dedicated hull parked at waypoint (its system is the discovery signal).

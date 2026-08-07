@@ -86,6 +86,16 @@ func (c RankerAgeCaps) For(activity string) time.Duration {
 	}
 }
 
+// Fresh reports whether a listing is still rankable at now, measured against ITS OWN
+// activity's cap. A zero ObservedAt is FRESH: an unknown age is not evidence of staleness.
+//
+// It is the one statement of that rule, shared by the undirected lane ranker
+// (partitionListingsByAge) and the profitable-lane census, so a stale row cannot be
+// invisible to the executor and visible to the count that sizes the fleet to fly it.
+func (c RankerAgeCaps) Fresh(l GoodListing, now time.Time) bool {
+	return l.ObservedAt.IsZero() || now.Sub(l.ObservedAt) <= c.For(l.Activity)
+}
+
 // Widest returns the loosest cap in the table — the age past which NO activity is still
 // rankable. It is the honest BACKSTOP for a consumer downstream of a per-activity filter
 // (the tour solver, which re-checks the snapshot it is handed): anything tighter would

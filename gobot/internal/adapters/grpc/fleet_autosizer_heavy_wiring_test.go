@@ -24,6 +24,7 @@ import (
 	shipyardQueries "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/queries"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
 )
 
 // fakeCensusShipRepo is a ship repository that DOES carry the tag-independent heavy census — the
@@ -67,7 +68,8 @@ func buildAutosizerHandler(shipRepo navigation.ShipRepository, scannedYards scan
 
 func buildAutosizerHandlerOn(server *DaemonServer, shipRepo navigation.ShipRepository, scannedYards scannedYardRanker, heavyYards heavyYardInventory) *fleetCmd.RunFleetAutosizerCoordinatorHandler {
 	return NewFleetAutosizerCoordinatorHandler(
-		server, nil, nil, shipRepo, nil, nil, nil, nil, scannedYards, heavyYards,
+		server, nil, nil, shipRepo, nil, nil, nil, nil, nil, scannedYards, heavyYards,
+		trading.RankerAgeCaps{}, // the zero table IS the fitted armed default (RankerAgeCaps.For)
 	)
 }
 

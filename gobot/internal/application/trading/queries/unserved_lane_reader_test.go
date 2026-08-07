@@ -13,15 +13,21 @@ import (
 )
 
 type fakeLaneCounter struct {
-	count      int
+	census     LaneCensus
 	readable   bool
 	err        error
 	lastSystem []string
 }
 
-func (f *fakeLaneCounter) CountProfitableLanes(ctx context.Context, playerID int, systems []string) (int, bool, error) {
+// countingLanes is the fake census answering with a count and no terms — what a test whose subject
+// is the SUBTRACTION needs.
+func countingLanes(profitable int) *fakeLaneCounter {
+	return &fakeLaneCounter{census: LaneCensus{Profitable: profitable}, readable: true}
+}
+
+func (f *fakeLaneCounter) CountProfitableLanes(ctx context.Context, playerID int, systems []string) (LaneCensus, bool, error) {
 	f.lastSystem = systems
-	return f.count, f.readable, f.err
+	return f.census, f.readable, f.err
 }
 
 // --- fake ship repository (narrow: the one fleet read the unserved count consumes) -------------
@@ -105,7 +111,7 @@ func hullAt(t *testing.T, symbol string, spec hullSpec) *navigation.Ship {
 func TestUnservedLaneCount_SubtractsTheTradePool(t *testing.T) {
 	// 7 profitable lanes, 2 trade-dedicated hulls => 5 unserved.
 	repo := fakeShipRepoWith(t, tradeHulls(2), otherHulls(3))
-	r := NewUnservedLaneReader(repo, &fakeLaneCounter{count: 7, readable: true})
+	r := NewUnservedLaneReader(repo, countingLanes(7))
 
 	got, readable, err := r.UnservedLaneCount(context.Background(), 1)
 	if err != nil || !readable {
@@ -121,7 +127,7 @@ func TestUnservedLaneCount_SubtractsTheTradePool(t *testing.T) {
 // itself through any rename and never see the two sides drift apart.
 func TestUnservedLaneCount_SubtractsHullsDedicatedToTheLiteralTradeFleet(t *testing.T) {
 	repo := fakeShipRepoWith(t, hullsTagged(2, "trade"), hullsTagged(3, "contract"))
-	r := NewUnservedLaneReader(repo, &fakeLaneCounter{count: 7, readable: true})
+	r := NewUnservedLaneReader(repo, countingLanes(7))
 
 	got, readable, err := r.UnservedLaneCount(context.Background(), 1)
 	if err != nil || !readable {
@@ -135,7 +141,7 @@ func TestUnservedLaneCount_SubtractsHullsDedicatedToTheLiteralTradeFleet(t *test
 // The pool already covering every lane is never a NEGATIVE demand.
 func TestUnservedLaneCount_PoolExceedsLanes_ClampsToZero(t *testing.T) {
 	repo := fakeShipRepoWith(t, tradeHulls(9))
-	r := NewUnservedLaneReader(repo, &fakeLaneCounter{count: 2, readable: true})
+	r := NewUnservedLaneReader(repo, countingLanes(2))
 	got, readable, _ := r.UnservedLaneCount(context.Background(), 1)
 	if !readable || got != 0 {
 		t.Fatalf("expected a readable 0, got %d readable=%v", got, readable)
@@ -146,7 +152,7 @@ func TestUnservedLaneCount_PoolExceedsLanes_ClampsToZero(t *testing.T) {
 // on a signal they could not see.
 func TestUnservedLaneCount_FailsClosedOnReadFailure(t *testing.T) {
 	t.Run("ship read", func(t *testing.T) {
-		r := NewUnservedLaneReader(erroringShipRepo(errors.New("db down")), &fakeLaneCounter{count: 7, readable: true})
+		r := NewUnservedLaneReader(erroringShipRepo(errors.New("db down")), countingLanes(7))
 		_, readable, err := r.UnservedLaneCount(context.Background(), 1)
 		if readable || err == nil {
 			t.Fatalf("a ship read failure must be unreadable with an error, got readable=%v err=%v", readable, err)
@@ -164,7 +170,7 @@ func TestUnservedLaneCount_FailsClosedOnReadFailure(t *testing.T) {
 // A READABLE zero is a genuine zero (empty cache, no floor-clearing lane) — no demand, no buy
 // — and must NOT read as fail-closed, which would be indistinguishable from an outage.
 func TestUnservedLaneCount_ReadableZeroIsNotFailClosed(t *testing.T) {
-	r := NewUnservedLaneReader(fakeShipRepoWith(t, tradeHulls(0)), &fakeLaneCounter{count: 0, readable: true})
+	r := NewUnservedLaneReader(fakeShipRepoWith(t, tradeHulls(0)), countingLanes(0))
 	got, readable, err := r.UnservedLaneCount(context.Background(), 1)
 	if !readable || err != nil || got != 0 {
 		t.Fatalf("expected (0,true,nil), got (%d,%v,%v)", got, readable, err)
@@ -173,7 +179,7 @@ func TestUnservedLaneCount_ReadableZeroIsNotFailClosed(t *testing.T) {
 
 // The lane surface is scanned over the systems the fleet actually holds hulls in.
 func TestUnservedLaneCount_ScansTheSystemsTheFleetOccupies(t *testing.T) {
-	lanes := &fakeLaneCounter{count: 1, readable: true}
+	lanes := countingLanes(1)
 	r := NewUnservedLaneReader(fakeShipRepoWith(t, hullsInSystems("X1-AA", "X1-AA", "X1-BB")), lanes)
 	if _, _, err := r.UnservedLaneCount(context.Background(), 1); err != nil {
 		t.Fatalf("unexpected error: %v", err)

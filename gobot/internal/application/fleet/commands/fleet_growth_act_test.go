@@ -636,3 +636,36 @@ func TestFleetGrowthTunableDefaults_MatchTheCoordinator(t *testing.T) {
 		t.Fatalf("growth_runway_milli_hours default = %d, want %d", defaults[growthRunwayKey], defaultGrowthRunwayMilliHours)
 	}
 }
+
+// THE SHORTFALL IS A THRESHOLD ON THE SPEND PATH, NOT A QUANTITY. The unserved-lane count is the
+// heavy class's whole shortfall, so a census correction that raises it ~100x raises the shortfall
+// ~100x too. Nothing downstream multiplies by it: the demand guard asks only shortfall > 0 and the
+// per-tick cap is 1, so a fleet 900 lanes short buys at exactly the pace a fleet 1 lane short does.
+// Pinned because the pacing is the whole answer to whether a corrected census can be armed.
+func TestGrowthReconcile_ALargeShortfallBuysNoFasterThanOnePerTick(t *testing.T) {
+	buyer := &growthPurchaseRecorder{}
+	h := newGrowthHandlerWith(t, growthFixture{
+		lanes:    &fakeLanes{count: 900, readable: true},
+		treasury: 1_000_000_000,
+		yardAsk:  1_000_000,
+		streak:   defaultGrowthUnservedLanesMin,
+	})
+	h.SetPurchaser(buyer)
+
+	const ticks = 4
+	for i := 0; i < ticks; i++ {
+		res, err := h.reconcileOnce(context.Background(), growthCmd())
+		if err != nil {
+			t.Fatalf("tick %d: %v", i, err)
+		}
+		if res.Shortfall != 900 {
+			t.Fatalf("tick %d: shortfall = %d, want the full unserved count 900", i, res.Shortfall)
+		}
+		if res.Purchased != 1 {
+			t.Fatalf("tick %d: purchased %d hulls, want exactly 1 whatever the shortfall", i, res.Purchased)
+		}
+	}
+	if buyer.calls != ticks {
+		t.Fatalf("%d ticks against a 900-lane shortfall bought %d hulls, want %d", ticks, buyer.calls, ticks)
+	}
+}
