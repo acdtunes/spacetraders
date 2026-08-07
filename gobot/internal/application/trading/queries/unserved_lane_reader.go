@@ -2,7 +2,9 @@ package queries
 
 import (
 	"context"
+	"strconv"
 
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
@@ -45,28 +47,33 @@ func NewUnservedLaneReader(ships navigation.ShipRepository, lanes ProfitableLane
 // and is reported as such, because a fleet with nothing to fly must not be indistinguishable
 // from a fleet whose sensors are down.
 func (r *UnservedLaneReader) UnservedLaneCount(ctx context.Context, playerID int) (int, bool, error) {
+	label := strconv.Itoa(playerID)
 	pid, err := shared.NewPlayerID(playerID)
 	if err != nil {
 		return 0, false, nil
 	}
 	ships, err := r.ships.FindAllByPlayer(ctx, pid)
 	if err != nil {
+		metrics.RecordGrowthLaneSurface(label, 0, 0, 0, 0, false)
 		return 0, false, err
 	}
-	profitable, readable, err := r.lanes.CountProfitableLanes(ctx, playerID, distinctShipSystems(ships))
-	if err != nil || !readable {
-		return 0, false, err
-	}
-	heavies := 0
+	systems := distinctShipSystems(ships)
+	pool := 0
 	for _, sh := range ships {
 		if sh.DedicatedFleet() == tradeFleetTag {
-			heavies++
+			pool++
 		}
 	}
-	unserved := profitable - heavies
+	profitable, readable, err := r.lanes.CountProfitableLanes(ctx, playerID, systems)
+	if err != nil || !readable {
+		metrics.RecordGrowthLaneSurface(label, 0, 0, pool, len(systems), false)
+		return 0, false, err
+	}
+	unserved := profitable - pool
 	if unserved < 0 {
 		unserved = 0
 	}
+	metrics.RecordGrowthLaneSurface(label, unserved, profitable, pool, len(systems), true)
 	return unserved, true, nil
 }
 

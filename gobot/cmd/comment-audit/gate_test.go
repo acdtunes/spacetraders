@@ -77,11 +77,86 @@ func TestCommentDensityGate(t *testing.T) {
 	touched := changedPackages(t, root)
 	assertTouchedPathsMatchTheCensus(t, root, touched, pkgs)
 
-	violations := scopedGateViolations(pkgs, bl, touched)
+	violations := scopedGateViolations(pkgs, effectiveBaseline(t, root, bl, touched), touched)
 	if len(violations) == 0 {
 		return
 	}
 	t.Fatal(gateReport(touched, violations))
+}
+
+// effectiveBaseline re-anchors each touched package to the density it ACTUALLY has on main,
+// leaving every untouched package on its recorded entry.
+//
+// THE ANCHOR IS MAIN, NOT THE RECORDED NUMBER, AND THAT IS WHAT MAKES THIS A RATCHET. Anchored to
+// a frozen baseline the gate fails a lane that IMPROVES a package which drifted past it since —
+// the lane inherits every comment line other merges added, and the first lane to touch a drifted
+// package pays for all of them. That is a bar, not a ratchet, and it is the deadlock §6a's scoping
+// already refuses one layer up. Anchored to main the direction still only goes one way, because a
+// lane that leaves a package denser than it found it is refused; main can never climb.
+//
+// A package absent from main is NEW: it keeps its recorded entry, or none, and the per-file
+// ceiling is what answers for it.
+func effectiveBaseline(t *testing.T, moduleDir string, bl *Baseline, touched []string) *Baseline {
+	t.Helper()
+	onMain := mainPackageStats(t, moduleDir, touched)
+
+	out := &Baseline{Packages: make(map[string]BaselineEntry, len(bl.Packages))}
+	for k, v := range bl.Packages {
+		out.Packages[k] = v
+	}
+	for _, pkg := range touched {
+		p, ok := onMain[pkg]
+		if !ok {
+			continue
+		}
+		out.Packages[pkg] = BaselineEntry{Ratio: p.Ratio(), Comment: p.Comment, Total: p.Total, Markers: p.MarkerTotal()}
+	}
+	return out
+}
+
+// mainPackageStats censuses the touched packages as they stand at the merge-base, by checking that
+// commit out detached and running the SAME Scan over it. Reusing Scan is the point: a second
+// counter written here could disagree with the one the lane is measured by, and the gate would then
+// compare two different definitions of a comment.
+func mainPackageStats(t *testing.T, moduleDir string, touched []string) map[string]*PkgStat {
+	t.Helper()
+	if len(touched) == 0 {
+		return nil
+	}
+	base := mergeBaseWithMain(t, moduleDir)
+
+	top, err := runGit(moduleDir, "rev-parse", "--show-toplevel")
+	if err != nil {
+		t.Fatalf("locating the repository root: %v", err)
+	}
+	rel, err := filepath.Rel(strings.TrimSpace(top), moduleDir)
+	if err != nil {
+		t.Fatalf("locating the module inside the repository: %v", err)
+	}
+
+	dir := filepath.Join(t.TempDir(), "base")
+	if _, err := runGit(moduleDir, "worktree", "add", "--detach", "--no-checkout", dir, base); err != nil {
+		t.Fatalf("checking out the merge-base to compare against: %v\n"+
+			"The gate holds a lane to the density main already has, and it will not fall back "+
+			"to a frozen number that would fail an improving lane.", err)
+	}
+	t.Cleanup(func() { _, _ = runGit(moduleDir, "worktree", "remove", "--force", dir) })
+
+	// Only the touched packages are materialised; a full checkout of a large tree per gate run is
+	// wasted work when the comparison covers a handful of directories.
+	paths := make([]string, 0, len(touched))
+	for _, pkg := range touched {
+		paths = append(paths, filepath.Join(rel, pkg))
+	}
+	if _, err := runGit(dir, append([]string{"checkout", base, "--"}, paths...)...); err != nil {
+		t.Fatalf("materialising the merge-base copies of %v: %v", touched, err)
+	}
+
+	pkgs, err := Scan(filepath.Join(dir, rel))
+	if err != nil {
+		t.Fatalf("scanning the merge-base tree: %v", err)
+	}
+	return pkgs
 }
 
 // scopedGateViolations applies the standing policy to the packages the lane

@@ -55,6 +55,8 @@ type FleetGrowthMetricsCollector struct {
 	workingCapital      *prometheus.GaugeVec
 	heavyPricePremium   *prometheus.SummaryVec
 
+	laneSurface *prometheus.GaugeVec
+
 	growthEnabled *prometheus.GaugeVec
 
 	// mu guards seenReasons, which is how a superseded reason is driven to 0 rather than left
@@ -132,6 +134,11 @@ func NewFleetGrowthMetricsCollector() *FleetGrowthMetricsCollector {
 			},
 			[]string{"player_id"},
 		),
+		laneSurface: newGaugeVec(
+			"growth_lane_surface",
+			"The wave's deciding input, published in PARTS. component=unserved is the number DeriveWave actually tests (profitable minus trade_pool, floored at 0); component=profitable is the ranked floor-clearing lane count; component=trade_pool is the hulls tagged 'trade' that subtract from it; component=systems_scanned is how many systems the ranking covered; component=readable is 1 when the surface was read at all. Publishing only the difference is what made a PROBE wave unexplainable: probe_reason=lanes_served fires whenever unserved<=0, and a correct zero, an under-scoped ranking (within-system pairs only) and a narrow system sweep all print identically. READ readable BESIDE THE COUNTS: on an unreadable surface the counts are published as 0, and a 0 with readable=0 is a blind read, never a verdict",
+			"player_id", "component",
+		),
 		growthEnabled: newGaugeVec(
 			"growth_enabled",
 			"The growth_enabled master switch as read this tick: 1=growing, 0=PAUSED by operator tune. Emitted every tick on both paths — at 0 the coordinator reads nothing and buys nothing, which is deliberate, NOT a stalled coordinator, and the wave it publishes is PROBE",
@@ -164,6 +171,7 @@ func (c *FleetGrowthMetricsCollector) Register() error {
 		c.heavyCap,
 		c.workingCapital,
 		c.heavyPricePremium,
+		c.laneSurface,
 		c.growthEnabled,
 		c.zeroEffectTotal,
 	)
@@ -199,6 +207,20 @@ func (c *FleetGrowthMetricsCollector) RecordWave(playerID, reader string, heavy 
 	seen[label] = struct{}{}
 	c.mu.Unlock()
 	c.waveProbeReason.WithLabelValues(playerID, reader, label).Set(1)
+}
+
+// RecordLaneSurface publishes the capacity-short signal in parts. No reader label: both wave
+// consumers share ONE UnservedLaneReader, so neither computes this and neither can disagree.
+func (c *FleetGrowthMetricsCollector) RecordLaneSurface(playerID string, unserved, profitable, tradePool, systemsScanned int, readable bool) {
+	readableValue := 0.0
+	if readable {
+		readableValue = 1
+	}
+	c.laneSurface.WithLabelValues(playerID, "unserved").Set(float64(unserved))
+	c.laneSurface.WithLabelValues(playerID, "profitable").Set(float64(profitable))
+	c.laneSurface.WithLabelValues(playerID, "trade_pool").Set(float64(tradePool))
+	c.laneSurface.WithLabelValues(playerID, "systems_scanned").Set(float64(systemsScanned))
+	c.laneSurface.WithLabelValues(playerID, "readable").Set(readableValue)
 }
 
 // RecordGrowthEnabled sets the master-switch gauge from the value read this tick.
@@ -273,6 +295,14 @@ func SetGlobalFleetGrowthCollector(collector *FleetGrowthMetricsCollector) {
 func RecordFleetGrowthWave(playerID, reader string, heavy bool, reason string) {
 	if globalFleetGrowthCollector != nil {
 		globalFleetGrowthCollector.RecordWave(playerID, reader, heavy, reason)
+	}
+}
+
+// RecordGrowthLaneSurface publishes the lane surface globally, on EVERY read: a series that stops on
+// a failed read leaves the last good numbers standing and makes a blind tick look like a quiet one.
+func RecordGrowthLaneSurface(playerID string, unserved, profitable, tradePool, systemsScanned int, readable bool) {
+	if globalFleetGrowthCollector != nil {
+		globalFleetGrowthCollector.RecordLaneSurface(playerID, unserved, profitable, tradePool, systemsScanned, readable)
 	}
 }
 
