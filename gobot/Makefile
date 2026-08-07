@@ -390,16 +390,23 @@ COMMENT_BASELINE := .comment-baseline.json
 comment-audit:
 	@go run ./cmd/comment-audit -root . $(ARGS)
 
-# Fail if a package got DENSER than the recorded baseline. This is the check a
-# lane self-runs before the gate; scope it to the touched set with ONLY=.
+# Fail if a package got DENSER than the recorded baseline, or a file sits over the per-file
+# ceiling. This is the check a lane self-runs before the gate; scope it with ONLY=.
 #   make comment-audit-check
 #   make comment-audit-check ONLY=internal/application/parkedsensing
 #   make comment-audit-check ONLY="internal/application/parkedsensing internal/domain/hullbuy"
 # ONLY takes commas or spaces; the value is quoted through, so a list stays one argument. An
 # unquoted list would reach the tool already split, and it refuses that rather than checking
 # the first entry and reporting OK.
+# -gate carries the limits, so no number is spelled out here to drift from the test's, and it
+# refuses any limit flag you add beside it rather than quietly overriding it.
+# TestCommentDensityGate applies the same policy to the packages the working tree changed
+# against main, which it works out from git — that test is what actually blocks a merge, so
+# ONLY= here is a convenience, not the scope of record. ONLY= also names a SUBTREE: naming a
+# parent checks every package under it, where the gate answers only for the packages whose
+# own files changed. So this can report a package the gate will not hold you to.
 comment-audit-check:
-	@go run ./cmd/comment-audit -root . -baseline $(COMMENT_BASELINE) \
+	@go run ./cmd/comment-audit -root . -gate -baseline $(COMMENT_BASELINE) \
 		$(if $(ONLY),-only "$(ONLY)",) -quiet
 
 # Re-record the baseline. Run this only after a deliberate sweep LOWERS a

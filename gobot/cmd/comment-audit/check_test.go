@@ -108,7 +108,7 @@ func TestCheckOnlyRestrictsToTouchedPackages(t *testing.T) {
 	}}
 	v := Check(pkgs, CheckOpts{
 		Baseline: bl, MaxMarkers: -1,
-		Only: []string{"internal/application/fleet"},
+		Scope: PackageSubtrees([]string{"internal/application/fleet"}),
 	})
 	if len(v) != 1 || v[0].Package != "internal/application/fleet" {
 		t.Fatalf("violations = %+v, want only the touched package", v)
@@ -128,7 +128,7 @@ func TestCheckOnlyMatchesPathSegmentsNotSubstrings(t *testing.T) {
 		"internal/app":         {Ratio: 0.5},
 		"internal/app/inner":   {Ratio: 0.5},
 	}}
-	v := Check(pkgs, CheckOpts{Baseline: bl, MaxMarkers: -1, Only: []string{"internal/app"}})
+	v := Check(pkgs, CheckOpts{Baseline: bl, MaxMarkers: -1, Scope: PackageSubtrees([]string{"internal/app"})})
 	if len(v) != 2 {
 		t.Fatalf("violations = %+v, want internal/app and internal/app/inner only", v)
 	}
@@ -142,7 +142,7 @@ func TestCheckOnlyMatchesPathSegmentsNotSubstrings(t *testing.T) {
 func TestCheckOnlyToleratesTrailingSlashAndSpaces(t *testing.T) {
 	pkgs := map[string]*PkgStat{"a/b": pkg("a/b", 8, 10, 0)}
 	bl := &Baseline{Packages: map[string]BaselineEntry{"a/b": {Ratio: 0.5}}}
-	if v := Check(pkgs, CheckOpts{Baseline: bl, MaxMarkers: -1, Only: []string{" a/b/ "}}); len(v) != 1 {
+	if v := Check(pkgs, CheckOpts{Baseline: bl, MaxMarkers: -1, Scope: PackageSubtrees([]string{" a/b/ "})}); len(v) != 1 {
 		t.Fatalf("violations = %+v, want one", v)
 	}
 }

@@ -1,20 +1,17 @@
 // Command comment-audit censuses comment density per package and flags
 // archaeology markers.
 //
-// It answers two separate questions. "How much of this package is comment?" is
-// absolute state, checked with -max-ratio. "Did this lane make it worse?" is
-// regression, checked with -baseline; that is the one a gate wants, because a
-// package inherited at 40% must not block every lane that touches it while a
-// lane that pushes it to 41% must.
+// It answers two questions. "How much of this package is comment?" is absolute
+// state (-max-ratio). "Did this lane make it worse?" is regression (-baseline),
+// and it is the one a gate wants: inherited density must not block a lane that
+// merely touches a package. -gate applies the standing limits without naming them.
 //
-// Standalone maintenance tool: nothing in the daemon, the CLI or the
-// watchkeeper imports it, and it imports nothing from them.
+// Standalone: nothing in the daemon, CLI or watchkeeper imports it, nor it them.
 //
 // Exit codes: 0 pass, 1 violations found, 2 usage or I/O error.
 //
 //	comment-audit -root gobot -top 20
-//	comment-audit -root gobot -write-baseline .comment-baseline.json
-//	comment-audit -root gobot -baseline .comment-baseline.json -only internal/application/fleet
+//	comment-audit -root gobot -gate -baseline .comment-baseline.json -only internal/application/fleet
 package main
 
 import (
@@ -26,70 +23,104 @@ import (
 	"strings"
 )
 
+// cliFlags holds the parsed command line, registrable against a throwaway
+// FlagSet so a test can check that gateOwnedFlags names flags that exist.
+type cliFlags struct {
+	root       *string
+	maxRatio   *float64
+	baseline   *string
+	writeBase  *string
+	tolerance  *float64
+	only       *string
+	maxMarkers *int
+	maxFile    *float64
+	gate       *bool
+	top        *int
+	explain    *bool
+	asJSON     *bool
+	quiet      *bool
+}
+
+func registerFlags(fs *flag.FlagSet) *cliFlags {
+	return &cliFlags{
+		root:       fs.String("root", ".", "directory to scan"),
+		maxRatio:   fs.Float64("max-ratio", 0, "absolute ceiling on a package's comment ratio (0 disables)"),
+		baseline:   fs.String("baseline", "", "baseline file to check for REGRESSION against"),
+		writeBase:  fs.String("write-baseline", "", "write the current census to this file and exit 0"),
+		tolerance:  fs.Float64("tolerance", 0, "ratio increase forgiven before a regression fires; 0 is strict, and strict is the default because a ratio slack is really a per-line budget that grows with the package"),
+		only:       fs.String("only", "", "package prefixes to check (a lane's touched set), separated by commas or spaces; QUOTE the value so the shell keeps it as one argument"),
+		maxMarkers: fs.Int("max-markers", -1, "fail a checked package carrying more archaeology markers than this (-1 disables)"),
+		maxFile: fs.Float64("max-file-prose", 0, fmt.Sprintf(
+			"per-FILE ceiling on comment beyond the doc credit — the package doc, plus the first %d lines of each exported declaration's godoc; the package ratchet cannot see a single essay inside a large package (0 disables)", DocAllowance)),
+		gate:    fs.Bool("gate", false, "apply the standing gate policy: baseline regression plus the built-in per-file ceiling. Prefer this to spelling the limits out, so a caller cannot drift from the policy the gate test enforces. Refuses the limit flags it would otherwise override"),
+		top:     fs.Int("top", 0, "print only the N densest packages (0 prints all)"),
+		explain: fs.Bool("explain", false, "list every archaeology marker with file:line"),
+		asJSON:  fs.Bool("json", false, "emit the census as JSON"),
+		quiet:   fs.Bool("quiet", false, "print violations only"),
+	}
+}
+
 func main() {
-	var (
-		root       = flag.String("root", ".", "directory to scan")
-		maxRatio   = flag.Float64("max-ratio", 0, "absolute ceiling on a package's comment ratio (0 disables)")
-		baseline   = flag.String("baseline", "", "baseline file to check for REGRESSION against")
-		writeBase  = flag.String("write-baseline", "", "write the current census to this file and exit 0")
-		tolerance  = flag.Float64("tolerance", 0, "ratio increase forgiven before a regression fires; 0 is strict, and strict is the default because a proportional slack is a per-line budget on a big package (0.005 buys ~45 free comment lines across 9k)")
-		only       = flag.String("only", "", "package prefixes to check (a lane's touched set), separated by commas or spaces; QUOTE the value so the shell keeps it as one argument")
-		maxMarkers = flag.Int("max-markers", -1, "fail a checked package carrying more archaeology markers than this (-1 disables)")
-		top        = flag.Int("top", 0, "print only the N densest packages (0 prints all)")
-		explain    = flag.Bool("explain", false, "list every archaeology marker with file:line")
-		asJSON     = flag.Bool("json", false, "emit the census as JSON")
-		quiet      = flag.Bool("quiet", false, "print violations only")
-	)
+	c := registerFlags(flag.CommandLine)
 	flag.Parse()
 
-	pkgs, err := Scan(*root)
+	pkgs, err := Scan(*c.root)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "comment-audit: %v\n", err)
 		os.Exit(2)
 	}
 	if len(pkgs) == 0 {
-		fmt.Fprintf(os.Stderr, "comment-audit: no non-test Go files under %s\n", *root)
+		fmt.Fprintf(os.Stderr, "comment-audit: no non-test Go files under %s\n", *c.root)
 		os.Exit(2)
 	}
 
-	if *writeBase != "" {
-		if err := WriteBaseline(*writeBase, NewBaseline(pkgs)); err != nil {
+	if *c.writeBase != "" {
+		if err := WriteBaseline(*c.writeBase, NewBaseline(pkgs)); err != nil {
 			fmt.Fprintf(os.Stderr, "comment-audit: %v\n", err)
 			os.Exit(2)
 		}
-		fmt.Printf("wrote baseline for %d packages to %s\n", len(pkgs), *writeBase)
+		fmt.Printf("wrote baseline for %d packages to %s\n", len(pkgs), *c.writeBase)
 		return
 	}
 
 	opts := CheckOpts{
-		MaxRatio:   *maxRatio,
-		Tolerance:  *tolerance,
-		MaxMarkers: *maxMarkers,
+		MaxRatio:          *c.maxRatio,
+		Tolerance:         *c.tolerance,
+		MaxMarkers:        *c.maxMarkers,
+		MaxFileProseRatio: *c.maxFile,
 	}
-	selected, err2 := resolveOnly(*only, flag.Args())
+	selected, err2 := resolveOnly(*c.only, flag.Args())
 	if err2 != nil {
 		fmt.Fprintf(os.Stderr, "comment-audit: %v\n", err2)
 		os.Exit(2)
 	}
-	opts.Only = selected
-	if *baseline != "" {
-		bl, err := LoadBaseline(*baseline)
+	opts.Scope = PackageSubtrees(selected)
+	if *c.baseline != "" {
+		bl, err := LoadBaseline(*c.baseline)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "comment-audit: %v\n", err)
 			os.Exit(2)
 		}
 		opts.Baseline = bl
 	}
+	if *c.gate {
+		gated, err := gatePolicyFor(opts.Baseline, opts.Scope, flagsSet(flag.CommandLine))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "comment-audit: %v\n", err)
+			os.Exit(2)
+		}
+		opts = gated
+	}
 
-	if *asJSON {
+	if *c.asJSON {
 		emitJSON(pkgs)
-	} else if !*quiet {
-		emitText(pkgs, *top, *explain)
+	} else if !*c.quiet {
+		emitText(pkgs, *c.top, *c.explain)
 	}
 
 	violations := Check(pkgs, opts)
 	if len(violations) == 0 {
-		if !*quiet {
+		if !*c.quiet {
 			fmt.Println("comment-audit: OK")
 		}
 		return
@@ -98,8 +129,49 @@ func main() {
 	for _, v := range violations {
 		fmt.Fprintf(os.Stderr, "  %s\n", v)
 	}
-	fmt.Fprintln(os.Stderr, "\nSee ENGINEERING.md §6 for the keep/cut rule. History belongs in docs/retrospectives/.")
+	fmt.Fprintf(os.Stderr, "\nSee ENGINEERING.md §6 for the keep/cut rule. History belongs in docs/retrospectives/.\n"+
+		"A per-file failure counts comment the doc credit does not cover: everything except the\n"+
+		"package doc and the first %d lines of each exported declaration's godoc. Godoc past that\n"+
+		"cap is counted like any other comment, so a file can fail on documentation alone.\n", DocAllowance)
 	os.Exit(1)
+}
+
+// gateOwnedFlags are the limits GatePolicy sets for itself, named as a caller writes them.
+var gateOwnedFlags = []string{"max-ratio", "tolerance", "max-markers", "max-file-prose"}
+
+// flagsSet reports the flags the caller actually wrote: Visit skips defaults.
+func flagsSet(fs *flag.FlagSet) map[string]bool {
+	set := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+	return set
+}
+
+// gatePolicyFor builds the standing gate policy, or REFUSES. -gate replaces
+// every limit with the policy's own, so a limit the caller also wrote could only
+// be discarded, and an OK from a run that quietly checked something else is
+// indistinguishable from a real one. A missing baseline is refused for the same
+// reason: the ratchet cannot run at all without it.
+func gatePolicyFor(bl *Baseline, scope Scope, set map[string]bool) (CheckOpts, error) {
+	var clash []string
+	for _, name := range gateOwnedFlags {
+		if set[name] {
+			clash = append(clash, "-"+name)
+		}
+	}
+	if len(clash) > 0 {
+		return CheckOpts{}, fmt.Errorf(
+			"-gate carries the standing limits, so %s cannot be set alongside it: one of the two "+
+				"would have to be dropped, and this tool will not drop one silently. "+
+				"Drop the flag to take the gate policy, or drop -gate to spell your own limits out",
+			strings.Join(clash, " and "))
+	}
+	if bl == nil {
+		return CheckOpts{}, fmt.Errorf(
+			"-gate needs -baseline: the ratchet is a comparison against the recorded census, and " +
+				"without one only the per-file ceiling would run — a package the lane made denser " +
+				"would report OK")
+	}
+	return GatePolicy(bl, scope), nil
 }
 
 func emitText(pkgs map[string]*PkgStat, top int, explain bool) {
@@ -151,17 +223,10 @@ func emitJSON(pkgs map[string]*PkgStat) {
 // resolveOnly turns the -only value, plus anything the flag parser could not consume, into the
 // set of package prefixes to check.
 //
-// THE LEFTOVERS ARE THE BUG, AND REFUSING ON THEM IS THE POINT. A list written the way it reads
-// — separated by spaces — and interpolated into a command unquoted arrives as several arguments
-// rather than one. The flag takes the first and the rest become positional arguments; worse, Go
-// stops parsing flags at the first of them, so every flag after the list is dropped too. The tool
-// then checks one package out of several, finds it clean, and reports OK. Nothing about that is
-// distinguishable from a real pass, which is the one failure a checking tool must not have.
-//
-// So a value that survives intact is honoured whichever separator it used, and a value the shell
-// already took apart is refused outright with the form that works. Diagnosing it is not enough:
-// the caller who hits this wrote the form that reads naturally and has no reason to suspect a
-// separator, so the tool has to be the one that knows.
+// THE LEFTOVERS ARE THE BUG, AND REFUSING ON THEM IS THE POINT. An unquoted list arrives already
+// split: -only takes the first entry, the rest become positional arguments, and Go drops every
+// flag after them. The tool would check one package of several and report OK — a pass
+// indistinguishable from a real one, the one failure a checking tool must not have.
 func resolveOnly(value string, leftovers []string) ([]string, error) {
 	if len(leftovers) > 0 {
 		return nil, fmt.Errorf(
