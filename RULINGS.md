@@ -33,27 +33,11 @@ This file exists so that class of miss cannot recur.)
    the **immutable anti-stall bound (50k)** and the **contract working-capital cushion (150k)**.
 
 6. **Fleet purchases follow measured demand.** Never buy hulls speculatively: a purchase
-   requires measured lane/contract demand. (Origin: the over-build that starved contracts;
-   captain ruling st-wisp-93mg.)
-   **Exception (Admiral 2026-07-21):** the dedicated contract scaler (epic sp-9le3x) is
-   NOT bound by the 25% rule — it ramps a fixed, isolated contract fleet to a bounded ceiling
-   (contract_fleet_max_hulls) one hull at a time, reuse-before-buy, guarded instead by the
-   immutable 200k contract cushion.
-   **REVOKED for fleet growth (Admiral 2026-08-07):** the 25%-of-treasury ceiling no longer
-   binds the growth coordinator's hull purchases. It was an *analyst affordability rule* layered
-   on top of the guard that actually prevents insolvency, and against a 1.74M heavy it demanded
-   a 6.97M treasury — a bar the fleet could not reach, so the growth loop could never complete
-   even once the lane census was corrected and the wave reached HEAVY for the first time.
-   The ceiling assumed a single purchase should not dominate the balance sheet, which is right
-   for a trading float and wrong for a fleet whose primary productive asset IS hulls.
-   **What still governs the same spend, and is not weakened:** the floor term
-   (treasury − immutable 50k − heavy reserve − working capital ≥ price + 200k margin);
-   `heavy_cap` (5 fleet-wide, tag-independent — a hard stop at 4 more hulls); the per-tick cap
-   of one hull; the 3-tick demand streak; and RULINGS #4 — the whole guard still fails CLOSED on
-   an unreadable treasury. Exposure remains bounded by count and by solvency; only the
-   percentage bound is gone.
-   Note `growth_treasury_pct_per_purchase` cannot express this: `<= 0` means *revert to default*,
-   so revocation is a change to the coordinator's default, not a tune.
+   requires measured lane/contract demand. Hull spend is bounded by the floor term
+   (treasury − immutable 50k − reserves − working capital ≥ price + margin), a per-class hull
+   cap, one hull per tick, and a demand streak. The contract scaler ramps a fixed, isolated
+   fleet to `contract_fleet_max_hulls`, one hull at a time, reuse-before-buy, bounded instead
+   by its immutable 200k cushion. RULINGS #4 applies: fail closed on an unreadable treasury.
 
 7. **The ownership model is law.** Pinned/dedicated hulls are never poached (l7h2 P1-P2.5,
    atomic ClaimShip); the command frigate hauls only as last resort (sp-4a4e). Do not code
