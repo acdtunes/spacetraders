@@ -17,34 +17,23 @@ import (
 // (reading treasury / price / census) lives in the coordinator's ACT step; keeping the
 // judgement pure makes every guard's refusal unit-testable in isolation.
 //
-// SIX GUARDS, ONE QUESTION EACH. The chain was twelve and asked three questions three times over
-// (affordability twice, overpaying twice, payback three times). It is now one guard per question:
+// SIX GUARDS, ONE QUESTION EACH:
 //
 //	demand         — is there a real, SETTLED need? (shortfall + the anti-thrash streak)
 //	per_tick_cap   — have we already spent this tick?
 //	price          — is the ask readable, and are we overpaying? (abs cap + premium cap)
 //	heavy_cap      — is capital exposure in large hulls within the operator's cap?
-//	affordability  — can the treasury bear it? (pct-per-buy rule + reserve floor & margin)
+//	affordability  — can the treasury bear it? (reserve floor & margin + an optional pct ceiling)
 //	api_util       — is there request budget to fly another hull?
 //
-// WHAT WAS DELETED, and why it is not a hole. era_payback required a marginal $/hr it could never
-// read in production ("marginal rate unreadable/zero — cannot prove payback"), so it refused every
-// buy unconditionally rather than refusing bad ones. realized_rate refused on a declining aggregate
-// rate while its own detail conceded the case did not apply (hull concentration, not absorption
-// saturation — the next hull flies a fresh lane). The autosizer therefore no longer forms an
-// opinion on whether a hull will EARN; it judges whether the fleet can afford it and has room for
-// it. Demand shortfall — which for heavies IS the unserved profitable-lane count — is the
-// remaining economic input, and it must be > 0.
+// NO PAYBACK OPINION. The stack judges whether the fleet can AFFORD a hull and has room for it,
+// never whether it will EARN: demand shortfall — for heavies, the unserved profitable-lane count —
+// is the whole economic input, and it must be > 0.
 //
-// class_ceiling IS GONE (sp-r7eiu, Admiral's order). It was a flat per-class POOL-SIZE cap —
-// fleet_ceiling_{lights,heavies} — that refused a purchase purely for being the Nth hull, with no
-// reference to whether the fleet could afford it or had work for it. It was the last descendant of
-// the fleet-wide total ceiling that had already been deleted for the same reason: a bound that must
-// be re-raised by hand every time the fleet legitimately grows is not a bound, it is a recurring
-// outage. It bound at 14/15 while the operator was expanding the heavy fleet, and raising it was a
-// config.yaml edit plus a daemon restart.
+// THERE IS NO PER-CLASS POOL CEILING. A bound that must be re-raised by hand every time the fleet
+// legitimately grows is not a bound, it is a recurring outage.
 //
-// WHAT BOUNDS EACH CLASS NOW — a pool cap was never the thing keeping spending honest:
+// WHAT BOUNDS EACH CLASS — a pool cap was never the thing keeping spending honest:
 //
 //	every class — demand (no shortfall, no buy), affordability, per_tick_cap (1/tick), price, api_util
 //	heavy       — heavy_cap, the fleet-wide heavy-HULL census (capital exposure), plus the
@@ -53,10 +42,8 @@ import (
 //	              There is no light pool cap left. This is a DELIBERATE consequence of the removal,
 //	              not an oversight: the operator was told, and the money guards below are what hold.
 //
-// NOTHING IN THE MONEY PATH MOVED with this removal. A ceiling only ever REFUSED a purchase the
-// money guards had already permitted, so deleting it cannot authorise a spend they refuse
-// (RULINGS #4). The removal is pinned by tests that hold every one of them firing with the ceiling
-// gone.
+// A count-based ceiling only ever REFUSES what the money guards below already permitted, so
+// removing one can never authorise a spend they refuse (RULINGS #4).
 
 // GuardName identifies a purchase guard for the decision log and the autosizer_blocked metric.
 type GuardName string
@@ -66,7 +53,7 @@ const (
 	GuardPerTickCap    GuardName = "per_tick_cap"  // hulls already bought this tick
 	GuardPrice         GuardName = "price"         // yard ask readable (fail-closed) AND within both ceilings
 	GuardHeavyCap      GuardName = "heavy_cap"     // owned HEAVY HULLS below the operator's heavy cap
-	GuardAffordability GuardName = "affordability" // BOTH treasury tests: the pct-per-buy rule AND the reserve floor+margin
+	GuardAffordability GuardName = "affordability" // BOTH treasury tests: the reserve floor+margin AND the optional pct ceiling
 	GuardAPIUtil       GuardName = "api_util"      // sustained request-utilization below ceiling (fail-closed)
 )
 
@@ -342,27 +329,21 @@ func guardAPIUtil(req PurchaseRequest) GuardVerdict {
 	}
 }
 
-// guardAffordability answers the whole "can the fleet afford this hull?" question in ONE verdict.
-// It merges the former treasury_pct and treasury_floor guards, which read the SAME live treasury
-// and asked it twice.
+// guardAffordability answers the whole "can the fleet afford this hull?" question in ONE verdict,
+// CONJUNCTIVE over two terms read from the SAME live treasury:
 //
-// CONJUNCTIVE — every condition from BOTH originals must still hold. This is a structural merge,
-// never a behavioural loosening:
+//	pct    : pct<=0 ? not applied : Price <= pct% × treasury
+//	floor  : (treasury − floor − heavyReserve − workingCapital) >= price + margin
+//	merged : TreasuryReadable && pctTerm && floorTerm
 //
-//	treasury_pct   : pct<=0 ? pass : (TreasuryReadable && Price <= pct% × treasury)
-//	treasury_floor : TreasuryReadable && (treasury − floor − heavyReserve − workingCapital) >= price + margin
-//	merged         : TreasuryReadable && pctTerm && floorTerm
+// FAIL-CLOSED on an unknown balance (RULINGS #4): an unreadable treasury refuses whatever the
+// percentage term is set to, INCLUDING when it is not applied — the floor term can no more judge an
+// unreadable balance than the percentage one can. Two separate tests pin the terms independently,
+// because one test cannot prove a conjunction kept both.
 //
-// The unreadable case is identical to the pair's: treasury_pct passed vacuously when the rule was
-// off (pct<=0) but treasury_floor blocked regardless, so the PAIR always refused an unreadable
-// treasury — and so does this. Fail-CLOSED on an unknown balance (RULINGS #4).
-//
-// Two separate tests pin the two terms independently (percent-only refusal, floor-only refusal),
-// because a single test cannot prove a conjunctive merge kept both.
-//
-// The detail carries BOTH terms' arithmetic so the one bracketed term still holds every number an
-// operator retunes from (heavy_treasury_pct_per_purchase, purchase_margin_over_floor) and still
-// distinguishes "own reserve waived because this IS the heavy buy" from "reserve silently dropped".
+// The detail carries BOTH terms' arithmetic so the one bracketed term holds every number an operator
+// retunes from, and still distinguishes "own reserve waived because this IS the heavy buy" from
+// "reserve silently dropped".
 func guardAffordability(req PurchaseRequest) GuardVerdict {
 	// Fail-closed on an unreadable treasury: a buy must never proceed on an unknown balance
 	// (RULINGS #4). Checked FIRST, exactly as the pair did — treasury_floor refused this case

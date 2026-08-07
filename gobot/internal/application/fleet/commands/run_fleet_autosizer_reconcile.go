@@ -26,7 +26,10 @@ type autosizerRunConfig struct {
 
 	LightRotationSlots float64
 
-	HeavyUnservedLanesMin       int
+	HeavyUnservedLanesMin int
+	// HeavyTreasuryPctPerPurchase resolves in lockstep with the growth coordinator's knob of the
+	// same shape (no "<= 0 ⇒ default" fallback), so waking this disabled class cannot revive a
+	// ceiling the fleet does not apply.
 	HeavyTreasuryPctPerPurchase int
 
 	APIUtilizationCeilingPct int
@@ -76,9 +79,6 @@ func resolveFleetAutosizerConfig(cmd *RunFleetAutosizerCoordinatorCommand) autos
 	}
 	if c.HeavyUnservedLanesMin <= 0 {
 		c.HeavyUnservedLanesMin = defaultHeavyUnservedLanesMin
-	}
-	if c.HeavyTreasuryPctPerPurchase <= 0 {
-		c.HeavyTreasuryPctPerPurchase = defaultHeavyTreasuryPctPerPurchase
 	}
 	if c.APIUtilizationCeilingPct <= 0 {
 		c.APIUtilizationCeilingPct = defaultAPIUtilCeilingPct

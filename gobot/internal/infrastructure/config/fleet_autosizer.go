@@ -45,8 +45,8 @@ type FleetAutosizerConfig struct {
 	// shortfall must persist before a heavy is bought (anti-thrash on a transient spike).
 	// 0/absent → 3.
 	HeavyUnservedLanesMin int `mapstructure:"heavy_unserved_lanes_min"`
-	// HeavyTreasuryPctPerPurchase is the analyst's 25%-treasury affordability rule for a heavy
-	// buy (a single heavy must cost ≤ this percent of live treasury). 0/absent → 25.
+	// HeavyTreasuryPctPerPurchase caps a single heavy buy at this percent of live treasury; 0/absent
+	// → NOT applied. Inert while the heavy class is disabled — growth owns heavy buying.
 	HeavyTreasuryPctPerPurchase int `mapstructure:"heavy_treasury_pct_per_purchase"`
 	// HeavyCap is the maximum HEAVY HULLS the fleet may own — capital exposure in large
 	// hulls, counted fleet-wide regardless of dedicated_fleet tag. Since sp-r7eiu removed the

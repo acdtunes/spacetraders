@@ -27,7 +27,6 @@ const (
 	defaultGrowthRunwayMilliHours = 2000
 
 	defaultGrowthPurchaseMarginOverFloor   = 200000
-	defaultGrowthTreasuryPctPerPurchase    = 25
 	defaultGrowthAPIUtilCeilingPct         = 85
 	defaultGrowthMaxPremiumOverCheapestPct = 50
 	defaultGrowthZeroEffectAlarmTicks      = 4

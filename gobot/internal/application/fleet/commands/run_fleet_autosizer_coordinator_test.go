@@ -137,6 +137,23 @@ func TestResolveConfig_Defaults(t *testing.T) {
 	}
 }
 
+// THE OTHER HEAVY BUYER RESOLVES THE SAME ANSWER. This coordinator's percentage-of-treasury knob is
+// a different constant on a path disabled by classDisabled, so it cannot bite today — which is
+// exactly why it is pinned rather than left alone: two heavy buyers silently disagreeing about a
+// revoked ceiling means whichever one is woken next decides fleet policy by accident.
+func TestResolveConfig_HeavyTreasuryPctCeilingIsOffAndZeroDoesNotReassertIt(t *testing.T) {
+	if pct := resolveFleetAutosizerConfig(&RunFleetAutosizerCoordinatorCommand{}).HeavyTreasuryPctPerPurchase; pct != 0 {
+		t.Errorf("an unset knob must leave the ceiling unapplied, got %d%%", pct)
+	}
+	if pct := resolveFleetAutosizerConfig(&RunFleetAutosizerCoordinatorCommand{HeavyTreasuryPctPerPurchase: 25}).HeavyTreasuryPctPerPurchase; pct != 25 {
+		t.Errorf("a configured ceiling must survive the resolve, got %d%%", pct)
+	}
+	// The class is disabled here, so the resolved knob must never reach a live purchase request.
+	if !(autosizerRunConfig{}).classDisabled(HullClassHeavy) {
+		t.Fatal("the heavy class must stay disabled in this coordinator — the growth coordinator owns heavy buying")
+	}
+}
+
 func TestResolveConfig_ExplicitFalseProximalYard(t *testing.T) {
 	no := false
 	cfg := resolveFleetAutosizerConfig(&RunFleetAutosizerCoordinatorCommand{PreferDemandProximalYard: &no})

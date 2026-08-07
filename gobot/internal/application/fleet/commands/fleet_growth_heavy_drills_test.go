@@ -68,8 +68,9 @@ func TestGrowthHeavyBuy_FiresThroughGuardStack_WhenDemandAndEconomicsClear(t *te
 }
 
 // TREASURY NET OF THE IMMUTABLE FLOOR: when the live treasury less the flat reserve floor cannot
-// cover price + margin, the buy is blocked. The margin is raised rather than the treasury lowered
-// so the 25% rule still passes and this isolates the floor term.
+// cover price + margin, the buy is blocked. This runs at the SHIPPED configuration — the
+// percentage-of-treasury ceiling unapplied — so the floor term is the only thing that can refuse,
+// and it is what proves the revocation left the term that actually prevents insolvency untouched.
 func TestGrowthHeavyBuy_BlockedByTreasuryFloor(t *testing.T) {
 	h, buyer, blocks := armedForHeavy(t, growthFixture{treasury: 6_000_000})
 	cmd := growthCmd()
@@ -86,18 +87,38 @@ func TestGrowthHeavyBuy_BlockedByTreasuryFloor(t *testing.T) {
 	}
 }
 
-// THE 25% RULE STILL REFUSES. A treasury that clears the floor term but not the per-hull
-// percentage cap must block on AFFORDABILITY — and reaching that guard at all is what proves no
-// count-based bound short-circuits ahead of it.
-func TestGrowthHeavyBuy_TwentyFivePercentRuleStillRefuses(t *testing.T) {
-	// A 1.4M hull needs a treasury above 5.6M to clear price <= 25% x treasury.
+// THE REVOKED CEILING NO LONGER REFUSES, at the coordinator that actually spends. A 1.4M hull
+// against a 5M treasury is affordable to the floor term (5,000,000 − 50,000 >= 1,400,000 + 200,000)
+// and was refused by the percentage ceiling, which wanted a treasury above 5.6M. It buys now.
+//
+// This is the whole behaviour change, driven through the real resolve and the real guard stack
+// rather than a hand-built request — the coordinator's resolved knobs are what the revocation
+// changed, so a guard-level test alone would not have caught a resolve that re-armed the rule.
+func TestGrowthHeavyBuy_RevokedCeilingNoLongerRefusesWhatTheFloorAffords(t *testing.T) {
 	h, buyer, blocks := armedForHeavy(t, growthFixture{treasury: 5_000_000})
 
-	if _, err := h.reconcileOnce(context.Background(), growthCmd()); err != nil {
+	res, err := h.reconcileOnce(context.Background(), growthCmd())
+	if err != nil {
+		t.Fatalf("reconcileOnce error: %v", err)
+	}
+	if res.Purchased != 1 || buyer.calls != 1 {
+		t.Fatalf("the floor term affords this hull — it must buy, got purchased=%d calls=%d blocked=%v", res.Purchased, buyer.calls, blocks.blocked)
+	}
+}
+
+// AND IT STILL REFUSES WHEN AN OPERATOR RESTORES IT. Identical economics to the drill above; the
+// only difference is the knob, which is what makes this the counterfactual for it — the ceiling
+// really would have refused that buy, and the rule can be put back without a merge.
+func TestGrowthHeavyBuy_RestoredCeilingStillRefuses(t *testing.T) {
+	h, buyer, blocks := armedForHeavy(t, growthFixture{treasury: 5_000_000})
+	cmd := growthCmd()
+	cmd.TreasuryPctPerPurchase = 25
+
+	if _, err := h.reconcileOnce(context.Background(), cmd); err != nil {
 		t.Fatalf("reconcileOnce error: %v", err)
 	}
 	if buyer.calls != 0 {
-		t.Fatalf("the 25%% affordability rule must still refuse this buy, bought %d", buyer.calls)
+		t.Fatalf("a restored percentage ceiling must refuse this buy, bought %d", buyer.calls)
 	}
 	if len(blocks.blocked) == 0 || blocks.blocked[0] != GuardAffordability {
 		t.Fatalf("expected an affordability block, got %v", blocks.blocked)

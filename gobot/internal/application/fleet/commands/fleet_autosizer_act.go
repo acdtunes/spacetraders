@@ -190,8 +190,8 @@ func (h *RunFleetAutosizerCoordinatorHandler) readTickInputs(ctx context.Context
 func classGuardConfig(class HullClass, cfg autosizerRunConfig) (shipType string, maxPrice int64, treasuryPct int) {
 	switch class {
 	case HullClassLight:
-		// Lights are protected by the treasury-floor guard; the analyst %-affordability rule is a
-		// big-ticket cap applied to heavies/warehouse, not the worker pool.
+		// Lights are protected by the treasury-floor guard; the percentage ceiling is a big-ticket
+		// dial, not a worker-pool one.
 		return cfg.ShipTypeLights, cfg.MaxPriceLights, 0
 	case HullClassHeavy:
 		return cfg.ShipTypeHeavies, cfg.MaxPriceHeavies, cfg.HeavyTreasuryPctPerPurchase

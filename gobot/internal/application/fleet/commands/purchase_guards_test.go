@@ -25,10 +25,12 @@ func passingRequest() PurchaseRequest {
 		MaxPriceClass:      0, // no absolute cap
 		MaxPremiumPct:      50,
 
-		LiveTreasury:      5000000,
-		TreasuryReadable:  true,
-		MarginOverFloor:   200000,
-		TreasuryPctPerBuy: 25,
+		LiveTreasury:     5000000,
+		TreasuryReadable: true,
+		MarginOverFloor:  200000,
+		// The percentage-of-treasury ceiling is the SHIPPED state: unapplied. Tests that are about
+		// that term set it explicitly, so none of the others depend on the fixture's choice.
+		TreasuryPctPerBuy: 0,
 
 		APIUtilPct:      40,
 		APIUtilReadable: true,
@@ -140,15 +142,36 @@ func heavyRequest() PurchaseRequest {
 
 // CONJUNCTIVE MERGE, TERM 1 OF 2: affordability refuses on the PERCENT term ALONE.
 //
-// The floor+margin term is deliberately SATISFIED here (spendable 950000 >= 537000), so the only
-// thing that can refuse this purchase is the analyst's 25%-of-treasury single-hull rule. Deleting
-// the percent term from the merged guard makes this test pass a purchase it must refuse — which is
-// exactly the loosening a structural merge must never introduce. This test and its floor twin are
-// separate on purpose: one test cannot prove a conjunction kept both of its terms.
+// The term is no longer applied by any shipped configuration, so the request opts it back IN — which
+// makes this a restorability test as well: an operator who sets the knob gets a working ceiling
+// back, without a merge. The floor+margin term is deliberately SATISFIED here (spendable 950000 >=
+// 537000), so the only thing that can refuse this purchase is the percentage rule. Deleting the
+// percent term from the merged guard makes this test pass a purchase it must refuse. This test and
+// its floor twin are separate on purpose: one test cannot prove a conjunction kept both of its terms.
 func TestGuard_Affordability_RefusesOnThePercentTermAlone(t *testing.T) {
 	r := passingRequest()
+	r.TreasuryPctPerBuy = 25   // the operator restored the ceiling
 	r.LiveTreasury = 1000000   // 25% = 250000 < price 437000 → the percent rule refuses
 	r.MarginOverFloor = 100000 // floor term PASSES: 1000000 − 50000 = 950000 >= 437000+100000
+	assertBlockedBy(t, r, GuardAffordability)
+}
+
+// THE BEHAVIOUR CHANGE, pinned rather than implied: a hull the floor term can afford is no longer
+// refused for costing more than a quarter of the treasury. The counterfactual runs on the IDENTICAL
+// request, so this cannot pass on a fixture the floor term was going to allow through anyway — the
+// second half proves the ceiling really would have refused it.
+func TestGuard_Affordability_RevokedCeilingNoLongerRefusesWhatTheFloorAffords(t *testing.T) {
+	r := heavyRequest()
+	r.LiveTreasury = 3_237_633
+	r.Price = 1_742_500
+	r.CheapestKnownPrice = 1_742_500 // priced at the cheapest known ask: no premium objection
+	r.MarginOverFloor = 200_000
+	// floor term: 3237633 − 50000 = 3187633 >= 1742500 + 200000 = 1942500
+	if d := EvaluateGuards(r); !d.Approved {
+		t.Fatalf("the floor term affords this hull, so it must no longer be refused; blocked by %q: %s", d.BlockedBy, d.Arithmetic())
+	}
+
+	r.TreasuryPctPerBuy = 25 // 25% = 809408 < price 1742500 — what the revoked rule did
 	assertBlockedBy(t, r, GuardAffordability)
 }
 
@@ -204,15 +227,19 @@ func TestGuard_APIUtil_UnderCeilingPasses(t *testing.T) {
 
 // CONJUNCTIVE MERGE, TERM 2 OF 2: affordability refuses on the FLOOR+MARGIN term ALONE.
 //
-// The percent term is deliberately SATISFIED and LEFT ON (pct=25, cap 25% × 2,000,000 = 500000 >=
-// price 437000), so the percent rule has no objection to this buy — only the immutable reserve
-// floor plus the required margin does. Deleting the floor term from the merged guard makes this
-// test approve a purchase that would leave the treasury under its reserve.
+// The percent term never objects on either row — LEFT ON at 25 its cap is 25% × 2,000,000 = 500000
+// >= price 437000, and at 0 it is not applied at all — so only the immutable reserve floor plus the
+// required margin can refuse this buy. Running BOTH rows is what proves the shipped configuration
+// did not take the floor term with it: deleting the floor term approves a purchase that would leave
+// the treasury under its reserve, and it does so whatever the ceiling is set to.
 func TestGuard_Affordability_RefusesOnTheFloorAndMarginTermAlone(t *testing.T) {
-	r := passingRequest()
-	r.LiveTreasury = 2000000    // percent term PASSES: 25% = 500000 >= price 437000
-	r.MarginOverFloor = 1600000 // floor term REFUSES: 2000000 − 50000 = 1950000 < 437000+1600000
-	assertBlockedBy(t, r, GuardAffordability)
+	for _, pct := range []int{25, 0} {
+		r := passingRequest()
+		r.TreasuryPctPerBuy = pct
+		r.LiveTreasury = 2000000    // percent term PASSES (or is off)
+		r.MarginOverFloor = 1600000 // floor term REFUSES: 2000000 − 50000 = 1950000 < 437000+1600000
+		assertBlockedBy(t, r, GuardAffordability)
+	}
 }
 
 // RULINGS #4: an unreadable treasury fails CLOSED — a buy must never proceed on an unknown balance.

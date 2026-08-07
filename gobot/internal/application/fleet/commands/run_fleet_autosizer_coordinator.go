@@ -23,10 +23,9 @@ const (
 	// There are no per-class pool ceilings — see purchase_guards.go for what bounds each
 	// class.
 
-	defaultPurchaseMarginOverFloor     = 200000
-	defaultLightRotationSlots          = 3.5
-	defaultHeavyUnservedLanesMin       = 3
-	defaultHeavyTreasuryPctPerPurchase = 25
+	defaultPurchaseMarginOverFloor = 200000
+	defaultLightRotationSlots      = 3.5
+	defaultHeavyUnservedLanesMin   = 3
 	// defaultHeavyCap is the ONLY count-based bound on any class. It is the SHARED constant
 	// (hullbuy.DefaultHeavyCap), not a copy: sensing's heavy reservation falls back to the same
 	// value, and two hand-copied literals is how the withholder and the spender end up saving

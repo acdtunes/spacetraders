@@ -24,7 +24,11 @@ type growthRunConfig struct {
 	RunwayMilliHours int
 
 	PurchaseMarginOverFloor int64
-	TreasuryPctPerPurchase  int
+	// TreasuryPctPerPurchase is the single-hull percentage-of-treasury ceiling. It resolves with NO
+	// "<= 0 ⇒ default" fallback: 0 leaves the term unapplied, any positive value applies it. A
+	// non-zero default would make the ceiling the ONLY reachable state, because `tune <key> 0`
+	// deletes a key rather than setting it.
+	TreasuryPctPerPurchase int
 
 	APIUtilizationCeilingPct int
 
@@ -63,9 +67,6 @@ func resolveFleetGrowthConfig(cmd *RunFleetGrowthCoordinatorCommand) growthRunCo
 	}
 	if c.PurchaseMarginOverFloor <= 0 {
 		c.PurchaseMarginOverFloor = defaultGrowthPurchaseMarginOverFloor
-	}
-	if c.TreasuryPctPerPurchase <= 0 {
-		c.TreasuryPctPerPurchase = defaultGrowthTreasuryPctPerPurchase
 	}
 	if c.APIUtilizationCeilingPct <= 0 {
 		c.APIUtilizationCeilingPct = defaultGrowthAPIUtilCeilingPct

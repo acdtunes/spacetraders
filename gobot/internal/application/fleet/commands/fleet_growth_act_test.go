@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -619,6 +620,57 @@ func TestResolveFleetGrowthConfig_ExplicitZeroHeavyCapIsAHold(t *testing.T) {
 	cfg := resolveFleetGrowthConfig(&RunFleetGrowthCoordinatorCommand{HeavyCap: &hold})
 	if cfg.HeavyCap != 0 {
 		t.Fatalf("an explicit 0 heavy cap must survive as a hold, got %d", cfg.HeavyCap)
+	}
+}
+
+// THE TRAP THE KNOB USED TO CARRY. A "<= 0 ⇒ default" resolve made an explicit 0 REASSERT the
+// percentage-of-treasury ceiling, so an operator revoking it by config would believe they had and
+// would not have — and `tune <key> 0` deletes a key rather than setting it, which left the ceiling
+// as the only reachable state. Unapplied is now the shipped state; a positive value is the only
+// thing that applies the rule, and it still does.
+func TestResolveFleetGrowthConfig_TreasuryPctCeilingIsOffAndZeroDoesNotReassertIt(t *testing.T) {
+	if pct := resolveFleetGrowthConfig(&RunFleetGrowthCoordinatorCommand{}).TreasuryPctPerPurchase; pct != 0 {
+		t.Errorf("an unset knob must leave the ceiling unapplied, got %d%%", pct)
+	}
+	if pct := resolveFleetGrowthConfig(&RunFleetGrowthCoordinatorCommand{TreasuryPctPerPurchase: 0}).TreasuryPctPerPurchase; pct != 0 {
+		t.Errorf("an explicit 0 must stay unapplied, not resolve back to a ceiling, got %d%%", pct)
+	}
+	if pct := resolveFleetGrowthConfig(&RunFleetGrowthCoordinatorCommand{TreasuryPctPerPurchase: 25}).TreasuryPctPerPurchase; pct != 25 {
+		t.Errorf("a configured ceiling must survive the resolve — restorable without a merge, got %d%%", pct)
+	}
+}
+
+// FAIL-CLOSED SURVIVES THE REVOCATION (RULINGS #4), and this is the one that matters most: the
+// percentage term also refused an unreadable balance, so removing it must not leave the guard
+// permitting a buy it cannot price against a treasury it cannot read. Fed the RESOLVED knobs rather
+// than hand-written ones, so this always exercises the configuration the coordinator actually runs.
+func TestGrowthResolvedDefaults_UnreadableTreasuryStillRefusesWithTheCeilingOff(t *testing.T) {
+	cfg := resolveFleetGrowthConfig(&RunFleetGrowthCoordinatorCommand{})
+	if cfg.TreasuryPctPerPurchase != 0 {
+		t.Fatalf("this test is aimed at the ceiling-OFF configuration; the resolve gave %d%%", cfg.TreasuryPctPerPurchase)
+	}
+	// The balance is one the floor term AFFORDS, so readability is the only thing left that can
+	// refuse: an unreadable request the floor term would have blocked anyway proves nothing, and the
+	// first assertion is what fails if this fixture ever drifts to that side of the floor.
+	req := PurchaseRequest{
+		Class:             HullClassHeavy,
+		LiveTreasury:      5_000_000,
+		TreasuryReadable:  true,
+		Price:             1_400_000,
+		MarginOverFloor:   cfg.PurchaseMarginOverFloor,
+		TreasuryPctPerBuy: cfg.TreasuryPctPerPurchase,
+	}
+	if v := guardAffordability(req); !v.Passed {
+		t.Fatalf("the fixture must PASS while the balance is readable, or the fail-closed arm is never reached: %s", v.Detail)
+	}
+
+	req.TreasuryReadable = false
+	v := guardAffordability(req)
+	if v.Passed {
+		t.Fatalf("an unreadable treasury must refuse whatever the percentage rule is set to: %s", v.Detail)
+	}
+	if !strings.Contains(v.Detail, "UNREADABLE") {
+		t.Fatalf("the refusal must name the unreadable balance, not refuse for some other reason: %s", v.Detail)
 	}
 }
 
