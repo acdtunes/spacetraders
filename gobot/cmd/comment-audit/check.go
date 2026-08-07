@@ -85,13 +85,15 @@ func GatePolicy(bl *Baseline, scope Scope) CheckOpts {
 	}
 }
 
-// Scope is the set of packages a run checks. There is no default matching: the
-// gate must not descend, since a nested package's files are not its parent's
-// and it would hold a lane to density it never opened, while -only must, since
-// an operator naming a directory means everything under it.
+// Scope is the packages a run checks, and optionally the files the per-file ceiling answers for.
+// There is no default matching: the gate must not descend, since a nested package's files are not
+// its parent's and it would hold a lane to density it never opened, while -only must, since an
+// operator naming a directory means everything under it.
 type Scope struct {
 	paths   []string
 	subtree bool
+	// files is what the ceiling applies to. NIL AND EMPTY DIFFER: nil is no filter, empty is none.
+	files map[string]bool
 }
 
 // ExactPackages selects the packages named and nothing nested under them.
@@ -99,6 +101,15 @@ func ExactPackages(paths []string) Scope { return Scope{paths: paths} }
 
 // PackageSubtrees selects the packages named and everything nested under them.
 func PackageSubtrees(paths []string) Scope { return Scope{paths: paths, subtree: true} }
+
+// ChangedFiles selects the packages named and holds the per-file ceiling to the files named.
+func ChangedFiles(packages, files []string) Scope {
+	set := make(map[string]bool, len(files))
+	for _, f := range files {
+		set[f] = true
+	}
+	return Scope{paths: packages, files: set}
+}
 
 // contains reports whether a package is checked. AN EMPTY SCOPE IS EVERY
 // PACKAGE: it is the absence of a filter, not of packages.
@@ -120,6 +131,13 @@ func (s Scope) contains(pkg string) bool {
 		}
 	}
 	return false
+}
+
+func (s Scope) containsFile(path string) bool {
+	if s.files == nil {
+		return true
+	}
+	return s.files[path]
 }
 
 // Violation is one package, or one file within it, that failed a check.
@@ -211,6 +229,9 @@ func Check(pkgs map[string]*PkgStat, opts CheckOpts) []Violation {
 				continue
 			}
 			for _, f := range p.FileStats {
+				if !opts.Scope.containsFile(f.Path) {
+					continue
+				}
 				if f.ProseRatio() <= opts.MaxFileProseRatio {
 					continue
 				}

@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -74,10 +75,14 @@ func TestCommentDensityGate(t *testing.T) {
 		t.Fatal("the baseline records no packages, so every regression would read as clean")
 	}
 
-	touched := changedPackages(t, root)
+	// ONE git read, BOTH halves of the scope. Deriving them separately is how the packages the
+	// ratchet answers for and the files the ceiling answers for would drift apart.
+	paths := changedPaths(t, root)
+	touched := packageDirs(paths)
+	files := censusableGoFiles(paths)
 	assertTouchedPathsMatchTheCensus(t, root, touched, pkgs)
 
-	violations := scopedGateViolations(pkgs, effectiveBaseline(t, root, bl, touched), touched)
+	violations := scopedGateViolations(pkgs, effectiveBaseline(t, root, bl, touched), touched, files)
 	if len(violations) == 0 {
 		return
 	}
@@ -168,26 +173,30 @@ func mainPackageStats(t *testing.T, moduleDir string, touched []string) map[stri
 // opened. -only is the selector that descends, because an operator naming a
 // directory means the subtree; the gate names a changed set and means only it.
 //
-// AN EMPTY SET MEANS NOTHING TO CHECK, AND MUST RETURN HERE. A scope is a filter
-// where empty means "no filter", so passing an empty touched set through to
-// Check would restore the tree-wide bar this scope exists to prevent — and
-// restore it on exactly the runs that changed no Go source, blocking a lane that
-// edited only tests or docs with the state of the whole tree.
-func scopedGateViolations(pkgs map[string]*PkgStat, bl *Baseline, touched []string) []Violation {
+// AN EMPTY SET MEANS NOTHING TO CHECK, AND MUST RETURN HERE. Scope.paths is a filter where empty
+// means "no filter", so passing an empty touched set through to Check would restore the tree-wide
+// bar this scope exists to prevent — and restore it on exactly the runs that changed no Go source,
+// blocking a lane that edited only tests or docs with the state of the whole tree.
+//
+// files scopes the per-file CEILING the same way touched scopes the ratchet: to what this lane
+// actually wrote. Without it a lane inherits every essay in a package it edited one line of.
+func scopedGateViolations(pkgs map[string]*PkgStat, bl *Baseline, touched, files []string) []Violation {
 	if len(touched) == 0 {
 		return nil
 	}
-	return Check(pkgs, GatePolicy(bl, ExactPackages(touched)))
+	return Check(pkgs, GatePolicy(bl, ChangedFiles(touched, files)))
 }
 
-// changedPackages is the set of packages this working tree changed relative to
-// main — committed, staged, unstaged or untracked, since all four are equally
-// this lane's doing and none of them are main's.
+// changedPaths is everything this working tree changed relative to main — committed, staged,
+// unstaged or untracked, since all four are equally this lane's doing and none of them are main's.
 //
-// The comparison is against the merge-base, not against main's tip: a lane that
-// has not rebased must answer for its own commits and not for whatever landed on
-// main meanwhile.
-func changedPackages(t *testing.T, moduleDir string) []string {
+// The comparison is against the merge-base, not against main's tip: a lane that has not rebased must
+// answer for its own commits and not for whatever landed on main meanwhile.
+//
+// IT IS THE ONE DEFINITION OF WHAT THIS LANE DID. Both halves of the scope — the packages the
+// ratchet answers for and the files the ceiling answers for — are derived from this list, so the two
+// checks cannot come to disagree about which changes are the lane's.
+func changedPaths(t *testing.T, moduleDir string) []string {
 	t.Helper()
 	base := mergeBaseWithMain(t, moduleDir)
 
@@ -196,7 +205,7 @@ func changedPackages(t *testing.T, moduleDir string) []string {
 	tracked, err := runGit(moduleDir, "diff", "--name-only", "--no-renames", "--relative", base)
 	if err != nil {
 		t.Fatalf("listing changed files: %v\n"+
-			"The gate scopes itself to the packages this tree changed, and it will not "+
+			"The gate scopes itself to what this tree changed, and it will not "+
 			"fall back to checking nothing.", err)
 	}
 	untracked, err := runGit(moduleDir, "ls-files", "--others", "--exclude-standard")
@@ -204,7 +213,13 @@ func changedPackages(t *testing.T, moduleDir string) []string {
 		t.Fatalf("listing untracked files: %v\n"+
 			"A new package arrives untracked, so skipping these would let one in unchecked.", err)
 	}
-	return packageDirs(append(splitLinesNonEmpty(tracked), splitLinesNonEmpty(untracked)...))
+	return append(splitLinesNonEmpty(tracked), splitLinesNonEmpty(untracked)...)
+}
+
+// changedPackages is the set of packages this working tree changed.
+func changedPackages(t *testing.T, moduleDir string) []string {
+	t.Helper()
+	return packageDirs(changedPaths(t, moduleDir))
 }
 
 // mergeBaseWithMain resolves where this branch left main. The local branch is
@@ -274,17 +289,22 @@ func splitLinesNonEmpty(s string) []string {
 	return out
 }
 
+// censusReads reports whether the census counts this path at all. A Makefile, a fixture or a
+// _test.go cannot move a ratio, so neither half of the scope may be widened by one. Shared by both
+// derivations below, so the packages the ratchet answers for and the files the ceiling answers for
+// are filtered by one rule rather than two copies of it.
+func censusReads(p string) bool {
+	return strings.HasSuffix(p, ".go") && !strings.HasSuffix(p, "_test.go")
+}
+
 // packageDirs turns changed paths into the packages whose census could have
-// moved. Only non-test .go files qualify, because those are the only files the
-// census reads: a Makefile, a fixture or a _test.go cannot change a ratio, and
-// scoping the gate to their directories would hold a lane to numbers it did not
-// touch. Paths arrive slash-separated from git and stay that way, which is how
+// moved. Paths arrive slash-separated from git and stay that way, which is how
 // the census keys packages.
 func packageDirs(paths []string) []string {
 	seen := map[string]bool{}
 	var out []string
 	for _, p := range paths {
-		if !strings.HasSuffix(p, ".go") || strings.HasSuffix(p, "_test.go") {
+		if !censusReads(p) {
 			continue
 		}
 		dir := path.Dir(p)
@@ -293,6 +313,23 @@ func packageDirs(paths []string) []string {
 		}
 		seen[dir] = true
 		out = append(out, dir)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// censusableGoFiles turns changed paths into the files the per-file ceiling answers for: the ones
+// this lane added or modified that the census actually reads. A file absent from here was not
+// touched by the lane, and the ceiling leaves it to whoever writes it.
+func censusableGoFiles(paths []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, p := range paths {
+		if !censusReads(p) || seen[p] {
+			continue
+		}
+		seen[p] = true
+		out = append(out, p)
 	}
 	sort.Strings(out)
 	return out
@@ -424,4 +461,165 @@ func gateReport(touched []string, violations []Violation) string {
 		fmt.Fprintf(&b, "\n  %s\n", v)
 	}
 	return b.String()
+}
+
+// --- the per-file ceiling answers for what the lane WROTE ---
+
+// THE CEILING IS A BAR, AND A BAR MUST STILL BITE. Scoping it to changed files is only correct if
+// the two cases it exists for still fail — a file this lane ADDED over the ceiling, and one it
+// EDITED past it — while a file it never opened does not. Applied per package that third case made a
+// six-line edit answerable for every essay beside it, recreating the deadlock the package ratchet
+// already refuses ("one offending file anywhere then blocks every lane, including the sweep that
+// would remove it").
+//
+// One requirement per test, so a failure names which of the three broke.
+
+// laneWithThreeFileRelationships builds a throwaway repo holding all three at once: main carries a
+// dense file the lane never opens and a lean one; the lane then EDITS the lean one past the ceiling
+// and ADDS a dense file, untracked, which is how a new file actually arrives.
+//
+// It drives the REAL derivation — changedPaths against a real merge-base, then packageDirs and
+// censusableGoFiles — because the risk is not in the comparison but in what reaches it: a set that
+// missed new files, or missed edits, would stop the bar biting while every other test passed.
+//
+// IT CALIBRATES BEFORE IT REPORTS. Unfiltered, all three files are over the ceiling, so a silence
+// below is the scope declining to report rather than a fixture with nothing to say.
+func laneWithThreeFileRelationships(t *testing.T) (reported map[string]bool, all []Violation) {
+	t.Helper()
+	dir := t.TempDir()
+	gitInit(t, dir)
+	writeGoFile(t, dir, "pkg/untouched.go", essayLines)
+	writeGoFile(t, dir, "pkg/edited.go", leanLines)
+	gitMust(t, dir, "add", "-A")
+	gitMust(t, dir, "commit", "-m", "baseline on main")
+	gitMust(t, dir, "checkout", "-b", "lane")
+
+	writeGoFile(t, dir, "pkg/edited.go", essayLines)
+	writeGoFile(t, dir, "pkg/added.go", essayLines)
+
+	pkgs, err := Scan(dir)
+	if err != nil {
+		t.Fatalf("scanning the fixture: %v", err)
+	}
+	if unfiltered := Check(pkgs, GatePolicy(nil, ExactPackages([]string{"pkg"}))); len(unfiltered) != 3 {
+		t.Fatalf("unfiltered = %v, want all three files over the ceiling; the fixture no longer "+
+			"demonstrates what the file scope is deciding between", unfiltered)
+	}
+
+	paths := changedPaths(t, dir)
+	all = scopedGateViolations(pkgs, nil, packageDirs(paths), censusableGoFiles(paths))
+	reported = map[string]bool{}
+	for _, v := range all {
+		reported[v.File] = true
+	}
+	return reported, all
+}
+
+// REQUIREMENT 1: a file this lane ADDED over the ceiling still fails.
+func TestFileCeilingFailsANewFileTheLaneAdded(t *testing.T) {
+	reported, all := laneWithThreeFileRelationships(t)
+
+	if !reported["pkg/added.go"] {
+		t.Fatalf("a NEW file over the ceiling was not reported (violations %v) — the bar no longer "+
+			"bites on the case it exists for", all)
+	}
+}
+
+// REQUIREMENT 2: a file this lane EDITED past the ceiling still fails. Without it a lane could push
+// any file it touches over the bar and inherit the exemption meant for files it never opened.
+func TestFileCeilingFailsAFileTheLaneEditedPastIt(t *testing.T) {
+	reported, all := laneWithThreeFileRelationships(t)
+
+	if !reported["pkg/edited.go"] {
+		t.Fatalf("a file this lane EDITED past the ceiling was not reported (violations %v)", all)
+	}
+}
+
+// REQUIREMENT 3, and the only thing this change relaxes: a file the lane never opened is exempt.
+func TestFileCeilingExemptsAFileTheLaneNeverTouched(t *testing.T) {
+	reported, all := laneWithThreeFileRelationships(t)
+
+	if reported["pkg/untouched.go"] {
+		t.Fatalf("a file this lane never opened was reported (violations %v) — that is the "+
+			"inherited-essay deadlock the file scope exists to remove", all)
+	}
+	if len(all) != 2 {
+		t.Fatalf("violations = %v, want exactly the added and the edited file", all)
+	}
+}
+
+// The nil-versus-empty trap, one level down from the package scope's. An empty file set means this
+// lane wrote no file the census reads, NOT "check every file" — and a Scope whose filter reads empty
+// as unfiltered would restore the tree-wide bar on exactly that run.
+func TestFileCeilingWithNoChangedFilesChecksNoFile(t *testing.T) {
+	pkgs, bl := denseTree()
+
+	if got := scopedGateViolations(pkgs, bl, []string{"internal/mine"}, nil); len(got) != 1 {
+		t.Fatalf("violations = %v, want only the package regression: no file was changed, so the "+
+			"ceiling answers for none", got)
+	}
+	// Calibration: naming the file is what brings the ceiling back, so the single violation above is
+	// the file scope working and not a fixture whose file sits under the bar.
+	if got := scopedGateViolations(pkgs, bl, []string{"internal/mine"}, []string{"internal/mine/essay.go"}); len(got) != 2 {
+		t.Fatalf("violations = %v, want the regression AND the file ceiling once the file is named", got)
+	}
+}
+
+// censusableGoFiles and packageDirs must filter by one rule, or a lane could be scoped to a package
+// by a file the ceiling then declines to check.
+func TestChangedFilesAndPackagesReadTheSameFiles(t *testing.T) {
+	paths := []string{"a/x.go", "a/x_test.go", "a/Makefile", "b/y.go", "b/y.go", "c/testdata/z.txt"}
+
+	if got := censusableGoFiles(paths); !reflect.DeepEqual(got, []string{"a/x.go", "b/y.go"}) {
+		t.Fatalf("censusableGoFiles = %v, want the non-test .go files, deduplicated", got)
+	}
+	if got := packageDirs(paths); !reflect.DeepEqual(got, []string{"a", "b"}) {
+		t.Fatalf("packageDirs = %v, want the directories of those same files", got)
+	}
+}
+
+// --- fixture helpers ---
+
+// essayLines and leanLines are comment counts either side of the ceiling, expressed as counts so a
+// reader can see which side of DefaultMaxFileProseRatio each lands on.
+const (
+	essayLines = 20
+	leanLines  = 1
+)
+
+// writeGoFile writes a compilable file whose uncredited comment count is exactly comments. The
+// comments sit INSIDE a function body, where the doc credit cannot reach them — a file made dense
+// with godoc would be forgiven and would not exercise the ceiling at all.
+func writeGoFile(t *testing.T, dir, rel string, comments int) {
+	t.Helper()
+	full := filepath.Join(dir, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		t.Fatalf("creating %s: %v", filepath.Dir(full), err)
+	}
+	var b strings.Builder
+	b.WriteString("package pkg\n\nfunc f() {\n")
+	for i := 0; i < comments; i++ {
+		b.WriteString("\t// a line of prose the doc credit does not cover\n")
+	}
+	b.WriteString("\t_ = 1\n}\n")
+	if err := os.WriteFile(full, []byte(b.String()), 0o644); err != nil {
+		t.Fatalf("writing %s: %v", rel, err)
+	}
+}
+
+// gitInit makes a throwaway repository whose default branch is main, which is the ref the gate
+// resolves its merge-base against.
+func gitInit(t *testing.T, dir string) {
+	t.Helper()
+	gitMust(t, dir, "init")
+	gitMust(t, dir, "checkout", "-b", "main")
+	gitMust(t, dir, "config", "user.email", "gate@example.test")
+	gitMust(t, dir, "config", "user.name", "Gate Fixture")
+}
+
+func gitMust(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	if _, err := runGit(dir, args...); err != nil {
+		t.Fatalf("git %s: %v", strings.Join(args, " "), err)
+	}
 }

@@ -75,10 +75,10 @@ func (h *RunOpportunityRelocatorHandler) markCompleted(ctx context.Context, cmd 
 // A persisted intent is never re-DECIDED — only finished. For each not-yet-completed intent the
 // hull's LIVE position decides which:
 //
-//   - already AT the target system: the move landed (possibly moments before the crash, before the
-//     completion could be written). Mark it completed. Its DecidedAt becomes the hull's cooldown
-//     clock, so the hull is not immediately re-scored either.
-//   - NOT at the target: the move was interrupted in flight. RESUME it toward the SAME target
+//   - already AT the target system: the move landed, possibly moments before the crash. Mark it
+//     completed; DecidedAt stays the cooldown clock, so the hull is not immediately re-scored either.
+//   - still IN TRANSIT: the move is under way and needs nothing from this tick. Leave it in flight.
+//   - stationary and NOT at the target: the move was interrupted. RESUME it toward the SAME target
 //     through the SAME actuator, rather than re-scoring the hull against a map that has moved since.
 //     Re-deciding here is exactly the double-relocation bug: the hull would be sent somewhere new
 //     from an intermediate position it was never evaluated at.
@@ -98,7 +98,7 @@ func (h *RunOpportunityRelocatorHandler) reconcileInFlight(
 		movingOrSettling: map[string]bool{},
 		lastRelocation:   map[string]time.Time{},
 	}
-	positions := hullPositions(hulls)
+	live := hullsBySymbol(hulls)
 	for _, intent := range intents {
 		if intent.DecidedAt.After(state.lastRelocation[intent.ShipSymbol]) {
 			state.lastRelocation[intent.ShipSymbol] = intent.DecidedAt
@@ -109,24 +109,35 @@ func (h *RunOpportunityRelocatorHandler) reconcileInFlight(
 		state.movingOrSettling[intent.ShipSymbol] = true
 		state.hullsBySystem[intent.TargetSystem]++
 		state.inFlight++
-		h.finishInterruptedMove(ctx, cmd, intent, positions, result)
+		h.finishInterruptedMove(ctx, cmd, intent, live, result)
 	}
 	return state
 }
 
-// finishInterruptedMove completes or resumes ONE interrupted intent (see reconcileInFlight).
+// finishInterruptedMove completes, waits out, or resumes ONE unfinished intent (see reconcileInFlight).
 func (h *RunOpportunityRelocatorHandler) finishInterruptedMove(
 	ctx context.Context,
 	cmd *RunOpportunityRelocatorCommand,
 	intent RelocationIntent,
-	positions map[string]string,
+	live map[string]RelocatorHull,
 	result *RelocatorTickResult,
 ) {
 	logger := common.LoggerFromContext(ctx)
-	if positions[intent.ShipSymbol] == intent.TargetSystem {
+	hull := live[intent.ShipSymbol]
+	if hull.CurrentSystem == intent.TargetSystem {
 		h.markCompleted(ctx, cmd, intent)
 		logger.Log("INFO", fmt.Sprintf("Opportunity relocator: %s already landed at %s - completing the persisted intent, not re-deciding it", intent.ShipSymbol, intent.TargetSystem), map[string]interface{}{
 			"ship_symbol": intent.ShipSymbol, "target_system": intent.TargetSystem, "reason": "intent_landed",
+		})
+		return
+	}
+	// STILL FLYING — leave it alone, and do not ask the ownership gate about it. A hull in transit
+	// reads OnTour, so actuationVerdict would call it "mid_tour" and ABANDON the move mid-journey,
+	// stranding a multi-leg one at a gate. Nothing moves here, so there is nothing for a gate to guard.
+	if hull.InTransit {
+		result.skip(skipReasonStillInFlight)
+		logger.Log("INFO", fmt.Sprintf("Opportunity relocator: %s is still flying to %s - leaving the intent in flight rather than re-issuing or abandoning it", intent.ShipSymbol, intent.TargetSystem), map[string]interface{}{
+			"ship_symbol": intent.ShipSymbol, "target_system": intent.TargetSystem, "reason": skipReasonStillInFlight,
 		})
 		return
 	}

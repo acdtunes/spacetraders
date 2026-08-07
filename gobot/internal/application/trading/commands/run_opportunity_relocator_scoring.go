@@ -263,14 +263,14 @@ func countHullsBySystem(hulls []RelocatorHull) map[string]int {
 	return counts
 }
 
-// hullPositions maps each observed hull to the system it is actually in — the live state the restart
-// contract compares a persisted intent against.
-func hullPositions(hulls []RelocatorHull) map[string]string {
-	positions := make(map[string]string, len(hulls))
+// hullsBySymbol indexes the observation by ship symbol — the live state the restart contract compares
+// an intent against. The whole hull, because it turns on where the hull IS and whether it still flies.
+func hullsBySymbol(hulls []RelocatorHull) map[string]RelocatorHull {
+	bySymbol := make(map[string]RelocatorHull, len(hulls))
 	for _, hull := range hulls {
-		positions[hull.ShipSymbol] = hull.CurrentSystem
+		bySymbol[hull.ShipSymbol] = hull
 	}
-	return positions
+	return bySymbol
 }
 
 // ── knob resolution (RULINGS #5: the 0/absent -> documented default idiom) ───────────────────────

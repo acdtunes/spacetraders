@@ -34,7 +34,7 @@ func denseTree() (map[string]*PkgStat, *Baseline) {
 func TestScopedGateHoldsALaneToItsOwnPackages(t *testing.T) {
 	pkgs, bl := denseTree()
 
-	got := scopedGateViolations(pkgs, bl, []string{"internal/mine"})
+	got := scopedGateViolations(pkgs, bl, []string{"internal/mine"}, []string{"internal/mine/essay.go"})
 	if len(got) == 0 {
 		t.Fatal("a package the lane changed must still fail: scoping the gate is not softening it")
 	}
@@ -54,10 +54,10 @@ func TestScopedGateHoldsALaneToItsOwnPackages(t *testing.T) {
 func TestScopedGateIgnoresDensityTheLaneDidNotCause(t *testing.T) {
 	pkgs, bl := denseTree()
 
-	if got := scopedGateViolations(pkgs, bl, []string{"internal/mine"}); len(got) != 2 {
+	if got := scopedGateViolations(pkgs, bl, []string{"internal/mine"}, []string{"internal/mine/essay.go"}); len(got) != 2 {
 		t.Fatalf("fixture check: internal/mine should have 2 violations, got %v", got)
 	}
-	got := scopedGateViolations(pkgs, bl, []string{"internal/elsewhere"})
+	got := scopedGateViolations(pkgs, bl, []string{"internal/elsewhere"}, nil)
 	if len(got) != 0 {
 		t.Fatalf("violations = %v, want none: internal/theirs is dense, but this lane changed neither file in it", got)
 	}
@@ -72,7 +72,7 @@ func TestScopedGateWithNoChangesChecksNothing(t *testing.T) {
 	pkgs, bl := denseTree()
 
 	for _, touched := range [][]string{nil, {}} {
-		if got := scopedGateViolations(pkgs, bl, touched); len(got) != 0 {
+		if got := scopedGateViolations(pkgs, bl, touched, nil); len(got) != 0 {
 			t.Fatalf("touched=%v produced %d violation(s) in a tree the lane did not change: "+
 				"an empty scope reached Check, where empty means unfiltered", touched, len(got))
 		}
@@ -114,7 +114,7 @@ func nestedTree() (map[string]*PkgStat, *Baseline) {
 func TestGateScopeDoesNotDescendIntoAPackageTheLaneDidNotOpen(t *testing.T) {
 	pkgs, bl := nestedTree()
 
-	got := scopedGateViolations(pkgs, bl, []string{"internal/parent"})
+	got := scopedGateViolations(pkgs, bl, []string{"internal/parent"}, []string{"internal/parent/essay.go"})
 	if len(got) != 2 {
 		t.Fatalf("violations = %v, want the parent's regression and its file ceiling: "+
 			"the package this lane did change must still fail", got)

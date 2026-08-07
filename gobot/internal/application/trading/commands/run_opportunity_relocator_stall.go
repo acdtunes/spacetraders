@@ -77,6 +77,8 @@ const (
 	skipReasonRelocateFailed      = "relocate_failed"
 	// skipReasonRegionsUnreadable is recorded per hull whose region set could not be read.
 	skipReasonRegionsUnreadable = "regions_unreadable"
+	// skipReasonStillInFlight marks a relocation under way — NOT a commit failure; the move is working.
+	skipReasonStillInFlight = "still_in_flight"
 	// skipReasonRepositionDisabled marks the operator stand-down tick.
 	skipReasonRepositionDisabled = "reposition_disabled"
 )

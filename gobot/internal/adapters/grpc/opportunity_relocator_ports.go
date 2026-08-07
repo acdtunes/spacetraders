@@ -197,17 +197,19 @@ func (o *RelocatorFleetObserverAdapter) ObserveHull(ctx context.Context, playerI
 // RULINGS #7 is enforced on, read by the bulk observation and by the actuation re-check alike. A second
 // copy of this is how the two gates end up disagreeing about what a protected hull is.
 func relocatorHullFrom(ship *navigation.Ship, systemSymbol string, tours tourOccupancy) tradingCmd.RelocatorHull {
-	onTour := ship.IsInTransit() || tours.holds(ship)
+	inTransit := ship.IsInTransit()
+	onTour := inTransit || tours.holds(ship)
 	// An OFFERED hull is still OnTour — its container is running, it is simply waiting — and the
 	// reconciler lifts the mid-tour exclusion for it. A hull IN TRANSIT is never offered whatever the row
 	// says: it is physically flying, so no offer can make it available.
-	offered := !ship.IsInTransit() && tours.offeredHulls[ship.ShipSymbol()]
+	offered := !inTransit && tours.offeredHulls[ship.ShipSymbol()]
 	return tradingCmd.RelocatorHull{
 		ShipSymbol:       ship.ShipSymbol(),
 		CurrentSystem:    systemSymbol,
 		IsCommandFrigate: ship.Role() == commandRole,
 		Pinned:           ship.IsReservedByCaptain() || (ship.IsAssigned() && !onTour),
 		OnTour:           onTour,
+		InTransit:        inTransit,
 		Offered:          offered,
 	}
 }

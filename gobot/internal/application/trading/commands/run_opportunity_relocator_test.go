@@ -963,6 +963,80 @@ func TestOpportunityRelocatorShould_LeaveAnInterruptedMoveInFlightWhenItsReReadI
 	}
 }
 
+// A hull PHYSICALLY FLYING its own relocation must be left to arrive. It reads OnTour — nothing is at
+// honest release while it is in the air — so an ownership gate applied here calls it mid_tour and
+// abandons the very move it is completing, which on a multi-leg journey strands the hull at an
+// intermediate gate.
+func TestOpportunityRelocatorShould_LeaveAMoveAloneWhileItsHullIsStillFlyingToTheTarget(t *testing.T) {
+	h := newRelocHarness(t)
+	h.cmd.MaxConcurrentRelocations = 1
+	// HAULER-A is in the air between X1-HOME and X1-RICH. HAULER-B is idle on excellent ground, so the
+	// concurrency cap is the ONLY thing that can hold it back — which is how this asserts that the
+	// unfinished intent still counts as in flight.
+	h.fleet.hulls = []RelocatorHull{
+		{ShipSymbol: "HAULER-A", CurrentSystem: "X1-HOME", OnTour: true, InTransit: true},
+		{ShipSymbol: "HAULER-B", CurrentSystem: "X1-B"},
+	}
+	h.regions.byOrigin["X1-B"] = []RelocatorRegion{relocRegion("X1-RICH-B", 2, 900_000)}
+	h.telemetry.rows = append(h.telemetry.rows, relocTelemetryFor("HAULER-B", 100_000, relocNow.Add(-30*time.Minute))...)
+	h.intents = newRelocFakeIntents(RelocationIntent{
+		ShipSymbol: "HAULER-A", FromSystem: "X1-HOME", TargetSystem: "X1-RICH", TargetWaypoint: "X1-RICH-MARKET",
+		DecidedAt: relocNow.Add(-5 * time.Minute), Completed: false,
+	})
+	h.handler = NewRunOpportunityRelocatorHandler(h.fleet, h.regions, h.telemetry, h.era, h.actuator, h.intents, nil, h.clock)
+
+	result := h.reconcile(t)
+
+	relocRequireNoMove(t, h.actuator, "the hull is already flying to its target, so re-issuing the move would only 4214 against a journey already under way")
+	if h.intents.records["HAULER-A"].Completed {
+		t.Fatal("the intent was COMPLETED while the hull was still in the air; a multi-leg move would stop at whatever gate it had reached and the hull would be stranded there")
+	}
+	if result.Skipped[string(actuationTaken)] != 0 {
+		t.Fatalf("counted the flying hull as claimed by another operation (%s); in transit is not evidence of a claim, and reading it as one abandons the relocator's own move", string(actuationTaken))
+	}
+	if result.Skipped[skipReasonStillInFlight] != 1 {
+		t.Fatalf("skips %v, want exactly one %s — a journey in progress must be counted as progress, not as a licensed relocation that failed", result.Skipped, skipReasonStillInFlight)
+	}
+	for _, ship := range h.fleet.reobserved {
+		if ship == "HAULER-A" {
+			t.Fatal("the ownership gate was consulted for a hull nothing was being asked to move; it has nothing to guard there, and its mid_tour verdict is what abandons the move")
+		}
+	}
+	if result.Skipped["at_concurrency_cap"] == 0 {
+		t.Fatalf("skips %v, want at_concurrency_cap — the unfinished intent must keep consuming its slot for the whole flight, not free it the moment the hull leaves", result.Skipped)
+	}
+}
+
+// The other half of the contract: a later tick, once the hull has actually arrived, is what completes
+// the intent. Without this the tick above would be indistinguishable from one that simply forgot.
+func TestOpportunityRelocatorShould_CompleteTheInFlightMoveOnTheTickAfterTheHullArrives(t *testing.T) {
+	h := newRelocHarness(t)
+	h.fleet.hulls = []RelocatorHull{{ShipSymbol: "HAULER-A", CurrentSystem: "X1-HOME", OnTour: true, InTransit: true}}
+	h.intents = newRelocFakeIntents(RelocationIntent{
+		ShipSymbol: "HAULER-A", FromSystem: "X1-HOME", TargetSystem: "X1-RICH", TargetWaypoint: "X1-RICH-MARKET",
+		DecidedAt: relocNow.Add(-5 * time.Minute), Completed: false,
+	})
+	h.handler = NewRunOpportunityRelocatorHandler(h.fleet, h.regions, h.telemetry, h.era, h.actuator, h.intents, nil, h.clock)
+
+	h.reconcile(t)
+	if h.intents.records["HAULER-A"].Completed {
+		t.Fatal("the intent was completed on the tick that found the hull still flying")
+	}
+
+	// The hull lands: the ONLY thing that changes between the two ticks.
+	h.fleet.hulls = []RelocatorHull{{ShipSymbol: "HAULER-A", CurrentSystem: "X1-RICH"}}
+
+	h.reconcile(t)
+
+	if !h.intents.records["HAULER-A"].Completed {
+		t.Fatal("the arrival tick did not complete the intent; it would consume a concurrency slot forever and deadlock the reconciler at its cap")
+	}
+	if got := h.intents.records["HAULER-A"].DecidedAt; !got.Equal(relocNow.Add(-5 * time.Minute)) {
+		t.Fatalf("completing the intent moved DecidedAt to %v; the ORIGINAL decision time is the restart-durable cooldown clock", got)
+	}
+	relocRequireNoMove(t, h.actuator, "the hull arrived under its own power, so nothing needed re-issuing")
+}
+
 // --- reconcile cadence (sp-fjvlm) ----------------------------------------------
 
 // shortestMeasuredIdleWindowSeconds is the SHORTEST gap ever observed between one tour

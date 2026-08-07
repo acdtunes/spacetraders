@@ -21,6 +21,9 @@ type RelocatorHull struct {
 	// OnTour is true while the hull is executing a tour. Only a hull at honest release is a
 	// candidate; a touring hull is skipped and reconsidered on a later tick.
 	OnTour bool
+	// InTransit is true while the hull is physically flying. It IMPLIES OnTour but is separate: an
+	// unfinished intent abandons a tour-claimed hull, and leaves a flying one alone to arrive.
+	InTransit bool
 	// Offered marks a hull whose tour has reached a boundary and has DURABLY offered it for
 	// relocation until a deadline (sp-e8d92 first refusal). Its tour container is still RUNNING — it is
 	// waiting — so the hull reads OnTour and would otherwise be excluded as mid_tour, which is exactly
