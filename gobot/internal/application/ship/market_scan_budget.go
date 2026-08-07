@@ -2,14 +2,12 @@ package ship
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"time"
 
 	"golang.org/x/time/rate"
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
-	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/marketscan"
 )
@@ -64,26 +62,24 @@ const defaultValueClampR = 8
 // markets.
 const burstRequests = 8
 
-// chartedCountTTL is how long a map-size reading is reused before the counter is
-// consulted again. The count only moves when charting finds new markets, so a
-// few minutes of staleness costs nothing, and re-counting on every admission
-// would put a database query on the scan path.
-const chartedCountTTL = 5 * time.Minute
-
-// ChartedMarketCounter reports how many market waypoints the player has
-// charted — the denominator of "budget ÷ markets known".
+// demandWindow is how long a market keeps its share of the allowance after the
+// last time a caller asked about it.
 //
-// It is a narrow optional port rather than a widening of the scanner's market
-// repository interface, because that interface is implemented by fakes in
-// dozens of tests that have no business knowing the map size. The production
-// repository already satisfies this shape, so ScanBudget discovers it by type
-// assertion; a store that does not satisfy it falls back to counting the
-// markets the gate has itself been asked about, which is a lower bound on the
-// map and therefore paces slightly LOOSER but never leaves the budget
-// unenforced.
-type ChartedMarketCounter interface {
-	ChartedMarketSystemCounts(ctx context.Context) (map[string]int, error)
-}
+// IT IS THE DENOMINATOR'S WHOLE DEFINITION, so it is worth being precise about
+// what it selects. A market read returns prices only with a hull standing on the
+// waypoint — with no ship there the quote sheet comes back empty (see
+// internal/adapters/api/market_dto.go) — so a market nobody is standing on
+// cannot consume a scan at all. The gate cannot see hulls, but it does not need
+// to: the ONLY way a scan happens is that some caller asks, so the markets being
+// asked about are exactly the markets able to spend. Everything else holds a
+// share of a rate it can never draw.
+//
+// An hour because that is the parked rotation's own intervalCap: it never lets a
+// slot wait longer, so a market the rotation is serving is asked about at least
+// hourly, and one that has gone a whole window unasked is being served by
+// nothing. The failure direction is benign — a window too short undercounts the
+// denominator, which paces LOOSER, and the token bucket is still the hard cap.
+const demandWindow = time.Hour
 
 // ScanBudget admits or declines market reads against one fixed allowance.
 //
@@ -99,22 +95,26 @@ type ScanBudget struct {
 	// spread holds the smoothed relative bid-ask spread of every market the gate
 	// has seen a scan of. Absence means "known but never measured", which is
 	// weighted at the optimistic prior rather than at zero.
+	//
+	// It is deliberately NOT pruned with the demand set. A spread is a learned
+	// estimate of a place, not a claim that anyone is standing there, so a hull
+	// returning to a market it measured yesterday resumes on what it learned
+	// instead of paying to re-learn it.
 	spread map[string]float64
 
-	// seen is every market the gate has been asked about. It is the fallback map
-	// size when no charted-market counter is wired, and it is unioned with the
-	// charted count so a market nobody has charted yet still gets a share.
-	seen map[string]struct{}
-
-	counter   ChartedMarketCounter
-	charted   int
-	chartedAt time.Time
+	// demand maps each market to the last time a caller asked about it. Its live
+	// entries ARE the denominator — see demandWindow.
+	demand map[string]time.Time
 
 	// aggregate caches the fleet median and total weight, which change only when
-	// a spread observation lands or the map size moves.
+	// a spread observation lands or the demand set moves.
 	aggregateStale bool
 	median         float64
 	totalWeight    float64
+
+	// spendsSinceDiscretionary is the discretionary floor's only state: how many
+	// reads have been admitted since the last discretionary one.
+	spendsSinceDiscretionary int
 
 	admitted uint64
 	declined uint64
@@ -139,20 +139,9 @@ func NewScanBudget(rateReqPerSec float64, clampR int) *ScanBudget {
 		limiter:        rate.NewLimiter(rate.Limit(rateReqPerSec), burstRequests),
 		now:            time.Now,
 		spread:         make(map[string]float64),
-		seen:           make(map[string]struct{}),
+		demand:         make(map[string]time.Time),
 		aggregateStale: true,
 	}
-}
-
-// SetChartedMarketCounter wires the map-size source. Passing nil leaves the
-// fallback (markets the gate has seen) in place rather than disabling pacing.
-func (b *ScanBudget) SetChartedMarketCounter(c ChartedMarketCounter) {
-	if c == nil {
-		return
-	}
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.counter = c
 }
 
 // setClock replaces the clock for tests. Unexported: production always runs on
@@ -187,27 +176,27 @@ func (b *ScanBudget) setClock(now func() time.Time) {
 // budget: there is one bucket, one map size and one rate across the whole daemon,
 // which is the property that makes it a budget at all.
 func (b *ScanBudget) Admit(ctx context.Context, playerID int, waypoint string, cached *market.Market, class marketscan.Class) marketscan.Decision {
-	b.refreshChartedCount(ctx)
-
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	if _, ok := b.seen[waypoint]; !ok {
-		b.seen[waypoint] = struct{}{}
-		b.aggregateStale = true
-	}
-
 	now := b.now()
-	median, totalWeight, marketsKnown := b.aggregateLocked()
+	// Asking IS the demand signal, so the stamp lands whatever the decision turns
+	// out to be. A market whose reads are all declined is still a market a hull is
+	// standing on, and dropping it from the denominator the moment the budget
+	// declined it would shorten the interval that caused the decline — a feedback
+	// loop between the rate and its own denominator.
+	b.noteDemandLocked(waypoint, now)
+	median, totalWeight, marketsKnown := b.aggregateLocked(now)
 
 	decision := marketscan.Decide(b.policy, marketscan.Request{
-		Class:           class,
-		Staleness:       stalenessOf(cached, now),
-		Weight:          b.weightLocked(waypoint, median),
-		TotalWeight:     totalWeight,
-		MarketsKnown:    marketsKnown,
-		TokensAvailable: b.limiter.TokensAt(now),
-		BucketCapacity:  burstRequests,
+		Class:                    class,
+		Staleness:                stalenessOf(cached, now),
+		Weight:                   b.weightLocked(waypoint, median),
+		TotalWeight:              totalWeight,
+		MarketsKnown:             marketsKnown,
+		TokensAvailable:          b.limiter.TokensAt(now),
+		BucketCapacity:           burstRequests,
+		SpendsSinceDiscretionary: b.spendsSinceDiscretionary,
 	})
 
 	// Emitted from INSIDE the lock, on values this call just re-derived, so the
@@ -229,7 +218,28 @@ func (b *ScanBudget) Admit(ctx context.Context, playerID int, waypoint string, c
 		recordScanBudgetOverdraft(playerID, metrics.BudgetMarket, class)
 	}
 	b.admitted++
+	b.noteSpendLocked(class)
 	return marketscan.Spend
+}
+
+// noteSpendLocked advances the discretionary floor's counter. Every admitted read
+// of any class raises it; a discretionary one clears it, because the floor asks
+// how long the class has gone unserved, not how much it has been served.
+func (b *ScanBudget) noteSpendLocked(class marketscan.Class) {
+	if class == marketscan.Discretionary {
+		b.spendsSinceDiscretionary = 0
+		return
+	}
+	b.spendsSinceDiscretionary++
+}
+
+// noteDemandLocked records that a caller has just asked about this market, which
+// is what puts it in the denominator for the next demandWindow.
+func (b *ScanBudget) noteDemandLocked(waypoint string, now time.Time) {
+	if _, ok := b.demand[waypoint]; !ok {
+		b.aggregateStale = true
+	}
+	b.demand[waypoint] = now
 }
 
 // Debit charges one market read to the allowance without offering it the chance
@@ -259,17 +269,16 @@ func (b *ScanBudget) Debit(playerID int, waypoint string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	if _, ok := b.seen[waypoint]; !ok {
-		b.seen[waypoint] = struct{}{}
-		b.aggregateStale = true
-	}
-	_, _, marketsKnown := b.aggregateLocked()
+	now := b.now()
+	b.noteDemandLocked(waypoint, now)
+	_, _, marketsKnown := b.aggregateLocked(now)
 	recordScanBudgetDecision(playerID, metrics.BudgetMarket, marketscan.Earning, marketscan.Spend, b.policy.RateReqPerSec, marketsKnown)
-	if !b.limiter.AllowN(b.now(), 1) {
+	if !b.limiter.AllowN(now, 1) {
 		b.forced++
 		recordScanBudgetOverdraft(playerID, metrics.BudgetMarket, marketscan.Earning)
 	}
 	b.admitted++
+	b.noteSpendLocked(marketscan.Earning)
 }
 
 // Observe folds a freshly scanned market's prices into its value estimate, so
@@ -294,7 +303,7 @@ func (b *ScanBudget) Observe(waypoint string, goods []market.TradeGood) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.spread[waypoint] = marketscan.UpdateSpread(b.spread[waypoint], observed)
-	b.seen[waypoint] = struct{}{}
+	b.noteDemandLocked(waypoint, b.now())
 	b.aggregateStale = true
 }
 
@@ -328,7 +337,7 @@ func (b *ScanBudget) Snapshot() BudgetSnapshot {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	median, totalWeight, marketsKnown := b.aggregateLocked()
+	median, totalWeight, marketsKnown := b.aggregateLocked(b.now())
 	return BudgetSnapshot{
 		RateReqPerSec:      b.policy.RateReqPerSec,
 		ValueClampR:        b.policy.ValueClampR,
@@ -345,93 +354,136 @@ func (b *ScanBudget) Snapshot() BudgetSnapshot {
 	}
 }
 
-// RotationInputs reports the allowance and the live map size behind it — the two
-// numbers marketscan.FreshnessCap needs to say how old a cached market row may be
-// before it is older than this rotation can explain.
+// RotationInputs reports the allowance and the live rotation size behind it — the
+// two numbers marketscan.FreshnessCap needs to say how old a cached market row may
+// be before it is older than this rotation can explain.
 //
-// It is a LIVE read, not a launch value. The map size is the same denominator
-// admission is decided against (re-counted on the charted-count TTL), so a
-// consumer derived from it widens on its own as charting finds markets and
-// narrows again if the allowance is raised — which is the whole point: a fixed
-// minute count chosen at one map size is wrong at every later one.
+// It is a LIVE read, not a launch value, and it is THE SAME denominator admission
+// is decided against — not a second count of the same thing. That identity is the
+// point rather than an implementation detail: when the two were derived
+// separately they disagreed by orders of magnitude, and a consumer reading the
+// smaller one refused rows the scanner believed it was still explaining.
 //
-// It takes a context because it refreshes the map size on the same TTL Admit does,
-// and that matters at BOOT: until something has counted the map, marketsKnown is
-// zero and every derived cap collapses to its floor — which is the 75-minute
-// behaviour this whole change exists to remove. Refreshing here means the first
-// freshness question asked after a daemon restart is answered against the real map
-// rather than against an empty one.
+// The context is unused and kept because it is the shape every consumer of this
+// port already holds; the rotation size is now in-process state rather than a
+// database count, so there is nothing left here that can fail, time out, or serve
+// an operator a number from five minutes ago.
 //
-// IT REPORTS THE COUNTED MAP OR NOTHING, and never the markets this process has
-// been asked about — which is the one difference between this and the denominator
-// Admit paces on. The two consumers need the count to err in OPPOSITE directions.
-// Pacing wants the smallest denominator it can defend: under-count the map and the
-// allowance simply spends less than it is allowed to, so a rate guard that errs low
-// is still a rate guard, and the markets-asked-about tally is a safe lower bound to
-// fall back on. A freshness bound wants the largest: under-count the map and the
-// bound shortens, and a bound shorter than the rotation makes every consumer discard
-// data that is merely waiting its turn — the failure the derivation exists to end.
+// IT NEVER REPORTS A PER-PROCESS TALLY, and that prohibition outlives the count it
+// was written about. A tally of markets asked about since boot is not a map size at
+// all: it starts at zero on every restart and climbs with uptime, so a bound derived
+// from it is minutes wide in the window a restart opens, still climbing an hour
+// later, and never related to how often the fleet actually re-reads a market. It
+// moved 23m14s to 23m37s in four seconds while the count it was OR'd with sat on a
+// five-minute TTL. Nothing here may fall back to one.
 //
-// The tally cannot serve the second because it is not a map size at all. It starts
-// at zero on every restart and climbs as the process is asked about markets, so a
-// bound derived from it is a function of UPTIME: minutes wide in the window a restart
-// opens, still climbing an hour later, and never related to how often the fleet
-// actually re-reads a market. Reporting zero instead is what makes an uncounted map
-// legible as "unknown", which FreshnessCap answers with the caller's own floor —
-// a number an operator chose, rather than one the process invented.
+// THE FRESHNESS COUNT AND THE PACING DENOMINATOR ARE NOW ONE NUMBER, which is a
+// change from when they had to err in OPPOSITE directions. That requirement was real
+// while the denominator was a CHARTING CENSUS. Pacing wanted the smallest count it
+// could defend, because under-counting only makes the allowance spend less than it is
+// allowed to and a rate guard erring low is still a rate guard. A freshness bound
+// wanted the largest, because a bound shorter than the rotation makes every consumer
+// discard data that is merely waiting its turn. Both leans were compensating for one
+// defect rather than expressing a real difference in what the two consumers need: a
+// census counts markets no hull can scan, so it was wrong for pacing and wrong for
+// freshness, in opposite directions, and each side had to correct for it separately.
 //
-// A nil budget (no scanner wired — every test that never builds one) reports the
-// same empty map, and for the same reason.
+// Sizing the rotation on the markets actually under demand dissolves the trade-off.
+// The number is then neither a floor to be defended nor a ceiling to be inflated — it
+// is what the rotation IS, so the bound it yields is the age the rotation genuinely
+// cannot explain, and the two consumers can read the same number without either of
+// them leaning. What it costs is that a market OUTSIDE the rotation is held to the
+// rotation's bound, and that is the fail-closed direction on purpose: a price for a
+// market nothing has looked at in hours is not evidence about that market.
+//
+// The context is unused and kept because it is the shape every consumer of this port
+// already holds; the rotation size is in-process state rather than a database count,
+// so there is nothing left here that can fail, time out, or serve an operator a
+// number from five minutes ago.
+//
+// A nil budget (no scanner wired — every test that never builds one), or one nothing
+// has asked about yet, reports an empty rotation. That is what makes an uncounted
+// rotation legible as "unknown", which FreshnessCap answers with the caller's own
+// floor — a number an operator chose, rather than one the process invented.
 func (b *ScanBudget) RotationInputs(ctx context.Context) (marketscan.Budget, int) {
 	if b == nil {
 		return marketscan.Budget{}, 0
 	}
-	b.refreshChartedCount(ctx)
-
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.policy, b.charted
+	_, _, marketsKnown := b.aggregateLocked(b.now())
+	return b.policy, marketsKnown
 }
 
-// aggregateLocked returns the fleet median spread, the summed weight of every
-// known market and the map size, recomputing them only when an observation or a
-// new market has invalidated the cache.
+// aggregateLocked returns the fleet median spread, the summed weight of the
+// rotation and its size, recomputing them only when an observation or a change in
+// the demand set has invalidated the cache.
+//
+// THE SIZE IS THE MARKETS UNDER DEMAND, not every market charted, and that is the
+// correction the whole rotation turns on. Dividing a fixed rate across the charted
+// map is only sound while every market in it can consume a scan; once the map runs
+// far ahead of the fleet, the markets no hull is standing on hold shares of a rate
+// they can never draw, and the ones that CAN are left waiting a share of the map
+// rather than a share of the work. The linear decay the fixed budget is built on
+// is still here — it is just measured against the rotation that exists rather than
+// the one the map implies.
 //
 // The total counts UNMEASURED markets at the optimistic prior, not at zero.
-// Omitting them would understate the denominator and hand every measured market
-// a shorter interval than the budget can fund — the map would be paced as
+// Omitting them would understate the denominator and hand every measured market a
+// shorter interval than the budget can fund — the rotation would be paced as
 // though the markets nobody has scanned yet did not have to be scanned.
-func (b *ScanBudget) aggregateLocked() (median, totalWeight float64, marketsKnown int) {
-	known := len(b.seen)
-	if b.charted > known {
-		known = b.charted
+func (b *ScanBudget) aggregateLocked(now time.Time) (median, totalWeight float64, marketsKnown int) {
+	if b.pruneDemandLocked(now) {
+		b.aggregateStale = true
 	}
+	known := len(b.demand)
 
 	if !b.aggregateStale {
 		return b.median, b.totalWeight, known
 	}
 
-	spreads := make([]float64, 0, len(b.spread))
-	for _, s := range b.spread {
-		spreads = append(spreads, s)
+	// Both sums run over the demand set and look the spread up, rather than over
+	// the spreads and counting: the weights have to total exactly `known` terms or
+	// the rotation is priced for a size it is not, and a market that has lapsed
+	// still has a remembered spread.
+	spreads := make([]float64, 0, known)
+	for waypoint := range b.demand {
+		if s := b.spread[waypoint]; s > 0 {
+			spreads = append(spreads, s)
+		}
 	}
 	b.median = marketscan.FleetMedianSpread(spreads)
 
 	total := 0.0
-	measured := 0
-	for _, s := range b.spread {
-		if s > 0 {
+	for waypoint := range b.demand {
+		if s := b.spread[waypoint]; s > 0 {
 			total += marketscan.Weight(s, b.median, b.policy.ValueClampR)
-			measured++
+			continue
 		}
-	}
-	if unmeasured := known - measured; unmeasured > 0 {
-		total += float64(unmeasured) * marketscan.PriorWeight(b.policy.ValueClampR)
+		total += marketscan.PriorWeight(b.policy.ValueClampR)
 	}
 	b.totalWeight = total
 	b.aggregateStale = false
 
 	return b.median, b.totalWeight, known
+}
+
+// pruneDemandLocked drops the markets whose last request has aged past
+// demandWindow, and reports whether it dropped any.
+//
+// Dropping is what makes the denominator self-correcting rather than another
+// monotone counter. A set that only ever grows re-creates the same disease more
+// slowly: every market a scout passed over once keeps a share forever, and the
+// rate drains toward markets that stopped being reachable long ago.
+func (b *ScanBudget) pruneDemandLocked(now time.Time) bool {
+	pruned := false
+	for waypoint, asked := range b.demand {
+		if now.Sub(asked) >= demandWindow {
+			delete(b.demand, waypoint)
+			pruned = true
+		}
+	}
+	return pruned
 }
 
 // weightLocked is one market's current value weight, or the optimistic prior
@@ -441,51 +493,6 @@ func (b *ScanBudget) weightLocked(waypoint string, median float64) float64 {
 		return marketscan.Weight(s, median, b.policy.ValueClampR)
 	}
 	return marketscan.PriorWeight(b.policy.ValueClampR)
-}
-
-// refreshChartedCount re-reads the map size when the cached reading has aged
-// out. It runs OUTSIDE the budget's mutex so a slow database read cannot block
-// every other container's admission, and a failed read leaves the previous
-// count in place — a counter hiccup must widen nothing and must not reset the
-// denominator to zero, which would collapse every interval.
-func (b *ScanBudget) refreshChartedCount(ctx context.Context) {
-	b.mu.Lock()
-	counter := b.counter
-	due := b.chartedAt.IsZero() || b.now().Sub(b.chartedAt) >= chartedCountTTL
-	b.mu.Unlock()
-
-	if counter == nil || !due {
-		return
-	}
-
-	counts, err := counter.ChartedMarketSystemCounts(ctx)
-
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	// Stamp the attempt either way, so a persistently failing counter is retried
-	// on the TTL rather than on every single admission.
-	b.chartedAt = b.now()
-	if err != nil {
-		// SAY SO. A discarded error here is the one failure with no symptom of its
-		// own: the count simply stays where it was, and from every consumer's side a
-		// counter that has never once succeeded is indistinguishable from a map that
-		// really is that small. Pacing then runs on the markets-asked-about fallback
-		// and freshness consumers run on their floor — both survivable, neither
-		// something an operator should have to infer from a bound that looks wrong.
-		// Rate-limited by the same TTL that gates the read, so it cannot flood.
-		common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf(
-			"Market-scan budget: charted-market census unreadable, holding the previous map size of %d - pacing falls back to the markets already seen and every derived freshness cap falls back to its floor: %v",
-			b.charted, err), nil)
-		return
-	}
-	total := 0
-	for _, n := range counts {
-		total += n
-	}
-	if total != b.charted {
-		b.charted = total
-		b.aggregateStale = true
-	}
 }
 
 // stalenessOf is how long ago a cached market row was written. A market that was

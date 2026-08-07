@@ -2,7 +2,6 @@ package ship
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -92,7 +91,7 @@ func seedMapWithHotMarketUnderTest(t *testing.T, b *ScanBudget, n int) string {
 	b.Observe(hot, goodsWithSpread(t, "FUEL", 20, 180))
 
 	b.mu.Lock()
-	median, _, _ := b.aggregateLocked()
+	median, _, _ := b.aggregateLocked(b.now())
 	weight := b.weightLocked(hot, median)
 	b.mu.Unlock()
 	require.InDelta(t, float64(b.Snapshot().ValueClampR), weight, 1e-9,
@@ -271,7 +270,7 @@ func TestObserve_WideSpreadMarketEarnsAShorterIntervalThanANarrowOne(t *testing.
 	b.Observe("X1-AA-WIDE", goodsWithSpread(t, "FUEL", 50, 150))
 
 	b.mu.Lock()
-	median, total, _ := b.aggregateLocked()
+	median, total, _ := b.aggregateLocked(b.now())
 	wide := b.weightLocked("X1-AA-WIDE", median)
 	narrow := b.weightLocked("X1-AA-N0", median)
 	b.mu.Unlock()
@@ -433,88 +432,43 @@ func TestAdmit_PairedReadIsAdmittedOnAFreshCacheButStillNeedsAToken(t *testing.T
 // Map size comes from the charted count when one is available.
 // -----------------------------------------------------------------------------
 
-type stubCounter struct {
-	counts map[string]int
-	err    error
-	calls  int
-}
-
-func (c *stubCounter) ChartedMarketSystemCounts(ctx context.Context) (map[string]int, error) {
-	c.calls++
-	if c.err != nil {
-		return nil, c.err
-	}
-	return c.counts, nil
-}
-
-func TestAdmit_MapSizeComesFromTheChartedCountNotJustTheMarketsSeen(t *testing.T) {
-	b, _ := newTestBudget(t, 0.35, 8)
-	b.SetChartedMarketCounter(&stubCounter{counts: map[string]int{"X1-AA": 200, "X1-BB": 155}})
-
-	b.Admit(context.Background(), budgetTestPlayerID, "X1-AA-A1", nil, marketscan.Discretionary)
-
-	assert.Equal(t, 355, b.Snapshot().MarketsKnown,
-		"the denominator is the charted map, not only the markets this gate happens to have been asked about")
-}
-
-func TestAdmit_ChartedCountIsCachedAndRefreshedOnItsTTL(t *testing.T) {
+// A rotation the fleet keeps asking about holds its size. This is the ordinary
+// case the interval is priced for, and it must not decay just because time passes.
+func TestAdmit_MarketsStillBeingAskedAboutKeepTheirShareOfTheAllowance(t *testing.T) {
 	b, clock := newTestBudget(t, 0.35, 8)
-	counter := &stubCounter{counts: map[string]int{"X1-AA": 10}}
-	b.SetChartedMarketCounter(counter)
 	ctx := context.Background()
 
-	for i := 0; i < 20; i++ {
-		b.Admit(ctx, budgetTestPlayerID, "X1-AA-A1", nil, marketscan.Discretionary)
-	}
-	assert.Equal(t, 1, counter.calls, "the map size must not be re-counted on every admission")
-
-	counter.counts = map[string]int{"X1-AA": 40}
-	clock.advance(chartedCountTTL + time.Second)
-	b.Admit(ctx, budgetTestPlayerID, "X1-AA-A1", nil, marketscan.Discretionary)
-
-	assert.Equal(t, 2, counter.calls)
-	assert.Equal(t, 40, b.Snapshot().MarketsKnown, "and it must pick up a map that grew")
-}
-
-func TestAdmit_CounterFailureKeepsThePreviousCountRatherThanCollapsingTheDenominator(t *testing.T) {
-	b, clock := newTestBudget(t, 0.35, 8)
-	counter := &stubCounter{counts: map[string]int{"X1-AA": 300}}
-	b.SetChartedMarketCounter(counter)
-	ctx := context.Background()
-
-	b.Admit(ctx, budgetTestPlayerID, "X1-AA-A1", nil, marketscan.Discretionary)
-	require.Equal(t, 300, b.Snapshot().MarketsKnown)
-
-	counter.err = errors.New("database unavailable")
-	clock.advance(chartedCountTTL + time.Second)
-	b.Admit(ctx, budgetTestPlayerID, "X1-AA-A1", nil, marketscan.Discretionary)
-
-	assert.Equal(t, 300, b.Snapshot().MarketsKnown,
-		"a counter hiccup must not reset the denominator, which would collapse every interval to nothing")
-}
-
-func TestAdmit_WithNoCounterWiredTheMarketsSeenAreTheDenominatorAndPacingStillHolds(t *testing.T) {
-	b, _ := newTestBudget(t, 0.35, 8)
-	ctx := context.Background()
-
-	for i := 0; i < 12; i++ {
-		b.Admit(ctx, budgetTestPlayerID, fmt.Sprintf("X1-AA-A%d", i), nil, marketscan.Discretionary)
+	for tick := 0; tick < 4; tick++ {
+		for i := 0; i < 12; i++ {
+			b.Admit(ctx, budgetTestPlayerID, fmt.Sprintf("X1-AA-A%d", i), nil, marketscan.Discretionary)
+		}
+		clock.advance(demandWindow / 2)
 	}
 
 	snap := b.Snapshot()
-	assert.Equal(t, 12, snap.MarketsKnown)
+	assert.Equal(t, 12, snap.MarketsKnown, "a market asked about inside the window keeps its share")
 	assert.InDelta(t, defaultBudgetReqPerSec, snap.RateReqPerSec, 1e-9,
-		"a missing counter must degrade the denominator, never the budget")
+		"and the allowance itself never moves with the rotation")
 }
 
-func TestSetChartedMarketCounter_IgnoresNil(t *testing.T) {
-	b, _ := newTestBudget(t, 0.35, 8)
-	counter := &stubCounter{counts: map[string]int{"X1-AA": 7}}
-	b.SetChartedMarketCounter(counter)
-	b.SetChartedMarketCounter(nil)
+// A market that lapses and is asked about again rejoins on the spread it was
+// last measured at, not on the optimistic prior. The demand set says who is in
+// the rotation; it is not a memory of what each market is worth.
+func TestAdmit_ARejoiningMarketKeepsTheSpreadItWasLastMeasuredAt(t *testing.T) {
+	b, clock := newTestBudget(t, 0.35, 8)
+	ctx := context.Background()
+	seedMap(t, b, 20)
 
-	b.Admit(context.Background(), budgetTestPlayerID, "X1-AA-A1", nil, marketscan.Discretionary)
-	assert.Equal(t, 7, b.Snapshot().MarketsKnown, "nil must not detach a working counter")
+	const wide = "X1-AA-WIDE"
+	b.Admit(ctx, budgetTestPlayerID, wide, nil, marketscan.Discretionary)
+	b.Observe(wide, goodsWithSpread(t, "FUEL", 20, 180))
+	measured := b.Snapshot().MarketsMeasured
+
+	clock.advance(demandWindow + time.Minute)
+	b.Admit(ctx, budgetTestPlayerID, wide, nil, marketscan.Discretionary)
+
+	assert.Equal(t, measured, b.Snapshot().MarketsMeasured,
+		"lapsing out of the rotation must not throw away what a scan already cost us to learn")
 }
 
 // -----------------------------------------------------------------------------
@@ -654,25 +608,49 @@ func TestDebit_RegistersTheMarketSoItJoinsTheDenominator(t *testing.T) {
 // RotationInputs: the numbers freshness consumers derive their caps from (sp-k4z5b).
 // -----------------------------------------------------------------------------
 
-// The map size must be counted on the FIRST question, not only after the first
-// admission. At boot nothing has been admitted yet, and a zero denominator collapses
-// every derived freshness cap back to its 75-minute floor — the exact behaviour the
-// derivation exists to remove. A consumer asking right after a daemon restart must get
-// the real map.
-func TestRotationInputs_CountsTheMapBeforeAnythingHasBeenAdmitted(t *testing.T) {
+// The rotation a freshness consumer derives its cap from is the LIVE one, so a
+// consumer asking mid-run is answered against the markets currently in the
+// rotation rather than against a count taken at boot.
+func TestRotationInputs_AnswersAgainstTheRotationAsItStandsNow(t *testing.T) {
+	b, clock := newTestBudget(t, 0.70, 8)
+	ctx := context.Background()
+
+	for i := 0; i < 90; i++ {
+		b.Admit(ctx, budgetTestPlayerID, fmt.Sprintf("X1-AA-R%d", i), nil, marketscan.Discretionary)
+	}
+	budget, marketsKnown := b.RotationInputs(ctx)
+	assert.Equal(t, 90, marketsKnown)
+	assert.Equal(t, 0.70, budget.RateReqPerSec)
+	assert.Equal(t, 8, budget.ValueClampR)
+	wide := marketscan.FreshnessCap(0, budget, marketsKnown)
+
+	// The fleet moves on and stops asking about most of them.
+	clock.advance(demandWindow + time.Minute)
+	for i := 0; i < 9; i++ {
+		b.Admit(ctx, budgetTestPlayerID, fmt.Sprintf("X1-AA-R%d", i), nil, marketscan.Discretionary)
+	}
+	budget, marketsKnown = b.RotationInputs(ctx)
+
+	assert.Equal(t, 9, marketsKnown, "the cap must follow the rotation down as well as up")
+	assert.InDelta(t, wide.Seconds()/10, marketscan.FreshnessCap(0, budget, marketsKnown).Seconds(), 1e-6,
+		"a tenth of the rotation is a tenth of the age it can explain")
+}
+
+// Before anything has asked about a market there is no rotation to explain any
+// age at all, and the consumer keeps its own floor. That direction is deliberate:
+// letting an empty rotation widen a fail-closed money guard is precisely the
+// fail-OPEN a freshness gate must never do.
+func TestRotationInputs_AnUnaskedBudgetReportsAnEmptyRotationRatherThanAWidenedCap(t *testing.T) {
 	b, _ := newTestBudget(t, 0.70, 8)
-	counter := &stubCounter{counts: map[string]int{"X1-AA": 4000, "X1-BB": 389}}
-	b.SetChartedMarketCounter(counter)
 
 	budget, marketsKnown := b.RotationInputs(context.Background())
 
-	assert.Equal(t, 1, counter.calls, "the first rotation question must count the map itself")
-	assert.Equal(t, 4389, marketsKnown, "a boot-time consumer must see the real map, not an empty one")
-	assert.Equal(t, 0.70, budget.RateReqPerSec)
-	assert.Equal(t, 8, budget.ValueClampR)
-
-	// And the derived bound is the one the whole change turns on: hours, not 75 minutes.
-	assert.Greater(t, marketscan.FreshnessCap(75*time.Minute, budget, marketsKnown), 2*time.Hour)
+	assert.Equal(t, 0, marketsKnown)
+	// Any floor, not a particular one: the property is that an empty rotation
+	// explains no age at all, so the caller's own number comes back untouched.
+	for _, floor := range []time.Duration{30 * time.Minute, 12 * time.Hour} {
+		assert.Equal(t, floor, marketscan.FreshnessCap(floor, budget, marketsKnown))
+	}
 }
 
 // A nil budget (no scanner wired) reports an empty map, which FreshnessCap answers with
@@ -682,5 +660,192 @@ func TestRotationInputs_NilBudgetReportsAnEmptyMap(t *testing.T) {
 	budget, marketsKnown := b.RotationInputs(context.Background())
 
 	assert.Equal(t, 0, marketsKnown)
-	assert.Equal(t, 75*time.Minute, marketscan.FreshnessCap(75*time.Minute, budget, marketsKnown))
+	// Any floor, not a particular one: the property is that an empty rotation
+	// explains no age at all, so the caller's own number comes back untouched.
+	for _, floor := range []time.Duration{30 * time.Minute, 12 * time.Hour} {
+		assert.Equal(t, floor, marketscan.FreshnessCap(floor, budget, marketsKnown))
+	}
+}
+
+// -----------------------------------------------------------------------------
+// The denominator: the markets that can consume a scan, not the map.
+// -----------------------------------------------------------------------------
+
+// A market read returns prices only with a hull standing on the waypoint (see
+// internal/adapters/api/market_dto.go — with no ship there the quote sheet comes
+// back empty), so a market nobody is asking about cannot consume a scan however
+// many of them have been charted. The rate has to be divided across the set that
+// CAN spend it, or the share held by the rest is allowance nothing ever draws.
+func TestAdmit_TheRateIsDividedAcrossTheMarketsUnderDemandNotEveryMarketEverAskedAbout(t *testing.T) {
+	b, clock := newTestBudget(t, 0.35, 8)
+	ctx := context.Background()
+
+	// A sweep across three hundred markets — ground a hull passed over once.
+	for i := 0; i < 300; i++ {
+		b.Admit(ctx, budgetTestPlayerID, fmt.Sprintf("X1-SWEEP-A%d", i), nil, marketscan.Discretionary)
+	}
+	require.Equal(t, 300, b.Snapshot().MarketsKnown, "every market just asked about is under demand")
+	wide := b.Snapshot().TypicalInterval
+
+	// The sweep moves on. Only three markets are still being asked about: the
+	// ones the fleet is actually standing on.
+	clock.advance(demandWindow + time.Minute)
+	for i := 0; i < 3; i++ {
+		b.Admit(ctx, budgetTestPlayerID, fmt.Sprintf("X1-SWEEP-A%d", i), nil, marketscan.Discretionary)
+	}
+	snap := b.Snapshot()
+
+	assert.Equal(t, 3, snap.MarketsKnown,
+		"a market that has stopped being asked about has stopped being able to spend, and stops holding a share")
+	assert.InDelta(t, wide.Seconds()/100, snap.TypicalInterval.Seconds(), 1e-6,
+		"a hundredth of the markets under demand is a hundredth of the wait: the interval tracks the scannable set")
+}
+
+// The payoff, stated as behaviour rather than as arithmetic: the read the dead
+// weight was blocking actually happens.
+func TestAdmit_AMarketNoLongerSharingWithTheDeadWeightIsScannedRatherThanServedFromStore(t *testing.T) {
+	b, clock := newTestBudget(t, 0.35, 8)
+	ctx := context.Background()
+
+	// A sweep wide enough that a market's own interval outruns the age it is
+	// about to reach — which is the whole complaint: a share of the rate spread
+	// across ground nothing is standing on.
+	const swept = 2000
+	for i := 0; i < swept; i++ {
+		b.Admit(ctx, budgetTestPlayerID, fmt.Sprintf("X1-SWEEP-B%d", i), nil, marketscan.Discretionary)
+	}
+
+	const age = 50 * time.Minute
+	clock.advance(age)
+	held := cachedAt(t, "X1-HELD-B1", clock.now(), age, goodsWithSpread(t, "FUEL", 100, 110))
+
+	// Pin WHY it is declined, or a fixture that simply ran the bucket dry would
+	// pass this test while proving nothing about the denominator.
+	snap := b.Snapshot()
+	require.GreaterOrEqual(t, snap.TokensAvailable, 1.0, "the allowance must hold a token, or the hard cap decides")
+	require.Greater(t, snap.TypicalInterval, age, "the swept rotation must be what leaves this market undue")
+	require.Less(t, age, snap.WorstCaseStaleness, "and it must stay short of the starvation escape")
+
+	require.Equal(t, marketscan.ServeFromStore, b.Admit(ctx, budgetTestPlayerID, "X1-HELD-B1", held, marketscan.Discretionary),
+		"while the swept markets still hold shares this read waits its turn behind them")
+
+	clock.advance(demandWindow + time.Minute)
+	held = cachedAt(t, "X1-HELD-B1", clock.now(), age, goodsWithSpread(t, "FUEL", 100, 110))
+
+	assert.Equal(t, marketscan.Spend, b.Admit(ctx, budgetTestPlayerID, "X1-HELD-B1", held, marketscan.Discretionary),
+		"once the markets that could never spend release their shares, the one that can is scanned")
+}
+
+// Spreads outlive the rotation, so the weight sum has to be taken over the
+// rotation and look each spread UP — never over the spreads and counted. A market
+// that has lapsed still has a remembered spread, and totalling those prices the
+// rotation for markets that already left it: the same dead weight this change
+// removes, re-created one level down.
+func TestAdmit_TheWeightSumCoversTheRotationNotEveryMarketEverMeasured(t *testing.T) {
+	b, clock := newTestBudget(t, 0.35, 8)
+	ctx := context.Background()
+
+	measure := func(n int) {
+		for i := 0; i < n; i++ {
+			w := fmt.Sprintf("X1-AA-W%d", i)
+			b.Admit(ctx, budgetTestPlayerID, w, nil, marketscan.Discretionary)
+			b.Observe(w, goodsWithSpread(t, "FUEL", 99, 101))
+		}
+	}
+
+	measure(40)
+	require.Equal(t, 40, b.Snapshot().MarketsMeasured)
+	wide := b.Snapshot().TypicalInterval
+
+	// The fleet moves on, then four of the forty are asked about again — rejoining
+	// on the spreads they already earned.
+	clock.advance(demandWindow + time.Minute)
+	measure(4)
+	snap := b.Snapshot()
+
+	require.Equal(t, 40, snap.MarketsMeasured, "the remembered spreads must survive the lapse")
+	assert.Equal(t, 4, snap.MarketsKnown)
+	assert.InDelta(t, wide.Seconds()/10, snap.TypicalInterval.Seconds(), 1e-6,
+		"the rotation is priced for the four markets in it, not the forty we remember")
+}
+
+// The fleet median is the yardstick every weight is measured against, so it has
+// to be the ROTATION's median. Taken over every spread ever remembered, a large
+// lapsed set decides what "typical" means for markets it is no longer competing
+// with — and a rotation of genuinely wide markets would be ranked against a
+// yardstick none of them set, flattening the value ordering it exists to produce.
+func TestAdmit_TheFleetMedianIsTheRotationsYardstickNotEveryMarketEverMeasured(t *testing.T) {
+	b, clock := newTestBudget(t, 0.35, 8)
+	ctx := context.Background()
+
+	// A large lapsed set of narrow markets.
+	for i := 0; i < 30; i++ {
+		w := fmt.Sprintf("X1-AA-NARROW%d", i)
+		b.Admit(ctx, budgetTestPlayerID, w, nil, marketscan.Discretionary)
+		b.Observe(w, goodsWithSpread(t, "FUEL", 99, 101))
+	}
+	narrow := b.Snapshot().MedianSpread
+	clock.advance(demandWindow + time.Minute)
+
+	// The rotation that remains is wide markets only.
+	for i := 0; i < 10; i++ {
+		w := fmt.Sprintf("X1-AA-WIDE%d", i)
+		b.Admit(ctx, budgetTestPlayerID, w, nil, marketscan.Discretionary)
+		b.Observe(w, goodsWithSpread(t, "FUEL", 20, 180))
+	}
+	snap := b.Snapshot()
+
+	require.Equal(t, 10, snap.MarketsKnown)
+	require.Equal(t, 40, snap.MarketsMeasured, "the lapsed spreads are still remembered, which is what makes this test bite")
+	assert.Greater(t, snap.MedianSpread, narrow*10,
+		"the yardstick must be set by the markets in the rotation, not by the ones that left it")
+}
+
+// ONE denominator, so the rotation a consumer derives its freshness cap from and
+// the rotation admission is decided against cannot disagree. They came from two
+// different counts before, and a consumer reading the smaller one refused rows
+// the scanner believed it was still explaining.
+func TestRotationInputs_ReportsTheSameDenominatorAdmissionIsDecidedAgainst(t *testing.T) {
+	b, _ := newTestBudget(t, 0.35, 8)
+	ctx := context.Background()
+
+	for i := 0; i < 40; i++ {
+		b.Admit(ctx, budgetTestPlayerID, fmt.Sprintf("X1-SWEEP-C%d", i), nil, marketscan.Discretionary)
+	}
+
+	_, marketsKnown := b.RotationInputs(ctx)
+	assert.Equal(t, b.Snapshot().MarketsKnown, marketsKnown,
+		"the freshness cap and the admission decision must be derived from one number")
+}
+
+// -----------------------------------------------------------------------------
+// The discretionary floor, against the allowance's own state.
+// -----------------------------------------------------------------------------
+
+// Earning reads are never denied, so a steady trade stream holds the bucket at
+// the bottom of its range where the value bar sits near the clamp. The parked
+// rotation is the discretionary class, and it earns nothing directly, so it
+// loses that comparison every time — which starves the one mechanism that can
+// widen coverage.
+func TestAdmit_AStreamOfEarningReadsCannotStarveTheDiscretionaryClassIndefinitely(t *testing.T) {
+	b, clock := newTestBudget(t, 0.35, 8)
+	ctx := context.Background()
+	seedMap(t, b, 60)
+
+	discretionary := func() marketscan.Decision {
+		clock.advance(3 * time.Second) // a token's worth of refill, and no more
+		b.Admit(ctx, budgetTestPlayerID, "X1-EARN-D1", nil, marketscan.Earning)
+		stale := cachedAt(t, "X1-COLD-D1", clock.now(), 30*time.Minute, goodsWithSpread(t, "FUEL", 100, 110))
+		return b.Admit(ctx, budgetTestPlayerID, "X1-COLD-D1", stale, marketscan.Discretionary)
+	}
+
+	spends := 0
+	for i := 0; i < 40; i++ {
+		if discretionary() == marketscan.Spend {
+			spends++
+		}
+	}
+
+	assert.GreaterOrEqual(t, spends, 40/(defaultValueClampR*2),
+		"the class that opens new ground must keep a floor share of the allowance, not 0.15% of it")
 }

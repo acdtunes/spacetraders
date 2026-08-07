@@ -495,3 +495,141 @@ func TestDecide_PairedReadStillObeysTheBudgetCapAndTheValueBar(t *testing.T) {
 	assert.Equal(t, ServeFromStore, Decide(b, contended),
 		"a paired read on a dull market yields the scarce token like any other")
 }
+
+// -----------------------------------------------------------------------------
+// The discretionary floor: scheduling fairness inside the fixed allowance.
+// -----------------------------------------------------------------------------
+
+// starvedDiscretionary is a read the value bar refuses on its own merits: due,
+// holding a whole token, and worth less than a contended bucket asks for.
+func starvedDiscretionary(b Budget) Request {
+	req := Request{
+		Class:           Discretionary,
+		Weight:          PriorWeight(b.ValueClampR),
+		TotalWeight:     355,
+		MarketsKnown:    355,
+		TokensAvailable: 1.2,
+		BucketCapacity:  8,
+	}
+	req.Staleness = Interval(b, req.Weight, req.TotalWeight) * 2
+	return req
+}
+
+func TestDecide_DiscretionaryRefusedByTheValueBarIsAdmittedOnceItsFloorComesDue(t *testing.T) {
+	b := era5Budget()
+	req := starvedDiscretionary(b)
+
+	require.Less(t, req.Staleness, MaxStaleness(b, req.MarketsKnown),
+		"fixture must not reach the starvation escape, or the floor is untested")
+	require.GreaterOrEqual(t, req.TokensAvailable, 1.0,
+		"fixture must hold a whole token, or the hard cap decides and the bar is untested")
+	require.Greater(t, requiredWeight(b, req.TokensAvailable, req.BucketCapacity), req.Weight,
+		"fixture must be one the value bar refuses on its own")
+
+	assert.Equal(t, ServeFromStore, Decide(b, req),
+		"with the class already served recently the bar still rations it")
+
+	req.SpendsSinceDiscretionary = b.ValueClampR
+	assert.Equal(t, Spend, Decide(b, req),
+		"a class that has gone a whole floor interval unserved takes the token the bar would have denied it")
+}
+
+// The floor is a SCHEDULING rule inside the allowance, never a second allowance.
+// It may reorder who gets a token; it may not conjure one.
+func TestDecide_TheDiscretionaryFloorNeverAdmitsAReadWithNoTokenLeft(t *testing.T) {
+	b := era5Budget()
+	req := starvedDiscretionary(b)
+	req.SpendsSinceDiscretionary = b.ValueClampR * 10 // starved far past the floor
+	req.TokensAvailable = 0.9
+
+	assert.Equal(t, ServeFromStore, Decide(b, req),
+		"the hard cap outranks the floor: fairness inside the ceiling, never through it")
+}
+
+// Nor does the floor buy a read that is not worth taking. A market inside its own
+// interval has nothing new to tell us, so admitting it early would spend the
+// class's floor on a cache hit.
+func TestDecide_TheDiscretionaryFloorDoesNotAdmitAMarketThatIsNotDue(t *testing.T) {
+	b := era5Budget()
+	req := starvedDiscretionary(b)
+	req.SpendsSinceDiscretionary = b.ValueClampR * 10
+	req.Staleness = Interval(b, req.Weight, req.TotalWeight) / 2
+
+	assert.Equal(t, ServeFromStore, Decide(b, req),
+		"the floor reorders due reads; it does not make an undue one due")
+}
+
+// The floor is one admitted read in ValueClampR, and that is derived rather than
+// picked: a class holding that share can serve marketsKnown markets within
+// marketsKnown x ValueClampR / rate — exactly the anti-starvation bound the
+// rotation already promises. Below it the class cannot fund its own bound.
+func TestDecide_TheDiscretionaryFloorFundsTheAntiStarvationBoundOnItsOwn(t *testing.T) {
+	b := era5Budget()
+	const marketsKnown = 355
+
+	floorShare := 1.0 / float64(b.ValueClampR)
+	sweep := float64(marketsKnown) / (floorShare * b.RateReqPerSec)
+
+	assert.InDelta(t, MaxStaleness(b, marketsKnown).Seconds(), sweep, 1e-6,
+		"one read in ValueClampR is precisely the share that sweeps the map within its own bound")
+}
+
+// -----------------------------------------------------------------------------
+// The ceiling over the derived term (sp-rsk2m).
+// -----------------------------------------------------------------------------
+
+// A fail-closed guard whose cap can be widened without limit by a derived number
+// is not fail-closed. At the charting census the derivation produced ~88h, so the
+// firm-sink FRESH clause was admitting prices nearly four days old — silently, and
+// widening further every time the population grew.
+func TestFreshnessCap_TheDerivedTermCannotWidenTheCapWithoutLimit(t *testing.T) {
+	b := era5Budget()
+	const census = 13903 // the charting census the bound used to be sized on
+
+	bound := MaxStaleness(b, census)
+	require.Greater(t, bound, 80*time.Hour, "fixture must reproduce the unbounded derivation")
+
+	assert.Equal(t, derivedCapCeiling, FreshnessCap(time.Minute, b, census),
+		"the rotation may widen the cap, but not past the point where a price stops being evidence")
+}
+
+// The ceiling bounds the DERIVED term only. It is never a clamp on the operator:
+// a floor raised above it still wins, because a consumer armed at a floor can
+// never be disarmed through this function (RULINGS #4).
+func TestFreshnessCap_AnOperatorFloorAboveTheCeilingStillWins(t *testing.T) {
+	b := era5Budget()
+	floor := derivedCapCeiling * 3
+
+	assert.Equal(t, floor, FreshnessCap(floor, b, 13903),
+		"the cap is never below the floor, whatever the ceiling says")
+	assert.Equal(t, floor, FreshnessCap(floor, b, 40),
+		"and that holds when the rotation is small too")
+}
+
+// THE FAILURE THIS TEST EXISTS TO CATCH IS A CEILING SET BELOW THE REAL ROTATION —
+// that is precisely the too-tight cap that cost 87% of trade throughput, and
+// tightening a cap is the direction that does it silently. Measured on staging:
+// 4 distinct waypoints scanned in the last hour, 18 in six, 86 holding cached data
+// at all. The ceiling must sit far above any of those.
+func TestFreshnessCap_TheCeilingDoesNotBindAtTheRotationTheFleetActuallyRuns(t *testing.T) {
+	b := era5Budget()
+
+	for _, rotation := range []int{4, 18, 86, 200} {
+		bound := MaxStaleness(b, rotation)
+		require.Less(t, bound, derivedCapCeiling,
+			"a rotation of %d must be explained by the derivation, not truncated by the ceiling", rotation)
+		assert.Equal(t, bound, FreshnessCap(0, b, rotation),
+			"at the rotation the fleet runs, the derived bound is still the whole answer")
+	}
+}
+
+// The ceiling is a CONSUMER's rule about when a price stops being evidence. It is
+// not the scanner's anti-starvation bound, and capping that one would change which
+// reads take the unconditional escape — turning a freshness decision into a
+// spending decision.
+func TestMaxStaleness_TheAntiStarvationEscapeIsNotBoundedByTheFreshnessCeiling(t *testing.T) {
+	b := era5Budget()
+
+	assert.Greater(t, MaxStaleness(b, 13903), derivedCapCeiling,
+		"the escape keeps its own arithmetic: it is what the scanner guarantees, not what a consumer will trust")
+}

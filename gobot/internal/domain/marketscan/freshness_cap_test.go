@@ -125,23 +125,42 @@ func TestFreshnessCap_DegenerateInputsYieldTheFloorNotTheCeiling(t *testing.T) {
 
 // The cap tracks the map without anyone editing anything — the property a hardcoded
 // minute count cannot have, and the reason raising the scan budget was never the fix.
-func TestFreshnessCap_TracksTheChartedMapWithoutRetuning(t *testing.T) {
+//
+// It tracks it UP TO derivedCapCeiling and then deliberately stops (sp-rsk2m). Both
+// halves are the property: a cap that never widened would re-run this incident, and a
+// cap that widened without limit would silently un-arm the money guard it feeds. The
+// sizes below sit either side of that boundary on purpose.
+func TestFreshnessCap_TracksTheChartedMapWithoutRetuningUpToTheCeiling(t *testing.T) {
 	small := FreshnessCap(oldHardcodedCap, incidentBudget(), 300)
 	large := FreshnessCap(oldHardcodedCap, incidentBudget(), incidentMarketsKnown)
 	if large <= small {
-		t.Fatalf("cap did not grow with the map: %s markets→%s, %d markets→%s", "300", small, incidentMarketsKnown, large)
+		t.Fatalf("cap did not grow with the map: %d markets→%s, %d markets→%s", 300, small, incidentMarketsKnown, large)
 	}
-	// Doubling the map doubles the bound (it is linear in markets known), so the cap can
-	// never fall behind charting the way a fixed number does.
-	doubled := FreshnessCap(0, incidentBudget(), 2*incidentMarketsKnown)
-	bound := FreshnessCap(0, incidentBudget(), incidentMarketsKnown)
+
+	// Below the ceiling the bound is linear in markets known, so the cap can never fall
+	// behind charting the way a fixed number does.
+	bound := FreshnessCap(0, incidentBudget(), 300)
+	doubled := FreshnessCap(0, incidentBudget(), 600)
+	if doubled >= derivedCapCeiling {
+		t.Fatalf("fixture must stay inside the governed range, got %s", doubled)
+	}
 	if doubled != 2*bound {
 		t.Errorf("bound is not linear in map size: %s vs 2×%s", doubled, bound)
 	}
+
+	// Past it the derivation stops widening, whatever the map does next. At the incident's
+	// own 0.70 req/s that boundary is ~7,560 markets — deliberately clear of the 4,389 that
+	// derived 13h56m, because rows of that age WERE explained by the rotation and admitting
+	// them is the acceptance criterion this package was written for.
+	if got := FreshnessCap(0, incidentBudget(), 100*incidentMarketsKnown); got != derivedCapCeiling {
+		t.Errorf("a map two orders of magnitude larger must not widen the cap further: got %s", got)
+	}
+
 	// Raising the ALLOWANCE narrows it again — cost and staleness trade against each
 	// other explicitly instead of one silently invalidating the other.
-	faster := FreshnessCap(0, Budget{RateReqPerSec: 2 * incidentRateReqPerSec, ValueClampR: incidentClampR}, incidentMarketsKnown)
-	if faster >= bound {
-		t.Errorf("doubling the budget must halve the bound: got %s, was %s", faster, bound)
+	governed := FreshnessCap(0, incidentBudget(), 300)
+	faster := FreshnessCap(0, Budget{RateReqPerSec: 2 * incidentRateReqPerSec, ValueClampR: incidentClampR}, 300)
+	if faster >= governed {
+		t.Errorf("doubling the budget must halve the bound: got %s, was %s", faster, governed)
 	}
 }

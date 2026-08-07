@@ -42,20 +42,13 @@ func NewMarketScanner(
 	playerRepo player.PlayerRepository,
 	priceHistoryRepo market.MarketPriceHistoryRepository,
 ) *MarketScanner {
-	s := &MarketScanner{
+	return &MarketScanner{
 		apiClient:        apiClient,
 		marketRepo:       marketRepo,
 		playerRepo:       playerRepo,
 		priceHistoryRepo: priceHistoryRepo,
 		budget:           NewScanBudget(defaultBudgetReqPerSec, defaultValueClampR),
 	}
-	// The production market repository can count charted markets, which is the
-	// budget's denominator; narrow test fakes cannot, and fall back to counting
-	// the markets the budget has been asked about.
-	if counter, ok := marketRepo.(ChartedMarketCounter); ok {
-		s.budget.SetChartedMarketCounter(counter)
-	}
-	return s
 }
 
 // SetScanBudget replaces the default market-scan allowance with a configured
@@ -64,9 +57,6 @@ func NewMarketScanner(
 func (s *MarketScanner) SetScanBudget(b *ScanBudget) {
 	if b == nil {
 		return
-	}
-	if counter, ok := s.marketRepo.(ChartedMarketCounter); ok {
-		b.SetChartedMarketCounter(counter)
 	}
 	s.budget = b
 }

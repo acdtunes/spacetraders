@@ -163,6 +163,50 @@ const NeverScanned = time.Duration(math.MaxInt64)
 // alternative is data going permanently dark.
 const stalenessCeiling = 30 * 24 * time.Hour
 
+// derivedCapCeiling is how far the ROTATION-DERIVED term may widen a consumer's
+// freshness cap. It is not stalenessCeiling: that one is an arithmetic guard
+// against a misconfigured rate producing a duration int64 cannot hold, thirty days
+// out and never meant to shape behaviour. This one is a POLICY bound, and it is
+// meant to bind.
+//
+// WHY A FIXED-BUDGET DERIVATION NEEDS ONE AT ALL. MaxStaleness grows linearly and
+// without limit in the population it is measured over, so a cap that is only ever
+// max(floor, bound) can be widened without limit by that population — and it
+// widens SILENTLY, because nothing refuses and no counter moves. Sized on the
+// charting census the derivation reached ~88h, which left the firm-sink FRESH
+// clause — a fail-closed money guard — admitting prices nearly four days old. A
+// guard that can be un-armed by a number growing underneath it is not fail-closed
+// (RULINGS #4), and the direction it failed in is the one nothing observes.
+//
+// ONE DAY, AND THE RISK IS ENTIRELY ON THE OTHER SIDE. A ceiling set BELOW a
+// rotation the fleet really runs is the too-tight cap that cost 87% of trade
+// throughput, so the number is sized against the largest rotation on record rather
+// than against what looks prudent. That high-water mark is the era-5 incident:
+// 4,389 markets at 0.70 req/s derives 13h56m, and rows of that age were explained
+// by the rotation and had to be admitted. A day is the smallest round bound that
+// sits clear of it, and it carries its own meaning — past a day a price is not
+// evidence about a market under any rotation this fleet has ever run.
+//
+// It still bites where it has to. Against a whole-map census the derivation runs to
+// several days, and cutting that to one is the difference between a guard that
+// admits prices from last week and one that does not.
+//
+// It is a backstop rather than the operative term. Sized on the markets actually
+// under demand the bound is minutes, so an operator floor governs and this is
+// reached only by a rotation of rate x 86400 / ValueClampR markets — some thousands
+// at any allowance the fleet has run, and orders of magnitude above the rotation it
+// actually keeps.
+//
+// Calibrating it against a live measurement rather than a constant would be
+// better still, and the repository already computes the honest input for it —
+// scouting.SystemsFreshness reports a measured per-market scan INTERVAL, which is
+// non-circular in a way that observed STALENESS is not (deriving a freshness cap
+// from how stale things are lets any amount of staleness justify itself). It is
+// deliberately not wired here: this package is value-in/value-out, with no clock
+// and no repository, and putting a database read behind a money guard's cap adds a
+// failure mode to the guard.
+const derivedCapCeiling = 24 * time.Hour
+
 // baselineWeight is the weight of the least valuable market in the rotation.
 // parkedsensing.ScanWeight clamps every weight up to it, so it is the floor of
 // the weight domain and the required-weight scale starts here.
@@ -222,6 +266,18 @@ type Request struct {
 	// per-request admission without a central scheduler.
 	TokensAvailable float64
 	BucketCapacity  float64
+
+	// SpendsSinceDiscretionary is how many reads the allowance has admitted
+	// since the last discretionary one — the only cross-request fact the
+	// admission rules need, carried in so the policy stays a pure function of
+	// its argument.
+	//
+	// It is what makes the discretionary FLOOR expressible without a central
+	// scheduler. The value bar orders reads by what they earn, and a class that
+	// earns nothing directly always loses that comparison; counting how long the
+	// class has gone unserved is what lets a per-request rule notice that the
+	// ordering has stopped being an ordering and become an exclusion.
+	SpendsSinceDiscretionary int
 }
 
 // Interval is how long a market of the given weight waits between scans when
@@ -285,13 +341,22 @@ func MaxStaleness(b Budget, marketsKnown int) time.Duration {
 // consumer refuses exactly when the scanner has failed its own guarantee — the
 // only case where a row is genuinely dead rather than merely waiting its turn.
 //
+// The answer is max(floor, min(bound, derivedCapCeiling)), and each of those three
+// terms is there to stop a different way of getting this wrong.
+//
 // floor is applied as a FLOOR and never as a ceiling. The cap is therefore never
 // TIGHTER than the rotation bound, whatever the floor says, so no setting of it
 // can re-create the incident by refusing rotation-explained rows; a floor raised
 // ABOVE the current bound does widen the cap, which is the direction an operator
 // ever needs in an incident. It also means the cap is never below the floor, so a
 // consumer armed at a floor can never be disarmed through this function — the
-// property the firm-sink money guard depends on (RULINGS #4).
+// property the firm-sink money guard depends on (RULINGS #4). Note the ceiling
+// bounds the DERIVED term only and never the operator: a floor set above it still
+// wins, because clamping an explicit instruction is not this function's business.
+//
+// derivedCapCeiling is the answer to the failure the first two terms create
+// between them. Both of them only ever widen, and the widening is silent — see the
+// constant for why a cap nothing can bound is not a fail-closed guard.
 //
 // An unknown map (marketsKnown <= 0) or an unconfigured budget yields the floor
 // alone, and that direction is deliberate: MaxStaleness answers a zero map size
@@ -301,7 +366,11 @@ func FreshnessCap(floor time.Duration, b Budget, marketsKnown int) time.Duration
 	if marketsKnown <= 0 || b.RateReqPerSec <= 0 {
 		return floor
 	}
-	if bound := MaxStaleness(b, marketsKnown); bound > floor {
+	bound := MaxStaleness(b, marketsKnown)
+	if bound > derivedCapCeiling {
+		bound = derivedCapCeiling
+	}
+	if bound > floor {
 		return bound
 	}
 	return floor
@@ -359,6 +428,35 @@ func requiredWeight(b Budget, tokensAvailable, capacity float64) float64 {
 	return baselineWeight + depth*(clamp-baselineWeight)
 }
 
+// discretionaryFloorOneIn is the discretionary class's guaranteed share of the
+// allowance, as one admitted read in this many.
+//
+// IT IS DERIVED, NOT PICKED. A class holding a share s sweeps marketsKnown
+// markets in marketsKnown/(s x rate) seconds, and the rotation already promises
+// every market comes round within MaxStaleness = marketsKnown x ValueClampR /
+// rate. Setting those equal gives s = 1/ValueClampR exactly: one read in
+// ValueClampR is the smallest share that lets the class fund the guarantee ON ITS
+// OWN, without borrowing from reads that happen to be taken for other reasons.
+// Below it the promise depends on trade traffic passing the right waypoints.
+//
+// Tying it to ValueClampR rather than to a percentage also keeps it honest at
+// every setting of the clamp, since the bound it has to fund is measured in the
+// same constant. At a clamp of 1 the value bar collapses to the baseline and
+// refuses nothing, so the floor is never consulted.
+func discretionaryFloorOneIn(b Budget) int {
+	if b.ValueClampR < 1 {
+		return 1
+	}
+	return b.ValueClampR
+}
+
+// discretionaryFloorDue reports whether the discretionary class has gone a whole
+// floor interval without being served, and so may take a token the value bar
+// would otherwise have handed to a market that earns more.
+func discretionaryFloorDue(b Budget, req Request) bool {
+	return req.Class == Discretionary && req.SpendsSinceDiscretionary >= discretionaryFloorOneIn(b)
+}
+
 // Decide admits or declines one market read.
 //
 // The rules, in the order they are applied and for the reason each is where it
@@ -372,14 +470,29 @@ func requiredWeight(b Budget, tokensAvailable, capacity float64) float64 {
 //     keep a cold market waiting forever, and a crushed market that recovered
 //     is invisible until someone looks.
 //  3. A market not yet due for its interval is served from store. This is the
-//     rule that makes total cost independent of map size: the interval widens
-//     as the map grows, so a growing map converts reads into cache hits rather
-//     than into requests. A Paired read skips this rule alone — a fresh cache is
-//     its precondition, not a reason to decline it — and remains subject to
-//     everything below.
+//     rule that makes total cost independent of rotation size: the interval
+//     widens as the rotation grows, so a growing rotation converts reads into
+//     cache hits rather than into requests. A Paired read skips this rule alone —
+//     a fresh cache is its precondition, not a reason to decline it — and remains
+//     subject to everything below.
 //  4. With no whole token left, serve from store. This is the hard cap.
 //  5. A market not worth the current bar is served from store — the priority
-//     ordering under contention.
+//     ordering under contention — UNLESS the discretionary class is below its
+//     floor, in which case this due read takes the token instead.
+//
+// The floor is placed at rule 5 and nowhere else, and the two rules it sits
+// BELOW are the reason it is a fairness rule rather than a weakened guard. It
+// cannot reach rule 4, so it never spends a token that does not exist; it cannot
+// reach rule 3, so it never buys a read of a market with nothing new to say. All
+// it changes is WHICH due read gets a token the budget was going to spend anyway.
+//
+// Without it the ordering stops being an ordering. Earning reads are never
+// denied, so a steady trade stream holds the bucket near the bottom of its range
+// where the bar sits near the clamp — and the discretionary class earns nothing
+// directly, so it loses that comparison every single time. The class that is
+// permanently outbid is precisely the one that opens ground the fleet is not
+// already trading, which makes its starvation self-sealing: coverage cannot widen,
+// so no new market ever becomes valuable enough to outbid anything.
 func Decide(b Budget, req Request) Decision {
 	if req.Class == Earning {
 		return Spend
@@ -393,7 +506,7 @@ func Decide(b Budget, req Request) Decision {
 	if req.TokensAvailable < 1 {
 		return ServeFromStore
 	}
-	if req.Weight < requiredWeight(b, req.TokensAvailable, req.BucketCapacity) {
+	if req.Weight < requiredWeight(b, req.TokensAvailable, req.BucketCapacity) && !discretionaryFloorDue(b, req) {
 		return ServeFromStore
 	}
 	return Spend
