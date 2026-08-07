@@ -100,10 +100,10 @@ func (h *RunTourCoordinatorHandler) planForState(
 	// fleet reserve would subtract the guard a second time and zero the planner for any
 	// treasury below 4×reserve (25%×T ≤ reserve). The dynamic path hands the planner a
 	// reserve of 0; execution-time floors are untouched.
-	plannerReserve := budget.reserve
-	if cmd.MaxSpend == 0 {
-		plannerReserve = 0
-	}
+	// Resolved through the shared rule (plannerReserveFor), which is also what callers predict
+	// the solver's spend_cap verdict with — so the reserve the request is BUILT with and the
+	// reserve a caller PREDICTS with can never drift apart.
+	plannerReserve := plannerReserveFor(cmd, budget.reserve)
 	cons := routing.TourConstraints{
 		MaxHops:          budget.maxHops,
 		MinMarginPerUnit: cmd.MinMargin,

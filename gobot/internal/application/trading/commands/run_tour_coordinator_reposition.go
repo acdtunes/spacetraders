@@ -50,6 +50,20 @@ const (
 	// against a wasted jump.
 	repositionMaxCandidatesDefault = 3
 
+	// repositionTiedFanoutDefault is the bound repositionMaxCandidatesDefault widens to for the ONE
+	// regime a small fixed K cannot survive: when the candidates either side of the K-boundary carry
+	// the SAME pre-rank, nothing chose between them and the cut is arbitrary. The regime is common —
+	// every candidate scores 0 whenever no cached in-system lane exists — and it is where the reach
+	// scan finds the most candidates, so a K of 3 there is a blind draw from a large undecided set.
+	//
+	// Deliberately still SMALL and still a hard ceiling (RULINGS: never unbounded solver fan-out): a
+	// pre-flight costs one planner round-trip of roughly a second, this fires only where the score
+	// abstained, and a margins-death episode is rare per hull (~30-60min). Paired with the rotation
+	// below it sweeps a two-dozen-candidate reach in a couple of attempts instead of never. A named
+	// knob, not a magic constant (RULINGS #5); a captain who raises reposition_max_candidates above
+	// it keeps their own wider number.
+	repositionTiedFanoutDefault = 8
+
 	// repositionReplanAllowanceSeconds prices the post-jump re-plan overhead (snapshot
 	// assembly + the solver call + the reserve round-trip) into a candidate's
 	// time-to-value for the sp-1wp8 rate ranking. Small next to the jump and the plan
@@ -154,6 +168,11 @@ type repositionCandidate struct {
 	// to charge deadhead per-hop in score(x)=E_x−β·D_x; the legacy repositionCandidateRate keeps
 	// its hardcoded single-hop constant, so this field is inert when placement is off.
 	hops int
+	// freshLanes counts the candidate system's non-stale cached market rows. Read ONLY when the
+	// pre-rank score ties, as the second tie-break behind hop distance: a ground showing many
+	// tradeable rows is likelier to yield a tour than one showing a single row, and at score 0 the
+	// pre-rank has expressed no preference between them at all.
+	freshLanes int
 }
 
 // repositionScore is one candidate's evaluated result for the ranking-table log and the
@@ -210,6 +229,26 @@ func (h *RunTourCoordinatorHandler) maybeReposition(
 		return false, nil // already spent this episode's one reposition — no hop-scotching
 	}
 
+	// A budget that leaves the solver's spend_cap at zero fixes EVERY candidate's verdict before
+	// a market is looked at, and the pre-flight clears the hull's hold (planAtCandidate), so the
+	// solver's held-cargo exemption — the one case a zero cap still permits a tour — can never
+	// apply here. Pricing candidates against it does not discover that the grounds are poor; it
+	// records "solver-infeasible" against grounds nobody priced, and the run then exits as
+	// though margins had died. Refuse the WORK, loudly, instead of collecting a predetermined
+	// verdict per candidate. The money guard itself is untouched (RULINGS #4): this only ever
+	// declines to spend, never permits a buy the budget refused, and a resolvable budget with real
+	// headroom takes the ranking path below exactly as before. Sits above the placement dispatch
+	// so it covers every pre-flight in this function, at the cost of not running the discovery
+	// scan the stranded detector observes — deferred, not lost: the detector re-observes on the
+	// next launch, and the loop's own capital-denied wait is what a hull in this state needs.
+	if h.budgetDeniesEverySpend(cmd, budget) {
+		metrics.RecordTourReposition(cmd.PlayerID, "budget_denied")
+		logger.Log("WARNING", fmt.Sprintf("Reposition: not ranking candidates for %s - the resolved spend budget leaves no headroom (max-spend %d, reserve %d), so every candidate would be refused on solvency, not on its grounds", cmd.ShipSymbol, budget.maxSpend, plannerReserveFor(cmd, budget.reserve)), map[string]interface{}{
+			"ship_symbol": cmd.ShipSymbol, "max_spend": budget.maxSpend, "planner_reserve": plannerReserveFor(cmd, budget.reserve),
+		})
+		return false, nil
+	}
+
 	// sp-z7ng placement dispatch — sits BELOW the shared kill-switch and episode-budget guards so
 	// precedence is RepositionDisabled > episode.repositioned > PlacementScoreEnabled > legacy: an
 	// armed daemon still honours reposition_disabled and one-reposition-per-episode. When armed and
@@ -259,6 +298,12 @@ func (h *RunTourCoordinatorHandler) maybeReposition(
 	if floor <= 0 {
 		floor = repositionMinMarginDefault
 	}
+
+	// Where the pre-rank separated the candidates it decides the top-K, unchanged. Where it scored
+	// them the same it decided nothing, and the alphabet standing in for it hands the same slice to
+	// the solver on every attempt from this ground — so that regime, and only that regime, gets a
+	// signal-bearing order, a wider (still bounded) fan-out and a rotating window.
+	candidates, k = h.settleRepositionTies(ctx, cmd, currentSystem, candidates, k)
 
 	evaluated := h.evaluateRepositionCandidates(ctx, cmd, ship, candidates, k, budget)
 
@@ -559,6 +604,133 @@ func repositionDecayedScore(candidate repositionCandidate, decay float64) float6
 	return float64(candidate.score) * math.Pow(decay, float64(hops))
 }
 
+// repositionRankKey is the value the candidate list was SORTED by, mirroring BOTH ranking paths:
+// the deadhead-decayed score when reach is armed (repositionReachCandidates) and the bare pre-rank
+// score otherwise (buildRepositionCandidates). Recomputed from the candidate rather than
+// remembered, so the tie test below can never drift from the sort that produced the order.
+func repositionRankKey(candidate repositionCandidate, cmd *RunTourCoordinatorCommand) float64 {
+	if cmd.RepositionReachEnabled {
+		return repositionDecayedScore(candidate, resolveRepositionReachHopDecay(cmd.RepositionReachHopDecayPct))
+	}
+	return float64(candidate.score)
+}
+
+// repositionCutIsTied reports whether the top-K cut falls INSIDE a run of candidates the pre-rank
+// scored identically — i.e. whether the sort's stable system-symbol tie-break, rather than the
+// score, decided which candidates get a solver call. When it does, the slice is an alphabet: the
+// same candidates win every time, however many attempts the hull makes, and the rest of its reach
+// is never priced. A cut the score itself made is not tied and is left completely alone.
+func repositionCutIsTied(candidates []repositionCandidate, cmd *RunTourCoordinatorCommand, k int) bool {
+	if k <= 0 || k >= len(candidates) {
+		return false // nothing is being cut off, so no cut was arbitrary
+	}
+	return repositionRankKey(candidates[k-1], cmd) == repositionRankKey(candidates[k], cmd)
+}
+
+// settleRepositionTies re-decides ONLY the order the pre-rank left undecided, and widens the
+// bounded fan-out for that regime alone. The pre-rank's real verdicts are preserved exactly —
+// equal-score runs are contiguous in a sorted list, so re-ordering inside them cannot move a
+// candidate past one the score ranked above or below it. What changes is the ordering WITHIN a
+// run: hop distance first (a cost the ranking already prices, but one the per-hop decay multiplies
+// away to nothing at score 0, leaving it unconsulted exactly when it is the only signal left),
+// then market breadth, then the symbol as a last resort so a window stays deterministic. And the
+// window ROTATES per hull and origin, so a slice that failed is not re-evaluated unchanged on the
+// next attempt from the same ground.
+//
+// This is not a re-fit of the pre-rank: where the score expressed a preference it is obeyed. It
+// only replaces the alphabet the score's silence was being resolved by.
+func (h *RunTourCoordinatorHandler) settleRepositionTies(ctx context.Context, cmd *RunTourCoordinatorCommand, currentSystem string, candidates []repositionCandidate, k int) ([]repositionCandidate, int) {
+	if !repositionCutIsTied(candidates, cmd, k) {
+		return candidates, k
+	}
+	if k < repositionTiedFanoutDefault {
+		k = repositionTiedFanoutDefault
+	}
+	if k > len(candidates) {
+		k = len(candidates)
+	}
+	offset := h.nextRepositionTieSweep(cmd.ShipSymbol, currentSystem, k)
+	ordered := orderRepositionTies(candidates, cmd, offset)
+	common.LoggerFromContext(ctx).Log("INFO", fmt.Sprintf("Reposition tie-break from %s: the top-%d cut falls inside candidates sharing one pre-rank, so %d of %d are ordered by hop distance then market breadth and swept from offset %d", currentSystem, k, k, len(candidates), offset), map[string]interface{}{
+		"ship_symbol": cmd.ShipSymbol, "current_system": currentSystem, "candidates": len(candidates),
+		"fan_out": k, "sweep_offset": offset,
+	})
+	return ordered, k
+}
+
+// orderRepositionTies re-orders each run of equally-scored candidates in a list already sorted by
+// rank key, then rotates that run by the sweep offset. Runs are contiguous by construction, so the
+// between-run order — every preference the pre-rank actually expressed — is untouched.
+func orderRepositionTies(candidates []repositionCandidate, cmd *RunTourCoordinatorCommand, rotate int) []repositionCandidate {
+	ordered := append([]repositionCandidate(nil), candidates...)
+	for lo := 0; lo < len(ordered); {
+		hi := lo + 1
+		for hi < len(ordered) && repositionRankKey(ordered[hi], cmd) == repositionRankKey(ordered[lo], cmd) {
+			hi++
+		}
+		tied := ordered[lo:hi]
+		sort.SliceStable(tied, func(i, j int) bool {
+			a, b := tied[i], tied[j]
+			if ah, bh := repositionChargedHops(a), repositionChargedHops(b); ah != bh {
+				return ah < bh // the nearer ground: less deadhead for an equally-rated prospect
+			}
+			if a.freshLanes != b.freshLanes {
+				return a.freshLanes > b.freshLanes // more tradeable rows: more for the solver to work with
+			}
+			return a.system < b.system
+		})
+		rotateRepositionTies(tied, rotate)
+		lo = hi
+	}
+	return ordered
+}
+
+// repositionChargedHops is a candidate's hop distance under the same hops<1 → 1 defensive floor
+// repositionDecayedScore and repositionCandidateRate apply, so an unstamped candidate from some
+// future discovery path can never tie-break as a free, zero-hop deadhead.
+func repositionChargedHops(candidate repositionCandidate) int {
+	if candidate.hops < 1 {
+		return 1
+	}
+	return candidate.hops
+}
+
+// rotateRepositionTies rotates a tied run left by `by`, wrapping — so consecutive attempts from
+// one origin sweep DISJOINT windows of the undecided set until it has been covered, rather than
+// re-pricing the same head of it forever.
+func rotateRepositionTies(tied []repositionCandidate, by int) {
+	if len(tied) < 2 || by <= 0 {
+		return
+	}
+	by %= len(tied)
+	if by == 0 {
+		return
+	}
+	rotated := append(append([]repositionCandidate(nil), tied[by:]...), tied[:by]...)
+	copy(tied, rotated)
+}
+
+// nextRepositionTieSweep returns the offset this hull's next tied slice starts at and advances the
+// sweep by the number of candidates about to be consumed. Keyed by ship symbol and reset whenever
+// the hull's origin changes — a new ground is a fresh reach to explore, so it starts at the head of
+// the ranking. In-memory only: the sweep exists to stop a hull re-pricing an identical losing slice
+// across the relaunches of ONE daemon lifetime, which is exactly the scope the map has; a restart
+// simply begins the sweep again. Guarded by repositionTieMu because the handler is a SHARED
+// singleton dispatched concurrently for every touring hull (the strandedStreak discipline).
+func (h *RunTourCoordinatorHandler) nextRepositionTieSweep(ship, system string, consumed int) int {
+	h.repositionTieMu.Lock()
+	defer h.repositionTieMu.Unlock()
+
+	st := h.repositionTieSweep[ship]
+	if st == nil || st.system != system {
+		st = &repositionTieState{system: system}
+		h.repositionTieSweep[ship] = st
+	}
+	offset := st.offset
+	st.offset += consumed
+	return offset
+}
+
 // excludeHerdedSystems drops any candidate system already served by >= the configured per-system
 // hull cap (sp-uf64 anti-herd), returning the survivors and how many were excluded (for the log).
 // The cap counts LANDED trade hulls (activeTradeHullsBySystem) PLUS rate-floor relocations currently
@@ -688,7 +860,7 @@ func (h *RunTourCoordinatorHandler) scoreRepositionNeighbors(ctx context.Context
 			rejections = append(rejections, neighborRejection{system: sys, reason: "no-waypoint"})
 			continue
 		}
-		candidates = append(candidates, repositionCandidate{system: sys, waypoint: waypoint, score: score, hops: nb.hops})
+		candidates = append(candidates, repositionCandidate{system: sys, waypoint: waypoint, score: score, hops: nb.hops, freshLanes: len(fresh)})
 	}
 	return candidates, rejections
 }
@@ -1038,6 +1210,14 @@ const strandedConsecutiveThresholdDefault = 3
 // accruing at (a change is a fresh episode — a captain-authority extraction that landed the hull
 // on ANOTHER dead ground), the consecutive qualifying-empty count, and whether this episode has
 // already paged (so the WARN + counter fire once per episode, not per launch).
+// repositionTieState is one hull's tied-slice sweep: the origin the sweep is accruing from (a
+// change is a fresh reach, so it restarts at the head of the ranking) and how far into the
+// undecided set the next attempt starts.
+type repositionTieState struct {
+	system string
+	offset int
+}
+
 type strandedHullState struct {
 	system string
 	count  int

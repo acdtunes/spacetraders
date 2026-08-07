@@ -56,6 +56,7 @@ func NewRunTourCoordinatorHandler(
 		mediator:                   mediator,
 		depositParked:              make(map[string]string),
 		strandedStreak:             make(map[string]*strandedHullState),
+		repositionTieSweep:         make(map[string]*repositionTieState),
 		purchaseObligation:         make(map[string]map[string]int),
 		rateFloorLastRelocation:    make(map[string]time.Time),
 		pendingRelocationsBySystem: make(map[string]int),

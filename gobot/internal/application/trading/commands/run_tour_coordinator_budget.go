@@ -214,6 +214,48 @@ func (h *RunTourCoordinatorHandler) applyCapitalBudget(ctx context.Context, play
 	return tradeBudget
 }
 
+// plannerReserveFor is the keep-back the SOLVER is handed for a plan priced under this budget.
+// The solver's own money guard is spend_cap = max(0, max_spend − working_capital_reserve), a CASH
+// contract that only holds on the EXPLICIT --max-spend path: under the dynamic budget max_spend is
+// already a spend BUDGET (25% of live treasury, clamped to trade's share of deployable capital), so
+// forwarding the absolute fleet reserve would subtract the same capital guard twice and zero the
+// planner for any treasury below 4x the reserve. One function so the rule the request is BUILT with
+// and the rule callers PREDICT the solver's verdict with can never drift apart.
+func plannerReserveFor(cmd *RunTourCoordinatorCommand, reserve int64) int64 {
+	if cmd.MaxSpend == 0 {
+		return 0
+	}
+	return reserve
+}
+
+// hasTreasurySource reports whether a LIVE balance can be read at all. It is the documented
+// discriminator between the two opposite meanings of a zero max-spend (defaultMaxSpend): with no
+// source wired, 0 is the "no explicit cumulative cap" sentinel and the per-buy working-capital
+// floor is the only guard; with a source wired, 0 is a number a live read produced.
+func (h *RunTourCoordinatorHandler) hasTreasurySource() bool {
+	return h.apiClient != nil || h.treasury != nil
+}
+
+// budgetDeniesEverySpend reports whether this budget leaves the solver's own money guard at zero,
+// so EVERY plan priced under it is refused before a single market is looked at. That is a SOLVENCY
+// verdict, not a market one: the deployable pool is empty (treasury at or below the working-capital
+// reserve), or an explicit ceiling sits at or below its keep-back.
+//
+// It reads the budget's OWN arithmetic rather than the solver's returned reason, so it is a
+// prediction the caller can act on BEFORE spending a planner round-trip per candidate — and cannot
+// be fooled by a reworded reason string.
+//
+// It never relaxes a guard: the answer is only ever used to REFUSE work (skip a pre-flight whose
+// verdict is already fixed) and to classify a refusal honestly. An unresolvable budget — a treasury
+// source wired but unreadable — never reaches here: resolveTourSpendCap fails closed and pauses
+// before anything is planned.
+func (h *RunTourCoordinatorHandler) budgetDeniesEverySpend(cmd *RunTourCoordinatorCommand, budget tourPlanBudget) bool {
+	if !h.hasTreasurySource() {
+		return false // 0 means "no explicit cap" here, not "no money"
+	}
+	return budget.maxSpend <= plannerReserveFor(cmd, budget.reserve)
+}
+
 func remainingSpend(maxSpend, spent int64) int64 {
 	if maxSpend <= 0 {
 		return 0 // no explicit cap

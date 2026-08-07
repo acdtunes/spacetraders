@@ -270,6 +270,18 @@ type RunTourCoordinatorHandler struct {
 	strandedMu     sync.Mutex
 	strandedStreak map[string]*strandedHullState
 
+	// repositionTieSweep records where each hull's next TIED reposition slice starts. When the
+	// pre-rank scores every reachable candidate the same, the top-K cut is decided by the sort's
+	// stable symbol tie-break alone — a deterministic alphabet, so a hull that failed re-prices an
+	// identical slice on every later attempt from that ground and never explores the rest of its
+	// reach. The sweep advances by the candidates each attempt consumed, so consecutive attempts
+	// cover disjoint windows. Keyed by ship symbol; reset when the hull's origin changes (a new
+	// ground is a fresh reach). Guarded by repositionTieMu because the handler is a SHARED singleton
+	// dispatched concurrently for every touring hull — the same per-hull discipline as
+	// strandedStreak. In-memory only: a restart begins the sweep again, which is harmless.
+	repositionTieMu    sync.Mutex
+	repositionTieSweep map[string]*repositionTieState
+
 	// purchaseObligation records how many units of each good a hull bought under tour
 	// operation and has NOT yet discharged (sold, deposited or liquidated). The
 	// honest-completion veto reads it at every terminal exit, so a tour can never release a
@@ -635,10 +647,23 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 		// the unreadable-treasury guard trip above (which likewise leaves the streak alone);
 		// it is bounded so a treasury that never recovers still ends the run honestly, and
 		// the exit epilogue clears the hold on the way out.
-		if response.CapitalDeniedBuys > deniedBefore {
+		// The same diagnosis one step EARLIER in the chain: a budget re-resolved from live
+		// treasury that came out at zero (the deployable pool is empty — treasury at or below the
+		// working-capital reserve) refuses every plan before the market is priced, so this tour's
+		// zero trades say nothing about the ground. Left in the starvation streak it reads as
+		// margin-death and parks the hull — on a treasury dip that moves every minute, and after
+		// ranking candidate grounds it equally cannot buy at. Scoped to the DYNAMIC budget, which
+		// re-resolves each pass and can therefore recover; an explicit --max-spend at or below its
+		// reserve is two operator constants that waiting cannot change, so it exits as before.
+		budgetDenied := cmd.MaxSpend == 0 && h.budgetDeniesEverySpend(cmd, tourBudget)
+		if response.CapitalDeniedBuys > deniedBefore || budgetDenied {
+			deniedCause := "a money guard refused its buys"
+			if budgetDenied {
+				deniedCause = fmt.Sprintf("the resolved spend budget left no headroom (max-spend %d)", tourBudget.maxSpend)
+			}
 			capitalDeniedStreak++
 			if capitalDeniedStreak < tourStarvationLimit {
-				logger.Log("WARNING", fmt.Sprintf("Tour denied capital by a money guard (%d since the last productive tour) - margins are intact, pausing %ds before re-planning", capitalDeniedStreak, int(tourTreasuryRetryBackoff.Seconds())), map[string]interface{}{
+				logger.Log("WARNING", fmt.Sprintf("Tour denied capital - %s (%d since the last productive tour) - this is not a margin verdict, pausing %ds before re-planning", deniedCause, capitalDeniedStreak, int(tourTreasuryRetryBackoff.Seconds())), map[string]interface{}{
 					"ship_symbol": cmd.ShipSymbol, "tours_completed": response.ToursCompleted,
 					"capital_denied_streak": capitalDeniedStreak, "backoff_seconds": int(tourTreasuryRetryBackoff.Seconds()),
 				})
@@ -648,7 +673,7 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 				continue
 			}
 			response.ExitReason = tourExitCapitalDenied
-			response.ExitDetail = fmt.Sprintf("denied capital (%d tours found a plan a money guard would not fund) after %d productive tour(s)", capitalDeniedStreak, response.ToursCompleted)
+			response.ExitDetail = fmt.Sprintf("denied capital - %s (%d consecutive tours) after %d productive tour(s)", deniedCause, capitalDeniedStreak, response.ToursCompleted)
 			logger.Log("INFO", "Tour stopping - "+response.ExitDetail, map[string]interface{}{
 				"ship_symbol": cmd.ShipSymbol, "tours_completed": response.ToursCompleted,
 				"capital_denied_streak": capitalDeniedStreak,
