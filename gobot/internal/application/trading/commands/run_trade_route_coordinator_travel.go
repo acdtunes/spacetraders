@@ -13,6 +13,7 @@ import (
 	navCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
 	shipQueries "github.com/andrescamacho/spacetraders-go/internal/application/ship/queries"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	domainSensing "github.com/andrescamacho/spacetraders-go/internal/domain/parkedsensing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
 )
@@ -1008,6 +1009,50 @@ func rankLanesByCircuitRate(lanes []trading.ArbitrageLane, shipCapacity int, tar
 		result[i] = s.lane
 	}
 	return result
+}
+
+// --- gate-fee pricing at selection ---
+
+// crossSystemCircuitCrossings is how many gate crossings ONE circuit of a cross-system lane
+// pays: out with the cargo, and back to re-buy. It is the money-side twin of
+// crossSystemRoundTripHops, which charges those same two hops as circuit TIME.
+//
+// Two is exact for every offered lane touching the home system, since scanLanes pools only that
+// system and its DIRECTLY-gated neighbours. A lane between two neighbours may sit further apart
+// and pay more; charging two there UNDER-states its bill, so the guard refuses fewer lanes than
+// the truth would — every lane it does refuse could not pay even the crossings it provably owes.
+const crossSystemCircuitCrossings = 2
+
+// laneGateCrossings reports the gate crossings one circuit of lane pays — zero when both ends
+// sit in the same system, where the lane crosses nothing and the charge must not reach it.
+func laneGateCrossings(l trading.ArbitrageLane) int {
+	if shared.ExtractSystemSymbol(l.SourceWaypoint) == shared.ExtractSystemSymbol(l.DestWaypoint) {
+		return 0
+	}
+	return crossSystemCircuitCrossings
+}
+
+// lanesClearingGateFees drops the ranked candidates whose trip cannot pay for the gates it must
+// cross, preserving order, and reports how many it removed. It is an ADDITIONAL bound layered
+// over the per-visit bid-floor discipline (ClearsFloor/MarginAlive), not a replacement: that
+// primitive prices a per-unit spread and cannot see travel, so a lane two gates out scored like
+// one across the street. The rate ranker charges those hops as TIME, but ranking only reorders —
+// it can seat a money-losing lane at the top of an otherwise empty board.
+//
+// A same-system lane crosses nothing and passes through untouched: zero-travel margin is the
+// fallback this steers back toward. Being a filter it can only REMOVE candidates (RULINGS #4).
+func lanesClearingGateFees(lanes []trading.ArbitrageLane) ([]trading.ArbitrageLane, int) {
+	kept := make([]trading.ArbitrageLane, 0, len(lanes))
+	pricedOut := 0
+	for _, l := range lanes {
+		crossings := laneGateCrossings(l)
+		if crossings > 0 && !l.ClearsFloorAfterGates(crossings, domainSensing.DefaultGateFeeCredits) {
+			pricedOut++
+			continue
+		}
+		kept = append(kept, l)
+	}
+	return kept, pricedOut
 }
 
 // --- lane-targeting override (sp-xwa1) ---

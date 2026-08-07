@@ -10,6 +10,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/absorption"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	domainSensing "github.com/andrescamacho/spacetraders-go/internal/domain/parkedsensing"
 	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
@@ -687,6 +688,25 @@ func (h *RunTradeRouteCoordinatorHandler) execute(
 			break
 		}
 
+		// A ranked lane must also be able to PAY for the gates its circuit crosses: the
+		// discipline floor below prices a per-unit spread and knows nothing about travel.
+		// Narrowing the candidate set here rather than inside selectLane keeps that per-visit
+		// primitive exactly as the executor enforces it, and charges the directed --dest path
+		// too — an operator picks WHICH lane, not whether the money guards run (RULINGS #4).
+		affordable, pricedOut := lanesClearingGateFees(lanes)
+		if pricedOut > 0 {
+			logger.Log("INFO", fmt.Sprintf(
+				"Gate fees priced out %d of %d ranked lane(s): their trip cannot clear the bid floor after paying %d credits a crossing",
+				pricedOut, len(lanes), domainSensing.DefaultGateFeeCredits),
+				map[string]interface{}{
+					"action":            "lanes_priced_out_by_gate_fees",
+					"ship_symbol":       cmd.ShipSymbol,
+					"priced_out":        pricedOut,
+					"ranked_lane_count": len(lanes),
+					"per_gate_fee":      domainSensing.DefaultGateFeeCredits,
+				})
+		}
+
 		// The scan ranks lanes by volume-capped spread and deliberately keeps sub-floor
 		// lanes visible (it is an observation tool). The executor, however, refuses any
 		// lane whose per-unit spread is below MinBidMargin (runCircuit's MarginAlive gate)
@@ -695,7 +715,7 @@ func (h *RunTradeRouteCoordinatorHandler) execute(
 		// flies >=1 visit instead of a silent zero-visit run (sp-sh6w). When cmd.TargetDest
 		// is set (sp-xwa1's --dest override), selectLane pins to that directed lane instead
 		// of the ranker's top pick; see selectLane's doc for the full contract.
-		lane, ok := selectLane(lanes, cmd.TargetDest)
+		lane, ok := selectLane(affordable, cmd.TargetDest)
 		if !ok {
 			exitReason = exitReasonMarginExhausted
 			// Only report "nothing to fly" if this run never flew anything at all — a
