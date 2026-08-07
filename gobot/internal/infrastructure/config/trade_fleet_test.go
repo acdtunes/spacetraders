@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -369,4 +370,30 @@ func TestLoadConfig_CargoBlocklist_AbsentIsEmpty(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, cfg.TradeFleet.CargoBlocklist,
 		"an absent cargo_blocklist must be empty (no filtering ⇒ byte-identical), never a config-layer default")
+}
+
+// The firm-sink money guard's BOOT floor is what holds the line whenever the rotation
+// bound cannot be derived — the window a restart opens before the map has been counted,
+// and any stretch where the census behind it is unreadable. In that window the floor IS
+// the cap, so it has to be a number the fleet's real market-refresh interval fits inside.
+//
+// A floor sized for a map of a few hundred markets does not. It refuses rows that are
+// merely waiting their turn in a rotation an order of magnitude longer, and refusing
+// them is not conservative: the firm-sink gate fails closed, so every refusal is a tour
+// that does not run. The value here is the one an operator already had to reach for by
+// hand during an incident to get throughput back.
+func TestResolvedSinkFreshnessMaxAge_UnsetFloorSpansARealRefreshInterval(t *testing.T) {
+	resolved := TradeFleetConfig{}.ResolvedSinkFreshnessMaxAge()
+
+	require.Equal(t, 12*time.Hour, resolved,
+		"an unset floor must span the fleet's real market-refresh interval, not a small map's")
+}
+
+// Raising the floor must never be able to disarm the clause, and a configured value must
+// still win outright — the floor is an operator lever, not a constant with a new value.
+func TestResolvedSinkFreshnessMaxAge_ConfiguredValueStillWinsAndStaysArmed(t *testing.T) {
+	require.Equal(t, 30*time.Minute, TradeFleetConfig{SinkFreshnessMaxMinutes: 30}.ResolvedSinkFreshnessMaxAge(),
+		"a configured floor is honoured as given, tighter or wider")
+	require.Positive(t, TradeFleetConfig{SinkFreshnessMaxMinutes: -1}.ResolvedSinkFreshnessMaxAge(),
+		"no reachable config value may resolve to a non-positive age, which would leave the clause inert")
 }

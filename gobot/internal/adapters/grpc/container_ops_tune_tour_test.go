@@ -45,7 +45,8 @@ func TestTourTune_OperationResolvesAndListsTheFreshnessFloor(t *testing.T) {
 	const key = "market_data_max_age_minutes"
 	knob, ok := byKey[key]
 	require.True(t, ok, "%s must be reachable via --operation tour", key)
-	require.Equal(t, 75, knob.Effective, "untuned, %s reports its documented floor", key)
+	require.Equal(t, documentedFreshnessFloorMinutes(), knob.Effective,
+		"untuned, %s reports its documented floor", key)
 	require.Equal(t, "default", knob.Source)
 	require.Equal(t, "minutes", knob.Bound.Unit)
 	require.Equal(t, 1, knob.Bound.Min, "%s may never be tuned to 0 as a VALUE — 0 is the revert verb", key)
@@ -84,7 +85,7 @@ func TestTourTune_TunedFloorIsReadableByTheByTypeReader(t *testing.T) {
 	out, err := s.MutateContainerConfigKey(ctx, "", "tour", "market_data_max_age_minutes", 1440, playerID)
 	require.NoError(t, err)
 	require.True(t, out.Changed)
-	require.Equal(t, 75, out.OldEffective)
+	require.Equal(t, documentedFreshnessFloorMinutes(), out.OldEffective)
 	require.Equal(t, 1440, out.NewEffective)
 	require.Equal(t, "live-config", out.NewSource)
 
@@ -99,7 +100,7 @@ func TestTourTune_TunedFloorIsReadableByTheByTypeReader(t *testing.T) {
 	// which would be indistinguishable from disarming a fail-closed money guard.
 	out, err = s.MutateContainerConfigKey(ctx, "", "tour", "market_data_max_age_minutes", 0, playerID)
 	require.NoError(t, err)
-	require.Equal(t, 75, out.NewEffective)
+	require.Equal(t, documentedFreshnessFloorMinutes(), out.NewEffective)
 	require.Equal(t, "default", out.NewSource)
 	snap, err = reader.Snapshot(ctx, playerID)
 	require.NoError(t, err)
@@ -147,4 +148,13 @@ func TestCoordinatorConfigReader_NoActiveCoordinatorIsEmptyNotAnError(t *testing
 	require.NoError(t, err)
 	_, set := snap.PositiveInt("market_data_max_age_minutes")
 	require.False(t, set)
+}
+
+// documentedFreshnessFloorMinutes reads the floor from the defaults-of-record the tune
+// registry itself is built from, rather than restating it here. A second copy of the
+// number in a test is the same drift the collapse to one knob was meant to end: it makes
+// widening the floor look like a broken test instead of the change it is, and pins the
+// operator-facing surface to a value the coordinator may no longer use.
+func documentedFreshnessFloorMinutes() int {
+	return tradingCmd.TradeFleetTunableDefaults()[tradingCmd.TuneKeyMarketDataMaxAgeMinutes]
 }

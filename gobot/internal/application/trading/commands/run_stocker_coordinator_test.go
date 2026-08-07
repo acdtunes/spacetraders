@@ -482,7 +482,7 @@ func TestStocker_Pick_UnsupportedGoodExcludes(t *testing.T) {
 func TestStocker_Pick_StaleForeignMarketExcludes(t *testing.T) {
 	fx := &stkFixture{cargo: map[string]int{}, location: "X1-S1-H", cargoCap: 100,
 		ask:       map[string]map[string]int{"X1-S1-M": {"MEDICINE": 2100}},
-		marketAge: map[string]time.Duration{"X1-S1-M": 76 * time.Minute}} // > 75-min cap
+		marketAge: map[string]time.Duration{"X1-S1-M": marketDataAgeFloor + time.Minute}} // past the floor by construction, not by a literal
 	coord, op := stkWireWarehouse(t, "wh", "X1-S1-H", 5000, []string{"MEDICINE"})
 	miner := &stkFakeMiner{rows: []persistence.DemandCandidate{eligible("MEDICINE", "X1-S1-M", 2100, 2800, 40)}}
 	h := newStockerHandler(t, fx, coord, op, miner, &sfFakeAPIClient{credits: 100000000}, tradingsvc.DepositCandidateConfig{}, 10)
@@ -1124,7 +1124,7 @@ func TestStocker_Standing_ReserveFloorParksFailClosed(t *testing.T) {
 func TestStocker_Standing_StaleForeignMarketParksFailClosed(t *testing.T) {
 	fx := &stkFixture{cargo: map[string]int{}, location: "X1-S1-H", cargoCap: 100,
 		ask:       map[string]map[string]int{"X1-S1-M": {"MEDICINE": 2100}},
-		marketAge: map[string]time.Duration{"X1-S1-M": 76 * time.Minute}} // > 75-min cap
+		marketAge: map[string]time.Duration{"X1-S1-M": marketDataAgeFloor + time.Minute}} // past the floor by construction, not by a literal
 	coord, op := stkWireWarehouse(t, "wh", "X1-S1-H", 5000, []string{"MEDICINE"})
 	miner := &stkFakeMiner{rows: []persistence.DemandCandidate{eligible("MEDICINE", "X1-S1-M", 2100, 2800, 40)}}
 	clock := &stkCancelOnSleepClock{}

@@ -2,12 +2,14 @@ package ship
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
 	"golang.org/x/time/rate"
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
+	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/marketscan"
 )
@@ -360,9 +362,26 @@ func (b *ScanBudget) Snapshot() BudgetSnapshot {
 // freshness question asked after a daemon restart is answered against the real map
 // rather than against an empty one.
 //
-// A nil budget (no scanner wired — every test that never builds one) reports a
-// zero map, which FreshnessCap answers with the caller's own floor rather than
-// with a widened cap.
+// IT REPORTS THE COUNTED MAP OR NOTHING, and never the markets this process has
+// been asked about — which is the one difference between this and the denominator
+// Admit paces on. The two consumers need the count to err in OPPOSITE directions.
+// Pacing wants the smallest denominator it can defend: under-count the map and the
+// allowance simply spends less than it is allowed to, so a rate guard that errs low
+// is still a rate guard, and the markets-asked-about tally is a safe lower bound to
+// fall back on. A freshness bound wants the largest: under-count the map and the
+// bound shortens, and a bound shorter than the rotation makes every consumer discard
+// data that is merely waiting its turn — the failure the derivation exists to end.
+//
+// The tally cannot serve the second because it is not a map size at all. It starts
+// at zero on every restart and climbs as the process is asked about markets, so a
+// bound derived from it is a function of UPTIME: minutes wide in the window a restart
+// opens, still climbing an hour later, and never related to how often the fleet
+// actually re-reads a market. Reporting zero instead is what makes an uncounted map
+// legible as "unknown", which FreshnessCap answers with the caller's own floor —
+// a number an operator chose, rather than one the process invented.
+//
+// A nil budget (no scanner wired — every test that never builds one) reports the
+// same empty map, and for the same reason.
 func (b *ScanBudget) RotationInputs(ctx context.Context) (marketscan.Budget, int) {
 	if b == nil {
 		return marketscan.Budget{}, 0
@@ -371,8 +390,7 @@ func (b *ScanBudget) RotationInputs(ctx context.Context) (marketscan.Budget, int
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	_, _, marketsKnown := b.aggregateLocked()
-	return b.policy, marketsKnown
+	return b.policy, b.charted
 }
 
 // aggregateLocked returns the fleet median spread, the summed weight of every
@@ -448,6 +466,16 @@ func (b *ScanBudget) refreshChartedCount(ctx context.Context) {
 	// on the TTL rather than on every single admission.
 	b.chartedAt = b.now()
 	if err != nil {
+		// SAY SO. A discarded error here is the one failure with no symptom of its
+		// own: the count simply stays where it was, and from every consumer's side a
+		// counter that has never once succeeded is indistinguishable from a map that
+		// really is that small. Pacing then runs on the markets-asked-about fallback
+		// and freshness consumers run on their floor — both survivable, neither
+		// something an operator should have to infer from a bound that looks wrong.
+		// Rate-limited by the same TTL that gates the read, so it cannot flood.
+		common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf(
+			"Market-scan budget: charted-market census unreadable, holding the previous map size of %d - pacing falls back to the markets already seen and every derived freshness cap falls back to its floor: %v",
+			b.charted, err), nil)
 		return
 	}
 	total := 0

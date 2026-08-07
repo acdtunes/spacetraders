@@ -226,9 +226,9 @@ type TradeFleetConfig struct {
 	// market and fail-closes on stale data. Daemon-global: injected into the tour coordinator
 	// handler via SetSinkFreshness at boot (the same cfg.TradeFleet → handler-setter path
 	// CargoBlocklist uses), re-read on every restart. It ships ARMED (no on/off flag,
-	// RULINGS #5 operational value): 0/absent → the 75-min default, byte-identical for any
-	// genuinely fresh sink. A captain softens it by RAISING the threshold (like the
-	// watchdog), never disabling.
+	// RULINGS #5 operational value): 0/absent → the documented default below,
+	// byte-identical for any genuinely fresh sink. A captain softens it by RAISING the
+	// threshold (like the watchdog), never disabling.
 	//
 	// It is the BOOT floor only, and a floor is not the cap: the effective cap is
 	// max(floor, the live scan rotation's own anti-starvation bound) (sp-k4z5b). The LIVE
@@ -250,13 +250,29 @@ type TradeFleetConfig struct {
 	FullHullPausePct int `mapstructure:"full_hull_pause_pct"`
 }
 
-// sink-freshness clause default (sp-tgll8 item 2): the standing 75-min freshness discipline
-// (maxListingAge), applied when the [trade_fleet] knob is unset so the clause ships ARMED.
-const defaultSinkFreshnessMaxMinutes = 75
+// defaultSinkFreshnessMaxMinutes is the sink-freshness clause's boot floor, applied when
+// the [trade_fleet] knob is unset so the clause ships ARMED.
+//
+// TWELVE HOURS, because the floor is what the guard runs on whenever the rotation bound
+// cannot be derived — the window a restart opens before the map has been counted, and any
+// stretch where the census behind that count is unreadable. In that window the floor IS the
+// cap, so it has to be a number the fleet's real market-refresh interval fits inside.
+//
+// The previous value was sized against a map of a few hundred markets and did not survive
+// the map growing. Refusing on it is not the conservative choice it looks like: the firm-sink
+// gate fails closed, so a floor below the rotation turns rows that are merely waiting their
+// turn into tours that never run, and the fleet stops trading rather than trades carefully.
+// This is the value an operator already had to reach for by hand, mid-incident, to get
+// throughput back.
+//
+// It is a FLOOR and not a ceiling. Raising it never disarms anything, and the money guard's
+// arming stays a separate boot decision: only a non-positive [trade_fleet] value leaves the
+// clause inert, and this default is never non-positive.
+const defaultSinkFreshnessMaxMinutes = 720
 
 // ResolvedSinkFreshnessMaxAge returns the configured sink-freshness ceiling as a Duration, or
-// the 75-min default when unset (non-positive) — so the daemon always injects a POSITIVE age
-// and the clause ships ARMED (sp-tgll8 item 2). Centralizes default resolution the way the
+// the documented default when unset (non-positive) — so the daemon always injects a POSITIVE
+// age and the clause ships ARMED (sp-tgll8 item 2). Centralizes default resolution the way the
 // [trade_impact] Resolved* helpers do.
 func (c TradeFleetConfig) ResolvedSinkFreshnessMaxAge() time.Duration {
 	minutes := c.SinkFreshnessMaxMinutes

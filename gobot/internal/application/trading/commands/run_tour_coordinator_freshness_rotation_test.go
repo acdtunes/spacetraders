@@ -25,7 +25,7 @@ import (
 // must now execute in full.
 func TestTourSinkFresh_RotationExplainedStaleness_StillBuys(t *testing.T) {
 	fx := arbFixture(1000)
-	fx.staleMarkets = map[string]bool{"X1-S1-B": true} // the sink's cached row is 2h old (>75m)
+	fx.staleMarkets = map[string]bool{"X1-S1-B": true} // the sink's cached row is past the boot floor
 	planner := &tourFakeRoutingClient{plans: []*routing.TourPlan{arbPlan()}}
 	h := newTourHandler(t, fx, planner, &tourFakeTelemetry{})
 	ledger, _ := setupTourLedger(t)
@@ -83,7 +83,7 @@ func TestTourSinkFresh_PastRotationBound_StillRefusesBuy(t *testing.T) {
 // goes blind to most of the map the moment charting outruns the budget.
 func TestTour_RotationExplainedStaleListings_StillReachTheShortlist(t *testing.T) {
 	fx := repositionFixture()
-	fx.staleMarkets = map[string]bool{"X1-S2-A": true, "X1-S2-B": true} // S2's only listings are 2h old
+	fx.staleMarkets = map[string]bool{"X1-S2-A": true, "X1-S2-B": true} // S2's only listings are past the floor
 	homeCalls := 0
 	planner := &tourFakeRoutingClient{planFn: func(ship routing.TourShipState) *routing.TourPlan {
 		if ship.CurrentSystem == "X1-S1" {

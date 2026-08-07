@@ -357,7 +357,10 @@ func (r *tourFakeMarketRepo) GetMarketData(ctx context.Context, waypointSymbol s
 	}
 	observedAt := time.Now()
 	if r.fx.staleMarkets[waypointSymbol] {
-		observedAt = observedAt.Add(-2 * time.Hour) // >marketDataAgeFloor (75m) → freshListings drops it
+		// Positioned relative to the floor, never at a literal age: a fixture pinned to
+		// a number stops being stale the moment the floor is widened, and the test then
+		// passes for the wrong reason — it stops exercising the gate at all.
+		observedAt = observedAt.Add(-(marketDataAgeFloor + time.Hour)) // freshListings drops it
 	}
 	if age, ok := r.fx.ageByWaypoint[waypointSymbol]; ok {
 		observedAt = time.Now().Add(-age)

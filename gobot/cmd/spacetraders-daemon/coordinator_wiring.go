@@ -155,7 +155,7 @@ func (w circuitWiring) configureTourCoordinator(h *tradeRouteCmd.RunTourCoordina
 	h.SetRankerAgeCaps(w.cfg.Trading.RankerAgeCapMinutes.Resolved())
 	// sp-tgll8 item 2: arm the "FRESH" clause on the firm-sink buy gate — at buy execution the
 	// gate re-reads each held sink's LIVE market_data and refuses on stale data (older than
-	// this). Ships ARMED at the 75-min default. This is the BOOT floor; the effective cap is
+	// this). Ships ARMED at the documented default. This is the BOOT floor; the effective cap is
 	// max(floor, rotation bound) (sp-k4z5b) and the LIVE lever is `tune --operation tour
 	// market_data_max_age_minutes`. Byte-identical for fresh sinks.
 	h.SetSinkFreshness(w.cfg.TradeFleet.ResolvedSinkFreshnessMaxAge())

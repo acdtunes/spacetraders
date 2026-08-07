@@ -61,10 +61,10 @@ const TuneKeyMarketDataMaxAgeMinutes = "market_data_max_age_minutes"
 // is the wrong SHAPE for ranking.
 //
 // It is a floor, NOT a cap. The EFFECTIVE cap is
-// marketscan.FreshnessCap(floor, budget, marketsKnown): on a small map, where the
-// rotation is quick, 75 minutes stays the operative number and behaviour is
-// unchanged; on today's 4,000+ market map the rotation bound dominates and the
-// floor never binds. Never a silent invalidation either way.
+// marketscan.FreshnessCap(floor, budget, marketsKnown): while the map is small enough
+// that the rotation beats the floor, the floor is the operative number; once the map
+// grows past it the rotation bound dominates and the floor never binds. Never a silent
+// invalidation either way.
 //
 // Even for the ranker no cap silently vetoes an operator-directed --dest lane,
 // which is re-verified LIVE at execution (staleAskAborts + the per-visit margin
@@ -77,8 +77,17 @@ const (
 	//
 	// It is also config.defaultSinkFreshnessMaxMinutes — the boot floor SetSinkFreshness
 	// injects into the money guard — so ONE knob really does mean ONE number: `tune
-	// --show` reports what BOTH consumers fall back to, not an average of two.
-	defaultMarketDataMaxAgeMinutes = 75
+	// --show` reports what BOTH consumers fall back to, not an average of two. The two
+	// packages cannot import each other, so the equality is held by a test that can see
+	// both rather than by these comments agreeing.
+	//
+	// TWELVE HOURS, sized for the case the floor actually governs: the rotation bound is
+	// derivable only once the map has been counted, so until then — the window every
+	// restart opens, and any stretch where that count is unreadable — the floor IS the
+	// cap. A floor below the fleet's real refresh interval discards rows that are merely
+	// waiting their turn, and on the buy gate, which fails closed, discarding them means
+	// not trading at all.
+	defaultMarketDataMaxAgeMinutes = 720
 
 	// freshnessSnapshotTTL bounds how long a resolved floor is reused before the
 	// container config column is consulted again.
