@@ -60,18 +60,16 @@ func (h *RunFleetCoordinatorHandler) newIdleArbDispatcher(cmd *RunFleetCoordinat
 	// Wires the cross-engine absorption ledger so the dispatcher consults it
 	// (skip:reserved) and records launched legs. Inert when unwired.
 	dispatcher.SetAbsorptionLedger(h.absorptionLedger, h.absorptionPlannedTTLSlack)
-	// Live-treasury source for the working-capital reserve gate (sp-zq635 §4a): the
-	// pass's concurrent legs can never collectively drain treasury below the immutable
-	// reserve. Reads the same live balance (mediator GetPlayerQuery) the contract park
-	// path reads; a read failure fails the gate CLOSED (holds the pass).
+	// Live-treasury source for the working-capital reserve gate, so the pass's concurrent legs can
+	// never collectively drain treasury below the immutable reserve. Reads the same live balance
+	// the contract park path reads; a read failure fails the gate CLOSED, holding the pass.
 	dispatcher.SetTreasuryReader(&mediatorTreasuryReader{
 		mediator: h.fleetPoolManager.GetMediator(),
 		playerID: cmd.PlayerID,
 	})
-	// LIVE hub set: resolves the CURRENT standby set each pass from this
-	// coordinator's container config, so `fleet hub add|remove` re-homes idle
-	// hulls across the new set with no restart. Falls back to
-	// cmd.StandbyStations on a read failure / no provider.
+	// LIVE hub set: resolves the CURRENT standby set each pass from this coordinator's container
+	// config, so `fleet hub add|remove` re-homes idle hulls across the new set with no restart.
+	// Falls back to cmd.StandbyStations on a read failure or with no provider.
 	dispatcher.SetStandbyResolver(func(resolveCtx context.Context) []string {
 		return appContract.ResolveStandbyStations(resolveCtx, common.LoggerFromContext(resolveCtx), h.standbyProvider, cmd.ContainerID, cmd.PlayerID.Value(), cmd.StandbyStations)
 	})
@@ -83,28 +81,21 @@ func (h *RunFleetCoordinatorHandler) newIdleArbDispatcher(cmd *RunFleetCoordinat
 	return dispatcher
 }
 
-// mediatorShipHomer implements appContract.ShipHomer by dispatching the
-// EXISTING balanced-standby HomeShipCommand through the mediator — the
-// idle-arb dispatcher's post-leg re-home reuses the coordinator's own homing
-// machinery verbatim, with the same standby-station set and fleet-peer list
-// the contract-handoff homing uses (RULINGS #7: no parallel homing algorithm).
+// mediatorShipHomer implements appContract.ShipHomer by dispatching the EXISTING balanced-standby
+// HomeShipCommand through the mediator: the idle-arb dispatcher's post-leg re-home reuses the
+// coordinator's own homing machinery verbatim, with the same standby-station set and fleet-peer
+// list the contract-handoff homing uses (RULINGS #7: no parallel homing algorithm).
 //
-// Both membership inputs are LIVE, not frozen launch snapshots. The standby
-// set is passed in per re-home — the dispatcher resolves the CURRENT hub set
-// from the coordinator's container config each pass, so a `fleet hub
-// add|remove` re-homes across the new set with no restart. The fleet-peer list
-// is resolved LIVE per re-home from the dedicated_fleet tag, so a hull `fleet
-// add`ed after launch is counted in standby-station occupancy and a `fleet
-// remove`d one is not — both matching the contract-handoff homing gate.
+// Both membership inputs are LIVE, not frozen launch snapshots. The standby set is passed in per
+// re-home from the CURRENT hub set in container config, so `fleet hub add|remove` re-homes across
+// the new set with no restart; the fleet-peer list is resolved live from the dedicated_fleet tag,
+// so a hull added after launch counts toward standby-station occupancy and a removed one does not.
 //
-// Navigation runs FIRE-AND-FORGET, mirroring the coordinator's own
-// `go func(){ Send(homeCmd) }` at the contract-handoff hook: HomeShipCommand
-// blocks until the hull arrives (navigate_route executes the whole route), so a
-// synchronous call would stall the dispatcher tick for the full flight. HomeShip
-// returns as soon as the home is DISPATCHED; the detached goroutine carries the
-// container logger on a background context that outlives the request ctx,
-// exactly as the coordinator's homing goroutine does, and logs a homing failure
-// at WARNING rather than surfacing it (re-homing is best-effort).
+// Navigation runs FIRE-AND-FORGET, mirroring the coordinator's own homing hook: HomeShipCommand
+// blocks until the hull ARRIVES, so a synchronous call would stall the dispatcher tick for the full
+// flight. HomeShip returns as soon as the home is DISPATCHED; the detached goroutine carries the
+// container logger on a background context that outlives the request ctx, and logs a homing failure
+// at WARNING rather than surfacing it, re-homing being best-effort.
 type mediatorShipHomer struct {
 	mediator common.Mediator
 	shipRepo navigation.ShipRepository

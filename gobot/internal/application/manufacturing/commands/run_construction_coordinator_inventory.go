@@ -38,18 +38,16 @@ func (w warehouseSourcing) enabled() bool {
 }
 
 // trySourceFromWarehouse withdraws up to `needed` units of the task's material from an in-system
-// depot warehouse at ZERO cost, mirroring the contract DeliveryExecutor's proven withdrawal
-// (FindInSystemInventory → reserve → AlignAndTransferCargo → confirm).
+// depot warehouse at ZERO cost, mirroring the contract DeliveryExecutor's withdrawal shape
+// (FindInSystemInventory -> reserve -> AlignAndTransferCargo -> confirm).
 //
 // Returns withdrew>0 (with the reloaded hull) when at least one unit lands aboard; the caller then
-// delivers it and skips the market buy THIS trip — the residual re-stages, and a later trip
-// withdraws more or buys once the warehouse drains, so a covered unit is NEVER also bought.
+// delivers it and skips the market buy THIS trip. The residual re-stages, and a later trip withdraws
+// more or buys once the warehouse drains, so a covered unit is NEVER also bought.
 //
-// FAIL-OPEN to the market path (RULINGS #4 fails closed on SPEND, never on supply — the gate is
-// never starved): every no-inventory shape (feature unwired, no in-system warehouse, drained
-// between the finder read and the reservation, no hold space) and every error (missing token, nav,
-// transfer) returns withdrew=0 so the caller buys as today. A failed transfer releases its whole
-// reservation so no inventory is lost to another worker.
+// FAIL-OPEN to the market path — RULINGS #4 fails closed on SPEND, never on supply, so the gate is
+// never starved. Every no-inventory shape and every error returns withdrew=0 so the caller buys
+// instead, and a failed transfer releases its whole reservation so no inventory is lost.
 func (h *RunConstructionCoordinatorHandler) trySourceFromWarehouse(
 	ctx context.Context,
 	task *manufacturing.ManufacturingTask,

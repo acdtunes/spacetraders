@@ -42,10 +42,10 @@ func (h *RunConstructionCoordinatorHandler) remainingBill(ctx context.Context, t
 // construction site — one site read per distinct pipeline per tick, and only on a tick that already
 // has work, so an idle drain adds no API cost.
 //
-// The counters are a cache written only AFTER the server has accepted a supply, so every
-// interruption in that gap leaves them permanently BEHIND: the drain then sources material the site
-// no longer needs and the surplus can never be delivered, because the server-side requirement is
-// already met. It also drives the operator's gate percentage, which reads the same row.
+// The counters are a cache written only AFTER the server accepts a supply, so every interruption in
+// that gap leaves them permanently BEHIND: the drain then sources material the site no longer needs
+// and the surplus can never be delivered, the server-side requirement already being met. The same
+// row drives the operator's gate percentage.
 //
 // A read failure is logged and skipped, never fatal — a stale counter over-sources, but a drain that
 // refuses to run delivers nothing at all.
@@ -164,16 +164,14 @@ func (h *RunConstructionCoordinatorHandler) recordDelivery(ctx context.Context, 
 	return pipeline
 }
 
-// enqueueReplenishmentIfNeeded implements PHASE-5 continuous refill. One supplyTask delivers a
-// single hauler cargo-load; the planner stages only one DELIVER_TO_CONSTRUCTION task per
-// material, so without this the pipeline stalls EXECUTING below 100% after that first load. When
-// the delivered material's bill is not yet met, it enqueues the next single-load delivery task —
-// left READY for the drain to pick up next tick — so the pipeline self-re-stages one load at a
-// time until every material's full bill is met. The remaining is read from the pipeline's
-// persisted material bill (already persisted and reloaded on boot — no new cross-restart state),
-// and the follow-on reuses this task's resolved delivery spec via the same domain factory the
-// planner uses, so the two paths cannot drift. When remaining <= 0 the material is complete and
-// nothing is queued, so the chain settles cleanly.
+// enqueueReplenishmentIfNeeded is the continuous refill. One supplyTask delivers a single hauler
+// cargo-load and the planner stages only one DELIVER_TO_CONSTRUCTION task per material, so without
+// this the pipeline stalls EXECUTING below 100% after that first load. When the delivered material's
+// bill is not yet met it enqueues the next single-load task, left READY for the drain to pick up
+// next tick, so the pipeline self-re-stages one load at a time. Remaining is read from the
+// pipeline's PERSISTED material bill, so no new cross-restart state is introduced, and the follow-on
+// reuses this task's resolved delivery spec via the same domain factory the planner uses, so the two
+// paths cannot drift. At remaining <= 0 nothing is queued and the chain settles.
 func (h *RunConstructionCoordinatorHandler) enqueueReplenishmentIfNeeded(ctx context.Context, task *manufacturing.ManufacturingTask, pipeline *manufacturing.ManufacturingPipeline) {
 	logger := common.LoggerFromContext(ctx)
 	if pipeline == nil {

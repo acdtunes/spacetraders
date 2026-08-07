@@ -108,13 +108,13 @@ func (h *RunConstructionCoordinatorHandler) deferTask(ctx context.Context, task 
 // to READY. It reports whether it took ownership of the task, so the fail/defer paths it fronts
 // stand down.
 //
-// A cancellation must not be charged to the retry budget: three deploys would otherwise spend a
-// leg's three lives and strand it terminal FAILED, holding whatever material the interrupted hull
-// had already paid for. ParkForResupply leaves the retry count untouched and releases the hull, and
-// the resolved source is deliberately NOT cleared (unlike a dry-source defer) because nothing about
-// the source failed. The write rides the detached cleanup ctx so it survives the very cancellation
-// that triggered it; if the process dies first the row is still the READY it was polled as — status
-// is never persisted mid-flight — so the next tick picks it up either way.
+// A cancellation must not be charged to the retry budget, or a handful of deploys spends a leg's
+// whole retry allowance and strands it terminal FAILED, holding material the interrupted hull
+// already paid for. ParkForResupply leaves the retry count untouched and releases the hull, and the
+// resolved source is deliberately NOT cleared — unlike a dry-source defer — because nothing about
+// the source failed. The write rides the detached cleanup ctx so it survives the cancellation that
+// triggered it; if the process dies first the row is still the READY it was polled as, status never
+// being persisted mid-flight, so the next tick picks it up either way.
 func (h *RunConstructionCoordinatorHandler) requeueInterrupted(ctx context.Context, task *manufacturing.ManufacturingTask) bool {
 	if !errors.Is(ctx.Err(), context.Canceled) {
 		return false

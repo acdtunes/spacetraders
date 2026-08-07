@@ -9,34 +9,23 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 )
 
-// sp-2dv4 (money-integrity #3). A SHIP_PARTS goods factory bled -675k in 18min:
-// it bought 1.17M of ELECTRONICS/EQUIPMENT feed and DELIVERED it into the fab
-// market's import bid at -47% per churn (our own prior dumping had crushed those
-// import bids -38..-61%), and its only recovery sink bid on the finished good
-// had trade volume 6 — far too small to ever absorb a 7-figure feed spend. The
-// factory model priced the feed leg at stale/assumed spreads and never re-checked
-// live, so nothing stopped the spend. The 9aoc solvency floor parked the buys at
-// 87k as designed, but the bleed happened BEFORE the floor: the economics were
-// negative from the first buy.
-//
-// ChainMarginGuard closes that gap with TWO checks, both run BEFORE any feed is
-// bought and both using LIVE market reads:
+// ChainMarginGuard is the PRE-SPEND economics gate for a goods factory. A solvency floor bounds
+// how MUCH a factory may spend; it cannot tell a factory that its economics are negative from the
+// first buy — a chain whose feed import bids have been crushed by our own dumping, or whose only
+// resale sink is too shallow to absorb a large feed spend, bleeds inside the floor. Both checks
+// run BEFORE any feed is bought, on LIVE market reads rather than the model's assumed spreads:
 //
 //	Guard 1 — chain margin: project the whole chain's P&L =
 //	  Σ_feed (fab_import_bid − source_ask)·vol  +  (final_sink_bid − fab_ask)·vol
-//	and refuse to start when it does not clear a safety margin. Crushed feed
-//	import bids drive this negative — Guard 1 alone would have refused the incident.
+//	and refuse to start when it does not clear a safety margin.
 //
-//	Guard 2 — absorption-bounded spend: cap one chain pass's total feed spend at
-//	what the FINAL sink can absorb (sink_bid × sink_trade_volume × a bounded number
-//	of tranches), NOT at the treasury. A vol-6 sink therefore caps feed spend to a
-//	commensurately small number regardless of how much cash is on hand.
+//	Guard 2 — absorption-bounded spend: cap one chain pass's total feed spend at what the FINAL
+//	sink can absorb (sink_bid × sink_trade_volume × a bounded number of tranches), NOT at the
+//	treasury, so a shallow sink caps feed spend however much cash is on hand.
 //
-// It is strictly additive and UPSTREAM: it does not touch the 9aoc solvency
-// floor, the bp6f #3 crushed-sink harvest guard (production_executor PollForProduction),
-// or the vsfn worker-park path (run_factory_coordinator executeLevelParallel). It
-// fails CLOSED — an unpriceable stage parks rather than spends — mirroring 9aoc's
-// discipline: can't price it, don't spend on it.
+// Strictly additive and UPSTREAM: it touches neither the solvency floor, the crushed-sink harvest
+// guard in PollForProduction, nor the worker-park path. It fails CLOSED — an unpriceable stage
+// parks rather than spends.
 const (
 	// chainMarginSafetyFraction is the safety margin on Guard 1: a chain must
 	// project a profit of at least this fraction of its feed spend before we
@@ -78,10 +67,9 @@ func NewChainMarginGuard(marketLocator *MarketLocator, marketRepo market.MarketR
 	return &ChainMarginGuard{marketLocator: marketLocator, marketRepo: marketRepo}
 }
 
-// ChainProjection is the structured, loggable result of a pre-spend projection.
-// The container-log renderer prints only level+message and drops metadata
-// (sp-iqyq), so the park/pass messages carry every number in their TEXT while
-// the same fields are also exposed as metadata for structured consumers.
+// ChainProjection is the structured, loggable result of a pre-spend projection. The container-log
+// renderer prints only level+message and drops metadata, so the park/pass messages carry every
+// number in their TEXT while the same fields are also exposed as metadata for structured consumers.
 type ChainProjection struct {
 	Proceed       bool
 	Reason        chainGuardReason

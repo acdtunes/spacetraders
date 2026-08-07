@@ -4,24 +4,20 @@ import (
 	"context"
 )
 
-// sp-vh1s — unified gate-fill: the run-context surface that turns a generic goods-factory run
-// into a gate fill. A gate fill IS a goods-factory run differing in exactly one thing — what
-// happens to the finished root output: a profit factory SELLS it at a resale sink; a gate fill
-// DELIVERS it to a construction site. That one difference is carried here as a DeliveryTarget on
-// the run context.
+// Unified gate-fill: the run-context surface that turns a generic goods-factory run into a gate
+// fill. A gate fill IS a goods-factory run differing in exactly one thing — what happens to the
+// finished root output: a profit factory SELLS it at a resale sink, a gate fill DELIVERS it to a
+// construction site. That one difference is carried here as a DeliveryTarget on the run context.
 //
-// Everything rides on ctx (not a struct field) for the SAME singleton-executor race reason as the
-// input price ceiling / fabricate depth cap (WithInputPriceCeiling, WithFabricateDepthCap): the
-// ProductionExecutor and SupplyChainResolver are
-// boot SINGLETONS shared across every concurrent factory container, so per-run config would race
-// between sibling factories if it lived on a struct — ctx is per-Handle and race-free. context.Context
-// threads BY VALUE through the recursive production chain, so ONE stamp in the coordinator's
-// executeCoordination reaches every child node.
+// Everything rides on ctx rather than a struct field for the same singleton-executor race reason as
+// the input price ceiling and the fabricate depth cap: ProductionExecutor and SupplyChainResolver
+// are boot SINGLETONS shared across every concurrent factory container, so per-run config on a
+// struct would race between sibling factories. context.Context threads BY VALUE through the
+// recursive production chain, so ONE stamp in the coordinator reaches every child node.
 //
 // A caller that never stamps a target (every profit-factory run, the demand/siting estimators)
-// reads the zero value: DeliveryTarget = resale sink — the unchanged profit-factory path. Gate mode
-// engages ONLY where a construction-site target is stamped (IsUnifiedGateNode), which today is the
-// construction coordinator's gateSupplyContext and nothing else.
+// reads the zero value, a resale sink. Gate mode engages ONLY where a construction-site target is
+// stamped (IsUnifiedGateNode).
 
 // DeliveryTargetKind distinguishes the two terminals a produced root output can take. The zero value
 // is DeliverySink so an unstamped run is a resale sink (unchanged behavior).

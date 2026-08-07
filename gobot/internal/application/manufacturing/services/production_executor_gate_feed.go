@@ -36,38 +36,34 @@ type FeedResult struct {
 // `inputs` IS THE TRIP'S SUBJECT, NOT AN INVENTORY OF THE HOLD, and the difference is
 // load-bearing in both directions:
 //
-//   - It is what the sp-b27a2 guard judges. ValidateFeedDestination refuses the NAVIGATE unless
+//   - It is what the destination guard judges. ValidateFeedDestination refuses the NAVIGATE unless
 //     the destination imports EVERY good named here, so a caller that named its whole hold would
-//     refuse trips over unrelated cargo the hull merely happens to carry — reversing sp-w2qg5,
-//     whose ruling is that unsellable cargo aboard RIDES ON rather than vetoing the trip. Callers
-//     therefore name what this run acquired FOR THIS FACTORY: the fabricate path passes
-//     run.haulingInputs(), the gate FACTORY leg passes the input it just bought for the step.
+//     refuse trips over unrelated cargo the hull merely happens to carry — and the standing rule is
+//     that unsellable cargo aboard RIDES ON rather than vetoing the trip. Callers therefore name
+//     what this run acquired FOR THIS FACTORY.
 //
-//   - The delivery underneath does NOT restrict itself to that list. deliverInputs offers the
-//     WHOLE HOLD and decides good-by-good against the destination's own listing (marketBuys), so
-//     a factory can receive more than is named here — but only goods it genuinely imports. Its
-//     own EXPORT is refused, which is why a hull carrying a gate material must be flushed
-//     elsewhere rather than expecting a factory to take it back, and anything the market does not
-//     list is held aboard.
+//   - The delivery underneath does NOT restrict itself to that list. deliverInputs offers the WHOLE
+//     HOLD and decides good-by-good against the destination's own listing (marketBuys), so a
+//     factory can receive more than is named here — but only goods it genuinely imports. Its own
+//     EXPORT is refused, which is why a hull carrying a gate material must be flushed elsewhere
+//     rather than expecting a factory to take it back, and anything unlisted is held aboard.
 //
 // IT ISSUES NO PURCHASE. Feeding a factory is a SELL into its import listing. The BUY that put the
 // inputs aboard is BuyAtTerminalFactory's, which routes through the shared fillFromSource tranche
 // loop where the working-capital floor (spendFloorBreached, re-read against live treasury) and
 // the cross-container concurrent-spend reservation are re-checked EVERY iteration and both fail
 // closed. Keeping the buy there means this phase adds no second spend primitive and edits none of
-// the existing one (RULINGS #4). The floor in force is defaultWorkingCapitalReserve —
-// common.NonContractWorkingCapitalFloor, the 150k non-contract band, NOT the 50k base — raised
-// further by the per-operation capital budget when a work sensor is wired.
+// the existing one (RULINGS #4). The floor in force is defaultWorkingCapitalReserve, the
+// non-contract band, raised further by the per-operation capital budget when a work sensor is wired.
 //
 // That is a claim about MARKET SPEND and nothing wider: the NavigateAndDock below is an ordinary
-// movement, so refuel and jump-gate fees ride on it exactly as they do on every other leg. What
-// this function must never do is open a second purchasing path around the guard stack.
+// movement, so refuel and jump-gate fees ride on it as on every other leg. What this function must
+// never do is open a second purchasing path around the guard stack.
 //
-// THE sp-b27a2 GUARD RUNS BEFORE THE NAVIGATE, through the SAME feedDestinationRefusedFor the
-// fabricate path uses. That incident dispatched IRON_ORE to a waypoint which did not import it,
-// and the haulers then sat at 80/80 unable to deliver OR dump. Checking the destination's own
-// listing before flying is the root-cause fix; deliverInputs' hold-what-it-cannot-sell behaviour
-// only limits the damage after the hull is already at the wrong waypoint.
+// THE DESTINATION GUARD RUNS BEFORE THE NAVIGATE, through the SAME feedDestinationRefusedFor the
+// fabricate path uses. Checking the destination's own listing before flying is the root-cause fix
+// for a hull dispatched to a waypoint that does not import its cargo; deliverInputs'
+// hold-what-it-cannot-sell behaviour only limits the damage once the hull is already there.
 //
 // Refuses (error, nil result) on a nil or unnamed destination and on an empty input list. The
 // last one matters: ValidateFeedDestination accepts an empty list by design (carrying nothing

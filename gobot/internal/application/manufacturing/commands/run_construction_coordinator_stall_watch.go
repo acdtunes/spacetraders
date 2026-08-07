@@ -12,33 +12,24 @@ import (
 )
 
 // watchGateProgress escalates when an ACTIVE pipeline's unmet material has received no delivered
-// units for gate.StallThreshold (sp-63r4f).
+// units for gate.StallThreshold.
 //
-// WHY THIS EXISTS AT ALL. Three separate defects this week produced one symptom: the gate stopped
-// and every log line stayed true and reassuring. A head-of-line block, an affordability wall and a
-// hysteresis deadlock — roughly 10 of 14 hours stalled, and EVERY ONE was found by a human asking
-// why, not by anything saying so. Each of those is now fixed, and each fix bounds only its own
-// cause. This detects the ABSENCE OF PROGRESS, which is what the next cause will also produce.
+// WHY IT EXISTS. A head-of-line block, an affordability wall and a hysteresis deadlock all produce
+// the SAME symptom — the gate stops while every log line stays true and reassuring — and each fix
+// bounds only its own cause. This watches for the ABSENCE OF PROGRESS, which the next cause will
+// also produce.
 //
 // IT LIVES IN THE COORDINATOR, AND ITS SILENCE IS NOT PROOF OF HEALTH. A check hosted inside the
 // thing it watches goes quiet when its host wedges, stops being scheduled, or dies — precisely when
-// an operator most wants to hear from it. That case is DELIBERATELY out of scope here and is
-// covered by detectStaleHeartbeats (internal/captain/detectors.go), which watches for a coordinator
-// that has stopped ticking. The two grains stack and neither subsumes the other:
+// an operator most wants to hear from it. That case is DELIBERATELY out of scope, covered by
+// detectStaleHeartbeats (internal/captain/detectors.go), which says the coordinator is dead or
+// wedged. THIS says the coordinator is ticking and heartbeating perfectly while one pipeline makes
+// no progress. Neither subsumes the other, so seeing nothing here means no pipeline is stalled ONLY
+// IF the coordinator is also known to be ticking.
 //
-//   - detectStaleHeartbeats: the coordinator is dead or wedged.
-//   - THIS: the coordinator is ticking and heartbeating perfectly while one pipeline makes no
-//     progress. That is the failure all three incidents actually had, and it is best seen from
-//     inside the healthy path where the problem lives.
-//   - sp-16zxm: the agent is transacting nothing at all while coordinators look healthy.
-//
-// So a reader who sees nothing from this function has learned that no pipeline is stalled ONLY IF
-// the coordinator is also known to be ticking. Do not read its silence as health on its own — that
-// mistake is the exact failure mode this bead exists to fight.
-//
-// It reports and never acts: no task is retried, no floor is moved, nothing is bought. Three
-// different causes produced identical silence, so any automatic remedy would be right at most a
-// third of the time, and a wrong remedy on a money path is worse than a stalled gate.
+// It reports and never acts: no task is retried, no floor is moved, nothing is bought. Several
+// distinct causes produce identical silence, so any automatic remedy would usually be the wrong one,
+// and a wrong remedy on a money path is worse than a stalled gate.
 func (h *RunConstructionCoordinatorHandler) watchGateProgress(
 	ctx context.Context,
 	pipeline *manufacturing.ManufacturingPipeline,
@@ -59,19 +50,13 @@ func (h *RunConstructionCoordinatorHandler) watchGateProgress(
 		return nil
 	}
 
-	// THE SIGNAL IS THE MATERIAL'S OWN REMAINING COUNT, NOT TASK BOOKKEEPING (sp-zx0tu).
+	// THE SIGNAL IS THE MATERIAL'S OWN REMAINING COUNT, NOT TASK BOOKKEEPING.
 	//
-	// This used to key "did units arrive" on completed tasks' actual_quantity. That was wrong twice
-	// over: the field was dead (sp-1f0ex fixed the write), and even repaired it only sees deliveries
-	// that finish through completeSupply. The delivery that exposed this landed 28 units and
-	// completed NO task, so the repaired write never fired and the alarm kept climbing.
-	//
-	// The authoritative figure was already in hand and already being printed: the live remaining
-	// requirement, re-read from the pipeline every tick. Across that delivery the watchdog's own
-	// ERROR line went "still needs 165" -> "still needs 137" while claiming zero units received. A
-	// falling remaining count IS a delivery, whatever path moved the cargo and whatever bookkeeping
-	// did or did not happen — which is exactly the "regardless of why" property this watchdog is
-	// supposed to have.
+	// Keying "did units arrive" on completed tasks' actual_quantity only sees deliveries that finish
+	// through completeSupply, and cargo can land without completing any task at all — so the alarm
+	// keeps climbing through a delivery that plainly happened. A FALLING REMAINING COUNT IS A
+	// DELIVERY, whatever path moved the cargo and whatever bookkeeping did or did not happen, which
+	// is exactly the "regardless of why" property this watchdog must have.
 	//
 	// completed is still read, but only so an unreadable task history keeps its own honest log line
 	// above; nothing below depends on it.
@@ -159,22 +144,20 @@ type materialObservation struct {
 // observeRemaining records this tick's remaining count and reports what changed since the last one:
 // the units the requirement FELL by (0 when flat), and when it last moved.
 //
-// A FALLING REMAINING COUNT IS A DELIVERY, whatever path moved the cargo. That is the whole point of
-// re-sourcing here: the watchdog is supposed to detect the absence of progress "regardless of why",
-// and keying on task bookkeeping made it blind to any delivery that did not complete a task — which
-// is the delivery that exposed it.
+// A FALLING REMAINING COUNT IS A DELIVERY, whatever path moved the cargo. The watchdog must detect
+// the absence of progress "regardless of why", and keying on task bookkeeping blinds it to any
+// delivery that did not complete a task.
 //
-// THE FIRST OBSERVATION REPORTS PROGRESS, NOT SILENCE (criterion 3). With no prior tick there is no
-// basis to claim anything has been quiet, and the honest answer is "no evidence of a stall" rather
-// than "stalled since the epoch". Returning `now` as the change time makes the elapsed quiet zero,
-// so the first tick after a daemon restart cannot raise an alarm from a missing memory.
+// THE FIRST OBSERVATION REPORTS PROGRESS, NOT SILENCE. With no prior tick there is no basis to claim
+// anything has been quiet, and the honest answer is "no evidence of a stall" rather than "stalled
+// since the epoch". Returning `now` as the change time makes the elapsed quiet zero, so the first
+// tick after a restart cannot raise an alarm from a missing memory.
 //
-// A RESTART LOOP CAN THEREFORE HIDE A STALL, and that is a real cost, stated rather than buried: a
-// process that bounces faster than gate.StallThreshold re-seeds this map every time and never
-// accumulates. The alternative was persisting the snapshot, which needs a schema change the
-// manufacturing models cannot take (they are absent from the startup AutoMigrate list). The
-// coordinator-liveness case is covered separately by detectStaleHeartbeats, which is what notices a
-// daemon that keeps restarting.
+// A RESTART LOOP CAN THEREFORE HIDE A STALL — a real cost, stated rather than buried: a process
+// bouncing faster than gate.StallThreshold re-seeds this map every time and never accumulates. The
+// alternative was persisting the snapshot, which needs a schema change the manufacturing models
+// cannot take, being absent from the startup AutoMigrate list. detectStaleHeartbeats covers the
+// restarting-daemon case separately.
 //
 // A RISING remaining count (the site's bill grew, or a correction raised it) is NOT progress and is
 // deliberately not treated as one — but it does reset the baseline, so the next fall is measured
@@ -210,10 +193,9 @@ func (h *RunConstructionCoordinatorHandler) observeRemaining(pipelineID, good st
 // print it. It is NOT part of the stall decision.
 //
 // Best-effort by design: the ERROR line already renders an empty result as "unreadable", and a
-// watchdog must never fail to report a stall because a market lookup was unavailable. Before
-// sp-zx0tu this was never populated at all, so every escalation said "Source supply reads
-// unreadable" whether or not the market was readable — a field that always reads the same is one a
-// reader learns to skip.
+// watchdog must never fail to report a stall because a market lookup was unavailable. It must
+// still be populated when it CAN be — a field that always reads the same is one a reader learns to
+// skip, which costs the escalation its only source-side clue.
 func (h *RunConstructionCoordinatorHandler) sourceSupplyFor(ctx context.Context, good string, pipeline *manufacturing.ManufacturingPipeline, playerID int) string {
 	if h.gate == nil || h.gate.topology == nil {
 		return ""

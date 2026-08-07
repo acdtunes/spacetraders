@@ -16,10 +16,9 @@ func (h *RunConstructionCoordinatorHandler) supplyTaskTimeout() time.Duration {
 	return constructionSupplyTaskDefaultTimeout
 }
 
-// effectiveSupplyTaskTimeout resolves the per-supplyTask BASE deadline for this run: the handler
-// default (supplyTaskTimeout — 30m, or a test override). scaledSupplyTaskTimeout scales this base by
-// the material's supply-chain depth. The per-launch override knob was retired by sp-sxyx6 — the base
-// is always the handler default now.
+// effectiveSupplyTaskTimeout resolves the per-supplyTask BASE deadline for this run: always the
+// handler default, with no per-launch override. scaledSupplyTaskTimeout scales it by the material's
+// supply-chain depth.
 func (h *RunConstructionCoordinatorHandler) effectiveSupplyTaskTimeout() time.Duration {
 	return h.supplyTaskTimeout()
 }

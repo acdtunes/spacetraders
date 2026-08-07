@@ -12,72 +12,56 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 )
 
-// sp-iv65 (P1 money-integrity). The factory input buyer had NO price ceiling. The
-// ADVANCED_CIRCUITRY chain bought ELECTRONICS+MICROPROCESSORS inputs at ~19k/u — 4x
-// market, chasing its own supply ladder up as each buy repriced the source — to
-// fabricate a ~7k/u output: −6.6M in 3h (−2.2M/hr), the operation's single largest
-// active leak. The coordinator ChainMarginGuard already projects the whole
-// chain's live P&L BEFORE a pass, but it runs ONCE at launch (run_factory_coordinator
-// Step 2.5); the ladder climbs DURING the per-tranche input-buy round, past a projection
-// made when the source ask was still ~4.75k. This file adds the two guards that gap
-// needs, both at the executor's actual points of spend:
+// Factory input-buy price guards, both at the executor's actual points of spend. The coordinator
+// ChainMarginGuard projects a chain's P&L ONCE at launch; a supply ladder climbs DURING the
+// per-tranche buy round, past that projection, so these two close the gap:
 //
-//	inputPriceCeilingParked  — per-buy: refuse an input whose live ask exceeds the
-//	                           trailing-median ask × a multiplier (default 1.5). Catches
-//	                           the ladder mid-round, per tranche.
+//	inputPriceCeilingParked  — per-buy: refuse an input whose live ask exceeds a median-ask
+//	                           baseline × a multiplier. Catches the ladder mid-round, per tranche.
 //	inputRoundMarginParked   — per-fabricate-round: refuse a chain already structurally
 //	                           underwater (summed input ask > output resale bid) even when
 //	                           no single input trips the ceiling.
 
 const (
-	// defaultInputPriceCeilingMultiplier is the ladder-chase ceiling from the trade
-	// analyst's ruling: a factory input buy aborts when the live ask exceeds this
-	// multiple of the good's trailing-median ask. A 0/absent config value resolves to
-	// this at the point of use — a protective default that turns the GUARD on (not money
-	// movement), so a default is correct (RULINGS #5). 1.5 = refuse to pay more than 50%
-	// over the recent baseline.
+	// defaultInputPriceCeilingMultiplier is the ladder-chase ceiling: a factory input buy aborts
+	// when the live ask exceeds this multiple of the good's median-ask baseline. A 0/absent config
+	// value resolves to it at the point of use — a protective default that turns the GUARD on, not
+	// money movement, so a default is correct (RULINGS #5).
 	defaultInputPriceCeilingMultiplier = 1.5
 
-	// inputPriceCeilingWindow is the trailing window over which the median-ask baseline is
-	// computed. 24h so a multi-hour ladder's handful of inflated on-change samples stay a
-	// MINORITY of the window (the leak laddered ~10 buys over 3h against a market a scout
-	// samples far more often), keeping the median on the pre-ladder baseline.
+	// inputPriceCeilingWindow is the trailing window the median-ask baseline is computed over. It
+	// is wide enough that a multi-hour ladder's inflated on-change samples stay a MINORITY of the
+	// window, keeping the median on the pre-ladder baseline.
 	inputPriceCeilingWindow = 24 * time.Hour
 
-	// inputPriceCeilingMinSamples is the fewest in-window history rows needed to trust the
-	// median. Set to 1 DELIBERATELY: market_price_history records ON CHANGE, so a perfectly
-	// STABLE-priced market has exactly ONE row forever — a higher bar would treat its median
-	// as "unavailable" and fail CLOSED, permanently parking every stable-priced input (the
-	// "guard rejects a class" fleet-killer). Below this the median is genuinely unavailable →
-	// fail closed (RULINGS #4).
+	// inputPriceCeilingMinSamples is the fewest in-window history rows needed to trust the median.
+	// Set to 1 DELIBERATELY: market_price_history records ON CHANGE, so a perfectly STABLE-priced
+	// market has exactly ONE row forever — a higher bar would treat its median as "unavailable" and
+	// fail CLOSED, permanently parking every stable-priced input, a guard that rejects a whole
+	// class. Below this the median is genuinely unavailable -> fail closed (RULINGS #4).
 	inputPriceCeilingMinSamples = 1
 )
 
-// InputPriceHistoryReader supplies the trailing ask series a rescue buy is validated against
-// (sp-iv65). Narrow by design — the check needs only one good's history at one waypoint over a
-// window, not the full market.MarketPriceHistoryRepository.
+// InputPriceHistoryReader supplies the trailing ask series a rescue buy is validated against.
+// Narrow by design — the check needs one good's history at one waypoint over a window, not the
+// full market.MarketPriceHistoryRepository.
 //
-// A NIL READER FAILS CLOSED, NOT OPEN, and this comment said the opposite until sp-f5lki. There is
-// no fail-open branch anywhere on this path: trailingMedianAsk returns (0, false) for a nil reader
-// exactly as it does for no samples, and its ONLY caller (rescueSource) parks the buy on false.
-// Unwired, the effect is not "the ceiling is disabled" — it is "every rescue buy is refused
-// forever". The word was load-bearing: a reader who believed the fail-open claim could delete the
-// nil check expecting graceful degradation and get a nil dereference on the request path.
+// A NIL READER FAILS CLOSED, NOT OPEN. There is no fail-open branch anywhere on this path:
+// trailingMedianAsk returns (0, false) for a nil reader exactly as it does for no samples, and its
+// only caller (rescueSource) parks the buy on false. Unwired, the effect is not "the ceiling is
+// disabled" — it is "every rescue buy is refused forever". Do not delete the nil check expecting
+// graceful degradation; that trades a park for a nil dereference on the request path.
 //
-// Leaving it unset is the fixture path only. The daemon wires the DB-backed
-// GormMarketPriceHistoryRepository via SetPriceHistoryReader at main.go, pinned by
-// executor_guard_wiring_test.go — it was NOT wired for the whole of era 6, which is the defect
-// sp-f5lki fixed and the reason this file no longer asserts a wiring without a check behind it.
+// Leaving it unset is the fixture path only. The daemon wires the DB-backed price-history
+// repository via SetPriceHistoryReader, pinned by executor_guard_wiring_test.go.
 type InputPriceHistoryReader interface {
 	GetPriceHistory(ctx context.Context, waypointSymbol, goodSymbol string, since time.Time, limit int) ([]*market.MarketPriceHistory, error)
 }
 
-// SetPriceHistoryReader wires the trailing-median source for the factory input price
-// ceiling (sp-iv65). The daemon calls this after construction with the DB-backed price
-// history repository; leaving it unset keeps the ceiling fail-open, which is exactly what
-// every non-daemon caller (the package's test fixtures) wants. Injected by setter, not
-// constructor, so the executor's many existing call sites stay untouched — the same idiom
-// as SetSpendLedger.
+// SetPriceHistoryReader wires the trailing-median source for the rescue-buy validator. The daemon
+// always calls it; leaving it unset FAILS CLOSED (every rescue buy parks), not open — see
+// InputPriceHistoryReader. Injected by setter rather than constructor so the executor's existing
+// call sites stay untouched, the same idiom as SetSpendLedger.
 func (e *ProductionExecutor) SetPriceHistoryReader(reader InputPriceHistoryReader) {
 	e.priceHistory = reader
 }
@@ -94,10 +78,10 @@ type inputPriceCeilingConfig struct {
 	disabled   bool
 }
 
-// WithInputPriceCeiling stamps the per-run input-price-ceiling config onto ctx (sp-iv65).
-// A 0 multiplier resolves to defaultInputPriceCeilingMultiplier at the point of use;
-// disabled=true is the emergency off-switch (RULINGS #5). A command built directly (tests)
-// that never stamps this leaves the guard at its default multiplier, enabled.
+// WithInputPriceCeiling stamps the per-run input-price-ceiling config onto ctx. A 0 multiplier
+// resolves to defaultInputPriceCeilingMultiplier at the point of use; disabled=true is the
+// emergency off-switch (RULINGS #5). A caller that never stamps this leaves the guard at its
+// default multiplier, enabled.
 func WithInputPriceCeiling(ctx context.Context, multiplier float64, disabled bool) context.Context {
 	return context.WithValue(ctx, inputPriceCeilingCtxKey{}, inputPriceCeilingConfig{multiplier: multiplier, disabled: disabled})
 }
@@ -109,39 +93,34 @@ func inputPriceCeilingConfigFromContext(ctx context.Context) inputPriceCeilingCo
 	return inputPriceCeilingConfig{}
 }
 
-// inputPriceCeilingParked reports whether a factory input buy of `good` at `waypoint` for a
-// live `ask` must PARK because the ask exceeds the ladder-chase ceiling: the CROSS-MARKET
-// median ask of ELIGIBLE (MODERATE+) sources × the configured multiplier (sp-iv65 origin;
-// baseline hardened by sp-a5j7 Phase 2 / hzz5 X4). This is the BACKSTOP to the supply-first
-// selector — it catches a chosen eligible source priced anomalously above its healthy peers,
-// and stale/cross-market anomalies the selector's point-in-time supply read misses.
+// inputPriceCeilingParked reports whether a factory input buy of `good` at `waypoint` for a live
+// `ask` must PARK because the ask exceeds the ladder-chase ceiling: the CROSS-MARKET median ask of
+// ELIGIBLE (MODERATE+) sources × the configured multiplier. This is the BACKSTOP to the
+// supply-first selector — it catches a chosen eligible source priced anomalously above its healthy
+// peers, and cross-market anomalies the selector's point-in-time supply read misses.
 //
-// BASELINE FIX (hzz5 X4 — the iv65 live failure): the original iv65 ceiling used this good's
-// TRAILING PER-WAYPOINT median, which a ladder POISONS — a laddering source drags its own
-// trailing median up behind it, so the 1.5x ceiling chases the ladder and never fires (KA42:
-// ELECTRONICS laddered 8,973→12,976/u with ZERO parks because the 24h KA42 median was
-// self-inflated). The baseline is now the median ask of ELIGIBLE sources CROSS-MARKET
-// (EligibleSourceMedianAsk): a source that ladders degrades out of MODERATE+ supply and
-// therefore out of this median, so it is structurally un-poisonable.
+// THE BASELINE MUST BE CROSS-MARKET, NOT THIS WAYPOINT'S TRAILING MEDIAN. A ladder POISONS a
+// per-waypoint median: the laddering source drags its own trailing median up behind it, so the
+// ceiling chases the ladder and never fires. The median ask of ELIGIBLE sources cross-market
+// (EligibleSourceMedianAsk) is structurally un-poisonable instead — a source that ladders degrades
+// out of MODERATE+ supply and therefore out of the median.
 //
-// Fail CLOSED (PARK) when the eligible-median read itself fails — a guard whose job is
-// refusing to overpay must not let a buy through blind (RULINGS #4). When NO eligible source
-// exists (count==0) the buy is on the selector's rescue path, already price-validated by the
-// 1.2x rescue cap; this cross-market ceiling does not apply there, so it fails OPEN and defers.
+// Fail CLOSED (PARK) when the eligible-median read itself fails — a guard whose job is refusing to
+// overpay must not let a buy through blind (RULINGS #4). When NO eligible source exists (count==0)
+// the buy is on the selector's rescue path, already price-validated by the rescue cap; this
+// cross-market ceiling does not apply there, so it fails OPEN and defers.
 //
 // The park logs ONE INFO with good/ask/median/ceiling in the message TEXT (the container-log
-// renderer drops metadata, sp-iqyq) — a routine protective decline. The blind fail-closed park
-// logs WARNING (an operational fault). No executor-side dedup: buyGood is one call per good per
-// pass and the container-log sink content-dedups at 60s.
+// renderer drops metadata) — a routine protective decline. The blind fail-closed park logs WARNING,
+// an operational fault. No executor-side dedup: buyGood is one call per good per pass and the
+// container-log sink content-dedups.
 func (e *ProductionExecutor) inputPriceCeilingParked(ctx context.Context, waypoint, good, systemSymbol string, playerID, ask int) bool {
 	logger := common.LoggerFromContext(ctx)
 
-	// sp-vh1s: gate-fill runs are MARGIN-BLIND (Admiral §9 sign-off 2026-07-14). The per-tranche
-	// ladder-chase ceiling is a LOCAL per-material margin optimization the gate deliberately drops —
-	// the gate is a finite, affordable (~1.3-2.6M remaining bill vs ~4M treasury), enormous-ROI
-	// investment, so margin-gating it stalls the unlock to save pennies. It is bounded instead by
-	// the 9aoc solvency floor (in buyGood, untouched here). Off gate
-	// mode this is byte-identical to the sp-a5j7/hzz5 cross-market backstop.
+	// Gate-fill runs are MARGIN-BLIND by standing order. The per-tranche ladder-chase ceiling is a
+	// LOCAL per-material margin optimization the gate deliberately drops: the gate is a finite,
+	// affordable, one-off investment, so margin-gating it stalls the unlock to save pennies. Spend
+	// is bounded instead by the solvency floor in buyGood, which this bypass does not touch.
 	if IsUnifiedGateNode(ctx) {
 		return false
 	}
@@ -156,14 +135,12 @@ func (e *ProductionExecutor) inputPriceCeilingParked(ctx context.Context, waypoi
 		multiplier = defaultInputPriceCeilingMultiplier
 	}
 
-	// sp-sdyo: a per-good override tunes THIS good's ladder ceiling only — the surgical knob for
-	// buying a stuck bottleneck past the global 1.5x while every other good keeps the global
-	// multiplier (a non-overridden good's ceiling is byte-identical to today). The override is
-	// HARD-CAPPED at MaxPriceCeilingMultiplier inside PriceCeilingMultFor so a fat-finger can only
-	// LOOSEN, never DISABLE, the ceiling (RULINGS #4). This raises the per-tranche ladder ceiling
-	// ONLY: the structural inputRoundMarginParked round-gate and the solvency floor read
-	// nothing from the override and still park an underwater round / a treasury breach — the
-	// sp-iv65 bleed stays prevented for overridden and non-overridden goods alike.
+	// A per-good override tunes THIS good's ladder ceiling only — the surgical knob for buying a
+	// stuck bottleneck while every other good keeps the global multiplier. It is HARD-CAPPED at
+	// MaxPriceCeilingMultiplier inside PriceCeilingMultFor so a fat-finger can only LOOSEN, never
+	// DISABLE, the ceiling (RULINGS #4). It raises the per-tranche ladder ceiling ONLY: the
+	// structural inputRoundMarginParked round-gate and the solvency floor read nothing from the
+	// override and still park an underwater round or a treasury breach.
 	multiplier = goodGatingOverridesFromContext(ctx).PriceCeilingMultFor(good, multiplier)
 
 	median, count, err := e.marketLocator.EligibleSourceMedianAsk(ctx, good, systemSymbol, playerID)
@@ -177,41 +154,28 @@ func (e *ProductionExecutor) inputPriceCeilingParked(ctx context.Context, waypoi
 		return true
 	}
 	if count < inputPriceCeilingMinSamples {
-		// No eligible (MODERATE+) source to price against, so the ceiling DEFERS rather than
-		// parks. The justification only holds with its precondition attached:
+		// No eligible (MODERATE+) source to price against, so the ceiling DEFERS rather than parks.
+		// That is safe only for SELECTOR-ROUTED buys (buyGood -> resolveInputSource ->
+		// selectInputSource): reaching here means the selector found no MODERATE+ source and
+		// returned a rescue pick it had ALREADY validated against the rescue cap, so deferring
+		// avoids double-parking a buy that was priced once.
 		//
-		// SELECTOR-ROUTED buys (buyGood -> resolveInputSource -> selectInputSource). Reaching
-		// here means the selector found no MODERATE+ source and returned a rescue/fallback
-		// pick it had ALREADY validated against the 1.2x rescue cap. Deferring avoids
-		// double-parking a buy that was priced once — the buy is not unpriced.
+		// PINNED-SOURCE buys (BuyAtTerminalFactory) break that implication — they never run the
+		// selector, so nothing upstream applied a rescue cap, and a deferral here leaves the buy
+		// with NO price validation at all, bounded only by the working-capital floor and the
+		// concurrent-spend cap, which are solvency guards rather than price guards.
 		//
-		// PINNED-SOURCE buys (BuyAtTerminalFactory) break that implication: they never run the
-		// selector, so nothing upstream applied a rescue cap. When count reaches 0 — NO MODERATE+
-		// exporter of the material anywhere in the system — this branch defers, and no price
-		// validation applies to that buy. It is then bounded only by the working-capital spend
-		// floor and the cross-container concurrent-spend cap, which are solvency guards, not
-		// price guards.
+		// SCOPE THAT PRECISELY, because the obvious reading of it is wrong. At the default buy
+		// floor the delivery fleet's BuyPolicy pauses a material before the leg would buy at a
+		// below-MODERATE factory, so "the terminal factory drained below MODERATE" does not reach
+		// here; that opens only if an operator tunes --buy-floor beneath MODERATE. The genuinely
+		// reachable window is MID-FILL DEPLETION: our own tranches push the factory below MODERATE
+		// inside a single fillFromSource loop, dropping count to 0 for the remaining tranches after
+		// the policy already ruled on a pre-buy reading. It is bounded by gateMaxTranchesPerStop,
+		// by hull capacity, and by the working-capital floor.
 		//
-		// SCOPE THAT PRECISELY, because the obvious reading of it is wrong. At the shipped default
-		// buy floor (MODERATE) the delivery fleet's BuyPolicy PAUSES the material before the leg
-		// would ever buy at a below-MODERATE factory, so "the terminal factory has drained below
-		// MODERATE" does not reach here at all. That scenario opens only if an operator tunes
-		// --buy-floor beneath MODERATE.
-		//
-		// The genuinely reachable window is narrower and different: MID-FILL DEPLETION. Our own
-		// tranches can push the factory below MODERATE inside a single fillFromSource loop,
-		// dropping count to 0 for the remaining tranches of that same fill — after the policy
-		// already ruled on a pre-buy reading. It is bounded by gateMaxTranchesPerStop, by hull
-		// capacity, and by the working-capital floor.
-		//
-		// Note also that the delivery leg does NOT stamp gate mode, and inputPriceCeilingParked
-		// returns false unconditionally under IsUnifiedGateNode. So this path is MORE
-		// price-guarded than the gate acquisition path it takes work from, not less.
-		//
-		// That is ACCEPTED, not overlooked: the delivery fleet's spec says price is deliberately
-		// not a gate for it. But do not read this deferral as a price backstop for a pinned buy —
-		// in that case there is none. Giving the pinned path its own baseline is a design decision
-		// for the phase, not something to graft on here.
+		// ACCEPTED, not overlooked — the delivery fleet's spec makes price deliberately not a gate
+		// for it. But do not read this deferral as a price backstop for a pinned buy: there is none.
 		return false
 	}
 
@@ -229,15 +193,14 @@ func (e *ProductionExecutor) inputPriceCeilingParked(ctx context.Context, waypoi
 	return false
 }
 
-// inputRoundMarginParked reports whether a fabrication chain rooted at `node` must PARK
-// before its input-buy round because it is structurally underwater: the summed live ask of
-// its direct inputs already exceeds what its output resells for, so fabricating loses money
-// every cycle regardless of the per-buy ceiling (sp-iv65 fix-shape, 2nd half). This is the
-// executor-level, live-at-buy-time re-check of the coordinator ChainMarginGuard's
-// negative-margin verdict — that guard projects ONCE at launch; prices move during a pass.
+// inputRoundMarginParked reports whether a fabrication chain rooted at `node` must PARK before its
+// input-buy round because it is structurally underwater: the summed live ask of its direct inputs
+// already exceeds what its output resells for, so fabricating loses money every cycle regardless of
+// the per-buy ceiling. This is the executor-level, live-at-buy-time re-check of the coordinator
+// ChainMarginGuard's verdict — that guard projects ONCE at launch, and prices move during a pass.
 //
-//   - output bid = the good's live in-system resale sink (FindImportMarket, the same call
-//     the bp6f #3 harvest guard and ChainMarginGuard price against).
+//   - output bid = the good's live in-system resale sink (FindImportMarket, the same call the
+//     harvest guard and ChainMarginGuard price against).
 //   - input asks = each direct child's live source ask (FindExportMarket).
 //
 // sum(child asks) > sink bid → PARK. The caller scopes this to !inputsOnly resale runs.
@@ -250,11 +213,10 @@ func (e *ProductionExecutor) inputPriceCeilingParked(ctx context.Context, waypoi
 func (e *ProductionExecutor) inputRoundMarginParked(ctx context.Context, node *goods.SupplyChainNode, systemSymbol string, playerID int) bool {
 	logger := common.LoggerFromContext(ctx)
 
-	// sp-vh1s: gate-fill drops the chain-margin round-park too (Admiral §9) — same margin-blind
-	// rationale as the per-tranche ceiling. A gate is a fixed, affordable investment, not a
-	// per-cycle profit factory, so a structurally-underwater LOCAL round is acceptable when it fills
-	// the gate; the 9aoc solvency floor (in buyGood) still bounds spend. Off gate mode this is
-	// byte-identical.
+	// Gate-fill drops the chain-margin round-park too, on the same margin-blind rationale as the
+	// per-tranche ceiling: a gate is a fixed one-off investment, not a per-cycle profit factory, so
+	// a structurally-underwater LOCAL round is acceptable when it fills the gate. The solvency
+	// floor in buyGood still bounds spend.
 	if IsUnifiedGateNode(ctx) {
 		return false
 	}

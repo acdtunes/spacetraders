@@ -18,11 +18,10 @@ import (
 // still riding in a hold is invisible to it, and anything sizing a purchase off the raw bill buys
 // those units again for cargo the site then refuses (API 4801).
 //
-// The commitment is DERIVED every tick from the holds of the hulls bound to this gate, never
-// carried in memory, so it holds across a restart and across the expiry of a worker registration.
-// The in-memory reservation is combined in as the one thing cargo cannot express — a worker
-// dispatched but not yet at the market has bought nothing — and the two are taken per hull as a
-// MAX, never a sum, so a worker that has already spent is counted once.
+// The commitment is DERIVED every tick from the holds of the hulls bound to this gate, never carried
+// in memory, so it survives a restart and the expiry of a worker registration. The in-memory
+// reservation is folded in as the one thing cargo cannot express — a worker dispatched but not yet
+// at the market has bought nothing — and the two are taken per hull as a MAX, never a sum.
 //
 // Fail-CLOSED throughout (RULINGS #4): every ambiguity resolves toward counting a unit as
 // committed, i.e. toward NOT buying. Over-counting costs one tick of under-dispatch; under-
@@ -33,10 +32,10 @@ import (
 //
 //   - total answers "how many units may I still BUY" — every commitment counts, including cargo
 //     aboard a hull this tick is about to dispatch, because that cargo is already bought.
-//   - undispatchable answers "how many units still need a HULL this tick" — cargo aboard a hull
-//     in this tick's own pool is EXCLUDED, because dispatching that hull is how it gets
-//     delivered. Netting it out of the lot count too would leave a laden hull with no lot minted
-//     to unload it, and the bill would never close.
+//   - undispatchable answers "how many units still need a HULL this tick" — cargo aboard a hull in
+//     this tick's own pool is EXCLUDED, because dispatching that hull is how it gets delivered.
+//     Netting it out of the lot count too leaves a laden hull with no lot minted to unload it, and
+//     the bill never closes.
 type gateCommitments struct {
 	total          map[string]int
 	undispatchable map[string]int
@@ -111,9 +110,9 @@ func outOfSystem(ship *navigation.Ship, systemSymbol string) bool {
 // AND unreachable by this tick".
 //
 // PER HULL, PER GOOD, IT TAKES A MAX AND NOT A SUM. A worker holds a buy RESERVATION (what it may
-// still spend) and its hull holds CARGO (what it already spent). Before the buy only the
-// reservation exists; after it, only the cargo should count. Summing them double-counts every
-// worker on its way home and starves the fleet of dispatch.
+// still spend) and its hull holds CARGO (what it already spent). Before the buy only the reservation
+// exists; after it, only the cargo should count. Summing them double-counts every worker on its way
+// home and starves the fleet of dispatch.
 func (h *RunConstructionCoordinatorHandler) commitUnits(ships []*navigation.Ship, pipelineID string, goods []string, skip func(*navigation.Ship) bool) map[string]int {
 	committed := make(map[string]int, len(goods))
 	for _, good := range goods {

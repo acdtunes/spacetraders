@@ -13,25 +13,21 @@ import (
 	"github.com/andrescamacho/spacetraders-go/pkg/utils"
 )
 
-// trySourceFromInventory attempts to fill this source trip from an in-system
-// warehouse (sp-dchv Lane D) instead of buying at market. It returns
-// withdrew=true (with the reloaded ship) when it lands at least one unit aboard,
-// so the caller skips the market buy for this trip and lets the delivery loop
-// re-source the remainder. It returns withdrew=false for EVERY no-inventory case
-// (feature off, no stock, drained mid-flight) so the caller uses the market
-// path, and a non-nil error only for an unexpected failure the caller logs and
-// still treats as fail-open (never a skip, RULINGS #1).
+// trySourceFromInventory attempts to fill this source trip from an in-system warehouse instead of
+// buying at market. It returns withdrew=true (with the reloaded ship) when at least one unit lands
+// aboard, so the caller skips the market buy for this trip and lets the delivery loop re-source the
+// remainder. It returns withdrew=false for EVERY no-inventory case (feature off, no stock, drained
+// mid-flight) so the caller uses the market path, and a non-nil error only for an unexpected
+// failure the caller logs and still treats as fail-open (never a skip, RULINGS #1).
 //
-// Withdrawal mirrors the proven manufacturing STORAGE_ACQUIRE_DELIVER shape
-// (TryReserveCargo -> TransferCargo -> ConfirmTransfer) but BOUNDS the take to
-// what the contract needs this trip: it reserves what the storage ship holds,
-// transfers only min(reserved, hold space, units needed), and releases the
-// excess reservation so other workers/contracts are not starved. The warehouse
-// hull is Lane B's dedicated, claimed ship (RULINGS #7) — the contract worker
-// only transfers from it, never claims it. The per-ship reservation is atomic
-// (TryReserveCargo holds the storage-ship mutex), so two contracts racing the
-// same units cannot double-claim: one reserves, the other sees them gone and
-// falls through.
+// Withdrawal mirrors the manufacturing STORAGE_ACQUIRE_DELIVER shape (TryReserveCargo ->
+// TransferCargo -> ConfirmTransfer) but BOUNDS the take to what the contract needs this trip: it
+// reserves what the storage ship holds, transfers only min(reserved, hold space, units needed), and
+// releases the excess reservation so other workers are not starved. The warehouse hull is the
+// storage operation's own dedicated, claimed ship (RULINGS #7) — the contract worker only transfers
+// from it, never claims it. The per-ship reservation is atomic (TryReserveCargo holds the
+// storage-ship mutex), so two contracts racing the same units cannot double-claim: one reserves,
+// the other sees them gone and falls through.
 func (e *DeliveryExecutor) trySourceFromInventory(
 	ctx context.Context,
 	shipSymbol string,

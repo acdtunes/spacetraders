@@ -5,27 +5,24 @@ import "context"
 // FACTORY_DOCTRINE X1 — fabricate depth cap.
 //
 // Without a cap the SupplyChainResolver fabricates any input that lacks a buyable market, recursing
-// into its own sub-chain and so on with no bound. sp-jav2 capped that at depth-1 (fabricate the
-// output, market-buy every input) on sp-naw6's ruling that raw inputs are ~0.29% of spend and a
-// market-buy always wins. That premise fails for a SCARCE mid-tree intermediate: buying an
-// ELECTRONICS the whole system is short of depletes/explodes its price and stalls the gate and
-// every dependent factory. Admiral directive consciously overrides the X1 depth-1 cap and sets
-// the default to 3, enabling scarcity-gated recursive production fleet-wide.
+// into its own sub-chain and so on with no bound. A depth-1 cap (fabricate the output, market-buy
+// every input) is the other extreme, and it fails for a SCARCE mid-tree intermediate: buying one
+// the whole system is short of depletes it further, explodes its price, and stalls the gate and
+// every dependent factory. The default sits between the two, enabling scarcity-gated recursion.
 //
 // The cap is a SAFETY BACKSTOP, not the terminator. StrategySmart is the real terminator: it
-// recurses ONLY into a SCARCE/LIMITED good that HAS a factory (fabricate to relieve the scarcity)
-// and BUYS an abundant one (stop recursing) — so an all-abundant chain behaves exactly as a
-// depth-1 cap would. The cap + the resolver's cycle/visited guard together bound the fan-out so a
-// pathological tree can never runaway. disabled=true restores the fully-unbounded recursion.
+// recurses ONLY into a SCARCE/LIMITED good that HAS a factory and BUYS an abundant one, so an
+// all-abundant chain behaves exactly as a depth-1 cap would. The cap plus the resolver's
+// cycle/visited guard bound the fan-out so a pathological tree cannot run away. disabled=true
+// restores fully-unbounded recursion.
 
 const (
 	// defaultFabricateMaxDepth is the deepest a node may sit in the dependency tree and still be
-	// FABRICATED. Root is depth 0, its direct inputs depth 1. At 3 the resolver may fabricate a
-	// scarce intermediate up to three layers down (StrategySmart gates WHICH goods actually
-	// recurse — abundant ones still buy), instead of market-buying every input.
-	// A 0/absent config value resolves to this at the point of use: the cap turns a guard ON (it
-	// never moves money — it only redirects a node between fabricate and market-buy), so a
-	// live-by-default is correct (RULINGS #5). It stays operator-tunable via fabricate_max_depth.
+	// FABRICATED; root is depth 0 and its direct inputs depth 1. StrategySmart gates WHICH goods
+	// actually recurse — abundant ones still buy. A 0/absent config value resolves to this at the
+	// point of use: the cap turns a guard ON and never moves money, only redirecting a node between
+	// fabricate and market-buy, so live-by-default is correct (RULINGS #5). Operator-tunable via
+	// fabricate_max_depth.
 	defaultFabricateMaxDepth = 3
 )
 

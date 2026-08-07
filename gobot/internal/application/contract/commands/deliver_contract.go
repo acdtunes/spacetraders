@@ -74,13 +74,11 @@ func (h *DeliverContractHandler) Handle(ctx context.Context, request common.Requ
 
 	deliveryData, err := h.callDeliverCargoAPI(ctx, cmd, token)
 	if err != nil {
-		// AUTHORITATIVE 4509 RECONCILIATION (sp-1pf0r): a "delivery terms have
-		// been met" response is server truth that this good is already fully
-		// delivered while the local row lagged behind. Do NOT propagate it as a
-		// crash — that is the retry loop that wedged the whole contract income
-		// stream (worker crash -> coordinator re-selects the same cargo-laden hull
-		// -> deliver -> 4509 -> forever). Reconcile the local delivery to fulfilled
-		// and return terminal success instead.
+		// AUTHORITATIVE 4509 RECONCILIATION: a "delivery terms have been met" response is server
+		// truth that this good is already fully delivered while the local row lagged behind. Do NOT
+		// propagate it as a crash — that wedges the whole contract income stream in a loop (worker
+		// crash -> coordinator re-selects the same cargo-laden hull -> deliver -> 4509 -> forever).
+		// Reconcile the local delivery to fulfilled and return terminal success instead.
 		if isContractDeliveryTermsMetError(err) {
 			return h.reconcileDeliveryTermsMet(ctx, contract, cmd)
 		}
@@ -99,16 +97,13 @@ func (h *DeliverContractHandler) Handle(ctx context.Context, request common.Requ
 	}, nil
 }
 
-// reconcileDeliveryTermsMet heals the server-met/local-unmet divergence behind
-// the sp-1pf0r wedge. It marks ONLY the good the server named terms-met to
-// UnitsRequired (never a good the server has not confirmed), PERSISTS it so the
-// reconciliation survives a restart (RULINGS #2) and the contract can never
-// resume the loop, and returns a terminal success. The worker then sees
-// UnitsFulfilled>=UnitsRequired, returns, and the workflow fulfils the contract
-// so it leaves the active set; the now-orphaned over-fetch cargo becomes
-// unrelated to any active contract and the coordinator's existing
-// FilterUnrelatedCargo + auto-liquidation path sells/dumps it — no crash, no
-// retry, no fleet-unassign needed.
+// reconcileDeliveryTermsMet heals a server-met/local-unmet divergence. It marks ONLY the good the
+// server named terms-met to UnitsRequired — never a good the server has not confirmed — PERSISTS
+// that so the reconciliation survives a restart (RULINGS #2) and the contract can never resume the
+// loop, and returns a terminal success. The worker then sees UnitsFulfilled >= UnitsRequired,
+// returns, and the workflow fulfils the contract so it leaves the active set; the now-orphaned
+// over-fetch cargo is unrelated to any active contract, so the existing FilterUnrelatedCargo and
+// auto-liquidation path sells or dumps it — no crash, no retry, no fleet-unassign.
 func (h *DeliverContractHandler) reconcileDeliveryTermsMet(ctx context.Context, contract *contract.Contract, cmd *DeliverContractCommand) (common.Response, error) {
 	if err := contract.MarkDeliveryTermsMet(cmd.TradeSymbol); err != nil {
 		return nil, fmt.Errorf("reconcile terms-met for %s: %w", cmd.TradeSymbol, err)

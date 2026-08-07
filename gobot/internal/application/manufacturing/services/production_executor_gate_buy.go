@@ -19,32 +19,30 @@ import (
 // is correct; substituting another market is the failure mode this phase exists to prevent.
 //
 // EVERY MONEY GUARD IS UNCHANGED. The fill runs through the same fillFromSource loop the
-// selected-source path uses, so the per-tranche working-capital floor (spendFloorBreached,
-// re-read against live treasury) and the cross-container concurrent-spend reservation
-// (buyInputTranche -> reserveConcurrentSpendOrPark) both still govern every tranche, and both
-// still fail CLOSED — the loop stops and delivers what is aboard rather than forcing a buy.
-// Nothing here reads, moves, re-orders or weakens a floor (RULINGS #4). The floor enforced is
-// whatever spendFloorBreached enforces: defaultWorkingCapitalReserve, which is
-// common.NonContractWorkingCapitalFloor (the non-contract band, NOT the 50k contract base),
-// raised further by the per-operation capital budget when a work sensor is wired.
+// selected-source path uses, so the per-tranche working-capital floor (spendFloorBreached, re-read
+// against live treasury) and the cross-container concurrent-spend reservation both still govern
+// every tranche and both still fail CLOSED — the loop stops and delivers what is aboard rather than
+// forcing a buy. Nothing here reads, moves, re-orders or weakens a floor (RULINGS #4). The floor is
+// whatever spendFloorBreached enforces: defaultWorkingCapitalReserve, the NON-CONTRACT band, raised
+// further by the per-operation capital budget when a work sensor is wired.
 //
-// The price ceiling also still applies per tranche (mode sourceModeEligible). The spec says
-// price is deliberately not a gate for this fleet, and supply-anchoring does pace against our
-// own market impact — but removing an existing guard is not this phase's to do, and the
-// degradation is graceful: a laddering ask stops the fill and the hull delivers what it has.
+// The price ceiling also still applies per tranche. Price is deliberately not a gate for this
+// fleet, but the degradation is graceful — a laddering ask stops the fill and the hull delivers
+// what it has — so the existing guard stays.
 //
 // units is a CAP from the trip plan, not a target to chase: exceeding it would over-supply a
-// material whose bill the trip already sized, or consume hold space allocated to the other
-// material on a mixed trip.
+// material whose bill the trip already sized, or consume hold space allocated to the other material
+// on a mixed trip.
 //
-// Refuses (error, nil result) on a nil or unnamed source, a non-positive allocation, or a
-// source with no transaction size. Each is a caller bug, and the alternative — resolving a
-// source here — is precisely the pinning this method exists to preserve.
-// sink names what these goods are FOR, and the caller MUST choose (sp-lpy9i). This method serves
-// both gate fleets — the delivery fleet, whose purchases are consumed by a construction site against
-// a bill, and the factory fleet, whose purchases are sold into a factory's import listing — and only
-// the second has a saturation threshold to clear. It was the absence of this parameter that let the
-// factory fleet's floor govern construction buys for as long as both callers existed.
+// Refuses (error, nil result) on a nil or unnamed source, a non-positive allocation, or a source
+// with no transaction size. Each is a caller bug, and the alternative — resolving a source here —
+// is precisely the pinning this method exists to preserve.
+//
+// sink names what these goods are FOR, and the caller MUST choose. This method serves both gate
+// fleets — the delivery fleet, whose purchases are consumed by a construction site against a bill,
+// and the factory fleet, whose purchases are sold into a factory's import listing — and only the
+// second has a saturation threshold to clear. Without the parameter the factory fleet's floor
+// silently governs construction buys.
 func (e *ProductionExecutor) BuyAtTerminalFactory(
 	ctx context.Context,
 	ship *navigation.Ship,

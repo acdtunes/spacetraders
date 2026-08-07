@@ -121,17 +121,12 @@ func (l *MarketLocator) TradeGoodAt(ctx context.Context, waypointSymbol, good st
 // For regular goods and ship components, returns the cheapest EXPORT or EXCHANGE
 // market for the good.
 //
-// sp-9mkf (Bug 1): an IMPORT market is NEVER a buy source. A consumer market (e.g. a
-// FOOD factory) lists a purchase_price for the FERTILIZERS it consumes, so the old
-// trade-type-blind "cheapest ask" query could return the consuming factory
-// itself as the feed's "source" when no real exporter existed in-system. The feed was
-// then bought AND delivered (sold back) at that same waypoint — a guaranteed
-// round-trip loss (FERTILIZERS bought at ask 470 and sold at bid 235 at FF5F, four
-// times, −75k). Every sibling locator in this file already filters trade_type; this
-// one now does too. EXCHANGE stays eligible (a neutral market you can buy from); only
-// EXPORT/EXCHANGE — never IMPORT — can source a good. When no such market exists the
-// feed is genuinely un-sourceable in-system and the caller correctly skips it, rather
-// than round-tripping cargo through the consumer at a loss.
+// AN IMPORT MARKET IS NEVER A BUY SOURCE. A consumer market lists a purchase_price for the good it
+// consumes, so a trade-type-blind "cheapest ask" query returns the consuming factory itself as the
+// feed's source whenever no real exporter exists in-system — and the feed is then bought AND
+// delivered at that same waypoint, a guaranteed round-trip loss on the ask/bid spread. Only
+// EXPORT/EXCHANGE can source a good; EXCHANGE stays eligible as a neutral market. When no such
+// market exists the feed is genuinely un-sourceable in-system and the caller skips it.
 func (l *MarketLocator) FindExportMarket(
 	ctx context.Context,
 	good string,
@@ -158,9 +153,8 @@ func (l *MarketLocator) FindExportMarket(
 		if tradeGood == nil {
 			continue
 		}
-		// Never source from an IMPORT market (the consumer/factory) — only EXPORT or
-		// EXCHANGE can sell a good to us. This filter is the fix for the same-waypoint
-		// feed round-trip (sp-9mkf Bug 1).
+		// Never source from an IMPORT market (the consumer/factory) — only EXPORT or EXCHANGE can
+		// sell a good to us, and buying from the consumer is a same-waypoint round-trip loss.
 		if tradeGood.TradeType() == market.TradeTypeImport {
 			continue
 		}
@@ -289,13 +283,13 @@ func (l *MarketLocator) FindExportMarketBySupplyPriority(
 }
 
 // EligibleSourceMedianAsk returns the median ASK (purchase_price — what WE PAY) across all ELIGIBLE
-// (MODERATE+ supply) EXPORT markets for a good in a system, plus how many such sources
-// exist. This is the poison-proof ceiling baseline (sp-a5j7 Phase 2 / hzz5 X4): the iv65
-// ceiling's per-waypoint trailing median drags itself up behind a ladder (a laddering source
-// poisons its OWN baseline, so the 1.5x ceiling chases the ladder and never fires — the KA42
-// live failure). Computed over the SAME eligible source set the supply-first selector picks
-// from, a ladder cannot poison this: a source that ladders degrades out of MODERATE+ supply
-// and therefore drops out of both the candidate set AND this median.
+// (MODERATE+ supply) EXPORT markets for a good in a system, plus how many such sources exist.
+//
+// It is the POISON-PROOF ceiling baseline. A per-waypoint trailing median drags itself up behind a
+// ladder — a laddering source poisons its OWN baseline, so a ceiling built on it chases the ladder
+// and never fires. Computed over the SAME eligible source set the supply-first selector picks from,
+// this median cannot be poisoned: a source that ladders degrades out of MODERATE+ supply and
+// therefore drops out of both the candidate set AND the median.
 //
 // Eligibility mirrors FindExportMarketBySupplyPriority exactly: EXPORT trade type, supply
 // MODERATE or better (SCARCE/LIMITED excluded). count==0 means no eligible source (the
@@ -344,13 +338,13 @@ func (l *MarketLocator) EligibleSourceMedianAsk(
 }
 
 // InputSourceEligibility reports whether a good has a healthy (MODERATE+) in-system EXPORT source
-// AND whether it has any readable in-system EXPORT source at all (sp-r5a6). It is the input-poison
+// AND whether it has any readable in-system EXPORT source at all. It is the input-poison
 // anti-cycle's detector, and the distinction between the two return bools is the whole point:
 //
 //   - eligible=true: at least one MODERATE+ EXPORT source — the chain can source this input.
 //   - eligible=false, hasReadableSource=true: EXPORT source(s) exist and were READ, but every one
-//     is SCARCE/LIMITED — POSITIVE evidence the market is depleted (and will regenerate on the
-//     ~194min half-life). This is the ONLY signal that arms the anti-cycle's recovery pause.
+//     is SCARCE/LIMITED — POSITIVE evidence the market is depleted and will regenerate. This is the
+//     ONLY signal that arms the anti-cycle's recovery pause.
 //   - eligible=false, hasReadableSource=false: no EXPORT source for the good was readable in-system
 //     — either a cold/partial market cache (a transient read miss) or the good genuinely has no
 //     in-system source at all. NEITHER is a depleted-market-that-recovers, so it must NOT arm the
@@ -411,16 +405,12 @@ func (l *MarketLocator) InputSourceEligibility(
 //     its ask price. A LIMITED export that stalls indefinitely is worse than
 //     paying a modest premium at an oversupplied importer.
 //
-// minSupply is the caller-set EXPORT acceptance floor. It reuses the
-// existing supply-state tolerance ladder (Order()) - passing the zero value ""
-// defaults to the original MODERATE floor, leaving unset-flag behavior exactly
-// unchanged. Passing a lower state (e.g. SCARCE) lets the caller buy down to
-// that floor when a pipeline needs to source materials the default floor would
-// otherwise defer indefinitely.
+// minSupply is the caller-set EXPORT acceptance floor, on the existing supply-state tolerance
+// ladder (Order()). The zero value "" resolves to the MODERATE floor; a lower state lets the caller
+// buy down when a pipeline would otherwise defer a material indefinitely.
 //
-// Returns (nil, nil) when neither exists so the caller can DEFER the material
-// (create a PENDING task that recovers when supply regenerates) instead of
-// failing the whole pipeline.
+// Returns (nil, nil) when neither exists, so the caller DEFERS the material as a PENDING task that
+// recovers when supply regenerates instead of failing the whole pipeline.
 func (l *MarketLocator) FindConstructionSource(
 	ctx context.Context,
 	good string,

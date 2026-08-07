@@ -19,21 +19,19 @@ const contractSpendOperation = "contract"
 // would breach the working-capital reserve. On the proceed path it returns the reservation id
 // the caller must release after the buy.
 //
-// WHY THE CONTRACT SIDE NEEDS THIS AT ALL. affordableSourceBuyLot already floors this buy
-// against common.ImmutableReserveFloor from a live treasury read. That guard is correct and
-// untouched — but it is PER-BUY, and a contract hauler does not spend alone. In the sp-ps2oc
-// incident three construction_supply buys landed inside 68ms, each individually affordable,
-// and the aggregate took treasury 75k below the reserve; the contract engine then parked
-// against its own floor with nothing left to earn with. A cap that serialised only
-// construction against itself would have left this path free to race the same float.
+// WHY THE CONTRACT SIDE NEEDS THIS AT ALL. affordableSourceBuyLot already floors this buy against
+// common.ImmutableReserveFloor from a live treasury read. That guard is correct and untouched — but
+// it is PER-BUY, and a contract hauler does not spend alone. Several buys landing inside one
+// check->buy window are each individually affordable while their AGGREGATE takes treasury below the
+// reserve, after which the contract engine parks against its own floor with nothing left to earn
+// with. A cap serialising only one operation against itself leaves this path free to race the float.
 //
 // THE FLOOR IS UNCHANGED AND UNWEAKENED (RULINGS #4/#5). This reserves against
-// common.ImmutableReserveFloor — the same 50k contract floor affordableSourceBuyLot enforces,
-// not the 150k non-contract floor construction uses. That asymmetry is deliberate and
-// pre-existing (sp-q8bon made the 50k–150k band contract-exclusive so the sole earner is not
-// starved by margin-blind gate fills), and the shared ledger preserves it exactly: each
-// operation checks the ONE in-flight total against ITS OWN floor. This adds a constraint and
-// removes none.
+// common.ImmutableReserveFloor — the same CONTRACT floor affordableSourceBuyLot enforces, not the
+// higher non-contract floor construction uses. That asymmetry is deliberate: the band between the
+// two is contract-exclusive so the sole earner is not starved by margin-blind gate fills, and the
+// shared ledger preserves it exactly, each operation checking the ONE in-flight total against ITS
+// OWN floor. This adds a constraint and removes none.
 //
 // Fails OPEN when no cap is wired — the optional-port contract every existing test relies on.
 // Fails CLOSED (parks) on any ledger or balance-read error: a cap whose job is protecting the
@@ -47,18 +45,16 @@ func (e *DeliveryExecutor) reserveConcurrentSpendOrPark(
 	if e.spendLedger == nil {
 		return "", false
 	}
-	// A zero/unknown projected cost has no basis to reserve against: reserving 0 would record
-	// an intent that constrains nobody while still taking a row.
+	// A zero/unknown projected cost has no basis to reserve against: reserving 0 records an intent
+	// that constrains nobody while still taking a row.
 	//
-	// This early return is NOT the unpriced-buy hole (sp-gef01) and must not be inverted into
-	// a park. Returning "no reservation, proceed" would be a fail-OPEN if an unpriced lot could
-	// still reach the purchase below — but it cannot: affordableSourceBuyLot now REFUSES a
-	// non-positive unit price outright, upstream of here, and it is armed unconditionally in
-	// production (run_contract_workflow.go). So by the time a buy reaches this call its cost is
-	// positive, and this branch is a defensive contract for a caller that has nothing to spend
-	// rather than a guard being asked to judge a real one. Parking here instead would give the
-	// WRONG diagnosis for that caller (a cap denial for a buy no cap ever refused) while the
-	// actual refusal — and its reason — belongs to the floor.
+	// This is NOT an unpriced-buy hole and must not be inverted into a park. It would be a
+	// fail-OPEN if an unpriced lot could reach the purchase below, but it cannot —
+	// affordableSourceBuyLot REFUSES a non-positive unit price outright, upstream and
+	// unconditionally, so any buy reaching here has a positive cost. This branch is a defensive
+	// contract for a caller with nothing to spend, not a guard judging a real buy; parking here
+	// would report a cap denial for a buy no cap refused, while the real refusal belongs to the
+	// floor.
 	if projectedCost <= 0 {
 		return "", false
 	}
@@ -71,10 +67,9 @@ func (e *DeliveryExecutor) reserveConcurrentSpendOrPark(
 		containerID = opCtx.ContainerID
 	}
 
-	// The balance is read INSIDE the ledger's critical section, never before it. Reading out
-	// here and passing a value in is the sp-ps2oc defect: a sibling that commits its buy and
-	// releases its reservation in between appears in neither the snapshot nor the SUM, so its
-	// spend is silently un-counted and the headroom is claimed twice.
+	// The balance is read INSIDE the ledger's critical section, never before it. Reading out here
+	// and passing a value in un-counts a sibling that commits its buy and releases its reservation
+	// in between: it appears in neither the snapshot nor the SUM, so the headroom is claimed twice.
 	var observedTreasury int
 	readBudget := func(ctx context.Context) (int64, int, error) {
 		treasury := e.lookupLiveCredits(ctx, playerID)

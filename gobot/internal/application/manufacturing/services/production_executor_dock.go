@@ -21,17 +21,15 @@ import (
 // forever.
 const productionDockConfirmAttempts = 10
 
-// productionDockRetryLimit bounds how many times a cargo transaction that fails
-// with a transient "must be docked" signal is re-docked and retried before the
-// error is surfaced. Bounded so a genuinely undockable ship can never infinite
-// loop (sp-n7yp feeder crash #3).
+// productionDockRetryLimit bounds how many times a cargo transaction that fails with a transient
+// "must be docked" signal is re-docked and retried before the error is surfaced. Bounded so a
+// genuinely undockable ship can never infinite-loop.
 const productionDockRetryLimit = 3
 
-// productionEmptyTrancheRetryLimit bounds how many times an input buy that comes
-// back empty ("partial failure: ... 0 units processed" / API 400 — a market drained
-// between the scout read and the buy) is retried before the tranche is skipped so the
-// feeder run can continue. Bounded so a structurally-empty market can never
-// infinite-loop (sp-q02m feeder crash #4).
+// productionEmptyTrancheRetryLimit bounds how many times an input buy that comes back empty
+// ("partial failure: ... 0 units processed" / API 400 — a market drained between the scout read and
+// the buy) is retried before the tranche is skipped so the feeder run can continue. Bounded so a
+// structurally-empty market can never infinite-loop.
 const productionEmptyTrancheRetryLimit = 3
 
 // productionEmptyTrancheRetryDelay is the backoff between empty-tranche retries,
@@ -152,11 +150,9 @@ func isTransientDockStateError(err error) bool {
 // market's supply was drained between the scout read and the buy (an empty /
 // zero-volume tranche, surfaced by the API as a 400).
 //
-// A genuine funds shortfall also processes zero units, so it too carries that phrase
-// — but it is NOT an empty tranche and must surface as a real failure (mirroring how
-// this file treats insufficient funds elsewhere). We therefore explicitly exclude it,
-// so only a truly empty/zero-volume tranche is eligible for retry-then-skip
-// (sp-q02m feeder crash #4).
+// A genuine funds shortfall also processes zero units and so carries the same phrase, but it is
+// NOT an empty tranche and must surface as a real failure. It is excluded explicitly, so only a
+// truly empty/zero-volume tranche is eligible for retry-then-skip.
 func isEmptyTrancheError(err error) bool {
 	if err == nil {
 		return false
@@ -175,8 +171,8 @@ func isEmptyTrancheError(err error) bool {
 // transient dock-state signal, reconciles the ship from the API (clearing any
 // stale DOCKED cache entry that would make a re-dock a no-op — the subtlety
 // NegotiateContractHandler documents), re-docks, and retries. Bounded by
-// productionDockRetryLimit. A transient dock state must never crash the container
-// (sp-n7yp feeder crash #3); genuine failures surface immediately, unretried.
+// productionDockRetryLimit. A transient dock state must never crash the container; genuine
+// failures surface immediately, unretried.
 func (e *ProductionExecutor) purchaseWithDockRetry(
 	ctx context.Context,
 	cmd *shipCargo.PurchaseCargoCommand,
@@ -304,11 +300,10 @@ func (e *ProductionExecutor) redockFromAPI(
 // sourcing step on the first rejection poisons the hold — nothing reconciles a hold
 // between lots, so the hull is disabled permanently.
 //
-// Nothing sellable is a no-op, not an error: it is indistinguishable from docking with
-// an empty hold, which this step has always accepted, and the production poll
-// downstream carries its own bounds. Because every per-good failure is absorbed this
-// way, the step has no failure mode of its own and returns no error. The operation
-// context rides on ctx (stamped by ProduceGood).
+// Nothing sellable is a no-op, not an error: it is indistinguishable from docking with an empty
+// hold, and the production poll downstream carries its own bounds. Because every per-good failure
+// is absorbed, the step has no failure mode of its own and returns no error. The operation context
+// rides on ctx (stamped by ProduceGood).
 //
 // It reports both the revenue and the UNITS delivered. Units is what the gate FACTORY leg records
 // against a starved factory: "sold something" and "sold 60 IRON" are different facts to an
@@ -418,22 +413,20 @@ func (e *ProductionExecutor) deliverInputs(
 // that is the resale-sink divergence SellFabricatedOutputAtSink exists to prevent, so
 // a factory's own output is never dumped back at the factory.
 //
-// A nil listing answers FALSE. This is a DEFENSIVE FALLBACK, NOT A LIVE GUARD, and the difference
-// matters to anyone auditing it: both callers reach the same answer before ever getting here —
-// ValidateFeedDestination refuses a nil destination with a named error, and deliverInputs withholds
-// the whole hold on an unreadable arrival read. So this branch is UNREACHABLE TODAY. It
-// is kept, rather than deleted, because deleting it means a future caller that forgets the check
-// silently fails OPEN again — which is the exact defect sp-kdsrh closed.
+// A nil listing answers FALSE, because the filter's other job is to WITHHOLD: an EXPORT listing is
+// the market's own bid, and dumping into it ladders that bid down against us, so nothing-to-read is
+// not a reason to do the one thing the filter exists to prevent.
 //
-// A MUTATION PROBE ON THIS LINE SURVIVES BY DESIGN. Flipping it back to `true` kills no test,
-// because deliverInputs' early return means the nil never arrives. That surviving mutant is not a
-// coverage hole and must not be "fixed" by weakening the caller to reach it; the behaviour is
-// pinned at deliverInputs, where it is live. (Recorded as probe M9b.)
+// That branch is a DEFENSIVE FALLBACK, NOT A LIVE GUARD, and the difference matters to anyone
+// auditing it: both callers reach the same answer before getting here — ValidateFeedDestination
+// refuses a nil destination with a named error, and deliverInputs withholds the whole hold on an
+// unreadable arrival read — so it is UNREACHABLE. It is kept rather than deleted because deleting
+// it lets a future caller that forgets the check silently fail OPEN.
 //
-// It previously answered true, on the reasoning that a sell spends nothing and withholding over a
-// data gap would stall a fabrication. What that missed is that the filter's other job is to
-// withhold — an EXPORT listing is the market's own bid, and dumping into it ladders that bid down
-// against us. Nothing to read is not a reason to do the one thing the filter exists to prevent.
+// A MUTATION PROBE ON THIS LINE SURVIVES BY DESIGN. Flipping it to `true` kills no test, because
+// deliverInputs' early return means the nil never arrives. That mutant is not a coverage hole and
+// must not be "fixed" by weakening the caller to reach it; the behaviour is pinned at
+// deliverInputs, where it is live.
 func marketBuys(listings *market.Market, good string) bool {
 	if listings == nil {
 		return false

@@ -12,39 +12,34 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 )
 
-// depotRoute is the coordinator's per-contract depot routing decision (bead sp-u9xa, extended
-// by sp-9j9c): when a configured depot OWNS the contract's delivery geometry, the coordinator
-// delivers via the depot's NEAREST delivery hull (the one whose hub is closest to this
-// contract's destination) and withdraws the pre-staged good from the depot's co-located
-// destination warehouse (withdraw-local + deliver-local), instead of the default distance-based
-// pool selection + cheapest-market sourcing.
+// depotRoute is the coordinator's per-contract depot routing decision: when a configured depot OWNS
+// the contract's delivery geometry, the coordinator delivers via the depot's NEAREST delivery hull
+// and withdraws the pre-staged good from the depot's co-located destination warehouse
+// (withdraw-local + deliver-local), instead of the default distance-based pool selection plus
+// cheapest-market sourcing.
 type depotRoute struct {
 	// DepotID is the owning depot's stable id (for logging/observability).
 	DepotID string
-	// DeliveryHull is the ShipSymbol of the depot delivery hull NEAREST to the routed
-	// destination (SelectDeliveryHull, ranked by the same in-system distance the default pool
-	// path uses) — the hull the contract is dispatched on instead of the distance-selected pool
-	// candidate. A single-hull depot returns that hull unchanged (byte-identical).
+	// DeliveryHull is the ShipSymbol of the depot delivery hull NEAREST to the routed destination
+	// (SelectDeliveryHull, ranked by the same in-system distance the default pool path uses) — the
+	// hull the contract is dispatched on instead of the distance-selected pool candidate.
 	DeliveryHull string
-	// Warehouse is the depot's destination-warehouse waypoint that covers the routed
-	// destination — the co-located withdraw-local source. The good is pre-staged there
-	// by the depot's stockers; the EXISTING inventory-first sourcing path
-	// (PlanSourcing + InventorySourceFinder) already prefers this in-system warehouse
-	// over the market, so the source preference is emergent — this field records it for
-	// the log, not a second sourcing path.
+	// Warehouse is the depot's destination-warehouse waypoint covering the routed destination — the
+	// co-located withdraw-local source, pre-staged by the depot's stockers. The inventory-first
+	// sourcing path already prefers this in-system warehouse over the market, so the preference is
+	// emergent: this field records it for the log, it is not a second sourcing path.
 	Warehouse string
 }
 
-// contractClaimFleet is the fleet identity the contract coordinator claims a dispatched hull
-// under (bead sp-3l64). A depot delivery hull carries the DISTINCT depot.DeliveryHullFleet
-// dedication so the coordinator's discovery can never re-grab it for a general contract; it is
-// dispatched ONLY via routeContractViaDepot. That depot-routed claim must therefore run under
-// the hull's OWN depot-delivery identity, or ClaimShip's dedication guard (DedicatedFleet != ""
-// && DedicatedFleet != operation) would REJECT the very hull the depot route selected. Every
-// other hull — unpinned or contract-pinned — still claims under the coordinator's "contract"
-// identity, so a foreign-pinned hull is rejected, never poached (sp-lprs unchanged). A
-// depot-delivery hull only ever reaches the claim via the depot route (excluded from both pools)
-// or a mid-delivery readopt, so keying the claim on its dedication cannot widen the poach surface.
+// contractClaimFleet is the fleet identity the contract coordinator claims a dispatched hull under.
+// A depot delivery hull carries the DISTINCT depot.DeliveryHullFleet dedication so discovery can
+// never re-grab it for a general contract; it is dispatched ONLY via routeContractViaDepot. That
+// depot-routed claim must therefore run under the hull's OWN depot-delivery identity, or ClaimShip's
+// dedication guard (DedicatedFleet != "" && DedicatedFleet != operation) would REJECT the very hull
+// the depot route selected. Every other hull — unpinned or contract-pinned — still claims under the
+// coordinator's "contract" identity, so a foreign-pinned hull is rejected, never poached. A
+// depot-delivery hull only reaches the claim via the depot route (it is excluded from both pools) or
+// a mid-delivery readopt, so keying the claim on its dedication cannot widen the poach surface.
 func contractClaimFleet(dedicatedFleet string) string {
 	if dedicatedFleet == depot.DeliveryHullFleet {
 		return dedicatedFleet
@@ -107,37 +102,35 @@ func routeContractViaDepot(reg *depot.Registry, contract *domainContract.Contrac
 	}, true
 }
 
-// contractHullRoute is the coordinator's resolved hull-selection strategy for one contract
-// pass (bead sp-obtr): whether to DELIVER via the depot's co-located, destination-nearest
-// delivery hull, or to fall through to source-nearest idle-hull selection.
+// contractHullRoute is the coordinator's resolved hull-selection strategy for one contract pass:
+// whether to DELIVER via the depot's co-located, destination-nearest delivery hull, or to fall
+// through to source-nearest idle-hull selection.
 type contractHullRoute struct {
-	// UseDepotHull is true ONLY for a BUFFERED depot-owned contract — the good is on hand in
-	// the hub warehouse, so the destination-nearest depot delivery hull withdraws from stock
-	// and delivers locally (sp-9j9c pick preserved, ~0 source travel). False otherwise, so the
-	// coordinator selects the idle hull nearest the SOURCE market instead.
+	// UseDepotHull is true ONLY for a BUFFERED depot-owned contract — the good is on hand in the hub
+	// warehouse, so the destination-nearest depot delivery hull withdraws from stock and delivers
+	// locally with near-zero source travel. False otherwise, so the coordinator selects the idle
+	// hull nearest the SOURCE market instead.
 	UseDepotHull bool
 	// DepotHull is the depot delivery hull to dispatch when UseDepotHull; "" otherwise.
 	DepotHull string
 }
 
-// resolveContractHullRoute branches an owned-destination (depot-routed) contract on buffered
-// vs unbuffered sourcing (bead sp-obtr) — the fix for a systemic ~2x-travel loss. It combines
-// the depot routing match (routeContractViaDepot) with the resolved sourcing plan
-// (PlanSourcing / InventorySourceFinder), which is the ONLY place both are in hand. The
-// buffered/unbuffered signal is the plan's Source:
+// resolveContractHullRoute branches an owned-destination (depot-routed) contract on buffered vs
+// unbuffered sourcing, which is what keeps it from doubling a contract's travel. It combines the
+// depot routing match (routeContractViaDepot) with the resolved sourcing plan, this being the ONLY
+// place both are in hand. The signal is the plan's Source:
 //
-//   - BUFFERED (SourceInventory): the good is staged in the hub warehouse at zero ask. Keep
-//     sp-9j9c's co-located, destination-nearest depot delivery hull — it withdraws from stock
-//     and delivers locally (~0 source travel). No regression.
+//   - BUFFERED (SourceInventory): the good is staged in the hub warehouse at zero ask, so the
+//     co-located, destination-nearest depot delivery hull withdraws from stock and delivers locally
+//     with near-zero source travel.
 //   - UNBUFFERED (SourceMarket): the good must be bought at a REMOTE source market, so the
-//     destination-pinned depot hull is the WRONG hull — it would fly empty to the far source
-//     then back (~2x) and leave its hub uncovered for the round trip. Fall through to
-//     source-nearest idle-hull selection (the coordinator's default SelectClosestShip toward
-//     the source market over the idle pool, which already EXCLUDES the depot delivery hull per
-//     sp-3l64 — so a genuinely-idle non-depot hull nearest the source is chosen).
+//     destination-pinned depot hull is the WRONG hull — it would fly empty to the far source and
+//     back, roughly doubling the travel, and leave its hub uncovered for the round trip. Fall
+//     through to source-nearest idle-hull selection, whose pool already EXCLUDES the depot delivery
+//     hull, so a genuinely-idle non-depot hull nearest the source is chosen.
 //
-// A non-matching depot route (routeMatched == false — nil/empty/non-owning registry) also
-// falls through to source-nearest selection: the sp-u9xa default path, byte-identical.
+// A non-matching depot route (nil/empty/non-owning registry) also falls through to source-nearest
+// selection, the default path.
 func resolveContractHullRoute(route depotRoute, routeMatched bool, plan *appContract.SourcingPlan) contractHullRoute {
 	if routeMatched && plan != nil && plan.Source == appContract.SourceInventory {
 		return contractHullRoute{UseDepotHull: true, DepotHull: route.DeliveryHull}

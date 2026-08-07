@@ -8,10 +8,9 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/storage"
 )
 
-// StorageInventoryFinder satisfies appContract.InventorySourceFinder by querying
-// the shared storage coordinator + operation repository for a RUNNING WAREHOUSE
-// operation (sp-dchv Lane B) in the delivery system that holds a contract good
-// with unreserved units.
+// StorageInventoryFinder satisfies appContract.InventorySourceFinder by querying the shared storage
+// coordinator and operation repository for a RUNNING WAREHOUSE operation in the delivery system
+// that holds a contract good with unreserved units.
 //
 // Two invariants make it safe as a contract-sourcing seam:
 //   - In-system ONLY (RULINGS #14): a warehouse in another system is never
@@ -41,16 +40,13 @@ func NewStorageInventoryFinder(opRepo storage.StorageOperationRepository, coordi
 // FindInSystemInventory returns the in-system warehouse the contract worker should
 // withdraw good from, or nil (fail-open). Nil-receiver-safe.
 //
-// Multi-warehouse: more than one warehouse may hold the good in the
-// delivery system (additive capacity). The withdrawal targets the FULLEST hull — the
-// one with the most unreserved units, breaking ties toward the newest operation — so
-// a single trip moves the most and the choice is stable across reads; as that hull
-// drains, the next read re-picks the new fullest. UnitsAvailable is the SUM of
-// unreserved units across every in-system warehouse holding the good — the true total
-// on hand, so a sibling's stock is never invisible to the sourcing gate. The withdrawal
-// itself still reserves against the single chosen OperationID (bounded by that hull),
-// which is correct: it is one physical ship-to-ship transfer, and the caller re-consults
-// this finder each trip.
+// Multi-warehouse: more than one warehouse may hold the good in the delivery system (additive
+// capacity). The withdrawal targets the FULLEST hull — most unreserved units, ties broken toward
+// the newest operation — so a single trip moves the most and the choice is stable across reads; as
+// that hull drains, the next read re-picks the new fullest. UnitsAvailable is the SUM across every
+// in-system warehouse holding the good, so a sibling's stock is never invisible to the sourcing
+// gate, while the withdrawal itself reserves against the single chosen OperationID: it is one
+// physical ship-to-ship transfer, and the caller re-consults this finder each trip.
 func (f *StorageInventoryFinder) FindInSystemInventory(ctx context.Context, playerID int, systemSymbol, good string) *appContract.InventorySource {
 	if f == nil || f.opRepo == nil || f.coordinator == nil {
 		return nil

@@ -7,45 +7,28 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
-// The spawn governor is the coordinator-level guard against worker-spawn
-// storms (sp-lybx): the contract coordinator persisted 4 worker containers for
-// one hull within 9 seconds, each dying instantly ('deliveries not complete' —
-// a 0-cargo probe can never deliver). The main loop spawns a worker, blocks on
-// its completion, and on a failure event immediately re-selects the SAME idle
-// hull and respawns — with nothing between the death and the respawn. A single
-// poison hull therefore hot-loops the coordinator, stalling the whole contract
-// chain (income.stalled caught the 2026-07-10 incident 30+ min in).
+// The spawn governor is the coordinator-level guard against worker-spawn storms. The main loop
+// spawns a worker, blocks on its completion, and on a failure event immediately re-selects the SAME
+// idle hull and respawns, with nothing between the death and the respawn — so one poison hull
+// hot-loops the coordinator and stalls the whole contract chain. An escalating per-hull backoff
+// spaces out respawns, and after N deaths the hull is quarantined so the coordinator moves on to a
+// healthy hull; the CONTRACT keeps being worked (RULINGS #1).
 //
-// Fix A (hull-class exclusion in FindIdleShipsByFleet) stops the SPECIFIC
-// 0-cargo cause at discovery. This governor is the generic net for ANY
-// instant-death cause on a cargo-carrying hull: an escalating per-hull backoff
-// spaces out respawns, and after N instant deaths within a window the hull is
-// quarantined so the coordinator moves on to a healthy hull (the CONTRACT keeps
-// being worked — RULINGS #1).
+// TWO BREAKERS, BECAUSE TIMING ALONE IS BLIND. An instant-death breaker counting only deaths faster
+// than a threshold has its streak RESET by anything slower, and a hull can fail the same way for
+// minutes at a time — API retries with exponential backoff, then in-place container restarts — so
+// it is never quarantined and, because nothing is ever "down", no recovery path fires. The second
+// breaker is content-shaped: it counts consecutive IDENTICAL errors with no reference to elapsed
+// time at all, because a hull failing the same way N times running is poison whether it dies in a
+// second or ten minutes.
 //
-// sp-20eyn widened both halves of that guard after agent TORWIND earned NOTHING
-// for 24h. One hull (TORWIND-5) was unreadable upstream — a persistent API error
-// 3000 on ship-state reload — and the two structural holes were:
-//
-//  1. TIMING BLINDNESS. The instant-death breaker only counted deaths FASTER
-//     than spawnInstantDeathThreshold; anything slower RESET the streak to zero.
-//     A TORWIND-5 worker took MINUTES to die (the API retry policy burns 10
-//     retries with exponential backoff capped at 30s, then ContainerRunner
-//     restarts in-place 3x with 5s/30s/120s backoff), so instantDeaths NEVER
-//     incremented and the hull was NEVER quarantined: 34,279 cumulative FAILED
-//     containers, and because nothing was "down" no recovery path fired. The fix
-//     is a SECOND, content-shaped breaker that counts consecutive IDENTICAL
-//     errors with no reference to elapsed time at all — a hull failing the same
-//     way N times running is poison whether it dies in 1s or 10 minutes.
-//
-//  2. NO WAY BACK. Quarantine was sticky for the whole coordinator run, cleared
-//     only by a coordinator recreate — a blacklist, not a circuit breaker. Both
-//     causes now quarantine for an EXPIRING cooldown, after which the hull is
-//     re-probed with a single real worker; a probe that succeeds clears every
-//     scrap of streak state (full recovery, no human action), and a probe that
-//     fails re-quarantines IMMEDIATELY on the escalated cooldown rather than
-//     restarting the streak from zero — otherwise the recoverable quarantine
-//     would just be a slower crash-loop.
+// QUARANTINE EXPIRES; IT IS A CIRCUIT BREAKER, NOT A BLACKLIST. A quarantine sticky for the
+// coordinator's whole run needs a recreate to clear, so a hull whose upstream problem resolves
+// never comes back. Both causes quarantine for an EXPIRING cooldown, after which the hull is
+// re-probed with a single real worker: a probe that succeeds clears every scrap of streak state
+// (full recovery, no human action), and a probe that fails re-quarantines IMMEDIATELY on the
+// escalated cooldown rather than restarting the streak from zero — otherwise the recoverable
+// quarantine is just a slower crash-loop.
 
 // spawnIdenticalErrorThreshold is how many CONSECUTIVE completions carrying the
 // SAME error message quarantine a hull, independent of how long each worker
@@ -103,12 +86,10 @@ const unspecifiedWorkerError = "<unspecified>"
 // it resets the hull's instant-death streak rather than adding to it.
 const spawnInstantDeathThreshold = 30 * time.Second
 
-// spawnQuarantineThreshold is how many instant deaths one hull may suffer
-// within spawnQuarantineWindow before it is quarantined (skipped until
-// spawnQuarantineCooldownSchedule elapses, then re-probed — sp-20eyn made this
-// expiring rather than sticky-for-the-run). Three tolerates a hull that flaps
-// once or twice for a transient reason while still shutting down a genuine
-// crash-loop fast.
+// spawnQuarantineThreshold is how many instant deaths one hull may suffer within
+// spawnQuarantineWindow before it is quarantined: skipped until spawnQuarantineCooldownSchedule
+// elapses, then re-probed. Low enough to shut down a genuine crash-loop fast, high enough to
+// tolerate a hull that flaps once or twice for a transient reason.
 const spawnQuarantineThreshold = 3
 
 // spawnQuarantineWindow bounds how far apart instant deaths may be and still
@@ -119,13 +100,11 @@ const spawnQuarantineThreshold = 3
 // drip over hours.
 const spawnQuarantineWindow = 10 * time.Minute
 
-// spawnBackoffSchedule is how long a hull is held out of worker selection after
-// its k-th consecutive instant death (index 0 = after the 1st death). Escalating
-// so a flapping hull is retried with progressively more breathing room instead
-// of hot-looping — the 5s→15s spacing alone turns the sp-lybx "4 spawns in 9s"
-// into at most one spawn per interval. Deaths past the last entry reuse the last
-// (longest) interval; in practice quarantine caps the streak at
-// spawnQuarantineThreshold before the schedule is exhausted.
+// spawnBackoffSchedule is how long a hull is held out of worker selection after its k-th
+// consecutive instant death (index 0 = after the 1st). Escalating, so a flapping hull is retried
+// with progressively more breathing room instead of hot-looping: even the first entries turn a
+// burst of respawns into at most one spawn per interval. Deaths past the last entry reuse the last,
+// longest interval; in practice quarantine caps the streak before the schedule is exhausted.
 var spawnBackoffSchedule = []time.Duration{
 	5 * time.Second,
 	15 * time.Second,
@@ -173,27 +152,23 @@ type hullSpawnState struct {
 	instantDeaths int
 	windowStart   time.Time
 
-	// errStreak counts CONSECUTIVE identical worker error messages with no
-	// reference to elapsed time — the sp-20eyn breaker that catches a hull dying
-	// slowly and identically forever. It is the health.StreakTracker already used
-	// for coordinator error loops rather than a third hand-rolled counter: the
-	// semantics needed here (identical increments, a different error resets to 1,
-	// a success resets to 0) are exactly what it implements and already tests.
-	// Only its streak length is consumed — its `crossed` return re-fires on every
-	// multiple of the threshold, which is right for re-alarming a stuck loop but
-	// wrong for a LATCHING quarantine whose re-entry is governed by the cooldown
-	// and re-probe rules below.
+	// errStreak counts CONSECUTIVE identical worker error messages with no reference to elapsed
+	// time — the breaker that catches a hull dying slowly and identically forever. It reuses
+	// health.StreakTracker rather than a third hand-rolled counter, because the semantics needed
+	// here (identical increments, a different error resets to 1, a success resets to 0) are exactly
+	// what it implements. Only its streak LENGTH is consumed: its `crossed` return re-fires on
+	// every multiple of the threshold, which is right for re-alarming a stuck loop but wrong for a
+	// LATCHING quarantine whose re-entry is governed by the cooldown and re-probe rules below.
 	errStreak *health.StreakTracker
 
 	// eligibleAt is the earliest time this hull may be spawned again (post-death
 	// backoff). Zero means eligible now.
 	eligibleAt time.Time
 
-	// quarantineUntil is when the current quarantine expires; the hull is skipped
-	// by every selection pass before it. Zero (or in the past) means not
-	// quarantined. EXPIRING rather than sticky-for-the-run (sp-20eyn): a hull
-	// whose upstream problem clears must return to service with no human action,
-	// so a quarantine is a circuit breaker, not a blacklist.
+	// quarantineUntil is when the current quarantine expires; the hull is skipped by every
+	// selection pass before it. Zero (or in the past) means not quarantined. EXPIRING rather than
+	// sticky-for-the-run: a hull whose upstream problem clears must return to service with no
+	// human action, so a quarantine is a circuit breaker, not a blacklist.
 	//
 	// quarantineCount is how many times this hull has been quarantined without an
 	// intervening success — it indexes the escalating cooldown schedule so a hull
@@ -275,12 +250,11 @@ func (g *spawnGovernor) NoteSpawn(hull string) {
 	st := g.stateFor(hull)
 	now := g.clock.Now()
 
-	// RE-PROBE (sp-20eyn): this is the first worker spawned for the hull since a
-	// quarantine expired, so it is a probe of a hull we have POSITIVE evidence was
-	// broken — not an ordinary spawn. Clearing quarantineUntil here (rather than
-	// on expiry) keeps the probe atomic with the release: exactly one worker gets
-	// through per cooldown, and quarantineCount survives so a failed probe escalates
-	// instead of restarting the ladder.
+	// RE-PROBE: the first worker spawned for the hull since a quarantine expired is a probe of a
+	// hull we have POSITIVE evidence was broken, not an ordinary spawn. Clearing quarantineUntil
+	// HERE rather than on expiry keeps the probe atomic with the release — exactly one worker gets
+	// through per cooldown — and quarantineCount survives so a failed probe escalates instead of
+	// restarting the ladder.
 	if !st.quarantineUntil.IsZero() && !now.Before(st.quarantineUntil) {
 		st.probing = true
 		st.quarantineUntil = time.Time{}
@@ -297,9 +271,8 @@ func (g *spawnGovernor) NoteSpawn(hull string) {
 //   - success: the hull is healthy — clear EVERY scrap of failure state, streaks
 //     and quarantine ladder alike. A hull that delivers is not a poison hull, and
 //     this is the recovery path that keeps quarantine from being a blacklist.
-//   - failure on a post-quarantine re-probe: the hull is still broken — re-
-//     quarantine at once on the escalated cooldown (sp-20eyn), never restart the
-//     streak from zero.
+//   - failure on a post-quarantine re-probe: the hull is still broken — re-quarantine at once on
+//     the escalated cooldown, never restart the streak from zero.
 //   - failure within the instant-death threshold: an instant death — extend the
 //     hull's backoff (escalating) and, if this is the Nth within the window,
 //     quarantine it.
@@ -307,10 +280,9 @@ func (g *spawnGovernor) NoteSpawn(hull string) {
 //     the storm signature, so clear the instant-death streak (but do not grant a
 //     backoff-free retry beyond the normal flow).
 //
-// The identical-error streak advances on EVERY failure regardless of which of
-// those branches applies, because it is the breaker that has to catch the case
-// all the timing-shaped logic above is blind to: a hull that takes minutes to
-// die, the same way, forever (TORWIND-5, sp-20eyn).
+// The identical-error streak advances on EVERY failure regardless of which branch applies, because
+// it is the breaker that catches what all the timing-shaped logic above is blind to: a hull that
+// takes minutes to die, the same way, forever.
 //
 // A completion with no matching NoteSpawn (e.g. a re-adopted restart worker the
 // governor never spawned) is a no-op: the governor only judges hulls it launched.

@@ -76,22 +76,14 @@ func outstandingDelivery(contract *domainContract.Contract) (delivery domainCont
 // moment its worker died, letting the coordinator purchase units redundant
 // with what that hull is still physically holding.
 //
-// Ordering rules out double-counting: readoptInterruptedDeliveries runs once,
-// before the main loop starts, and moves any successfully
-// re-adopted ship onto a fresh RUNNING container before this function is ever
-// called from inside the loop. That ship is therefore picked up exactly once,
-// by the RUNNING-workers pass below, and no longer matches
-// FindInterruptedWorkerShipsWithCargo's query (it queries by container ID,
-// and the ship has moved off the dead one — the dead container's own row can
-// still be sitting in the FAILED list, but nothing on it matches anymore). A
-// ship that is NOT re-adopted (readoption only re-adopts one hull per
-// startup) stays attached to its FAILED container - a transient state the
-// loop's unconditional ReclaimShipsFromInterruptedWorkers pass forces closed
-// on its very next iteration - so counting it here can delay, but never
-// permanently stall, the coordinator, unlike counting arbitrary idle-ship
-// cargo would.
-//
-// This is used during restart recovery to prevent duplicate cargo purchases.
+// ORDERING RULES OUT DOUBLE-COUNTING. readoptInterruptedDeliveries runs once, before the main loop
+// starts, and moves any re-adopted ship onto a fresh RUNNING container before this is ever called
+// from inside the loop — so that ship is counted exactly once, by the RUNNING-workers pass below,
+// and no longer matches FindInterruptedWorkerShipsWithCargo, which queries by container ID. A ship
+// that is NOT re-adopted stays attached to its FAILED container, a transient state the loop's
+// unconditional ReclaimShipsFromInterruptedWorkers pass forces closed on the next iteration, so
+// counting it can delay but never permanently stall the coordinator — unlike counting arbitrary
+// idle-ship cargo, which could.
 func (h *RunFleetCoordinatorHandler) calculateInFlightCargo(
 	ctx context.Context,
 	tradeSymbol string,
@@ -161,15 +153,13 @@ func (h *RunFleetCoordinatorHandler) calculateInFlightCargo(
 // (unassigned) hulls — most importantly one just reclaimed from a crashed
 // contract worker that still physically holds its contract load.
 //
-// calculateInFlightCargo deliberately counts only RUNNING/interrupted-worker
-// cargo for its WAIT gate: counting idle cargo there would STALL the coordinator,
-// because an idle hull's load is dispatchable NOW (the wait gate short-circuits
-// before selection, so a counted-but-not-dispatched idle load would loop
-// forever). This companion instead surfaces that idle load as a DISPATCH signal —
-// the coordinator completes it with the holding hull (cargo-priority selection
-// picks the holder) rather than sourcing a duplicate onto a second hull, which is
-// the sp-1pf0r double-load defense. Read-only; a load-failure is returned so the
-// caller can log and proceed (better to risk a duplicate than to block).
+// calculateInFlightCargo deliberately counts only RUNNING/interrupted-worker cargo for its WAIT
+// gate: counting idle cargo there would STALL the coordinator, because an idle hull's load is
+// dispatchable NOW and the wait gate short-circuits before selection, so a counted-but-undispatched
+// idle load would loop forever. This companion surfaces that idle load as a DISPATCH signal
+// instead, so the coordinator completes it with the holding hull rather than sourcing a duplicate
+// onto a second one. Read-only; a load failure is returned so the caller logs and proceeds, risking
+// a duplicate being better than blocking.
 func (h *RunFleetCoordinatorHandler) idleReclaimedContractCargoHeld(ctx context.Context, tradeSymbol string, playerID int) (int, error) {
 	ships, err := h.shipRepo.FindAllByPlayer(ctx, shared.MustNewPlayerID(playerID))
 	if err != nil {
@@ -192,18 +182,15 @@ func (h *RunFleetCoordinatorHandler) idleReclaimedContractCargoHeld(ctx context.
 // lexicographically-smallest symbol so a restart deterministically re-picks the
 // SAME hull, never a second cargo-laden one. Returns "" when no pure holder exists.
 //
-// This is the SELECTION companion to idleReclaimedContractCargoHeld's dispatch-
-// signal COUNT: that surfaces the intent to complete the load with its holder; this
-// NAMES the holder so the coordinator actually SELECTS it, short-circuiting the
-// distance-based pick. It is needed because the candidate-discovery filters
-// (FindIdleLightHaulers / FindIdleShipsByFleet) drop an idle holder that is IN
-// TRANSIT, or UNDEDICATED while a dedicated contract fleet is active (EXCLUSIVE
-// MODE) — so such a holder is DETECTED yet never reaches SelectClosestShip's own
-// cargo-priority, and the closest empty hull sources a duplicate (the observed
-// TORWIND-15-holds-43 / TORWIND-8-double-sources gap). This scans the full fleet,
-// like its count sibling, so it sees the holder regardless of those filters.
-// Read-only; a load failure is returned so the caller logs and falls back to
-// distance selection (better a possible duplicate than a blocked contract).
+// This is the SELECTION companion to idleReclaimedContractCargoHeld's dispatch-signal COUNT: that
+// surfaces the intent to complete the load with its holder; this NAMES the holder so the
+// coordinator actually SELECTS it, short-circuiting the distance-based pick. It is needed because
+// the candidate-discovery filters (FindIdleLightHaulers / FindIdleShipsByFleet) drop an idle holder
+// that is IN TRANSIT, or UNDEDICATED while a dedicated contract fleet is active — such a holder is
+// DETECTED yet never reaches SelectClosestShip's own cargo-priority, and the closest empty hull
+// sources a duplicate. This scans the full fleet, like its count sibling, so it sees the holder
+// regardless of those filters. Read-only; a load failure is returned so the caller logs and falls
+// back to distance selection, a possible duplicate being better than a blocked contract.
 func (h *RunFleetCoordinatorHandler) idleContractCargoHolder(ctx context.Context, requiredCargo string, playerID int) (string, error) {
 	ships, err := h.shipRepo.FindAllByPlayer(ctx, shared.MustNewPlayerID(playerID))
 	if err != nil {
@@ -250,14 +237,12 @@ type holderRun struct {
 // identical for every candidate and cancels out, so this is a scalar sweep of
 // already-loaded ship positions — never a routing solve.
 //
-// Only hulls in the SOURCE's system are compared: Waypoint.DistanceTo is a plain
-// Euclidean coordinate distance and is meaningless across systems, and a hull
-// outside the contract's home system could reach neither the source nor the
-// delivery anyway (RULINGS #14). Candidates are taken from the pass's already
-// dedication-filtered, cargo-filtered, governor-filtered spawnable pool, so this
-// never reaches into another fleet's hulls. Errors (and a nil graph provider)
-// return a placement with no alternative named, which the decision reads as
-// "keep the holder" — fail-closed onto sp-zve2q's behaviour.
+// Only hulls in the SOURCE's system are compared: Waypoint.DistanceTo is a plain Euclidean
+// coordinate distance and is meaningless across systems, and a hull outside the contract's home
+// system could reach neither the source nor the delivery anyway (RULINGS #14). Candidates come from
+// the pass's already dedication-, cargo- and governor-filtered spawnable pool, so this never
+// reaches into another fleet's hulls. Errors and a nil graph provider return a placement with no
+// alternative named, which the decision reads as "keep the holder" — fail-closed.
 func (h *RunFleetCoordinatorHandler) weighHolderPlacement(ctx context.Context, run holderRun) (domainContract.HolderPlacement, error) {
 	placement := domainContract.HolderPlacement{Holder: run.Holder, UnitsNeeded: run.UnitsNeeded}
 	if run.Holder == "" || run.SourceWaypoint == "" || h.graphProvider == nil {

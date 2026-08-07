@@ -8,19 +8,19 @@ import (
 // supplyWorkers is the drain's registry of live supply workers.
 //
 // A supply worker OUTLIVES the tick that dispatched it — that is what keeps activation, the retry
-// sweep and hull discovery on the tick's cadence instead of a haul's — so the bookkeeping a joined
-// errgroup would give for free has to live here: how many workers a container has out (the
+// sweep and hull discovery on the tick's cadence rather than a haul's — so the bookkeeping a joined
+// errgroup would give for free lives here instead: how many workers a container has out (the
 // max_workers bound), which hulls they hold (so no later tick re-dispatches one), and how many
 // supplies have landed since that container's last tick reported.
 //
-// Everything is keyed by container so two coordinator containers sharing this one registered handler
-// never spend each other's worker budget, harvest each other's completions, or block each other's
-// stop. Hull ownership is deliberately global: no two workers may hold one hull, whoever dispatched
-// them.
+// Everything is keyed by container, so two coordinator containers sharing this one registered
+// handler never spend each other's worker budget, harvest each other's completions, or block each
+// other's stop. Hull ownership is deliberately GLOBAL: no two workers may hold one hull, whoever
+// dispatched them.
 //
-// A registration is BOUNDED (supplyHold.expiresAt) because nothing else bounds it: an errgroup would
-// know its goroutines had returned, this registry only knows what a worker tells it, and a worker that
-// stops running without deregistering would retire its hull for the life of the process.
+// A registration is BOUNDED (supplyHold.expiresAt) because nothing else bounds it: this registry
+// only knows what a worker tells it, so a worker that stops running without deregistering would
+// retire its hull for the life of the process.
 //
 // In-process only. A restart loses the workers and this registry together, and the daemon's
 // boot-time ReleaseAllActive returns their hulls to the idle pool.
@@ -61,9 +61,8 @@ type supplyHold struct {
 
 // admit registers hull under containerID until expiresAt, reserving units of material against the
 // material's bill, and reports the registration's generation. A hull another worker already holds is
-// REFUSED: this is the atomic backstop behind the pool-level exclusion, and it matters because a
-// re-claim by the SAME container is idempotent at the DB — ClaimShip would hand a second worker the
-// same hull without complaint.
+// REFUSED: the atomic backstop behind the pool-level exclusion, which matters because a re-claim by
+// the SAME container is idempotent at the DB — ClaimShip hands a second worker the same hull.
 func (w *supplyWorkers) admit(hull, containerID, material string, units int, expiresAt time.Time) (uint64, bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -141,10 +140,10 @@ func (w *supplyWorkers) owns(hull string, seq uint64) bool {
 	return held && hold.seq == seq
 }
 
-// releasable reports whether the seq registration may release hull's claim: while the registration is
-// still its own, and still once the reap has left the hull unregistered — an orphaned claim belongs
-// back in the idle pool. False only when a DIFFERENT worker now holds the hull, whose live haul must
-// not be un-claimed from under it.
+// releasable reports whether the seq registration may release hull's claim: while the registration
+// is still its own, and still once the reap has left the hull unregistered, an orphaned claim
+// belonging back in the idle pool. False ONLY when a DIFFERENT worker now holds the hull, whose live
+// haul must not be un-claimed from under it.
 func (w *supplyWorkers) releasable(hull string, seq uint64) bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -175,9 +174,8 @@ func (w *supplyWorkers) reservedUnits(material string) int {
 //
 // The PER-HULL grain is what lets the commitment fold combine a reservation with the hull's actual
 // cargo by MAX rather than by sum. The aggregate reservedUnits above cannot say which hull a
-// reservation belongs to, so it cannot tell "reserved but not yet spent" from "reserved and
-// already in that same hold", and adding those two starves the fleet of dispatch while its holds
-// are full.
+// reservation belongs to, so it cannot tell "reserved but not yet spent" from "reserved and already
+// in that same hold" — and summing those starves the fleet of dispatch while its holds are full.
 func (w *supplyWorkers) reservationFor(hull string) (int, string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()

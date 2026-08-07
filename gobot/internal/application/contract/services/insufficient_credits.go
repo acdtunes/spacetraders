@@ -5,22 +5,13 @@ import (
 	"strings"
 )
 
-// ErrInsufficientCredits signals that a contract cargo purchase failed
-// because the agent's treasury could not cover the cost (SpaceTraders API
-// error code 4600). This is PERMANENT relative to the current treasury
-// snapshot, not transient - the caller must PARK (clean exit, resume on the
-// coordinator's next tick once credits recover) rather than propagate a
-// crash. This is the third credits-guard surface, joining sp-bp6f
-// (trade) and sp-9aoc/sp-2dv4 (factory); it follows the park-not-crash idiom
-// established by ErrDeferToSupply (manufacturing) and
-// ErrRefuelUnrecoverable (refuel retry).
-//
-// Before this fix, a 4600 during contract purchasing propagated as a plain
-// wrapped error, which the container runner treats as a crash: the
-// coordinator respawned the worker roughly every 10s, producing ~18
-// container.crashed events in 3 minutes until the captain intervened
-// manually (2026-07-XX incident, ELECTRONICS x18 @ 5,566 = 100,188 credits
-// needed vs 85,517 available).
+// ErrInsufficientCredits signals that a contract cargo purchase failed because the agent's
+// treasury could not cover the cost (SpaceTraders API error code 4600). It is PERMANENT relative to
+// the current treasury snapshot rather than transient, so the caller must PARK — a clean exit that
+// resumes on the coordinator's next tick once credits recover — and never propagate a crash: the
+// container runner treats a plain wrapped error as a crash and respawns the worker every few
+// seconds, turning one unaffordable buy into a crash loop. It follows the park-not-crash idiom of
+// ErrDeferToSupply (manufacturing) and ErrRefuelUnrecoverable (refuel retry).
 type ErrInsufficientCredits struct {
 	ShipSymbol     string
 	TradeSymbol    string

@@ -14,26 +14,22 @@ import (
 
 // reallocateGateRoles moves gate hulls between the delivery and factory roles, once per tick.
 //
-// THE PAUSE IS A SELF-SHORTENING FEEDBACK LOOP. Delivery pauses because a terminal factory is
-// low; those hulls go feed that factory; it produces faster; supply recovers sooner; delivery
-// resumes. The pause actively works to end itself instead of idling capacity — which is also what
-// makes an aggressive buy floor safe: over-buying costs a reallocation, not a stall.
+// THE PAUSE IS A SELF-SHORTENING FEEDBACK LOOP. Delivery pauses because a terminal factory is low;
+// those hulls go feed that factory; it produces faster; supply recovers sooner; delivery resumes.
+// The pause works to end itself instead of idling capacity — which is also what makes an aggressive
+// buy floor safe: over-buying costs a reallocation, not a stall.
 //
-// IT NEVER MOVES A CLAIM. AssignFleet does not evict a holder by design ("the tag takes effect
-// when the present claim is released"), and constructionLot.claimIdentity is FROZEN at plan time
-// — a hull re-tagged in flight would present a stale tag, and ClaimShip authorizes a new claim
-// only when tag == operation, so it would be rejected at the DB and the hull would be dispatched
-// and silently never work. Considering only IDLE, UNHELD hulls makes that unreachable rather than
-// merely rare, and it satisfies the spec's "a hull mid-haul must finish its leg" structurally.
+// IT NEVER MOVES A CLAIM. AssignFleet does not evict a holder by design, and
+// constructionLot.claimIdentity is FROZEN at plan time — a hull re-tagged in flight presents a
+// stale tag, ClaimShip authorizes a new claim only when tag == operation, so it is rejected at the
+// DB and the hull is dispatched and silently never works. Considering only IDLE, UNHELD hulls makes
+// that unreachable rather than merely rare, and structurally satisfies "a hull mid-haul finishes
+// its leg". AssignFleet is also the SINGLE WRITE PATH for the dedicated_fleet column (RULINGS #3);
+// a general ship save would be reverted by preserveDedicatedFleetTag, silently.
 //
-// AssignFleet is the SINGLE WRITE PATH for the dedicated_fleet column (RULINGS #3). A general
-// ship save would be reverted by preserveDedicatedFleetTag, silently.
-//
-// EVERY EXIT LOGS, including the ones that do nothing. This package has no metrics seam at all,
-// so the log is this coordinator's only counter, and a reallocator that declines every decision is
-// otherwise indistinguishable from one that is never invoked.
-//
-// It spends nothing. RULINGS #4 is not in scope here and no floor is read.
+// EVERY EXIT LOGS, including the ones that do nothing. This package has no metrics seam, so the log
+// is this coordinator's only counter, and a reallocator that declines every decision is otherwise
+// indistinguishable from one that is never invoked. It spends nothing: no floor is read here.
 func (h *RunConstructionCoordinatorHandler) reallocateGateRoles(
 	ctx context.Context,
 	systemSymbol string,
@@ -63,21 +59,19 @@ func (h *RunConstructionCoordinatorHandler) reallocateGateRoles(
 		return
 	}
 	if len(workers) == 0 {
-		// NOT "none is idle", which is what this line used to say and is the opposite diagnosis.
-		// gateWorkforce counts every in-system gate hull WHATEVER its state — Idle is a field on the
-		// worker, not a filter — so a hull mid-haul is in this census and is reported as `busy` by
-		// the ruling below. An empty census therefore means no gate-tagged hull exists here at all,
-		// and telling an operator their hulls are busy would send them to look at hauls that do not
-		// exist.
+		// NOT "none is idle" — the opposite diagnosis. gateWorkforce counts every in-system gate hull
+		// WHATEVER its state (Idle is a field on the worker, not a filter), so a hull mid-haul is in
+		// this census and is reported as busy below. An empty census therefore means no gate-tagged
+		// hull exists here at all, and reporting them busy sends an operator to look at hauls that
+		// do not exist.
 		logger.Log("INFO", fmt.Sprintf("Gate roles: no gate-tagged hull exists%s, so there is no workforce to split this tick. A BUSY hull would still be counted here, so this census is empty rather than occupied", gateCensusScope(systemSymbol)), map[string]interface{}{"system": systemSymbol})
 		return
 	}
 
-	// The pause state the DELIVERY LEGS already wrote. Reading it here rather than re-deciding
-	// costs no market read and cannot disagree with what the legs actually did. FleetPaused is
-	// EVERY material, never any one of them — that rule lives in the policy and is consumed, not
-	// restated, because getting it backwards idles the fleet the moment a single material dips and
-	// nothing about the fleet then looks broken.
+	// The pause state the DELIVERY LEGS already wrote. Reading it rather than re-deciding costs no
+	// market read and cannot disagree with what the legs did. FleetPaused is EVERY material, never
+	// any one of them — that rule lives in the policy and is consumed, not restated, because getting
+	// it backwards idles the fleet the moment a single material dips and nothing looks broken.
 	pipeline := h.gatePipeline(ctx, tasks)
 	buyFloor, resumeFloor := "", ""
 	if pipeline != nil {
@@ -166,23 +160,21 @@ func (h *RunConstructionCoordinatorHandler) gatePipeline(ctx context.Context, ta
 // gateWorkforce is the live gate fleet as the reallocator sees it: every hull carrying a gate tag
 // (the two roles PLUS the legacy one), in the operating system.
 //
-// Idle collapses three facts that all mean the same thing here — something is mid-haul with this
-// hull: the drain's own worker registry holds it, the ship is not idle, or it is in transit. The
-// registry is the authoritative one; the other two catch a hull flying with no registration
-// behind it, which a restart can leave. IsIdle() ALONE is not enough: it reads the assignment, so
-// a hull whose claim identity was frozen at plan time and is now flying reads idle by that measure.
+// Idle collapses three facts that all mean "something is mid-haul with this hull": the drain's own
+// worker registry holds it, the ship is not idle, or it is in transit. The registry is the
+// authoritative one; the other two catch a hull flying with no registration behind it, which a
+// restart can leave. IsIdle() ALONE is not enough — it reads the assignment, so a hull whose claim
+// identity was frozen at plan time and is now flying reads idle by that measure.
 //
-// The LEGACY tag is included deliberately: those hulls carry no role, and adopting them is the
-// only way a fleet that already holds four of them ever gets a role tag at all. A foreign fleet or
-// a custom launch identity is NOT a gate tag and is never in this census — re-tagging one would be
-// a poach (RULINGS #7).
+// The LEGACY tag is included deliberately: those hulls carry no role, and adopting them is the only
+// way a fleet already holding them ever gets one. A foreign fleet or a custom launch identity is NOT
+// a gate tag and is never in this census — re-tagging one would be a poach (RULINGS #7).
 //
-// THE PLANNER FILTERS FOREIGN TAGS TOO, and that redundancy is deliberate rather than accidental.
-// The planner's ReallocationPlan.Foreign counter exists for a caller that INTENDS to pass only
-// gate hulls, so a foreign hull arriving there is a wiring bug worth rendering. FindAllByPlayer
-// hands us the entire fleet — contract haulers, traders, probes — so passing them through would
-// render "+ 62 foreign" on every tick and turn that signal into noise. Filtering here is what
-// keeps a non-zero Foreign meaningful: from this caller it must always be 0.
+// THE PLANNER FILTERS FOREIGN TAGS TOO, deliberately. Its ReallocationPlan.Foreign counter exists
+// for a caller that INTENDS to pass only gate hulls, so a foreign hull arriving there is a wiring
+// bug worth rendering — but FindAllByPlayer hands over the ENTIRE fleet, and passing that through
+// would render a large foreign count every tick and turn the signal into noise. Filtering here is
+// what keeps a non-zero Foreign meaningful: from this caller it must always be 0.
 func (h *RunConstructionCoordinatorHandler) gateWorkforce(ctx context.Context, systemSymbol string, outstanding []string, playerID shared.PlayerID) ([]gate.Worker, error) {
 	logger := common.LoggerFromContext(ctx)
 	ships, err := h.shipRepo.FindAllByPlayer(ctx, playerID)
@@ -222,26 +214,20 @@ func (h *RunConstructionCoordinatorHandler) gateWorkforce(ctx context.Context, s
 // route belongs to the FACTORY role: the hold is FULL, and nothing aboard is a gate material whose
 // bill is still open.
 //
-// IT IS wedgedAtFullHold's OWN SHAPE, and that is not a coincidence — it is wedgedAtFullHold that
-// decides this hull's fate on the far side of a move to delivery. A hull matching it there is
-// dropped from the dispatch pool every tick, so it never reaches deliverGateLeg and never reaches
-// flushOnHandGateMaterials, that role's only unload path — which could not have helped anyway, since
-// the flush only moves gate materials and by this predicate the hull carries none. The FACTORY leg
-// does have a route: feedGateLegFromHold sells what is aboard into a factory that imports it, from
-// an already-owned hold, with no purchase (RULINGS #4 untouched — this function reads no floor and
-// opens no spend path; it only declines to move a hull).
+// IT IS wedgedAtFullHold'S OWN SHAPE, deliberately — that is the predicate deciding this hull's fate
+// on the far side of a move to delivery. A hull matching it there is dropped from the dispatch pool
+// every tick, so it never reaches deliverGateLeg nor flushOnHandGateMaterials, which could not help
+// anyway: the flush moves gate materials and by this predicate the hull carries none. The FACTORY
+// leg does have a route — feedGateLegFromHold sells what is aboard into a factory that imports it.
 //
 // THE CALLER SCOPES THIS TO THE FACTORY ROLE, and the scoping is load-bearing in the OTHER
 // direction. A wedged DELIVERY hull must still be borrowed to the factory role under a pause,
-// because that borrow IS its recovery; blocking it would turn a self-healing degradation into a
+// because that borrow IS its recovery; blocking it turns a self-healing degradation into a
 // permanent one. Nothing is lost by the narrow scope: moveTarget returns wanted=false for a factory
-// hull whenever needFactory > 0, so the ONLY move a factory-role hull can ever be selected for is
-// the return to delivery — for that role, "not idle" and "do not return to delivery" are the same
-// statement.
+// hull whenever needFactory > 0, so the ONLY move it can be selected for is the return to delivery.
 //
 // It decides on POSITIVE evidence only, exactly as wedgedAtFullHold does: an unreadable or
-// capacity-less hold is never called full. Holding a hull back on a hold we could not read would
-// freeze the workforce split on a missing observation.
+// capacity-less hold is never called full, or a missing observation would freeze the split.
 func onlyTheFactoryLegCanEmpty(ship *navigation.Ship, outstanding []string) bool {
 	cargo := ship.Cargo()
 	if cargo == nil || cargo.Capacity <= 0 {
@@ -278,29 +264,21 @@ func (h *RunConstructionCoordinatorHandler) stampRoleChange(ship string) {
 	h.roleSince[ship] = h.clock.Now()
 }
 
-// reportDeliveryIdleTransition names the CAUSAL LINK the incident of 2026-08-06 left to be
-// inferred: the drain is dispatching nothing BECAUSE the delivery fleet is paused down to zero
-// hulls (sp-5vv65).
+// reportDeliveryIdleTransition names a CAUSAL LINK nothing else states: the drain is dispatching
+// nothing BECAUSE the delivery fleet is paused down to zero hulls.
 //
-// For six hours the gate sat flat at 85% and the only evidence was two unrelated counters — a
-// `(0 task(s) promoted to READY)` line nobody watches, and a 60x drop in log volume — plus a roles
-// line reporting `want 0D/4F` that reads as routine. Nothing anywhere said the first was CAUSED by
-// the last. The engine was healthy the whole time and looked dead.
+// Without it the only evidence is a "0 tasks promoted to READY" line, a collapse in log volume, and
+// a roles line reporting a want of zero delivery hulls that reads as routine — none of which says
+// the first is caused by the last, so a healthy engine looks dead.
 //
-// ON TRANSITION ONLY, and that bound is not cosmetic. Later that same day the delivery fleet was
-// paused on all 59 ticks of an hour whose cadence was perfectly normal, so a per-tick line would
-// have produced 59 identical rows in a healthy hour and taught its reader to scroll past exactly
-// the wording that mattered during the outage.
+// ON TRANSITION ONLY, and that bound is not cosmetic: a legitimate pause holds for every tick of an
+// hour, and identical rows through a healthy hour teach the reader to scroll past exactly the
+// wording that matters during an outage.
 //
-// IT COVERS THE ROLE-ALLOCATION CASE ONLY. sp-vrnjx already reports the material-level cause —
-// "supply X has been BELOW the Y buy floor for N, so buying is correctly withheld" — and two
-// messages narrating one condition is worse than one. This one answers the different question that
-// went unanswered: why the DRAIN as a whole has no work, which is a statement about the fleet's
-// role split rather than about any single material.
-//
-// It reports and never acts. The pause is correct behaviour — during this outage it rested the
-// market and recovered the IRON ask 63% — so the defect was never the pause, only that its
-// consequence for the drain was invisible.
+// IT COVERS THE ROLE-ALLOCATION CASE ONLY. The material-level cause is reported elsewhere, and two
+// messages narrating one condition is worse than one. This answers why the DRAIN as a whole has no
+// work — a statement about the fleet's role split. It reports and never acts: the pause is correct
+// behaviour, resting the market so the ask recovers, and only its invisibility needed fixing.
 func (h *RunConstructionCoordinatorHandler) reportDeliveryIdleTransition(ctx context.Context, paused bool, wantDelivery int) {
 	// The reportable state is specifically "paused AND no delivery hull is wanted". A pause that
 	// still wants delivery hulls is not the drain-idle shape and must not raise this.

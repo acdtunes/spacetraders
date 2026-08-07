@@ -18,21 +18,19 @@ import (
 
 // supplyTask advances one construction material for the claimed hauler. It runs in two phases:
 //
-//	PHASE 1 (deliver-on-hand): if the hull ALREADY HOLDS units of the material the site still
-//	needs, unload them to the site FIRST — UNCONDITIONALLY, before and independent of the
-//	source-buy gate below. Delivering cargo already aboard has zero market impact and always
-//	advances the gate; it is NOT a buy, so the fail-closed buy guard does not govern it. Without
-//	this, a laden hull released mid-delivery (pipeline/coordinator restart) reaches ProduceGood
-//	first and parks on a dry source WITHOUT ever unloading, stranding the gate material.
+//	PHASE 1 (deliver-on-hand): if the hull ALREADY HOLDS units the site still needs, unload them
+//	FIRST — UNCONDITIONALLY, before and independent of the source-buy gate below. Cargo already
+//	aboard has zero market impact and always advances the gate; it is NOT a buy, so the
+//	fail-closed buy guard does not govern it. Without this a laden hull released mid-delivery
+//	reaches ProduceGood first and parks on a dry source WITHOUT ever unloading.
 //
-//	PHASE 2 (source-then-deliver): source the still-outstanding remainder via the shared engine
-//	(the fail-closed buy path, UNCHANGED) and deliver it. Reached for the common empty-hull drain
-//	(nothing on-hand) or when the hull's on-hand load did not cover the full bill.
+//	PHASE 2 (source-then-deliver): source the still-outstanding remainder via the shared
+//	fail-closed buy path and deliver it. Reached for the common empty-hull drain, or when the
+//	on-hand load did not cover the full bill.
 //
-// Returns true when the tick delivered anything for this task. A genuinely-unsourceable remainder
-// is deferred (parked PENDING, source cleared) rather than failed — but on-hand cargo that was
-// already delivered is never stranded: such a task advances (completed; the outstanding
-// remainder re-stages via replenishment).
+// Returns true when the tick delivered anything for this task. A genuinely-unsourceable remainder is
+// deferred (parked PENDING, source cleared) rather than failed, and on-hand cargo already delivered
+// is never stranded: such a task completes and the outstanding remainder re-stages.
 func (h *RunConstructionCoordinatorHandler) supplyTask(ctx context.Context, cmd *RunConstructionCoordinatorCommand, systemSymbol string, lot constructionLot, playerID shared.PlayerID) bool {
 	if !h.claimTaskForSupply(ctx, lot.task, lot.ship) {
 		return false
@@ -45,16 +43,15 @@ func (h *RunConstructionCoordinatorHandler) supplyTask(ctx context.Context, cmd 
 	// strength of what these legs can do and must never disagree with this routing.
 	//
 	// A SWITCH WITH A LOUD DEFAULT, not an if/else, and the default is the point. gate.Role is an
-	// int enum and Go checks no switch for exhaustiveness, so an `else` here would silently hand a
-	// THIRD role to the delivery leg — while dispatchableByHold, which asks `role != RoleDelivery`,
-	// silently exempted the same hull from the wedged-hull decline. Two silent, opposite readings
-	// of one new role, with no compiler help and no failing test. The default converts that into a
-	// line an operator cannot miss.
+	// int enum and Go checks no switch for exhaustiveness, so an `else` here silently hands a THIRD
+	// role to the delivery leg — while dispatchableByHold, asking `role != RoleDelivery`, silently
+	// EXEMPTS the same hull from the wedged-hull decline: two opposite readings of one new role,
+	// with no compiler help and no failing test.
 	//
-	// It falls through to the SHARED path rather than refusing the lot: the shared path is the
+	// It falls through to the SHARED path rather than refusing the lot, because that path is the
 	// universal fallback every unroled hull already takes, so a mis-configured role still does
-	// useful work instead of stranding an EXECUTING task. Unreachable today — ParseFleetTag only
-	// ever yields the two roles — and deliberately kept as the alarm for the day it is not.
+	// useful work instead of stranding an EXECUTING task. Unreachable while ParseFleetTag yields
+	// only the two roles, and kept as the alarm for the day it does not.
 	if role, ok := h.gateLegRole(lot.claimIdentity); ok {
 		switch role {
 		case gate.RoleFactory:
@@ -277,10 +274,10 @@ func (h *RunConstructionCoordinatorHandler) completeOrDefer(ctx context.Context,
 }
 
 // hullFillTarget sizes how far to fill the hauler before delivering: the material's outstanding
-// bill, so a round-trip carries ~a hull rather than one ~trade-volume tranche. A 0 bill
-// (pipeline/material unreadable) leaves the executor to fill to full capacity — a supply is never
-// harmful. One of SEVERAL lots fanned onto the same material is capped to its hull-load SLICE so
-// the concurrent lots together never buy past the remaining requirement; a lot with no
+// bill, so a round-trip carries about a hull rather than one trade-volume tranche. A 0 bill (an
+// unreadable pipeline or material) leaves the executor to fill to full capacity, a supply never
+// being harmful. One of SEVERAL lots fanned onto the same material is capped to its hull-load
+// SLICE, so concurrent lots together never buy past the remaining requirement; a lot with no
 // authoritative cap fills toward the whole bill.
 func (h *RunConstructionCoordinatorHandler) hullFillTarget(ctx context.Context, lot constructionLot) int {
 	return lot.cappedNeed(h.remainingBill(ctx, lot.task))
@@ -299,14 +296,13 @@ func (h *RunConstructionCoordinatorHandler) gateSupplyContext(ctx context.Contex
 }
 
 // supplyTaskBounded runs supplyTask under a per-task deadline so a single wedged task can NEVER hold
-// its worker — and the slot that worker holds under max_workers — indefinitely. The task body runs on
-// a child goroutine over a timeout ctx; the worker is reclaimed the instant the task finishes OR the
-// deadline elapses, whichever comes first, so a slot always comes back. This is the hard safety net:
-// even a downstream op that ignores ctx entirely cannot starve the drain of dispatch capacity
-// — at worst its goroutine unwinds later while the drain keeps ticking, and because
-// taskCtx is cancelled the money paths abort rather than spend. done is buffered so a late finish
-// never blocks a possibly-orphaned child. Per-step enter/exit logging makes a slow/wedged task
-// diagnosable rather than an undiagnosable hang.
+// its worker — and the slot that worker holds under max_workers — indefinitely. The task body runs
+// on a child goroutine over a timeout ctx and the worker is reclaimed the instant the task finishes
+// OR the deadline elapses, so a slot always comes back. Even a downstream op that ignores ctx
+// entirely cannot starve the drain: at worst its goroutine unwinds later while the drain keeps
+// ticking, and because taskCtx is cancelled the money paths abort rather than spend. done is
+// buffered so a late finish never blocks a possibly-orphaned child, and per-step enter/exit logging
+// makes a wedged task diagnosable rather than an opaque hang.
 func (h *RunConstructionCoordinatorHandler) supplyTaskBounded(ctx context.Context, cmd *RunConstructionCoordinatorCommand, systemSymbol string, lot constructionLot, playerID shared.PlayerID, timeout time.Duration) bool {
 	logger := common.LoggerFromContext(ctx)
 	task := lot.task
@@ -380,14 +376,10 @@ func (h *RunConstructionCoordinatorHandler) completeSupply(ctx context.Context, 
 	// planner's one-task-per-material and lets the fan-out re-derive parallelism from live hulls each
 	// tick, with no clone-created task rows to orphan.
 	if !ephemeral {
-		// RECORD WHAT THIS TASK ACTUALLY MOVED, before completing it (sp-1f0ex).
-		//
-		// actual_quantity was dead: SetActualQuantity had exactly one reference in the tree — its own
-		// definition — so every completed task in production persisted 0, and the sp-63r4f stall
-		// watchdog, which keys "did this material receive units" on that field, could never observe a
-		// delivery. It reported FAB_MATS stalled for 30.8 hours while the pipeline was taking 134
-		// units an hour. The number was in hand the whole time; it is the one this function already
-		// logs a line below.
+		// RECORD WHAT THIS TASK ACTUALLY MOVED, before completing it. An unwritten actual_quantity
+		// persists 0 on every completed task, and anything keyed on "did this material receive
+		// units" then reports a healthy pipeline as permanently stalled. The number is already in
+		// hand — it is the one this function logs below.
 		task.SetActualQuantity(delivered)
 		if err := task.Complete(); err != nil {
 			logger.Log("WARNING", fmt.Sprintf("Could not complete construction task %s: %v", task.ID(), err), nil)

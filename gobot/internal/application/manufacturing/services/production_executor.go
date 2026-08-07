@@ -16,12 +16,11 @@ import (
 )
 
 // defaultHullFillFraction is the fraction of a hauler's hold the construction-supply drain fills
-// per trip when no fraction is configured. 1.0 = fill the whole hull — the fix's intent:
-// a construction buy tops the hold up toward capacity instead of stopping at one trade-volume
-// tranche (~1/4 hull), which quartered per-trip throughput. A 0/absent value resolves here at the
-// point of use — a protective default that turns the FILL on, not money movement, so a default is
-// correct (RULINGS #5); WithHullFillTarget's fraction parameter is the seam a per-run config sets
-// to fill a smaller fraction.
+// per trip when no fraction is configured: the whole hull, so a construction buy tops the hold up
+// toward capacity instead of stopping at one trade-volume tranche and paying a full round trip for
+// a fraction of a load. A 0/absent value resolves here at the point of use — a protective default
+// that turns the FILL on, not money movement (RULINGS #5); WithHullFillTarget's fraction parameter
+// is the seam a per-run config sets to fill less.
 const defaultHullFillFraction = 1.0
 
 // hullFillCtxKey carries the per-trip hull-fill target for a construction-supply input buy. It
@@ -37,10 +36,10 @@ type hullFillTarget struct {
 
 // WithHullFillTarget stamps the per-trip hull-fill target onto ctx so buyGood tops the hold up
 // toward hull capacity for a construction-supply buy instead of carrying a single trade-volume
-// tranche. billRemaining caps the fill at the material's outstanding bill (never
-// over-buying past demand); fraction (<=0 => full hull) parametrizes how much of the hold to fill
+// tranche. billRemaining caps the fill at the material's outstanding bill so the drain never
+// over-buys past demand; fraction (<=0 => full hull) parametrizes how much of the hold to fill
 // (RULINGS #5). ONLY the construction drain stamps this; every other buyGood caller (goods-factory
-// inputs) leaves it unset and keeps the single-tranche behavior exactly as before (RULINGS #2).
+// inputs) leaves it unset and keeps single-tranche behaviour.
 func WithHullFillTarget(ctx context.Context, billRemaining int, fraction float64) context.Context {
 	return context.WithValue(ctx, hullFillCtxKey{}, hullFillTarget{billRemaining: billRemaining, fraction: fraction})
 }
@@ -54,11 +53,11 @@ func HullFillTargetFromContext(ctx context.Context) (billRemaining int, fraction
 	return 0, 0, false
 }
 
-// liveAsk re-reads the current EXPORT ask (purchase_price — what WE PAY, sp-en5h7) of good at waypoint from the market DB — the
-// per-iteration price the hull-fill loop re-checks its guards against, so a laddering market is not
-// chased tranche-by-tranche. ok is false when the market/good is unreadable or the ask is
-// non-positive; the loop treats that as fail-CLOSED (stop, deliver what is aboard), never buying at
-// an unknown price (RULINGS #4).
+// liveAsk re-reads the current EXPORT ask (purchase_price — what WE PAY) of good at waypoint from
+// the market DB: the per-iteration price the hull-fill loop re-checks its guards against, so a
+// laddering market is not chased tranche-by-tranche. ok is false when the market/good is unreadable
+// or the ask is non-positive; the loop treats that as fail-CLOSED (stop, deliver what is aboard),
+// never buying at an unknown price (RULINGS #4).
 func (e *ProductionExecutor) liveAsk(ctx context.Context, waypoint, good string, playerID int) (int, bool) {
 	marketData, err := e.marketRepo.GetMarketData(ctx, waypoint, playerID)
 	if err != nil || marketData == nil {
@@ -84,43 +83,34 @@ type ProductionExecutor struct {
 	marketLocator    *MarketLocator
 	clock            shared.Clock
 	pollingIntervals []time.Duration // Configurable polling intervals
-	// apiClient live-reads treasury for the working-capital spend floor.
-	// nil disables the floor — the fail-OPEN contract for the package's test fixtures
-	// that cannot supply a live client; the daemon always wires the real one (main.go).
+	// apiClient live-reads treasury for the working-capital spend floor. nil disables the floor —
+	// the fail-OPEN optional-port contract for fixtures that cannot supply a live client; the
+	// daemon always wires the real one.
 	apiClient domainPorts.APIClient
-	// spendLedger is the cross-container concurrent spend cap. nil disables it —
-	// the same optional-port fail-OPEN contract as apiClient (tests pass nothing; the daemon
-	// wires the real DB-backed ledger via SetSpendLedger). Injected by setter, not constructor,
-	// so the package's existing test fixtures and the executor's many call sites stay untouched.
+	// spendLedger is the cross-container concurrent spend cap. nil disables it, the same
+	// fail-OPEN contract as apiClient. Injected by setter, not constructor, so the package's
+	// fixtures and the executor's call sites stay untouched.
 	spendLedger SpendReservationLedger
-	// treasury is the LEDGER-backed treasury reader (sp-muq66) BOTH factory money guards —
-	// the per-buy spend floor and the cross-container concurrent-spend cap — read through
-	// instead of calling Get Agent before every input tranche. nil (every
-	// existing fixture) leaves the direct apiClient read in place, byte-identical; the
-	// daemon injects the shared reader via SetTreasuryReader at boot, with no config gate
-	// between. Wired or not, an unreadable treasury still PARKS the buy (fail closed).
+	// treasury is the LEDGER-backed reader BOTH factory money guards — the per-buy spend floor and
+	// the concurrent-spend cap — read through instead of calling Get Agent before every input
+	// tranche. nil leaves the direct apiClient read in place. Wired or not, an unreadable treasury
+	// still PARKS the buy (fail closed).
 	treasury TreasuryReader
-	// priceHistory backs the RESCUE-BUY validator (sp-iv65): the trailing-median-ask source a
-	// rescue source-buy is capped against before it dispatches. nil does NOT disable the check and
-	// is NOT the fail-OPEN contract apiClient/spendLedger have — this comment claimed both until
-	// sp-f5lki. A nil reader parks EVERY rescue buy (trailingMedianAsk returns ok=false, and
-	// rescueSource refuses on false), which is how it went unnoticed while unwired for a whole era:
-	// the park logs "no trailing median", indistinguishable from a market with no history.
+	// priceHistory backs the RESCUE-BUY validator: the trailing-median-ask source a rescue
+	// source-buy is capped against before it dispatches. nil does NOT disable the check and is NOT
+	// the fail-OPEN contract apiClient/spendLedger have — a nil reader parks EVERY rescue buy
+	// (trailingMedianAsk returns ok=false and rescueSource refuses on false), and the park logs "no
+	// trailing median", indistinguishable from a market with no history. Unwired is silent.
 	priceHistory InputPriceHistoryReader
-	// constructionRepo backs the DeliverToConstructionSite terminal: the construction
-	// supply API a sourced hauler delivers gate materials through. nil leaves the terminal
-	// unavailable (returns an error if reached) — the optional-port contract; the daemon wires
-	// the real API-backed repo via SetConstructionRepo, and only the construction-supply drain
-	// ever calls the terminal, so every other caller is unaffected.
+	// constructionRepo backs the DeliverToConstructionSite terminal. nil leaves the terminal
+	// unavailable (it errors if reached) — the optional-port contract; only the construction-supply
+	// drain calls the terminal, so every other caller is unaffected.
 	constructionRepo manufacturing.ConstructionSiteRepository
-	// workSensor backs the per-operation capital budget (sp-ftqgp): it answers whether the TRADE
-	// side is live, which is what sizes construction's share of deployable capital. nil disables
-	// the budget and leaves the flat reserve floor guarding alone — the SAME optional-port
-	// fail-OPEN contract as apiClient/spendLedger (NOT priceHistory, which fails closed — see
-	// its field above; the citation was wrong until sp-f5lki) (the package's fixtures wire
-	// nothing; the daemon wires the container-backed sensor unconditionally via
-	// SetCapitalWorkSensor, with no config gate between). A wired-but-erroring sensor does NOT
-	// fail open: see budgetedReserveFloor.
+	// workSensor backs the per-operation capital budget: it answers whether the TRADE side is live,
+	// which is what sizes construction's share of deployable capital. nil disables the budget and
+	// leaves the flat reserve floor guarding alone — the same fail-OPEN contract as
+	// apiClient/spendLedger, NOT priceHistory's. A wired-but-erroring sensor does NOT fail open:
+	// see budgetedReserveFloor.
 	workSensor common.CapitalWorkSensor
 }
 
@@ -154,12 +144,10 @@ func NewProductionExecutorWithConfig(
 	pollingIntervals []time.Duration,
 	apiClient domainPorts.APIClient,
 ) *ProductionExecutor {
-	// Defense in depth (sp-vh1s): PollForProduction is clock-driven (e.clock.Now()). The construction
-	// daemon builds this executor directly with a nil clock (main.go), unlike the factory path which
-	// defaults nil→RealClock upstream in NewRunFactoryCoordinatorHandler. Default it here so NO
-	// construction path can nil-panic on the first e.clock.Now(). The default applies ONLY when nil,
-	// so an injected mock clock is always honored. Mirrors the same nil-guard precedent in
-	// shared.NewLifecycleStateMachine and NewRunConstructionCoordinatorHandler.
+	// PollForProduction is clock-driven, and the construction daemon builds this executor directly
+	// with a nil clock (unlike the factory path, which defaults nil->RealClock upstream in
+	// NewRunFactoryCoordinatorHandler), so default it here or a construction path nil-panics on the
+	// first e.clock.Now(). Applies ONLY when nil, so an injected mock clock is always honoured.
 	if clock == nil {
 		clock = shared.NewRealClock()
 	}
@@ -253,12 +241,9 @@ func (e *ProductionExecutor) buyGood(
 // iteration and fails closed, and a second copy would be free to drift from this one silently —
 // which is how a guard stops guarding without any test noticing.
 //
-// Behaviour is unchanged from the inline version: same order, same guards, same stop
-// conditions. Only the caller's source resolution moved out.
-//
 // sink names what the goods are FOR, and is the ONLY thing that differs between the two callers'
-// physics (sp-lpy9i). It selects the shrink floor and nothing else — every money guard below runs
-// identically for both sinks, in the same order, and still fails closed.
+// physics. It selects the shrink floor and nothing else — every money guard below runs identically
+// for both sinks, in the same order, and still fails closed.
 func (e *ProductionExecutor) fillFromSource(
 	ctx context.Context,
 	ship *navigation.Ship,
@@ -312,45 +297,38 @@ func (e *ProductionExecutor) fillFromSource(
 		// (RULINGS #4): once the NEXT tranche would breach, the loop SHRINKS it to what the reserve
 		// can absorb, and stops only when even the minimum viable tranche will not fit.
 		//
-		// SHRINK, NOT BYPASS (sp-xcjuy). A full tranche breaching used to end the fill outright, so
-		// a step whose ask had risen died entirely: live, 60 IRON at 4,044 cost 242,640 against a
-		// 460,373 reserve on a 648,388 treasury, and the gate sat at FAB_MATS 1301/1600 for 78
-		// minutes while a 25-unit tranche would have fitted with 100k to spare. Treasury was FALLING
-		// across the stall, so there was no self-recovery path — waiting required reserve + a full
-		// tranche to become affordable, which was moving further away, not closer.
+		// SHRINK, NOT BYPASS. Ending the fill outright on a breach kills a whole step whose ask has
+		// risen, even when a smaller tranche would have cleared the reserve comfortably — and if
+		// treasury is falling there is no self-recovery path, because waiting requires reserve plus
+		// a FULL tranche to become affordable, which moves further away rather than closer.
 		//
 		// The guard below still runs on the SHRUNKEN size and still decides. Nothing here spends
-		// against an unvalidated number: affordableTrancheUnits only PROPOSES, and a proposal that
-		// the guard then refuses stops the fill exactly as before.
+		// against an unvalidated number: affordableTrancheUnits only PROPOSES, and a proposal the
+		// guard then refuses stops the fill.
 		projectedCost := trancheQty * ask
 		if breached, enforcedFloor := e.spendFloorBreached(ctx, playerID, projectedCost); breached {
 			// THE RESIZE RESCUES AN EMPTY LEG, AND ONLY AN EMPTY LEG.
 			//
-			// With units already aboard the pre-existing behaviour is right and is left exactly as
-			// it was: stop, and deliver what the hull carries. The hull is not going home empty, the
-			// factory gets fed, and grinding the treasury down toward the floor in ever-smaller
-			// tranches would buy little while spending the fleet's whole cushion.
+			// With units already aboard, stopping is right: the hull is not going home empty, the
+			// factory gets fed, and grinding the treasury toward the floor in ever-smaller tranches
+			// would buy little while spending the fleet's whole cushion.
 			//
-			// It is acquired == 0 that is the defect: there the leg returns with NOTHING, the step
-			// is scored a failure, and the gate makes no progress at all. That is the 78-minute
-			// stall — one oversized first tranche, and the entire leg dies.
+			// acquired == 0 is the case worth rescuing — one oversized first tranche otherwise kills
+			// the whole leg, which returns with nothing and scores the step a failure.
 			if fill.acquired > 0 {
 				logSpendFloorStop(ctx, good, source.WaypointSymbol, fill.acquired, projectedCost, enforcedFloor)
 				break
 			}
 			affordable := e.affordableTrancheUnits(ctx, playerID, ask, trancheQty)
-			// THE FLOOR IS THE SINK'S, NOT THE LOOP'S (sp-lpy9i). Feeding a factory it is the
-			// min-effective delivery, below which a leg buys a dribble the feed side has already
-			// measured as moving a factory's activity nothing. Delivering to a construction site
-			// there is no such threshold — the site consumes against a bill — so the floor is a
-			// trip-economics bound instead, and a nearly-finished material is never held hostage to
-			// a floor larger than what is left of it.
-			//
+			// THE FLOOR IS THE SINK'S, NOT THE LOOP'S. Feeding a factory it is the min-effective
+			// delivery, below which a leg buys a dribble that moves the factory's activity nothing.
+			// Delivering to a construction site there is no such threshold — the site consumes
+			// against a bill — so the floor is a trip-economics bound instead, and a nearly-finished
+			// material is never held hostage to a floor larger than what is left of it.
 			minUnits := minTrancheUnitsFor(sink, fill.capacity)
 			if affordable < minUnits {
 				// Logged DISTINCTLY from the ordinary stop so "the reserve is genuinely too tight
-				// for a useful buy" and "the full tranche happened not to fit" are never the same
-				// line again.
+				// for a useful buy" and "the full tranche happened not to fit" stay separable.
 				logSpendFloorTooTightToShrink(ctx, good, source.WaypointSymbol, fill.acquired, trancheQty, affordable, minUnits, projectedCost, enforcedFloor)
 				break
 			}
@@ -521,10 +499,9 @@ func (e *ProductionExecutor) resolveInputSource(
 		"selector_branch": mode.String(),
 	})
 
-	// The cross-market ceiling backstops the selector on the ELIGIBLE path only: the rescue path
-	// was already validated by the 1.2x rescue cap, and era-end/disabled are deliberately
-	// price-first, so re-gating them would veto a decision already made. Ordered
-	// selector → ceiling → capital-floor.
+	// The cross-market ceiling backstops the selector on the ELIGIBLE path only: the rescue path was
+	// already validated by the rescue cap, and era-end/disabled are deliberately price-first, so
+	// re-gating them would veto a decision already made. Ordered selector -> ceiling -> capital floor.
 	if mode == sourceModeEligible && e.inputPriceCeilingParked(ctx, marketResult.WaypointSymbol, good, systemSymbol, playerID, marketResult.Price) {
 		return ctx, marketResult, mode, &ProductionResult{QuantityAcquired: 0, TotalCost: 0, WaypointSymbol: marketResult.WaypointSymbol}, nil
 	}
@@ -693,9 +670,9 @@ func logEmptyTrancheStop(ctx context.Context, good, waypoint string, acquired in
 	})
 }
 
-// logSpendFloorShrink records a tranche RESIZED to fit the reserve (sp-xcjuy). It is INFO, not a
-// warning: the buy proceeds and the factory gets fed. Distinct from the stop lines below so
-// "progress, just smaller" is never read as a park.
+// logSpendFloorShrink records a tranche RESIZED to fit the reserve. INFO, not a warning: the buy
+// proceeds and the factory gets fed. Distinct from the stop lines below so "progress, just smaller"
+// is never read as a park.
 func logSpendFloorShrink(ctx context.Context, good, waypoint string, wanted, shrunk, wantedCost, enforcedFloor int) {
 	common.LoggerFromContext(ctx).Log("INFO", fmt.Sprintf(
 		"Resized the %s tranche at %s from %d to %d units — the full %d would have cost %d against a reserve of %d, so the fill proceeds smaller rather than not at all",
@@ -707,20 +684,17 @@ func logSpendFloorShrink(ctx context.Context, good, waypoint string, wanted, shr
 }
 
 // logSpendFloorTooTightToShrink records the one case that still declines: the reserve cannot absorb
-// even the min-effective tranche (sp-xcjuy).
+// even the min-effective tranche.
 //
-// IT IS A SEPARATE LINE FROM logSpendFloorStop ON PURPOSE (acceptance criterion 5). The ordinary
-// stop means "the next tranche did not fit"; this means "no USEFUL tranche fits at all", which is a
-// statement about the treasury rather than about this buy — and conflating them is how the 78-minute
-// stall looked like routine tranche accounting.
-// THE BINDING CONSTRAINT LEADS THE MESSAGE (sp-lpy9i criterion 5), and that ordering is not
-// cosmetic. This line previously opened with the ATTEMPTED tranche and named the two numbers that
-// actually decide the outcome — what the reserve affords, and the minimum it must clear — only
-// after ~140 characters. A reader who truncated the line saw "59 units would cost 148621 against a
-// reserve of" and reasonably concluded 59 WAS the minimum, i.e. that the floor tracked the market's
-// trade_volume. That misreading became sp-jt14b, a P2 filed on a mechanism that does not exist.
-// A log line whose verdict sits past the point where anyone reads it is a legibility defect, so the
-// affordable/minimum pair now leads and the tranche arithmetic follows.
+// IT IS A SEPARATE LINE FROM logSpendFloorStop ON PURPOSE. The ordinary stop means "the next
+// tranche did not fit"; this means "no USEFUL tranche fits at all", a statement about the treasury
+// rather than about this buy, and conflating the two makes a hard stall look like routine tranche
+// accounting.
+//
+// THE BINDING CONSTRAINT LEADS THE MESSAGE, and that ordering is not cosmetic: the two numbers that
+// decide the outcome are what the reserve affords and the minimum it must clear. Opening instead
+// with the ATTEMPTED tranche invites a truncated read in which the attempted size looks like the
+// minimum — i.e. that the floor tracks the market's trade_volume, a mechanism that does not exist.
 func logSpendFloorTooTightToShrink(ctx context.Context, good, waypoint string, acquired, wanted, affordable, minUnits, wantedCost, enforcedFloor int) {
 	common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf(
 		"Parked input purchase of %s at %s — reserve affords only %d units, below the %d-unit minimum for this sink: the %d-unit tranche would have cost %d against a reserve of %d. %d already aboard",

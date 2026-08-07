@@ -195,11 +195,10 @@ func (a *TaskActivator) resolveDeferredViaFactory(ctx context.Context, task *man
 }
 
 // resolveDeferredViaBuySource re-sources a deferred construction material from a BUY market against
-// the pipeline's persisted --min-supply floor. sp-j2hq: read the caller-set floor back off the
-// persisted pipeline, so a floor set at planning time (or updated later via a resumed
-// `construction start --min-supply X` call) is honored here too, not just during the initial planning
-// pass. An unset/unreadable floor resolves to "" and FindConstructionSource treats that as MODERATE.
-// This is the fallback for raw/mined goods with no fabrication factory.
+// the pipeline's persisted --min-supply floor, read back off the PERSISTED pipeline so a floor set
+// at planning time or updated later is honoured on this recovery path too, not only during the
+// initial planning pass. An unset or unreadable floor resolves to "" and FindConstructionSource
+// treats that as MODERATE. This is the fallback for raw/mined goods with no fabrication factory.
 func (a *TaskActivator) resolveDeferredViaBuySource(ctx context.Context, task *manufacturing.ManufacturingTask, systemSymbol string) bool {
 	logger := common.LoggerFromContext(ctx)
 	minSupply := a.pipelineMinSupply(ctx, task.PipelineID(), task.Good())
@@ -225,13 +224,12 @@ func (a *TaskActivator) resolveDeferredViaBuySource(ctx context.Context, task *m
 	return true
 }
 
-// pipelineMinSupply reads the EXPORT sourcing floor for a specific good on a construction
-// pipeline: the pipeline's persisted global --min-supply floor, or the good's per-good
-// override when one is set (sp-sdyo). Returns "" (unset) if the pipeline repo is unavailable or
-// the pipeline can't be loaded, which FindConstructionSource treats as the default MODERATE floor.
-// Reading the override off the SAME persisted pipeline the global floor lives on is what makes a
-// per-good override survive a restart and apply to the deferred-material recovery path, not just
-// the initial planning pass (RULINGS #2).
+// pipelineMinSupply reads the EXPORT sourcing floor for a specific good on a construction pipeline:
+// the pipeline's persisted global --min-supply floor, or the good's per-good override when one is
+// set. Returns "" if the pipeline repo is unavailable or the pipeline cannot be loaded, which
+// FindConstructionSource treats as the default MODERATE floor. Reading the override off the SAME
+// persisted pipeline the global floor lives on is what makes it survive a restart and apply to the
+// deferred-material recovery path, not just the initial planning pass (RULINGS #2).
 func (a *TaskActivator) pipelineMinSupply(ctx context.Context, pipelineID, good string) string {
 	if a.pipelineRepo == nil {
 		return ""

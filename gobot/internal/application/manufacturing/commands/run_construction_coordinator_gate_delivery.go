@@ -17,8 +17,8 @@ import (
 // GateTopologyResolver resolves this era's terminal factory for a gate material — the waypoint
 // that EXPORTS it. *services.GateTopology satisfies it. Only TerminalFactory is declared: the
 // delivery fleet buys terminal OUTPUT and never walks the recipe graph, so IsRaw/Inputs are
-// deliberately out of this interface (they are also unsound — the recipe map is cyclic and
-// !hasRecipe is false for every real raw material, bead sp-4irrr).
+// deliberately out of this interface (a naive !hasRecipe reading of them is also unsound — the
+// recipe map is cyclic and every real raw material HAS a recipe entry).
 type GateTopologyResolver interface {
 	TerminalFactory(ctx context.Context, good, systemSymbol string, playerID int) (*mfgServices.MarketLocatorResult, error)
 }
@@ -27,20 +27,16 @@ type GateTopologyResolver interface {
 // given size would breach the working-capital reserve.
 // *services.ProductionExecutor satisfies it via BuyAtTerminalFactory and SpendFloorWouldBreach.
 //
-// THE PROBE IS ON THE BUYER, AND ON THIS INTERFACE, DELIBERATELY (sp-9eor3). It could have been a
-// separate seam reached by type assertion, and that shape is exactly what makes a fix dormant: an
-// assertion that fails leaves the precheck silently absent, the leg behaves as it did before, and
-// nothing anywhere reports that the guard is not being consulted. Declaring it HERE makes it a
-// compile-time obligation of being a GateBuyer at all — every buyer has one, no wiring step can
-// omit it, and there is no arming seam between the fix and the running fleet.
+// THE PROBE IS ON THE BUYER, AND ON THIS INTERFACE, DELIBERATELY. A separate seam reached by type
+// assertion is what makes a guard dormant: a failing assertion leaves the precheck silently absent,
+// the leg behaves as though it were never added, and nothing reports that the guard is not being
+// consulted. Declaring it HERE makes it a compile-time obligation of being a GateBuyer at all, and
+// putting it on the BUYER keeps the pre-dispatch and commit-time answers sourced from the SAME
+// object: the thing that will refuse the spend is the thing asked to predict it.
 //
-// Putting it on the BUYER rather than beside it also keeps the pre-dispatch answer and the
-// commit-time answer sourced from the SAME object: the thing that will refuse the spend is the
-// thing asked to predict it.
-// The sink parameter is on this interface for the same reason the probe below is: a floor that
-// depends on what the goods are FOR must be a compile-time obligation of being a GateBuyer, not an
-// ambient value a new caller inherits without choosing. sp-lpy9i is what happens when it is not —
-// the delivery fleet ran for as long as it existed under the factory fleet's saturation floor.
+// The sink parameter is here for the same reason: a floor that depends on what the goods are FOR
+// must be a compile-time obligation, not an ambient value a new caller inherits without choosing —
+// otherwise a delivery leg silently runs under the factory fleet's saturation floor.
 type GateBuyer interface {
 	BuyAtTerminalFactory(ctx context.Context, ship *navigation.Ship, good string, source *mfgServices.MarketLocatorResult, units int, systemSymbol string, playerID int, opContext *shared.OperationContext, sink mfgServices.TrancheSink) (*mfgServices.ProductionResult, error)
 	// SpendFloorWouldBreach reports whether committing projectedCost right now would drop treasury
@@ -74,35 +70,27 @@ func (g *gateDelivery) enabled() bool { return g != nil && g.topology != nil && 
 // gateLegRole is THE routing predicate: which gate leg (if any) will a lot with this claim
 // identity actually run?
 //
-// It exists as ONE function because it has two callers that must never disagree — supplyTask,
-// which routes to a leg, and the dispatch planner, which declines a hull on the strength of what
-// that leg can do. When those drifted apart the result was D2: the decline was made about a leg
-// the hull was not going to run, and a recoverable hull became permanently invisible.
+// It exists as ONE function because it has two callers that must never disagree — supplyTask, which
+// routes to a leg, and the dispatch planner, which declines a hull on the strength of what that leg
+// can do. If those drift apart the decline is made about a leg the hull is not going to run, and a
+// recoverable hull becomes permanently invisible.
 //
-// IT RETURNS THE ROLE, NOT A BOOLEAN, and that shape is load-bearing. The two callers ask
-// DIFFERENT questions of the same fact:
+// IT RETURNS THE ROLE, NOT A BOOLEAN, and that shape is load-bearing: routing asks WHICH leg, while
+// the decline asks IS THIS THE DELIVERY ROLE — because wedgedAtFullHold ("full hold, nothing aboard
+// is a material whose bill is still open") is sound only for the delivery leg, whose repertoire is
+// flush-then-buy. A boolean widened to cover both roles would decline EVERY laden factory hull,
+// whose hold is full of fabrication INPUTS that are never bill materials.
 //
-//   - routing asks WHICH leg, and there are now two;
-//   - the decline asks IS THIS THE DELIVERY ROLE, because wedgedAtFullHold ("full hold, nothing
-//     aboard is a material whose bill is still open") is only sound for the delivery leg, whose
-//     entire repertoire is flush-then-buy.
+// Each role's leg is gated on ITS OWN collaborators. With a role's leg unwired, a hull carrying that
+// tag takes the shared fabricate path and recovers there, so the decline is never made about a leg
+// that is not going to run. That is the optional-collaborator pattern the drain already uses, not
+// an arming seam: both are wired unconditionally.
 //
-// A boolean widened to cover both roles would decline EVERY laden factory hull — their holds are
-// full of fabrication inputs like IRON_ORE, which are never bill materials — and the factory fleet
-// would never run once. Returning the role lets the decline stay exactly as narrow as it was while
-// routing widens, with one function still shared, so a phase-4 widening touches one place.
-//
-// Each role's leg is gated on ITS OWN collaborators. With a role's leg unwired, a hull carrying
-// that tag takes the shared fabricate path and recovers there like any other, so the decline is
-// never made about a leg that is not going to run. That is the optional-collaborator pattern the
-// drain already uses, NOT a feature flag: main.go wires both unconditionally.
-//
-// It takes the resolved IDENTITY rather than the hull deliberately. The dispatch planner resolves
-// it from the live hull (claimIdentityFor) because that is where the lot's identity is minted; the
-// worker must use the lot's FROZEN claimIdentity, because it runs long after the planning tick and
-// claims under that exact value. Re-deriving from the hull inside the worker would let routing
-// disagree with what was actually claimed — the hazard constructionLot.claimIdentity exists to
-// prevent.
+// It takes the resolved IDENTITY rather than the hull deliberately. The dispatch planner resolves it
+// from the live hull, because that is where the lot's identity is minted; the worker must use the
+// lot's FROZEN claimIdentity, because it runs long after the planning tick and claims under that
+// exact value. Re-deriving from the hull inside the worker would let routing disagree with what was
+// actually claimed.
 //
 // The zero Role is RoleDelivery, so the boolean is the ONLY safe discriminator for "no role": a
 // caller that reads the role without checking ok reads a legacy hull as a delivery hull.
@@ -146,22 +134,22 @@ func (h *RunConstructionCoordinatorHandler) SetGateDelivery(topology GateTopolog
 // *services.GateTopology satisfies it.
 //
 // IsRaw/Inputs are GateTopology's, NEVER goods.IsRawMaterial/goods.GetRequiredInputs. The pairs
-// diverge in CONTENT since sp-4irrr: Inputs("IRON_ORE") is nil while GetRequiredInputs is
-// {"EXPLOSIVES"}, so a swap would descend an ore into
-// IRON_ORE -> EXPLOSIVES -> LIQUID_HYDROGEN -> MACHINERY -> IRON -> IRON_ORE and stop terminating.
+// diverge in CONTENT: Inputs("IRON_ORE") is nil while GetRequiredInputs is {"EXPLOSIVES"}, so a
+// swap would descend an ore into IRON_ORE -> EXPLOSIVES -> LIQUID_HYDROGEN -> MACHINERY -> IRON ->
+// IRON_ORE and never terminate.
 type GateFactoryTopology interface {
 	TerminalFactory(ctx context.Context, good, systemSymbol string, playerID int) (*mfgServices.MarketLocatorResult, error)
 	IsRaw(good string) bool
 	Inputs(good string) []string
-	// ImportSupply reports how short a RESOLVED factory is of one of its INPUTS — that factory's
-	// own IMPORT supply level for the good (sp-q9um6). It is a third quantity, distinct from both
-	// supply levels TerminalFactory returns: the source's EXPORT supply of the input, and the
-	// target's EXPORT supply of its own output. Neither of those answers "which input is this
-	// factory shortest of", and ranking on either is wrong in a way that looks right.
+	// ImportSupply reports how short a RESOLVED factory is of one of its INPUTS — that factory's own
+	// IMPORT supply level for the good. It is a THIRD quantity, distinct from both supply levels
+	// TerminalFactory returns (the source's EXPORT supply of the input, and the target's EXPORT
+	// supply of its own output); neither answers "which input is this factory shortest of", and
+	// ranking on either is wrong in a way that looks right.
 	//
-	// The boolean is load-bearing: false means "no basis to rank" (unscanned market, absent
-	// listing, non-IMPORT listing, null supply), which must leave the caller's existing order
-	// untouched rather than sorting the unreadable to either end.
+	// The boolean is load-bearing: false means "no basis to rank" (unscanned market, absent listing,
+	// non-IMPORT listing, null supply), which must leave the caller's existing order untouched
+	// rather than sorting the unreadable to either end.
 	ImportSupply(ctx context.Context, factoryWaypoint, good string, playerID int) (string, bool)
 }
 
@@ -176,11 +164,9 @@ type GateFeeder interface {
 // comment is an unchecked assertion: a signature change on either concrete type would silently
 // make it false, and nothing would fail until the composition root tried to wire the two together.
 //
-// That was not hypothetical for the FACTORY pair. Until main.go wired SetGateFactory, no call site
-// anywhere passed a *GateTopology as a GateFactoryTopology or a *ProductionExecutor as a
-// GateFeeder — the handler's own tests use fixtures — so the compiler checked neither claim. These
-// assertions move the check into the package that DECLARES the seam, where a break names the
-// interface rather than surfacing as a type error a thousand lines into main.
+// The handler's own tests use fixtures, so without these lines nothing in this package proves a
+// production type satisfies a seam it declares, and a break surfaces as a type error a thousand
+// lines into main rather than naming the interface here.
 var (
 	_ GateTopologyResolver = (*mfgServices.GateTopology)(nil)
 	_ GateFactoryTopology  = (*mfgServices.GateTopology)(nil)
@@ -206,11 +192,9 @@ func (g *gateFactory) enabled() bool {
 // SetGateFactory wires the factory fleet: phase 1's role-based topology (which also answers the
 // recipe seam the feed walk needs), phase 2's pinned terminal-factory buy, and the feed terminal.
 //
-// OPTIONAL, following SetGateDelivery/SetTreeResolver — a nil in any argument leaves the feeding
-// leg unwired and a factory-tagged hull keeps taking the shared path, so every existing
-// coordinator test is unchanged. This is NOT a feature flag: the wiring task wires it
-// unconditionally in main.go, so it ships ARMED. It is the same optional-collaborator pattern the
-// drain already uses to keep its own fixtures buildable.
+// OPTIONAL, following SetGateDelivery/SetTreeResolver — a nil in any argument leaves the feeding leg
+// unwired and a factory-tagged hull keeps taking the shared path, so the package's fixtures stay
+// buildable. It is NOT an arming seam: the daemon wires it unconditionally.
 func (h *RunConstructionCoordinatorHandler) SetGateFactory(topology GateFactoryTopology, buyer GateBuyer, feeder GateFeeder) {
 	if topology == nil || buyer == nil || feeder == nil {
 		return
@@ -221,10 +205,9 @@ func (h *RunConstructionCoordinatorHandler) SetGateFactory(topology GateFactoryT
 // SetSourceCooldown wires the fleet-shared compression ledger so the feeding leg paces itself
 // against sources it is draining, accrued from OUR OWN traded volume and decayed over time.
 //
-// Volume, not price, is what makes it safe: a baseline derived from the ask would rise as we push
-// the ask up and the guard would stop firing. This one cannot — no observed price enters it.
-//
-// Optional collaborator, like its siblings — nil leaves the leg byte-identical.
+// Volume, not price, is what makes it safe: a baseline derived from the ask rises as we push the ask
+// up and the guard stops firing. No observed price enters this one. Optional collaborator, like its
+// siblings — nil leaves the leg unpaced.
 func (h *RunConstructionCoordinatorHandler) SetSourceCooldown(ledger *trading.LaneCooldownLedger) {
 	h.sourceCooldown = ledger
 }
@@ -249,19 +232,19 @@ type gateMaterial struct {
 // sizes or buys anything, and reports the hold units it freed.
 //
 // This is the delivery role's ONLY unload path. supplyTask routes a delivery lot here ahead of the
-// shared deliver-on-hand phase, so a hull that arrives laden has no other way to empty — and a hull
-// that arrives FULL cannot buy either, because PlanFill returns zero stops for any capacity <= 0.
-// It would then defer, be re-discovered, be re-paired with the same material by haulerPool.take,
-// and repeat forever while the drain reports RUNNING.
+// shared deliver-on-hand phase, so a hull that arrives laden has no other way to empty — and one
+// that arrives FULL cannot buy either, since PlanFill returns zero stops for any capacity <= 0. It
+// would defer, be re-paired with the same material by haulerPool.take, and repeat forever.
 //
 // It reuses the SAME producer terminal the buy loop and deliverOnHandCargo use — no second unload
-// path, no duplicated navigation. A material whose bill is already MET is not flown anywhere: the
-// site would reject it. That case is logged loudly rather than silently skipped, because a hull
-// holding material nobody needs is stuck on capacity this leg cannot recover.
-// It returns the freed units PER GOOD, not one total. The per-good grain is load-bearing for the
-// buy sizing: only the LOT'S OWN material has its delivery recorded into the pipeline counter
-// here, so for every OTHER material the bill this leg reads is stale by exactly the units this
-// flush unloaded — and sizing a purchase against that stale bill re-buys them.
+// path, no duplicated navigation. A material whose bill is already MET is not flown anywhere, and
+// that case is logged loudly rather than skipped: a hull holding material nobody needs is stuck on
+// capacity this leg cannot recover.
+//
+// It returns freed units PER GOOD, not one total, and that grain is load-bearing for the buy sizing:
+// only the LOT'S OWN material has its delivery recorded into the pipeline counter here, so for every
+// OTHER material the bill this leg reads is stale by exactly the units this flush unloaded — and
+// sizing a purchase against that stale bill re-buys them.
 func (h *RunConstructionCoordinatorHandler) flushOnHandGateMaterials(
 	ctx context.Context,
 	leg *supplyLeg,
@@ -333,19 +316,15 @@ func (h *RunConstructionCoordinatorHandler) flushOnHandGateMaterials(
 
 // deliverGateLeg runs one delivery hull's leg: decide, record, fill, buy, deliver.
 //
-// THE FLOORS ARE READ OFF THE PIPELINE ROW HERE, ON EVERY LEG. That per-leg read is what makes
-// the knob live; hoisting it to handler construction would silently turn a pattern-C tunable into
-// a restart-only one, which looks identical from the outside until an operator tunes it and
-// nothing happens.
+// THE FLOORS ARE READ OFF THE PIPELINE ROW HERE, ON EVERY LEG. That per-leg read is what makes the
+// knob live; hoisting it to handler construction silently turns a live tunable into a restart-only
+// one, which looks identical from the outside until an operator tunes it and nothing happens.
 //
-// EVERY exit funnels through the SAME completion machinery the rest of supplyTask uses
-// (completeSupply / completeOrDefer). A leg that simply returns leaves its task EXECUTING
-// forever: nothing persists a terminal status, nothing re-stages the next single load, the ready
-// queue drains to nothing, and the drain goes quiet while still reporting RUNNING — a stall
-// indistinguishable from a finished gate. A recoverable stand-down PARKS (completeOrDefer) rather
-// than failing, so a supply pause never spends a retry and the SupplyMonitor re-activates the leg.
-//
-// Reports whether the leg delivered anything.
+// EVERY exit funnels through the SAME completion machinery the rest of supplyTask uses. A leg that
+// simply returns leaves its task EXECUTING forever: nothing persists a terminal status, nothing
+// re-stages the next load, and the drain goes quiet while reporting RUNNING. A recoverable
+// stand-down PARKS rather than failing, so a supply pause never spends a retry and the SupplyMonitor
+// re-activates the leg. Reports whether the leg delivered anything.
 func (h *RunConstructionCoordinatorHandler) deliverGateLeg(
 	ctx context.Context,
 	cmd *RunConstructionCoordinatorCommand,
@@ -371,14 +350,12 @@ func (h *RunConstructionCoordinatorHandler) deliverGateLeg(
 	// leg.pipeline, and a pre-delivery snapshot enqueues a refill for a bill that was just met.
 	leg := &supplyLeg{lot: lot, ship: lot.ship, pipeline: pipeline}
 
-	// FLUSH FIRST, before anything is sized or bought. This role skips the shared
-	// deliver-on-hand phase (supplyTask routes here ahead of it), so this is the ONLY unload path a
-	// delivery hull has. Without it a hull that arrives laden — a delivery that errored after a
-	// successful buy, a task deadline, a restart mid-leg — has free capacity 0, PlanFill returns
-	// ZERO stops for any capacity <= 0, and the leg defers. The hull is then re-discovered every
-	// tick and re-paired with the same material by haulerPool.take (which PREFERS a hull already
-	// holding the good), burning a dispatch slot forever while reporting RUNNING. That is the
-	// amendment's own failure class moved from the task to the hull.
+	// FLUSH FIRST, before anything is sized or bought. This role skips the shared deliver-on-hand
+	// phase, so this is the ONLY unload path a delivery hull has. Without it a hull that arrives
+	// laden — a delivery that errored after a successful buy, a task deadline, a restart mid-leg —
+	// has free capacity 0, PlanFill returns ZERO stops, and the leg defers; the hull is then
+	// re-discovered every tick and re-paired with the same material by haulerPool.take, burning a
+	// dispatch slot forever while reporting RUNNING.
 	//
 	// It runs BEFORE the pause check on purpose: cargo already aboard has zero market impact and
 	// always advances the gate, so a paused fleet must still unload — the same rule PHASE 1 of
@@ -397,18 +374,18 @@ func (h *RunConstructionCoordinatorHandler) deliverGateLeg(
 
 	// NET OUT WHAT IS ALREADY BOUGHT, before a single unit is sized.
 	//
-	// THIS NETTING IS NEEDED HERE AND NOT ONLY IN THE DISPATCH PLANNER. A delivery trip is MIXED:
-	// it buys every gate material on the pipeline, not just the one its lot was dispatched for.
-	// The planner's budget governs which lots EXIST and never reaches this sizing, so without a
-	// second netting a fully committed material is re-bought by the first leg that goes out for
-	// anything else.
+	// THIS NETTING IS NEEDED HERE AND NOT ONLY IN THE DISPATCH PLANNER. A delivery trip is MIXED: it
+	// buys every gate material on the pipeline, not just the one its lot was dispatched for. The
+	// planner's budget governs which lots EXIST and never reaches this sizing, so without a second
+	// netting a fully committed material is re-bought by the first leg that goes out for anything
+	// else.
 	//
 	// THIS hull is excluded BY SYMBOL, never by subtracting its cargo. Its load was just flushed
 	// into billSource, so counting it again nets the same units out twice — and the cached *Ship
 	// this leg holds is deliberately NOT updated by DeliverToConstructionSite, so subtracting its
-	// cargo would subtract a PRE-flush figure from a POST-flush fold and under-count, which is the
-	// over-buying direction. Whatever the flush could not unload still occupies the hold, which
-	// the capacity arithmetic below already accounts for.
+	// cargo subtracts a PRE-flush figure from a POST-flush fold and under-counts, which is the
+	// over-buying direction. Whatever the flush could not unload still occupies the hold, which the
+	// capacity arithmetic below accounts for.
 	self := lot.ship.ShipSymbol()
 	commitment := h.commitUnits(
 		h.commitmentHulls(ctx, cmd, playerID, systemSymbol),
@@ -462,11 +439,10 @@ func (h *RunConstructionCoordinatorHandler) deliverGateLeg(
 		if decision.Paused {
 			level = "WARNING"
 		}
-		// A SUSPECTED-STUCK PAUSE IS AN ERROR, NOT A WARNING (sp-c9wuu). The ordinary pause is a
-		// WARNING and reads as healthy patience — correctly, most of the time. That is exactly why
-		// the stuck case has to leave the band the healthy case occupies: the 7.5-hour deadlock was
-		// invisible because it logged the same reassuring level and shape as every legitimate pause,
-		// and was twice read as "thin market, being patient".
+		// A SUSPECTED-STUCK PAUSE IS AN ERROR, NOT A WARNING. The ordinary pause is a WARNING and
+		// reads as healthy patience — correctly, most of the time — which is exactly why the stuck
+		// case must leave the band the healthy case occupies. A deadlock logged at the same level
+		// and shape as every legitimate pause reads as "thin market, being patient" indefinitely.
 		action := "gate_delivery_paused"
 		if decision.SuspectedStuck {
 			level = "ERROR"
@@ -562,21 +538,19 @@ func (h *RunConstructionCoordinatorHandler) deliverGateLeg(
 			"good": stop.Good, "units": units, "construction_site": task.ConstructionSite(), "ship": lot.ship.ShipSymbol(),
 		})
 		// Only the LOT'S OWN material counts against this task — the pipeline counter AND
-		// leg.delivered. A mixed trip's other material is picked up by reconcilePipelinesFromSite on
-		// the next tick, which re-reads the LIVE site and raises the delivered counters from the
-		// server — the authoritative source. Recording it here would need a second material's task
-		// and pipeline lock, and would double-count against that reconcile.
+		// leg.delivered. A mixed trip's other material is picked up by reconcilePipelinesFromSite
+		// next tick, which re-reads the LIVE site and raises the counters from the authoritative
+		// server figure; recording it here would need a second material's task and pipeline lock,
+		// and would double-count against that reconcile.
 		//
 		// leg.delivered is NOT a trip total. completeSupply logs it against task.Good() and
 		// completeOrDefer decides complete-vs-defer on it, so a cross-material total would report
-		// another good's units under this one's name and could COMPLETE a task that moved none of its
-		// own material. tripUnits carries the honest cross-material figure for the leg summary below.
+		// another good's units under this one's name and could COMPLETE a task that moved none of
+		// its own. tripUnits carries the honest cross-material figure for the summary below.
 		//
-		// The returned pipeline REPLACES the leg's: recordDelivery does its own FindByID and the
-		// production repository hands back a fresh aggregate, so the object read at the top of this
-		// leg is a pre-delivery snapshot. Sizing replenishment off it enqueues a refill for a bill
-		// this very delivery met, and nothing ever cleans that task up. Every sibling supply path
-		// assigns the same way.
+		// The returned pipeline REPLACES the leg's: recordDelivery does its own FindByID and gets a
+		// fresh aggregate, so the object read at the top of this leg is a PRE-delivery snapshot, and
+		// sizing replenishment off it enqueues a refill for a bill this very delivery met.
 		if stop.Good == task.Good() {
 			leg.delivered += units
 			leg.pipeline = h.recordDelivery(ctx, task, units)

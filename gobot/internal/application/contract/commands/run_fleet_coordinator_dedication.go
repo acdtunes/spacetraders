@@ -51,18 +51,16 @@ type DedicatedFleetSeedMarker interface {
 	MarkDedicatedShipsSeeded(ctx context.Context, containerID string, playerID int) error
 }
 
-// dedicationSeed applies the --dedicated-ships launch seed EXACTLY
-// once per coordinator lifetime. On genuine first boot (seeded=false) it
-// reconciles the seed into the dedication tag and then persists a durable "seeded"
-// marker into the coordinator's own container config; on every subsequent daemon
-// restart (seeded=true, reloaded from that marker) it does NOTHING, leaving the
-// live dedicated_fleet tag authoritative. Replaying the seed on every boot would
-// re-stamp a hull removed via `fleet remove` (tag cleared) back onto the fleet,
-// resurrecting a deliberate removal.
+// dedicationSeed applies the --dedicated-ships launch seed EXACTLY once per coordinator lifetime.
+// On genuine first boot it reconciles the seed into the dedication tag and persists a durable
+// "seeded" marker into the coordinator's own container config; on every subsequent restart it does
+// NOTHING, leaving the live dedicated_fleet tag authoritative. Replaying the seed on every boot
+// would re-stamp a hull removed via `fleet remove` back onto the fleet, resurrecting a deliberate
+// removal.
 //
-// An empty seed still touches nothing (mediator lookup included). A nil marker
-// leaves the seed un-persisted and warns: the seed still applies, but a restart
-// would re-seed (fail-open; production always wires it).
+// An empty seed touches nothing, mediator lookup included. A nil marker leaves the seed
+// un-persisted and warns: the seed still applies but a restart would re-seed (fail-open;
+// production always wires it).
 type dedicationSeed struct {
 	logger         common.ContainerLogger
 	med            common.Mediator

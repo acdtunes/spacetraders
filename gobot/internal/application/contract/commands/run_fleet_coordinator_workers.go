@@ -55,28 +55,21 @@ func recordWorkerCompletion(logger common.ContainerLogger, event navigation.Work
 	return false
 }
 
-// readoptInterruptedDeliveries resumes a contract delivery that a daemon
-// restart orphaned mid-flight. A restart marks the in-flight worker container
-// FAILED (markWorkerInterrupted) but deliberately leaves its ship holding the
-// contract cargo. The existing "ship has cargo -> resume delivery" path
-// (StopExistingWorkers) only inspects RUNNING workers, so it never fires for a
-// restart-interrupted (FAILED) worker; without this pass the coordinator would
-// instead ForceRelease that ship (ReclaimShipsFromInterruptedWorkers) and
-// restart the whole workflow from the top — negotiate -> find-purchase-market
-// -> select — stalling the fully-loaded ship behind a purchase-market gate it
-// does not need while scouts repopulate market data after the restart.
+// readoptInterruptedDeliveries resumes a contract delivery that a daemon restart orphaned
+// mid-flight. A restart marks the in-flight worker container FAILED (markWorkerInterrupted) but
+// deliberately leaves its ship holding the contract cargo, and the "ship has cargo -> resume
+// delivery" path in StopExistingWorkers only inspects RUNNING workers, so it never fires for a
+// FAILED one. Without this pass the coordinator ForceReleases that ship and restarts the workflow
+// from negotiate, stalling a fully-loaded hull behind a purchase-market gate it does not need while
+// scouts repopulate market data.
 //
-// Re-adopting spawns a fresh worker directly for the cargo-laden ship; the
-// worker's already-idempotent workflow (FindOrNegotiate finds the accepted
-// contract, ProcessAllDeliveries delivers the aboard cargo) resumes at the
-// delivery leg with no re-negotiation and no re-purchase. At most one ship is
-// re-adopted per startup: contracts run one worker at a time (game constraint:
-// one active contract per player), so only one ship is ever mid-delivery. Empty
-// interrupted ships are left untouched here for ReclaimShipsFromInterruptedWorkers
-// to free into normal discovery. Any failure falls back to that reclaim path, so
-// a transient error here can never strand the ship — it just forgoes the fast
-// resume. Returns the re-adopted worker's container ID, or "" if nothing was
-// re-adopted.
+// Re-adopting spawns a fresh worker directly for the cargo-laden ship, and the worker's idempotent
+// workflow resumes at the delivery leg with no re-negotiation and no re-purchase. At most one ship
+// is re-adopted per startup: one active contract per player means only one ship is ever
+// mid-delivery. Empty interrupted ships are left for ReclaimShipsFromInterruptedWorkers to free
+// into normal discovery, and any failure here falls back to that reclaim path, so a transient error
+// forgoes the fast resume but can never strand the ship. Returns the re-adopted worker's container
+// ID, or "" if nothing was re-adopted.
 func (h *RunFleetCoordinatorHandler) readoptInterruptedDeliveries(
 	ctx context.Context,
 	cmd *RunFleetCoordinatorCommand,

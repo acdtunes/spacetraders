@@ -48,17 +48,12 @@ func NewGateTopology(markets marketResolver, supplyChainMap map[string][]string)
 //
 //	IRON_ORE -> EXPLOSIVES -> LIQUID_HYDROGEN -> MACHINERY -> IRON -> IRON_ORE
 //
-// and both gate materials feed into it (FAB_MATS={IRON,QUARTZ_SAND}; ADVANCED_CIRCUITRY reaches
-// SILICON_CRYSTALS through ELECTRONICS/MICROPROCESSORS). staticSupplyChainDepth in
-// run_construction_coordinator_budget.go has documented this correctly all along.
+// and both gate materials feed into it.
 //
-// "Has no recipe" is therefore NOT "is raw", and this method used to conflate them. Every ore and
-// crystal in the game HAS a recipe entry — they are all {EXPLOSIVES} — so !hasRecipe called none
-// of the actual raw materials raw, IRON_ORE included. That is the literal good that stranded a
-// hauler at 80/80 in sp-b27a2. goods.IsMineableRawMaterial is the domain's curated answer to the
-// question this method is actually asking, and shouldBuyGood in supply_chain_resolver.go already
-// needed its own correction on top of hasRecipe for the same reason ("SILICON_CRYSTALS has a
-// recipe (needs EXPLOSIVES)").
+// "Has no recipe" is therefore NOT "is raw". Every ore and crystal in the game HAS a recipe entry
+// — they are all {EXPLOSIVES} — so a !hasRecipe test calls none of the actual raw materials raw,
+// and a walk keyed on it descends an ore into the cycle above. goods.IsMineableRawMaterial is the
+// domain's curated answer to the question this method actually asks.
 //
 // The no-recipe half is KEPT rather than replaced by the curated list: a good absent from the map
 // entirely is still raw. Dropping it would make every unknown or newly-added good look fabricable,
@@ -68,11 +63,11 @@ func NewGateTopology(markets marketResolver, supplyChainMap map[string][]string)
 // goods are minable is a game constant, not per-instance config; a second seam would only let a
 // caller construct a topology whose two halves disagree.
 //
-// TERMINATION. This predicate is what actually bottoms out the recursion, and it is NOT sufficient
-// on its own: it cuts the loop above at IRON_ORE, but the map is data that ships with the game and
-// the curated list is hand-maintained, so neither is a proof of acyclicity. A recursive walk built
-// on this seam MUST still carry cycle detection, and THE FABRICATE DEPTH CAP MUST NOT BE DELETED
-// ON THE ARGUMENT THAT THE RECIPE GRAPH IS AN ACYCLIC DAG — that argument is false, and
+// TERMINATION. This predicate is what bottoms out the recursion, and it is NOT sufficient on its
+// own: it cuts the loop above at the ore, but the map is data that ships with the game and the
+// curated list is hand-maintained, so neither is a proof of acyclicity. A recursive walk built on
+// this seam MUST still carry cycle detection, and THE FABRICATE DEPTH CAP MUST NOT BE DELETED ON
+// THE ARGUMENT THAT THE RECIPE GRAPH IS AN ACYCLIC DAG — that argument is false, and
 // fabricate_depth.go's cap is doing real work, not acting as a redundant backstop.
 func (t *GateTopology) IsRaw(good string) bool {
 	if goods.IsMineableRawMaterial(good) {
@@ -92,21 +87,19 @@ func (t *GateTopology) IsRaw(good string) bool {
 // Raw goods keep returning a nil slice, not an empty one: IsRaw(g) is true exactly when
 // Inputs(g) is nil, and the recursion in later phases depends on that biconditional.
 //
-// NOT INTERCHANGEABLE WITH goods.GetRequiredInputs. The two answer different questions and are
-// kept deliberately distinct; substituting one for the other is a silent behaviour change, not a
-// refactor. They differ on BOTH axes:
+// NOT INTERCHANGEABLE WITH goods.GetRequiredInputs. Substituting one for the other is a silent
+// behaviour change, not a refactor; they differ on BOTH axes:
 //
-//   - Shape: this returns nil for a raw good, GetRequiredInputs returns []string{}. Both of its
-//     idioms at every call site today are len()==0 and range, which are blind to the difference —
-//     so a swap would go unnoticed until something compared against nil.
-//   - CONTENT, which is the sharper hazard. Since sp-4irrr this method treats a curated mineable
-//     raw material as raw, so Inputs("IRON_ORE") is nil while GetRequiredInputs("IRON_ORE") is
-//     still {"EXPLOSIVES"}. A walk that swapped in GetRequiredInputs would descend an ore into the
-//     recipe cycle and stop terminating.
+//   - Shape: this returns nil for a raw good, GetRequiredInputs returns []string{}. The len()==0
+//     and range idioms are blind to that, so a swap goes unnoticed until something compares to nil.
+//   - CONTENT, the sharper hazard. This method treats a curated mineable raw material as raw, so
+//     Inputs("IRON_ORE") is nil while GetRequiredInputs("IRON_ORE") is still {"EXPLOSIVES"}. A walk
+//     that swapped in GetRequiredInputs would descend an ore into the recipe cycle and never
+//     terminate.
 //
-// GetRequiredInputs is the honest reading of the raw map and is correct for its four callers,
-// which ask "what does this recipe list" — a fabricate-eligibility question. This method answers
-// "what must I still source", which is the recursion's question. Neither contract moves.
+// GetRequiredInputs is the honest reading of the raw map and answers "what does this recipe list",
+// a fabricate-eligibility question. This method answers "what must I still source", which is the
+// recursion's question. Neither contract moves.
 func (t *GateTopology) Inputs(good string) []string {
 	if t.IsRaw(good) {
 		return nil
@@ -129,11 +122,10 @@ func (t *GateTopology) Inputs(good string) []string {
 // fallback: substituting a different waypoint is precisely how cargo ends up somewhere
 // that cannot accept it.
 //
-// Both refusal branches are live. *MarketLocator reports a missing exporter as an error, so
-// today's production path refuses through the wrap below; the nil-result branch covers the
-// (nil, nil) not-found convention that this interface permits and that sibling locators in
-// market_locator.go already use. Either way the seam fails closed rather than returning a
-// waypoint the caller did not ask for.
+// Both refusal branches are live. *MarketLocator reports a missing exporter as an error; the
+// nil-result branch covers the (nil, nil) not-found convention this interface permits and that
+// sibling locators in market_locator.go use. Either way the seam fails closed rather than
+// returning a waypoint the caller did not ask for.
 func (t *GateTopology) TerminalFactory(
 	ctx context.Context,
 	good, systemSymbol string,
@@ -153,26 +145,20 @@ func (t *GateTopology) TerminalFactory(
 // legally be delivered.
 //
 // FAILS CLOSED. When no importer can be resolved this returns an error and a nil result, so the
-// caller cannot dispatch. This is the sp-b27a2 guard: that incident dispatched IRON_ORE to a
-// waypoint which did not import it, and the haulers then sat at 80/80 unable to deliver OR dump
-// ("Could not unload IRON_ORE to free cargo space"). Resolving by import capability makes that
-// state unreachable rather than merely unlikely — the destination is derived from the good, so
-// a destination that cannot accept the good is not expressible here.
+// caller cannot dispatch. Resolving by IMPORT capability makes a hull stranded full at a waypoint
+// that cannot accept its cargo unreachable rather than merely unlikely: the destination is derived
+// from the good, so a destination that cannot take the good is not expressible here.
 //
-// The role choice is the whole fix, and it is not interchangeable with TerminalFactory's. An
+// The role choice is the whole guarantee and is NOT interchangeable with TerminalFactory's. An
 // exporter SELLS the good and an importer BUYS it; asking the export locator where to deliver
-// returns the very kind of waypoint that stranded the fleet.
+// returns exactly the kind of waypoint that strands a loaded hull.
 //
-// Refusal reaches this method by two routes. *MarketLocator reports a missing importer as an
-// error ("no market found importing X"), so today's production path refuses through the wrap
-// below; the nil-result branch is a defensive guard covering the (nil, nil) not-found convention
-// that this interface permits and that sibling locators in market_locator.go already use.
-//
-// Both routes deliberately collapse to one refusal. MarketLocator cannot presently distinguish
-// "nothing imports this good" from "the market repo is down", and FeedTarget must refuse on
-// either cause — dispatching feedstock during an outage is exactly as harmful as dispatching it
-// to a non-importer. The wrapped cause is preserved so an operator can tell the two apart in the
-// log; discriminating on it in code is out of scope and tracked separately.
+// Refusal reaches this method by two routes: *MarketLocator reports a missing importer as an
+// error, and the nil-result branch guards the (nil, nil) not-found convention this interface
+// permits. Both deliberately collapse to one refusal — MarketLocator cannot distinguish "nothing
+// imports this good" from "the market repo is down", and dispatching feedstock during an outage is
+// as harmful as dispatching it to a non-importer. The wrapped cause is preserved so an operator
+// can tell the two apart in the log.
 func (t *GateTopology) FeedTarget(
 	ctx context.Context,
 	good, systemSymbol string,
@@ -192,35 +178,27 @@ func (t *GateTopology) FeedTarget(
 //
 // The fabricate path navigates a hauler to the factory that EXPORTS the good being produced, on
 // the assumption that the same factory imports that good's inputs. That assumption holds within
-// one chain and fails across chains — sp-b27a2: IRON_ORE (FAB_MATS chain) was carried to the
-// ADVANCED_CIRCUITRY exporter, which imports nothing from that chain, and the hauler clogged at
-// 80/80 unable to deliver or dump.
+// one chain and FAILS ACROSS CHAINS, where the hull arrives full at a factory that imports nothing
+// it carries and can neither deliver nor dump.
 //
 // It reads the DESTINATION'S OWN listing rather than comparing against the best-bid importer that
-// FeedTarget resolves. A system can hold several markets importing the same good, and
-// FindImportMarket returns only the best bid among them; a factory that legitimately imports the
-// input but is not that best bid would be refused, which would park valid fabrication. The
-// question here is not "where is the best place to sell this" but "will THIS destination accept
-// it", and only the destination's listing answers that.
+// FeedTarget resolves. A system can hold several markets importing the same good and
+// FindImportMarket returns only the best bid among them, so a factory that legitimately imports
+// the input but is not that best bid would be refused and valid fabrication parked. The question
+// is not "where is the best place to sell this" but "will THIS destination accept it".
 //
 // The predicate is marketBuys — the same one deliverInputs applies on arrival. Sharing it is the
-// point: a divergence would be its own stranding, approving a navigate that the delivery step then
-// refuses.
+// point: a divergence would be its own stranding, approving a navigate the delivery step refuses.
 //
-// The nil handling is now shared too, and used not to be. marketBuys answered TRUE for an
-// unreadable listing, on the reasoning that it governs a sell that has already arrived, where
-// withholding costs a delivery and spends nothing — while this guard governs a navigate that has
-// not happened, where guessing wrong strands a loaded hull at the far end of a system. sp-kdsrh
-// closed that divergence: the arrival-side read fails closed as well, because "no basis to judge"
-// is not a reason to offer a factory its own EXPORT, which is the one thing the filter exists to
-// withhold. Both sides now refuse on an unreadable listing; the two rationales differ, the answer
-// no longer does. The nil check below is kept for its NAMED error, which the log needs.
+// BOTH SIDES FAIL CLOSED ON AN UNREADABLE LISTING, for different reasons that must not be allowed
+// to diverge again: here, guessing wrong strands a loaded hull at the far end of a system; on
+// arrival, "no basis to judge" is not a reason to offer a factory its own EXPORT, which is the one
+// thing the filter exists to withhold. The nil check below is kept for its NAMED error, which the
+// log needs.
 //
 // Carrying nothing is not a guess either way — there is no cargo to strand, so an empty input list
-// is accepted before the listing is consulted at all.
-//
-// Returns an error naming the first offending good, so the refusal is diagnosable from the log
-// alone rather than requiring a code read.
+// is accepted before the listing is consulted at all. The error names the first offending good, so
+// a refusal is diagnosable from the log alone.
 func (t *GateTopology) ValidateFeedDestination(
 	destination *market.Market,
 	factoryWaypoint string,
@@ -241,22 +219,21 @@ func (t *GateTopology) ValidateFeedDestination(
 }
 
 // ImportSupply reports the supply level at which factoryWaypoint IMPORTS good — how short that
-// specific factory is of that specific input (sp-q9um6).
+// specific factory is of that specific input.
 //
-// THIS IS A THIRD QUANTITY, and the two already in hand are both the wrong one. For a feed step
-// IRON -> FAB_MATS with the FAB_MATS factory resolved at F45:
+// THIS IS A THIRD QUANTITY, and the two nearby ones are both the wrong one. For a feed step
+// input -> output:
 //
-//   - TerminalFactory("IRON").Supply is H51's EXPORT supply of IRON — how much the market we BUY
-//     FROM has. Ranking on it is actively perverse: it would prefer IRON precisely BECAUSE its
-//     source is scarce, which is backwards on both counts (it is the hardest to buy and says
-//     nothing about need).
-//   - TerminalFactory("FAB_MATS").Supply is F45's EXPORT supply of its own OUTPUT — how much
-//     FAB_MATS F45 has made. That is the ABUNDANT fail-safe's subject, and it answers "does this
-//     factory need feeding at all", never "which of its inputs is it shortest of".
+//   - TerminalFactory(input).Supply is the SOURCE market's EXPORT supply of the input — how much
+//     the market we buy FROM has. Ranking on it is perverse: it prefers an input precisely BECAUSE
+//     its source is scarce, which is backwards on both counts.
+//   - TerminalFactory(output).Supply is the destination's EXPORT supply of its OWN output. That is
+//     the ABUNDANT fail-safe's subject, and it answers "does this factory need feeding at all",
+//     never "which of its inputs is it shortest of".
 //
-// Only F45's own IMPORT listing for IRON answers the third question, and no searching locator can
-// reach it: FindImportMarket returns the system's BEST importer of IRON, which is a different
-// waypoint whenever F45 is not it.
+// Only the destination's own IMPORT listing answers the third question, and no searching locator
+// can reach it: FindImportMarket returns the system's BEST importer of the good, which is a
+// different waypoint whenever this factory is not it.
 //
 // IMPORT ONLY. An EXPORT listing means the factory makes the good rather than consuming it, where
 // a high supply means the opposite of need; EXCHANGE means it merely trades it, where supply is

@@ -134,15 +134,13 @@ type RunFleetCoordinatorHandler struct {
 	// the invFinder / standbyProvider optional-injection idiom.
 	depotRegistryProvider appContract.DepotRegistryProvider
 
-	// standbyPlacementProvider resolves the LIVE ≤6 FIXED placement slots each homing
-	// pass (the sp-mtgje replacement for the demand-ranked spread that let concurrent homing
-	// pile idle hulls on the top-demand hub). Between-legs homing zips each hull to its own
-	// slot by symbol. It also auto-resolves the standby SET
-	// the FIXED ≤6 placement slots when the `fleet hub` set is empty (the sp-bu6ma auto
-	// hub-placement, now the fixed one-per-waypoint set). Backed by the SAME home-system role
-	// lookup + TopDeliverySlots selection the contract auto-scaler buys against, so both
-	// positioning consumers agree on ONE slot set. Nil leaves homing on the launch set
-	// (byte-identical); it is a READ, never a config write (RULINGS #3).
+	// standbyPlacementProvider resolves the LIVE FIXED placement slots each homing pass, replacing
+	// a demand-ranked spread whose concurrent-homing timing piles idle hulls on the top-demand hub.
+	// Between-legs homing zips each hull to its own slot by symbol, and the same set auto-resolves
+	// the standby SET when the `fleet hub` set is empty. Backed by the SAME home-system role lookup
+	// and TopDeliverySlots selection the contract auto-scaler buys against, so both positioning
+	// consumers agree on ONE slot set. Nil leaves homing on the launch set; it is a READ, never a
+	// config write (RULINGS #3).
 	standbyPlacementProvider appContract.StandbyPlacementProvider
 }
 
@@ -239,10 +237,10 @@ func (h *RunFleetCoordinatorHandler) SetDepotRegistryProvider(provider appContra
 }
 
 // SetStandbyPlacementProvider wires the live FIXED-placement reader so between-legs homing sends
-// each idle hull to its permanent slot, and auto-resolves the standby set from the ≤6 fixed
-// placement slots when the `fleet hub` set is empty. Optional and nil-safe: without it homing stays
-// on the launch set (byte-identical). The SAME ≤6 slot set the contract auto-scaler homes new buys
-// onto (epic sp-9le3x / sp-mtgje), so both positioning consumers place hulls on one slot set.
+// each idle hull to its permanent slot, and auto-resolves the standby set from the fixed placement
+// slots when the `fleet hub` set is empty. Optional and nil-safe: without it homing stays on the
+// launch set. It is the SAME slot set the contract auto-scaler homes new buys onto, so both
+// positioning consumers place hulls on one set.
 func (h *RunFleetCoordinatorHandler) SetStandbyPlacementProvider(provider appContract.StandbyPlacementProvider) {
 	h.standbyPlacementProvider = provider
 }
@@ -343,12 +341,11 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 	// already-cleared hold).
 	liquidationCooldown := make(map[string]time.Time)
 
-	// deliverHeldAttempted bounds the sp-5jce2 cycle split to ONE zero-travel
-	// deliver-held run per (contract, hull), in-memory for this run only (like gov
-	// and liquidationCooldown). If a hull comes back still holding its load, the
-	// next pass runs the FULL source+deliver leg rather than re-dispatching the
-	// same no-op forever. A restart clears it deliberately: the split is cheap and
-	// re-earning it once is safer than persisting a stale suppression.
+	// deliverHeldAttempted bounds the cycle split to ONE zero-travel deliver-held run per
+	// (contract, hull), in-memory for this run only, like gov and liquidationCooldown. If a hull
+	// comes back still holding its load, the next pass runs the FULL source+deliver leg rather than
+	// re-dispatching the same no-op forever. A restart clears it deliberately: the split is cheap
+	// and re-earning it once is safer than persisting a stale suppression.
 	deliverHeldAttempted := make(map[string]bool)
 
 	idlePoolWait := workerWait{
@@ -405,23 +402,17 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 			continue
 		}
 
-		// DETERMINISTIC SINGLE-HULL GATE (sp-zve2q): activeWorkerContainerID is this
-		// coordinator's OWN synchronous record of the worker it spawned or re-adopted
-		// this lifetime — set the instant readoptInterruptedDeliveries re-adopts a
-		// cargo-laden hull after a restart, BEFORE that fresh worker's async
-		// StartContainer surfaces it as RUNNING in the container store. During that
-		// window the RUNNING-status FindExistingWorkers query below sees zero workers,
-		// calculateInFlightCargo sees the hull on neither a RUNNING nor the dead FAILED
-		// container (it moved to the fresh one), and idleReclaimedContractCargoHeld sees
-		// it as assigned — every durable defense is blind, so the loop would negotiate
-		// + dispatch a SECOND hull onto the same contract and buy a duplicate load (the
-		// observed TORWIND-D re-adopted + TORWIND-9 selected double-buy). The contract
-		// runs exactly ONE hull at a time: while this coordinator already holds an
-		// active hull, WAIT for it to complete (re-selecting THAT hull as the sole
-		// hull) rather than dispatching another; only once it completes (id cleared
-		// on the completion event) does the loop fall through to distance-based
-		// selection of the NEXT hull. A no-op on the normal cold pass, where
-		// activeWorkerContainerID is "" here — byte-identical selection preserved.
+		// DETERMINISTIC SINGLE-HULL GATE. activeWorkerContainerID is this coordinator's OWN
+		// synchronous record of the worker it spawned or re-adopted this lifetime, set the instant
+		// readoptInterruptedDeliveries re-adopts a cargo-laden hull, BEFORE that worker's async
+		// StartContainer surfaces it as RUNNING. During that window EVERY durable defense is blind:
+		// the RUNNING-status FindExistingWorkers query sees zero workers, calculateInFlightCargo
+		// sees the hull on neither a RUNNING nor the dead FAILED container, and
+		// idleReclaimedContractCargoHeld sees it as assigned — so the loop would dispatch a SECOND
+		// hull onto the same contract and buy a duplicate load. The contract runs exactly ONE hull
+		// at a time: while this coordinator holds an active hull it WAITS for that hull rather than
+		// dispatching another, and only once the completion event clears the id does the loop fall
+		// through to distance-based selection of the NEXT hull.
 		if activeWorkerContainerID != "" {
 			logger.Log("INFO", fmt.Sprintf("Contract already has an active hull (worker %s) - waiting for it to complete before dispatching another (sp-zve2q deterministic single-hull)", activeWorkerContainerID), nil)
 			if h.awaitWorkerSlot(ctx, activeHullWait("INFO", "Timeout waiting for active hull, will re-check"), &activeWorkerContainerID) {
@@ -610,18 +601,15 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 		// below fires on a badly-placed PARTIAL holder standing on the delivery.
 		deliverHeldOnly := false
 
-		// DETERMINISTIC HOLDER SHORT-CIRCUIT (sp-zve2q): an IDLE hull that already
-		// holds the contract good delivers that EXISTING load — so it MUST win over
-		// sourcing a duplicate onto the closest empty hull. idleReclaimedContractCargoHeld
-		// DETECTED such a holder above and logged the intent to complete its load, but
-		// the candidate-discovery filters drop it when it is in transit or undedicated
-		// while a dedicated fleet is active, so SelectClosestShip's own cargo-priority
-		// never sees it and the closest EMPTY hull double-sources (observed: idle
-		// TORWIND-15 holds 43, "Selecting closest ship" picks TORWIND-8). This binds
-		// detection to selection — name the pure idle holder and select it directly (the
-		// SAME hull on a restart). A pure holder can't trip the NO-CARGO-DUMP guard, so
-		// the claim is safe; the normal no-holder pass returns "" and falls through to
-		// the unchanged depot/closest selection BYTE-IDENTICALLY.
+		// DETERMINISTIC HOLDER SHORT-CIRCUIT. An IDLE hull already holding the contract good
+		// delivers that EXISTING load, so it MUST win over sourcing a duplicate onto the closest
+		// empty hull. idleReclaimedContractCargoHeld DETECTS such a holder above, but the
+		// candidate-discovery filters drop it when it is in transit or undedicated while a
+		// dedicated fleet is active — so SelectClosestShip's own cargo-priority never sees it and
+		// the closest EMPTY hull double-sources. This binds detection to selection: name the pure
+		// idle holder and select it directly, deterministically the SAME hull on a restart. A pure
+		// holder cannot trip the NO-CARGO-DUMP guard, so the claim is safe; the normal no-holder
+		// pass returns "" and falls through to the unchanged depot/closest selection.
 		holder, holderErr := h.idleContractCargoHolder(ctx, requiredCargo, cmd.PlayerID.Value())
 		if holderErr != nil {
 			logger.Log("WARNING", fmt.Sprintf("Failed to resolve idle contract-cargo holder (falling back to distance selection): %v", holderErr), nil)
@@ -629,15 +617,14 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 		if holder != "" {
 			selectedShip = holder
 
-			// WEIGHED, NOT ABSOLUTE (sp-5jce2): the short-circuit above is
-			// unconditional, and a hull ends every cycle AT THE DELIVERY — the point
-			// maximally far from the source — so "any holder wins" re-picks the
-			// worst-placed hull for the next source run, every cycle. When the held
-			// load is only a partial and a spawnable hull sits decisively closer to
-			// the source, split the cycle instead: this hull still runs, but only to
-			// register what it is standing on (zero travel), and the next pass sources
-			// the remainder with the near hull. The held load is neither stranded nor
-			// re-bought, so sp-zve2q's duplicate-sourcing defense is intact.
+			// WEIGHED, NOT ABSOLUTE. The short-circuit above is unconditional, and a hull ends
+			// every cycle AT THE DELIVERY — the point maximally far from the source — so "any
+			// holder wins" re-picks the worst-placed hull for the next source run, every cycle.
+			// When the held load is only a PARTIAL and a spawnable hull sits decisively closer to
+			// the source, split the cycle instead: this hull still runs, but only to register what
+			// it is standing on at zero travel, and the next pass sources the remainder with the
+			// near hull. The held load is neither stranded nor re-bought, so the duplicate-sourcing
+			// defense is intact.
 			deliverHeldOnly = h.decideDeliverHeldFirst(ctx, contract.ContractID(), holderRun{
 				Holder:         holder,
 				Candidates:     spawnableShips,
@@ -708,15 +695,13 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 		logger.Log("INFO", fmt.Sprintf("Waiting for %s to complete contract...", selectedShip), nil)
 		select {
 		case event := <-workerCompletedCh:
-			// Feed the completion to the spawn governor FIRST, error text and all:
-			// a worker that died instantly extends this hull's backoff, and either
-			// the Nth instant death within the window OR the Nth consecutive
-			// IDENTICAL error (sp-20eyn — the TORWIND-5 signature, which every
-			// timing-shaped test misses because that worker took minutes to die)
-			// crosses the hull into an expiring quarantine. On that crossing emit
-			// the loud line + captain event + counter; thereafter the hull is
-			// skipped until its cooldown elapses and the next pass selects a
-			// healthy hull (RULINGS #1: the contract keeps being worked).
+			// Feed the completion to the spawn governor FIRST, error text and all: a worker that
+			// died instantly extends this hull's backoff, and either the Nth instant death within
+			// the window OR the Nth consecutive IDENTICAL error — the breaker for a hull that takes
+			// minutes to die the same way — crosses it into an expiring quarantine. On that
+			// crossing emit the loud line, captain event and counter; thereafter the hull is
+			// skipped until its cooldown elapses and the next pass selects a healthy hull
+			// (RULINGS #1: the contract keeps being worked).
 			if outcome := gov.NoteCompletion(event.ShipSymbol, event.Success, event.Error); outcome.JustQuarantined {
 				logger.Log("ERROR", hullQuarantineMessage(event.ShipSymbol, outcome), map[string]interface{}{
 					"action":           "hull_quarantined",

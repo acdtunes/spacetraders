@@ -12,13 +12,13 @@ import (
 )
 
 // FabricationTreeResolver builds the scarcity-gated supply-chain dependency tree for a candidate
-// fabrication material — the SAME engine (*SupplyChainResolver) the construction drain executes
-// (sp-yfzi). planFabrication uses it as its per-input FEASIBILITY oracle: a material is
-// feasible to fabricate iff the resolver can build a COMPLETE tree for it within the depth ceiling
-// — every scarce intermediate that has a factory recurses, and every leaf resolves to a buyable
-// market. It is an OPTIONAL collaborator wired by SetTreeResolver: left unset (nil), planFabrication
-// falls back to the previous gate (every IMMEDIATE input must be buyable at MODERATE+ now).
-// *SupplyChainResolver satisfies it via BuildDependencyTree.
+// fabrication material — the SAME engine (*SupplyChainResolver) the construction drain executes.
+// planFabrication uses it as its per-input FEASIBILITY oracle: a material is feasible to fabricate
+// iff the resolver can build a COMPLETE tree for it within the depth ceiling, meaning every scarce
+// intermediate that has a factory recurses and every leaf resolves to a buyable market. It is an
+// OPTIONAL collaborator wired by SetTreeResolver; left nil, planFabrication falls back to the
+// narrower gate that every IMMEDIATE input be buyable at MODERATE+ now. *SupplyChainResolver
+// satisfies it via BuildDependencyTree.
 type FabricationTreeResolver interface {
 	BuildDependencyTree(ctx context.Context, targetGood, systemSymbol string, playerID int) (*goods.SupplyChainNode, error)
 }
@@ -37,8 +37,8 @@ type ConstructionPipelinePlanner struct {
 	shipRepo         navigation.ShipRepository
 	clock            shared.Clock
 	// treeResolver is the fabrication FEASIBILITY oracle — the SAME scarcity-gated
-	// SupplyChainResolver the drain runs. Optional (wired by SetTreeResolver); nil falls
-	// back to the before "every immediate input buyable at MODERATE+" gate.
+	// SupplyChainResolver the drain runs. Optional (wired by SetTreeResolver); nil falls back to
+	// the narrower "every immediate input buyable at MODERATE+" gate.
 	treeResolver FabricationTreeResolver
 }
 
@@ -540,9 +540,9 @@ func (p *ConstructionPipelinePlanner) releaseShip(ctx context.Context, shipSymbo
 //  1. BUY the final good directly when a buy source exists (an EXPORT market at
 //     MODERATE+, or - via FindConstructionSource - an IMPORT/EXCHANGE holding
 //     ABUNDANT/HIGH accumulated stock). This is preferred: one hop, no chain.
-//  2. Otherwise FABRICATE within the depth ceiling (only when depth < 3, the good
-//     is not raw, and every input is SOURCEABLE within that ceiling — buyable now OR
-//     itself producible from sourceable inputs, sp-3bza).
+//  2. Otherwise FABRICATE within the depth ceiling: the good is not raw, depth is
+//     below the ceiling, and every input is SOURCEABLE within it — buyable now OR
+//     itself producible from sourceable inputs.
 //  3. Otherwise DEFER: stage a PENDING DELIVER_TO_CONSTRUCTION with no source
 //     that the SupplyMonitor re-sources when supply regenerates.
 //
@@ -666,7 +666,7 @@ func (p *ConstructionPipelinePlanner) planFabrication(
 // produced — within the depth ceiling, the feasibility gate that decides stage-vs-defer.
 //
 // When a tree resolver is wired (the daemon injects the shared SupplyChainResolver — the SAME
-// engine the construction drain runs, sp-yfzi), it asks the resolver to build the full
+// engine the construction drain runs), it asks the resolver to build the full
 // scarcity-gated dependency tree for targetGood under the drain's EXACT settings: the smart
 // production strategy (a scarce intermediate that has a factory recurses; an abundant one is
 // bought), the pipeline's SupplyChainDepth as the fabricate depth cap (WithFabricateDepthCap —

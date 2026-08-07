@@ -54,10 +54,9 @@ func (h *RunFleetCoordinatorHandler) repositionPreviousShip(ctx context.Context,
 	// when no provider is wired.
 	liveStandby := appContract.ResolveStandbyStations(ctx, logger, h.standbyProvider, cmd.ContainerID, cmd.PlayerID.Value(), cmd.StandbyStations)
 
-	// Resolve the ≤6 FIXED placement slots when the fleet-hub set is empty (sp-bu6ma /
-	// sp-mtgje) so between-legs homing sends each idle hull to its permanent slot instead
-	// of piling. Nil-safe → liveStandby unchanged. The homing zips this hull to its slot
-	// by symbol against the dedicated roster (FleetShips) — no demand.
+	// Resolve the FIXED placement slots when the fleet-hub set is empty, so between-legs homing
+	// sends each idle hull to its permanent slot instead of piling. Nil-safe: liveStandby unchanged.
+	// The homing zips this hull to its slot by symbol against the dedicated roster, not by demand.
 	liveStandby = appContract.ResolveStandbyForHoming(ctx, logger, h.standbyPlacementProvider, cmd.PlayerID.Value(), liveStandby)
 
 	opCtx := shared.OperationContextFromContext(ctx)
@@ -106,9 +105,9 @@ func (h *RunFleetCoordinatorHandler) homeCompletedHullToStandby(ctx context.Cont
 
 	dedicatedMembers := resolveDedicatedMembersForHoming(ctx, logger, h.shipRepo, cmd.PlayerID, dedicatedFleetContract, cmd.DedicatedShips)
 
-	// No-thrash: a hull already at ITS OWN assigned fixed slot skips the redundant dispatch (sp-mtgje —
-	// "at MY slot", not "at ANY sink": two hulls that both delivered to one sink would otherwise both
-	// skip and pile). A hull that owns no slot (surplus over the knee) is left for the scaler to re-role.
+	// No-thrash: a hull already at ITS OWN assigned fixed slot skips the redundant dispatch. The test
+	// is "at MY slot", never "at ANY sink" — two hulls that both delivered to one sink would
+	// otherwise both skip and pile there. A hull that owns no slot is left for the scaler to re-role.
 	slot, owns := domainContract.AssignedSlot(shipSymbol, dedicatedMembers, liveStandby)
 	if !owns || ship.CurrentLocation().Symbol == slot {
 		return

@@ -78,23 +78,20 @@ func (h *RunFleetCoordinatorHandler) dispatchLiquidationForParked(
 // the parking decision and this dispatch, so there is nothing to liquidate.
 var errHoldAlreadyClear = errors.New("hold no longer holds cargo unrelated to the contract")
 
-// spawnLiquidationWorker persists, claims, and starts a one-shot
-// cargo_liquidation worker on a parked hull, mirroring spawnContractWorker's
-// atomic-claim + rollback lifecycle. The claim goes through ClaimShip under
-// the contract fleet identity, so an unpinned or contract-pinned hull claims
-// cleanly while a hull pinned to another fleet is rejected at the DB rather
-// than poached. On a start failure the assignment is released so the hull
-// returns to the pool.
+// spawnLiquidationWorker persists, claims, and starts a one-shot cargo_liquidation worker on a
+// parked hull, mirroring spawnContractWorker's atomic-claim + rollback lifecycle. The claim goes
+// through ClaimShip under the contract fleet identity, so an unpinned or contract-pinned hull
+// claims cleanly while a hull pinned to another fleet is rejected at the DB rather than poached. On
+// a start failure the assignment is released so the hull returns to the pool.
 //
-// The hold is re-verified against SERVER TRUTH first, because the parking decision
-// can be right when made and wrong when acted on: a contract turnover empties the
-// hold and flips requiredCargo within about a second, so a hull parked for the
-// OUTGOING good is routinely clear by the time the worker would run. Re-evaluating
-// FilterUnrelatedCargo's own predicate against the API — the same read the worker
-// itself opens with, so no extra call is spent — is what makes decision and action
-// agree; the sync also persists the true hold, so the hull re-enters candidacy on
-// the next pass. Fails CLOSED: an unverifiable hold is never claimed, and the
-// caller's cooldown defers the retry rather than skipping it (RULINGS #1).
+// The hold is re-verified against SERVER TRUTH first, because the parking decision can be right
+// when made and wrong when acted on: a contract turnover empties the hold and flips requiredCargo
+// within about a second, so a hull parked for the OUTGOING good is routinely clear by the time the
+// worker would run. Re-evaluating FilterUnrelatedCargo's own predicate against the API — the same
+// read the worker itself opens with, so no extra call is spent — is what makes decision and action
+// agree, and the sync persists the true hold so the hull re-enters candidacy next pass. Fails
+// CLOSED: an unverifiable hold is never claimed, and the caller's cooldown defers the retry rather
+// than skipping it (RULINGS #1).
 func (h *RunFleetCoordinatorHandler) spawnLiquidationWorker(
 	ctx context.Context,
 	cmd *RunFleetCoordinatorCommand,

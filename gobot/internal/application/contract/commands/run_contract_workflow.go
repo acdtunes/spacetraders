@@ -21,30 +21,10 @@ import (
 type RunWorkflowCommand = contractTypes.RunWorkflowCommand
 type RunWorkflowResponse = contractTypes.RunWorkflowResponse
 
-// RunWorkflowHandler implements the complete contract workflow
-// following the exact Python implementation pattern:
-//
-// 1. Check for existing active contracts (idempotency)
-// 2. Negotiate new contract or resume existing (handle error 4511)
-// 3. Evaluate profitability (log only, always accept)
-// 4. Accept contract (skip if already accepted)
-// 5. For each delivery:
-//   - Reload ship state
-//   - Jettison wrong cargo if needed
-//   - Calculate purchase needs
-//   - Execute multi-trip loop if units > cargo capacity
-//   - For each trip:
-//   - Navigate to seller
-//   - Dock
-//   - Purchase with transaction splitting (handled by PurchaseCargoHandler)
-//   - Navigate to delivery
-//   - Dock
-//   - Deliver cargo
-//
-// 6. Fulfill contract
-// 7. Calculate profit
-// 8. Transfer ship back to coordinator (if applicable)
-// 9. Signal completion via channel (if applicable)
+// RunWorkflowHandler implements the complete contract workflow: resume or negotiate a contract
+// (handling error 4511), evaluate profitability, accept, then per delivery reload the ship,
+// jettison wrong cargo, size the purchase and run the multi-trip source->deliver loop; finally
+// fulfill, book the profit, hand the ship back to the coordinator and signal completion.
 type RunWorkflowHandler struct {
 	lifecycleService *contractServices.ContractLifecycleService
 	deliveryExecutor *contractServices.DeliveryExecutor
@@ -73,11 +53,10 @@ func WithInventorySourcing(finder appContract.InventorySourceFinder, coordinator
 	}
 }
 
-// WithWithdrawalRecording wires the warehouse-withdrawal event recorder
-// onto the delivery executor: each successful warehouse→hauler buffer draw emits a
-// structured event (good, units, waypoint, hauler, contract id, timestamp) so
-// downstream analysis can measure warehouse ROI. A nil recorder is a no-op and a
-// nil clock defaults to RealClock, so callers may forward the wiring unconditionally.
+// WithWithdrawalRecording wires the warehouse-withdrawal event recorder onto the delivery executor,
+// so each successful warehouse->hauler draw emits a structured event and warehouse ROI is
+// measurable. A nil recorder is a no-op and a nil clock defaults to RealClock, so callers may
+// forward the wiring unconditionally.
 func WithWithdrawalRecording(recorder storage.WithdrawalRecorder, clock shared.Clock) RunWorkflowOption {
 	return func(c *runWorkflowConfig) {
 		c.deliveryOpts = append(c.deliveryOpts, contractServices.WithWithdrawalRecorder(recorder, clock))
@@ -160,13 +139,10 @@ func (h *RunWorkflowHandler) Handle(ctx context.Context, request common.Request)
 
 	// Execute workflow
 	if err := h.executeWorkflow(ctx, cmd, result); err != nil {
-		// PARK, don't crash: insufficient-credits during purchase
-		// is a clean recoverable exit, not a container crash. A nil Go
-		// error here means the container runner does NOT count this as a
-		// failure/restart - the dynamic-discovery fleet coordinator simply
-		// re-picks-up this ship's unfulfilled contract on its next pass,
-		// once the treasury recovers. Every other executeWorkflow error
-		// keeps the existing crash-and-restart behavior unchanged.
+		// PARK, don't crash: insufficient credits during purchase is a clean recoverable exit. A nil
+		// Go error means the container runner does NOT count this as a failure/restart, and the
+		// fleet coordinator re-picks-up this ship's unfulfilled contract once treasury recovers.
+		// Every other executeWorkflow error keeps crash-and-restart behaviour.
 		var insufficientErr *contractServices.ErrInsufficientCredits
 		if errors.As(err, &insufficientErr) {
 			result.Error = insufficientErr.Error()
@@ -276,20 +252,18 @@ func (h *RunWorkflowHandler) executeWorkflow(
 	return nil
 }
 
-// settleAlreadyDeliveredContract closes out a contract the SERVER already considers delivered,
-// and reports whether it handled the workflow (sp-20eyn, acceptance 4).
+// settleAlreadyDeliveredContract closes out a contract the SERVER already considers delivered, and
+// reports whether it handled the workflow.
 //
-// This is the branch that unwedges the 2026-08-05 TORWIND outage. That agent held a contract the
-// server read as 94/47 delivered and still `fulfilled: false`, while the local row read 0/47. Every
-// worker resumed it, walked into the delivery leg, tried to reload a hull the API could not return,
-// died, and respawned onto the same contract and the same hull — 34,279 times, ~24h of zero income.
-// There was nothing left to deliver the whole time. Fulfilling here, off contract state alone,
-// takes the ship out of the loop entirely: an unreadable, in-transit or missing hull cannot block
-// the collection of a contract that is already paid for in goods.
+// The local delivered counter can lag the server's while `fulfilled` is still false. Without this
+// branch every worker resumes such a contract, walks into the delivery leg, and dies on a hull read
+// — respawning onto the same contract and the same hull indefinitely, with nothing left to deliver
+// the whole time. Fulfilling here off CONTRACT STATE ALONE takes the ship out of the loop: an
+// unreadable, in-transit or missing hull cannot block collection of a contract already paid for in
+// goods.
 //
-// It runs BEFORE profitability evaluation and before the delivery leg, because both are work
-// planned against a contract with nothing left to plan, and the delivery leg is where the ship
-// read that killed prod lives.
+// It runs BEFORE profitability evaluation and before the delivery leg, because both plan work
+// against a contract with nothing left to plan, and the delivery leg is where the ship read lives.
 func (h *RunWorkflowHandler) settleAlreadyDeliveredContract(
 	ctx context.Context,
 	cmd *RunWorkflowCommand,
@@ -419,15 +393,11 @@ const (
 	contractLoopStopChunk = time.Second
 )
 
-// runContractLoop runs contracts continuously on this one hull until the
-// container is stopped (sp-ehg9). It wraps the SAME single-contract cycle the
-// single-shot path runs (executeWorkflow), so every money guard, the
-// one-active-contract idempotence (FindOrNegotiateContract finds the active
-// contract before negotiating a new one), and the container runner's ship claim
-// are inherited unchanged — the loop only adds "do it again, paced, until
-// stopped". Exposed via `workflow batch-contract --loop <ship>`; the bootstrap
-// INCOME phase starts it for the command frigate and stops it (container stop)
-// at the first-hauler pivot.
+// runContractLoop runs contracts continuously on this one hull until the container is stopped. It
+// wraps the SAME single-contract cycle the single-shot path runs (executeWorkflow), so every money
+// guard, the one-active-contract idempotence (FindOrNegotiateContract finds the active contract
+// before negotiating a new one) and the container runner's ship claim are inherited unchanged: the
+// loop only adds "do it again, paced, until stopped".
 func (h *RunWorkflowHandler) runContractLoop(ctx context.Context, cmd *RunWorkflowCommand) (common.Response, error) {
 	return h.runContractLoopWithCycle(ctx, cmd, func(c context.Context) (*RunWorkflowResponse, error) {
 		result := &RunWorkflowResponse{}
@@ -436,14 +406,12 @@ func (h *RunWorkflowHandler) runContractLoop(ctx context.Context, cmd *RunWorkfl
 	})
 }
 
-// runContractLoopWithCycle is the loop core, decoupled from the delivery
-// pipeline via the cycle seam so the orchestration (repeat, pace,
-// park-not-crash, clean ctx-stop) is unit-testable. It NEVER returns on a
-// per-cycle failure — a money-guard park or a transient error is logged, backed
-// off, and retried, exactly as the fleet coordinator keeps working the contract
-// through worker deaths (RULINGS #1). It returns ONLY when the container is
-// stopped (ctx cancelled), surfacing the graceful ctx error the runner treats as
-// a clean stop.
+// runContractLoopWithCycle is the loop core, decoupled from the delivery pipeline via the cycle
+// seam so the orchestration (repeat, pace, park-not-crash, clean ctx-stop) is unit-testable. It
+// NEVER returns on a per-cycle failure — a money-guard park or a transient error is logged, backed
+// off and retried, exactly as the fleet coordinator keeps working the contract through worker
+// deaths (RULINGS #1). It returns ONLY when the container is stopped, surfacing the graceful ctx
+// error the runner treats as a clean stop.
 func (h *RunWorkflowHandler) runContractLoopWithCycle(
 	ctx context.Context,
 	cmd *RunWorkflowCommand,

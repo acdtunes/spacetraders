@@ -54,52 +54,49 @@ func (e *DeliveryExecutor) lookupLiveCredits(ctx context.Context, playerID share
 	return playerResp.Player.Credits
 }
 
-// affordableSourceBuyLot sizes the source-buy lot the flat, immutable working-capital
-// reserve floor (common.ImmutableReserveFloor, sp-zq635 §4b / sp-05glh) allows, from a
-// live treasury read right before the buy. It is the contract-side analogue of the
-// factory's spendFloorBreached and the trade/arb spend-floor, extended by sp-8f8fg:
-// an all-or-nothing park deadlocked the sole earner over a small gap (nothing else
-// refilled treasury), so when the FULL lot would breach the floor the largest
-// affordable lot is bought instead — the floor itself is untouched (RULINGS #4/#5),
-// since the partial's projected cost still leaves treasury >= the reserve.
+// affordableSourceBuyLot sizes the source-buy lot the flat, immutable working-capital reserve floor
+// (common.ImmutableReserveFloor) allows, from a live treasury read right before the buy. It is the
+// contract-side analogue of the factory's spendFloorBreached and the trade/arb spend floor.
+//
+// IT SHRINKS RATHER THAN PARKING ALL-OR-NOTHING, because the contract engine is the sole earner:
+// parking it over a small gap deadlocks the operation, since nothing else refills treasury. The
+// floor itself is untouched (RULINGS #4/#5) — a partial lot's projected cost still leaves treasury
+// at or above the reserve.
 //
 // Returns (units, held):
-//   - guard unarmed (WithSourceBuyFloor not wired) → (unitsWanted, false): the
-//     optional-guard contract every existing caller/test relies on, byte-identical
-//   - unpriced lot (unitPrice ≤ 0) → (0, true): fails CLOSED, see sp-gef01 below
-//   - treasury unreadable → (0, true): fails CLOSED — a guard whose job is keeping
-//     treasury above the reserve must never let a buy through blind
-//   - full lot clears the floor → (unitsWanted, false), byte-identical
+//   - guard unarmed (WithSourceBuyFloor not wired) → (unitsWanted, false): the optional-guard
+//     contract every existing caller relies on
+//   - unpriced lot (unitPrice ≤ 0) → (0, true): fails CLOSED, see below
+//   - treasury unreadable → (0, true): fails CLOSED — a guard whose job is keeping treasury above
+//     the reserve must never let a buy through blind
+//   - full lot clears the floor → (unitsWanted, false)
 //   - full lot breaches but ≥ MinPartialSourceBuyUnits are affordable →
 //     (floor((treasury−reserve)/unitPrice), false)
-//   - anything smaller → (0, true): PARK (not crash), resuming when treasury
-//     recovers, as before
+//   - anything smaller → (0, true): PARK, not crash, resuming when treasury recovers
 func (e *DeliveryExecutor) affordableSourceBuyLot(ctx context.Context, playerID shared.PlayerID, unitsWanted, unitPrice int) (int, bool) {
 	if !e.enforceSourceBuyFloor {
 		return unitsWanted, false
 	}
 	logger := common.LoggerFromContext(ctx)
 
-	// UNPRICED LOT — FAIL CLOSED (sp-gef01). A non-positive unit price is not a cheap
-	// lot, it is an UNKNOWN one, and both money guards downstream reason in COST:
+	// UNPRICED LOT — FAIL CLOSED. A non-positive unit price is not a cheap lot, it is an UNKNOWN
+	// one, and both money guards downstream reason in COST:
 	//
-	//   - this floor computes fullCost = unitsWanted × 0 = 0, and treasury minus 0 is
-	//     always above the reserve, so it waves the FULL UNSHRUNK lot through; then
-	//   - reserveConcurrentSpendOrPark returns early on projectedCost ≤ 0, so no
-	//     reservation is taken either.
+	//   - this floor computes fullCost = unitsWanted × 0 = 0, and treasury minus 0 always clears
+	//     the reserve, so it waves the FULL UNSHRUNK lot through; then
+	//   - reserveConcurrentSpendOrPark returns early on projectedCost ≤ 0, so no reservation is
+	//     taken either.
 	//
-	// The buy would then execute at REAL prices with both armed guards blind — a money
-	// guard failing OPEN on missing data, the inverse of RULINGS #4. Refusing is the only
-	// answer available here: a lot nobody can price cannot be sized against the floor
-	// (that is why the partial-lot arithmetic below already requires unitPrice > 0), and
-	// reserving 0 would record an intent that constrains nobody.
+	// The buy would execute at REAL prices with both armed guards blind — a money guard failing
+	// OPEN on missing data, the inverse of RULINGS #4. Refusing is the only answer available: a lot
+	// nobody can price cannot be sized against the floor (the partial-lot arithmetic below already
+	// requires unitPrice > 0), and reserving 0 records an intent that constrains nobody.
 	//
-	// This cannot wedge sourcing. It is strictly narrower than the park that already
-	// happens when no market sells the good at all: an unscanned or aged-out good never
-	// reaches this guard, because PlanDeliverySourcing errors and the profitability
-	// evaluation fails upstream. Only a market row quoting a non-positive ask lands here,
-	// and UpsertMarketData rewrites that waypoint's whole price set on the next scan,
-	// while the coordinator re-projects the parked delivery each pass.
+	// It cannot wedge sourcing. It is strictly narrower than the park that already happens when no
+	// market sells the good at all — an unscanned or aged-out good never reaches here, because
+	// PlanDeliverySourcing errors and the profitability evaluation fails upstream. Only a market row
+	// quoting a non-positive ask lands here, and the next scan rewrites that waypoint's whole price
+	// set while the coordinator re-projects the parked delivery each pass.
 	if unitPrice <= 0 {
 		logger.Log("WARNING", fmt.Sprintf(
 			"Contract source-buy of %d units has no positive unit price to project a cost from — parking the buy (fail-closed, sp-gef01). An unpriced lot would clear the working-capital reserve floor and the aggregate spend cap at a projected cost of 0 while charging the real amount; resumes when the market is re-priced",
@@ -144,15 +141,13 @@ func (e *DeliveryExecutor) affordableSourceBuyLot(ctx context.Context, playerID 
 
 // ExecutePurchaseLoop executes the multi-trip purchase loop.
 //
-// projectedUnitAsk is the cached ask the profitability evaluation (and the
-// coordinator's sourcing defer gate, sp-1z2h) based its projection on; 0
-// disables the ladder cap (no basis to compare against). When a trip realizes
-// worse than SourcingLadderCapNumer/Denom (1.5×) of that basis, the loop stops
-// buying and delivers what is aboard — the −891k ELECTRONICS incident was
-// exactly this shape, a buyer laddering a SCARCE ask upward tranche after
-// tranche until the contract filled at any price. The undelivered remainder is
-// re-picked-up by the coordinator's next pass, where the defer gate re-projects
-// it at live prices (and parks it if still negative). Nothing is skipped.
+// projectedUnitAsk is the cached ask the profitability evaluation and the coordinator's sourcing
+// defer gate based their projection on; 0 disables the ladder cap, having no basis to compare
+// against. When a trip realizes worse than SourcingLadderCapNumer/Denom of that basis, the loop
+// stops buying and delivers what is aboard — without that cap a buyer ladders a SCARCE ask upward
+// tranche after tranche until the contract fills at any price. The undelivered remainder is
+// re-picked-up by the coordinator's next pass, where the defer gate re-projects it at live prices
+// and parks it if still negative. Nothing is skipped.
 func (e *DeliveryExecutor) ExecutePurchaseLoop(
 	ctx context.Context,
 	shipSymbol string,

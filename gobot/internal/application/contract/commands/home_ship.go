@@ -16,15 +16,14 @@ import (
 type HomeShipCommand = contractTypes.HomeShipCommand
 type HomeShipResponse = contractTypes.HomeShipResponse
 
-// HomeShipHandler dispatches an idle dedicated contract hull to its FIXED placement slot
-// (sp-mtgje): each delivery hull permanently OWNS one waypoint — the symbol-zip of the delivery
-// roster (FleetShips) onto the ≤6 placement slots (StandbyStations), computed by the pure
-// domainContract.AssignedSlot. The assignment depends ONLY on the roster + the slot set — NO demand
-// ranking, NO occupancy, NO live/peer position — so N hulls land on N DISTINCT slots (never piled),
-// byte-identical across restarts, and a second pass moves no hull. This replaces the runtime
-// demand/occupancy distributor whose concurrent-homing timing piled idle hulls on the top-demand hub
-// (the live K83 pile). A hull beyond the slot count (surplus over the delivery knee) owns no slot and
-// is left where it is for the scaler to re-role into a warehouse.
+// HomeShipHandler dispatches an idle dedicated contract hull to its FIXED placement slot: each
+// delivery hull permanently OWNS one waypoint — the symbol-zip of the delivery roster (FleetShips)
+// onto the placement slots (StandbyStations), computed by the pure domainContract.AssignedSlot. The
+// assignment depends ONLY on the roster and the slot set — NO demand ranking, NO occupancy, NO
+// live or peer position — so N hulls land on N DISTINCT slots, identically across restarts, and a
+// second pass moves no hull. A runtime demand/occupancy distributor cannot promise that: concurrent
+// homing races pile idle hulls onto the top-demand hub. A hull beyond the slot count owns no slot
+// and is left where it is for the scaler to re-role into a warehouse.
 type HomeShipHandler struct {
 	mediator      common.Mediator
 	shipRepo      navigation.ShipRepository

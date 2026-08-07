@@ -8,25 +8,21 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
 )
 
-// sp-a5j7 Phase 2 (wedx restoration + hzz5 X4). The runtime input-buy path (buyGood) chose its
-// source PRICE-FIRST via FindExportMarket, ignoring the supply/activity data it even logged.
-// The original SupplyChainResolver design — alive but bypassed at market_locator.go:254
-// FindExportMarketBySupplyPriority — ranked SUPPLY-FIRST (MODERATE+ only, supply > activity >
-// price). The trade analyst ruled and the full-factory review confirmed
-// that supply-first is the correct PRIMARY policy: every input blowup this era (parts -220k,
-// the micro chase, electronics -891k, the -6.6M furnace) began at a SCARCE/LIMITED source;
-// zero from ABUNDANT/HIGH. Supply is the LEADING indicator (SCARCE regenerates ~194min
-// half-life — it ladders immediately under draw); price is the LAGGING signal (by the time the
-// ask ladders, the money is spent). selectInputSource restores the design: never pick a
-// depleted source on the normal path, so the ladder the iv65 ceiling failed to catch cannot
-// even begin.
+// The runtime input-buy path selects its source SUPPLY-FIRST (MODERATE+ only, ranked
+// supply > activity > price), not price-first.
+//
+// SUPPLY IS THE LEADING INDICATOR AND PRICE IS THE LAGGING ONE. A depleted source ladders
+// immediately under our own draw, so by the time the ask has climbed the money is already spent;
+// every large input blowup starts at a SCARCE/LIMITED source, never at an ABUNDANT one. Never
+// picking a depleted source on the normal path means the ladder a price ceiling can only chase
+// cannot begin.
 
 const (
-	// defaultRescueMultiplier caps the rescue clause (wedx (a)): when NO eligible (MODERATE+)
-	// source exists and the chain is blocked on this input, a SCARCE/LIMITED source is bought
-	// ONLY if its ask is within this multiple of the good's trailing median. Tighter than the
-	// iv65 ceiling's 1.5x because a rescue buy is already into a depleted market — accept it
-	// only barely above baseline, never a ladder. A 0/absent config resolves here (RULINGS #5).
+	// defaultRescueMultiplier caps the rescue clause: when NO eligible (MODERATE+) source exists
+	// and the chain is blocked on this input, a SCARCE/LIMITED source is bought ONLY if its ask is
+	// within this multiple of the good's trailing median. Deliberately TIGHTER than the ladder
+	// ceiling, because a rescue buy is already into a depleted market — accept it barely above
+	// baseline, never a ladder. A 0/absent config resolves here (RULINGS #5).
 	defaultRescueMultiplier = 1.2
 )
 
@@ -61,22 +57,20 @@ func inputSourcingConfigFromContext(ctx context.Context) inputSourcingConfig {
 	return inputSourcingConfig{}
 }
 
-// sp-vh1s unified gate-fill mode. When a construction deliver-to-gate run is buying a node, the
-// Admiral §9 sign-off (2026-07-14) authorises MARGIN-BLIND gating: the gate is a finite, affordable
-// (bill ~1.3-2.6M vs treasury ~4M), enormous-ROI investment, so per-material margin/price gating is
-// penny-wise/pound-foolish and freezes the unlock. Under gate mode the executor's gates relax to
-// solvency (9aoc) only:
-//   - the input-source supply FLOOR drops to SCARCE (a MODERATE floor permanently freezes deep
-//     chains like SILICON/ELECTRONICS that never regenerate to MODERATE under continuous buy — the
-//     ADV freeze), with buy-vs-feed decided by ACTIVITY not supply alone (selectInputSource);
+// UNIFIED GATE-FILL MODE. When a construction deliver-to-gate run is buying a node, standing order
+// authorises MARGIN-BLIND gating: the gate is a finite, affordable, one-off investment, so
+// per-material margin/price gating freezes the unlock to save pennies. Under gate mode the
+// executor's gates relax to SOLVENCY ONLY:
+//   - the input-source supply FLOOR drops to SCARCE, because a MODERATE floor permanently freezes
+//     deep chains that never regenerate to MODERATE under continuous buy, with buy-vs-feed decided
+//     by ACTIVITY rather than supply alone (selectInputSource);
 //   - the per-tranche price ceiling and the chain-margin park are EXEMPTED (input_price_ceiling.go).
 //
-// A node is in gate mode iff IsUnifiedGateNode(ctx) — the single sp-vh1s predicate
-// (unified_gate_fill.go, Part A): the run delivers to a construction site. It rides ctx (not a
-// struct field) for the SAME singleton-executor race reason as the sibling sourcing / price-ceiling
-// / reserve configs: ProductionExecutor is a boot singleton shared across every concurrent factory
-// container, so a struct field would race between a gate run and a profit factory. The unstamped
-// default (every profit factory, estimator, and previous test) is false — profit-factory behavior.
+// A node is in gate mode iff IsUnifiedGateNode(ctx) — the single predicate, in unified_gate_fill.go
+// — meaning the run delivers to a construction site. It rides ctx rather than a struct field for
+// the same singleton-executor race reason as the sibling sourcing/price-ceiling/reserve configs:
+// ProductionExecutor is a boot singleton shared across every concurrent factory container, so a
+// struct field would race between a gate run and a profit factory. Unstamped is false.
 
 // inputSourceMode is how selectInputSource chose the returned source — buyGood uses it to
 // decide which downstream guards still apply (the eligible path faces the cross-market ceiling;
@@ -286,15 +280,14 @@ func (e *ProductionExecutor) perNodeSupplyFloor(ctx context.Context, good string
 	)
 }
 
-// trailingMedianAsk returns the trailing-window median ASK (purchase_price — what WE PAY, sp-en5h7) for a good at a waypoint
-// from the price-history reader, or ok=false when the reader is unwired, errors, or has no
-// samples in the window. Extracted so the rescue cap and any history-based check share one median
-// source.
+// trailingMedianAsk returns the trailing-window median ASK (purchase_price — what WE PAY) for a
+// good at a waypoint from the price-history reader, or ok=false when the reader is unwired, errors,
+// or has no samples in the window. Extracted so the rescue cap and any history-based check share
+// one median source.
 //
-// ALL THREE ok=false CASES FAIL CLOSED, IDENTICALLY. This comment used to claim "fail-open (nil
-// reader) / fail-closed (no samples)" semantics; that distinction never existed in the code — every
-// branch below returns (0, false) and the caller parks on all of them. sp-f5lki corrected it after
-// the nil-reader case turned out to be live in production for a whole era.
+// ALL THREE ok=false CASES FAIL CLOSED, IDENTICALLY. There is no fail-open nil-reader branch: every
+// branch below returns (0, false) and the caller parks on all of them, so an unwired reader is
+// indistinguishable in the log from a market with no history.
 func (e *ProductionExecutor) trailingMedianAsk(ctx context.Context, waypoint, good string) (int, bool) {
 	if e.priceHistory == nil {
 		return 0, false

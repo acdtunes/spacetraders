@@ -8,45 +8,42 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
 )
 
-// sp-to2v — FABRICATION EFFICIENCY feeding policy (analyst adjustments #2, #3, #4). It shapes HOW the
-// executor feeds a fabricated node's inputs — sizing and ordering the per-window deliveries — without
-// changing WHICH inputs the tree resolves (that is the resolver's job). The three verified mechanics
-// it encodes:
+// The FABRICATION EFFICIENCY feeding policy shapes HOW the executor feeds a fabricated node's
+// inputs — sizing and ordering the per-window deliveries — without changing WHICH inputs the tree
+// resolves, which is the resolver's job. Three mechanics:
 //
-//   #2 BALANCED-TO-LIMITING (the ~4x lever): feed a node's inputs in balanced proportion gated by
-//      the SCARCEST (limiting) input's sourceable flow, never greedily piling onto the cheapest/
-//      most-abundant one. Feeding ALL inputs balanced → +0.12 activity vs feeding SOME → +0.03.
-//   #3 SATURATION-CAPPED TRANCHES: cap each per-input delivery at the saturation window
-//      (~100-200u/window; Δactivity rolls off past ~200 and <25u does nothing), then move the hull
-//      to the next starved node rather than dumping one node past saturation.
-//   #4 TAPROOT-FIRST + FEED-RESPONSIVE-ONLY: feed the limiting input DEEPEST in the tree first (it
-//      gates everything above it); and only feed goods whose OUTPUT activity actually responds to
-//      feeding — ADVANCED_CIRCUITRY/SHIP_PLATING/SHIP_PARTS respond, EQUIPMENT/LAB_INSTRUMENTS/
-//      FOOD/MEDICINE do NOT, so those are BUY-OR-SKIP (feeding them wastes hull-hours).
+//	BALANCED-TO-LIMITING: feed a node's inputs in balanced proportion gated by the SCARCEST
+//	(limiting) input's sourceable flow, never greedily piling onto the cheapest or most abundant
+//	one. Activity responds to feeding ALL inputs, far more than to feeding some of them harder.
 //
-// This balanced feeding is now the executor's SOLE feeding path. The fabrication_efficiency
-// toggle + its greedy OFF alternative + the per-run coefficient/non-responsive overrides were deleted
-// (they were LIVE-on with the default coefficients) — the algorithm below runs unconditionally against
-// the analyst-tuned defaultFeedingPolicy consts, so there is no per-run config to race on ctx.
+//	SATURATION-CAPPED TRANCHES: cap each per-input delivery at the saturation window, then move
+//	the hull to the next starved node rather than dumping one node past saturation, where extra
+//	units move activity nothing.
+//
+//	TAPROOT-FIRST + FEED-RESPONSIVE-ONLY: feed the limiting input DEEPEST in the tree first, since
+//	it gates everything above it; and only feed goods whose OUTPUT activity actually responds to
+//	feeding — the rest are BUY-OR-SKIP, because hauling their inputs buys nothing.
+//
+// This is the executor's SOLE feeding path: there is no alternative greedy mode and no per-run
+// coefficient override, so nothing here can race on ctx.
 
 const (
-	// defaultFeedSaturationMaxUnits caps a single per-input delivery tranche this window. Δactivity
-	// peaks at 101-200u and rolls off past 200 (wasted), so 200 is the analyst default (MEDIUM
-	// confidence on the exact figure — tuned live). 0/absent resolves here (RULINGS #5).
+	// defaultFeedSaturationMaxUnits caps a single per-input delivery tranche this window. Activity
+	// gain rolls off past the saturation window, so units beyond it are wasted hull-hours.
+	// 0/absent resolves here (RULINGS #5).
 	defaultFeedSaturationMaxUnits = 200
-	// defaultFeedSaturationMinUnits is the min-effective delivery: <25u moves activity nothing, so a
-	// balanced tranche is never sized below this (a dribble is wasted hull-hours). 0/absent resolves
-	// here (RULINGS #5).
+	// defaultFeedSaturationMinUnits is the min-effective delivery: below it a delivery moves
+	// activity nothing, so a balanced tranche is never sized smaller. 0/absent resolves here
+	// (RULINGS #5).
 	defaultFeedSaturationMinUnits = 25
 )
 
-// defaultNonResponsiveFeedGoods is the analyst-verified set of OUTPUT goods whose activity does NOT
-// respond to feeding (era-2/3, ample-feed controlled). A factory producing one of these gains
-// nothing from being fed, so the executor BUY-OR-SKIPs it instead of burning hull-hours hauling its
-// inputs. It is an EXCLUSION set, not a positive responder list: intermediates like ELECTRONICS /
-// MICROPROCESSORS must stay fed (the recursion depends on them), so only the known dead-ends are
-// listed and everything else is fed. This verified set is the sole exclusion set (sp-sxyx6 removed
-// the per-run operator override).
+// defaultNonResponsiveFeedGoods is the set of OUTPUT goods whose activity does NOT respond to
+// feeding. A factory producing one of these gains nothing from being fed, so the executor
+// BUY-OR-SKIPs it instead of burning hull-hours hauling its inputs. It is an EXCLUSION set, not a
+// positive responder list: intermediates such as ELECTRONICS/MICROPROCESSORS must stay fed because
+// the recursion depends on them, so only known dead-ends are listed and everything else is fed.
+// There is no per-run operator override.
 var defaultNonResponsiveFeedGoods = map[string]bool{
 	"EQUIPMENT":       true,
 	"LAB_INSTRUMENTS": true,

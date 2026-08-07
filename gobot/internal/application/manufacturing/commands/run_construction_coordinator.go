@@ -42,23 +42,18 @@ const (
 	constructionOperationContext = "construction_supply"
 
 	// defaultConstructionWorkerCap bounds concurrent supplyTask workers when a tick's pipeline
-	// exposes no positive max_workers. This is defensive only — readyConstructionTasks yields
-	// tasks solely from EXECUTING pipelines, which always carry a max_workers — and mirrors the
-	// domain's default construction max_workers so an unset pipeline drains at the width the
-	// planner would have chosen.
+	// exposes no positive max_workers. Defensive only — readyConstructionTasks yields tasks solely
+	// from EXECUTING pipelines, which always carry one — and it mirrors the domain default so an
+	// unset pipeline drains at the width the planner would have chosen.
 	defaultConstructionWorkerCap = 5
 
 	// constructionSupplyTaskDefaultTimeout bounds a single supplyTask so one wedged task can never
 	// hold its worker — and the slot that worker occupies under max_workers — forever. An unbounded
-	// downstream wait (a hull already at the gate whose supply 4219s, a navigation/dock that never
-	// returns, a bad task state) would otherwise permanently retire a slot, and enough of them starve
-	// the drain of dispatch capacity while it still reports RUNNING. Must stay
-	// generous enough never to cut a legitimate in-system source+deliver round trip (construction legs
-	// are single-system): a multi-hop light-hauler round trip can exceed 10m, abandoning healthy long
-	// hauls at the finish line and forcing the retry onto a fresh empty hull while the laden one
-	// strands out of the pool — 30m clears that haul while still converting a genuine indefinite hang
-	// into a logged, retried tick. Was operator-tunable per-launch; sp-sxyx6 retired the knob —
-	// this const is now the sole value.
+	// downstream wait permanently retires a slot, and enough of them starve the drain of dispatch
+	// capacity while it still reports RUNNING. It must stay generous enough never to cut a
+	// legitimate in-system source+deliver round trip, since cutting a healthy long haul at the
+	// finish line forces the retry onto a fresh empty hull while the laden one strands out of the
+	// pool, and short enough to convert an indefinite hang into a logged, retried tick.
 	constructionSupplyTaskDefaultTimeout = 30 * time.Minute
 
 	// defaultConstructionLotUnits is the fallback per-lot hull-load used to size the fan-out when an
@@ -79,18 +74,16 @@ const (
 	// fabricates down to before it market-buys the deeper inputs.
 	constructionDefaultChainDepth = 3
 
-	// constructionWorkerReapGrace is how long PAST its own task deadline a supply worker's registration
-	// survives before the drain gives the worker up for dead and reclaims its hull. The deadline bounds
-	// the TASK; nothing bounds the goroutine, which can stop running without ever reaching its
-	// deregistration — wedged in a claim or release that ignores ctx, or unwound past it — and an
-	// unbounded registration retires that hull permanently.
+	// constructionWorkerReapGrace is how long PAST its own task deadline a supply worker's
+	// registration survives before the drain gives it up for dead and reclaims its hull. The
+	// deadline bounds the TASK; nothing bounds the goroutine, which can stop running without ever
+	// reaching its deregistration, and an unbounded registration retires that hull permanently.
 	//
-	// It is a grace on top of the worker's own deadline, never a deadline of its own, so a legitimately
-	// long haul is untouched: a 60-minute haul under a 90-minute deadline is nowhere near it. Only a
-	// worker that has already blown its own contract, and then failed to clean up (a detached-ctx
-	// release is itself bounded at 15s), is ever reaped. Generous on purpose — reaping early risks a
-	// second hull-load bought against a bill the first is about to meet, reaping late costs one hull's
-	// capacity for a while.
+	// It is a GRACE on top of the worker's own deadline, never a deadline of its own, so a
+	// legitimately long haul under its deadline is untouched; only a worker that already blew its
+	// contract and then failed to clean up is reaped. Generous on purpose — reaping early risks a
+	// second hull-load bought against a bill the first is about to meet, reaping late costs one
+	// hull's capacity for a while.
 	constructionWorkerReapGrace = 10 * time.Minute
 
 	// constructionDetachedPersistTimeout bounds the detached write persistCleanupCtx hands back
@@ -136,14 +129,13 @@ type ConstructionNavigator interface {
 	NavigateAndDock(ctx context.Context, shipSymbol, destination string, playerID shared.PlayerID) (*navigation.Ship, error)
 }
 
-// RunConstructionCoordinatorHandler is the thin construction-supply drain. Each
-// tick it: runs the activator, polls READY DELIVER_TO_CONSTRUCTION tasks from EXECUTING
-// pipelines, claims idle in-system haulers under the shared "manufacturing" identity, then
-// delegates source+deliver to the ProductionExecutor and records pipeline progress. An
-// unsourceable material is PARKED for resupply (never failed). It is queue-driven (not
-// tree-driven) and holds no PERSISTENT state — a restart re-polls persistence and resumes; the one
-// thing it carries between ticks is the live worker registry, which dies with the process the
-// workers it tracks do.
+// RunConstructionCoordinatorHandler is the thin construction-supply drain. Each tick it runs the
+// activator, polls READY DELIVER_TO_CONSTRUCTION tasks from EXECUTING pipelines, claims idle
+// in-system haulers under the shared "manufacturing" identity, then delegates source+deliver to the
+// ProductionExecutor and records pipeline progress. An unsourceable material is PARKED for resupply,
+// never failed. It is queue-driven rather than tree-driven and holds no PERSISTENT state — a restart
+// re-polls persistence and resumes — the one thing carried between ticks being the live worker
+// registry, which dies with the process its workers do.
 type RunConstructionCoordinatorHandler struct {
 	taskRepo     manufacturing.TaskRepository
 	pipelineRepo manufacturing.PipelineRepository
@@ -158,19 +150,16 @@ type RunConstructionCoordinatorHandler struct {
 	// resolver builds the scarcity-gated dependency tree for a FABRICATE material. Optional
 	// (wired by SetTreeResolver); nil falls back to the one-level fabricate node.
 	resolver ConstructionTreeResolver
-	// recordMu serializes the pipeline delivery read-modify-write (recordDelivery) across the
-	// concurrent supplyTask workers: two workers supplying the SAME pipeline must not
-	// both load-add-store its material counters and lose an update. It guards an in-tick section
-	// only, not any cross-tick/persisted state.
+	// recordMu serializes the pipeline delivery read-modify-write (recordDelivery) across concurrent
+	// supplyTask workers: two workers supplying the SAME pipeline must not both load-add-store its
+	// material counters and lose an update. It guards an in-tick section only.
 	recordMu sync.Mutex
-	// taskTimeout bounds a single supplyTask (claim→source→deliver→record) so one wedged task can
-	// never silently freeze the whole drain goroutine. Defaulted in the constructor to
-	// constructionSupplyTaskDefaultTimeout; in-package tests set a tiny bound directly to keep the
-	// timeout test fast.
+	// taskTimeout bounds a single supplyTask (claim->source->deliver->record) so one wedged task can
+	// never silently freeze the whole drain goroutine. Defaulted in the constructor; in-package
+	// tests set a tiny bound directly.
 	taskTimeout time.Duration
 	// reapGrace is how long past its task deadline a worker's REGISTRATION survives before the drain
-	// reclaims its hull. Defaulted in the constructor to constructionWorkerReapGrace; in-package tests
-	// set a tiny bound directly to keep the liveness test fast.
+	// reclaims its hull. Defaulted in the constructor; in-package tests set a tiny bound directly.
 	reapGrace time.Duration
 	warehouse warehouseSourcing
 	// gate is the delivery-fleet collaborator set + the LIVE buy policy, whose pause state must
@@ -188,36 +177,32 @@ type RunConstructionCoordinatorHandler struct {
 	// changed its role.
 	//
 	// IT MUST LIVE HERE, ON THE HANDLER, AND NOT INSIDE A TICK. gate.Worker.LastMovedByUs is the
-	// one field of a Worker that is NOT derivable from a single read of the ship row, so a tick
-	// that rebuilds its Workers from the DB leaves it zero forever: every hull reads "never moved
-	// by us", the dwell guard never fires, and hulls churn roles every tick. That failure is
-	// invisible from the planner's side and it does not look like a stall — an inert dwell produces
-	// MORE role changes, so the fleet looks BUSY. The alarm is gate.ReallocationPlan.DwellRecords,
-	// which LogLine renders as "dwell records N/M": a steady "dwell records 0/N" means this ledger
-	// is not being kept.
+	// one Worker field NOT derivable from a single read of the ship row, so a tick that rebuilds its
+	// Workers from the DB leaves it zero forever: every hull reads "never moved by us", the dwell
+	// guard never fires, and hulls churn roles every tick. That does not look like a stall — an
+	// inert dwell produces MORE role changes, so the fleet looks BUSY. The alarm is
+	// gate.ReallocationPlan.DwellRecords: a steady 0/N means this ledger is not being kept.
 	//
-	// It is deliberately IN-MEMORY and per-process, following the pause state's precedent: a
-	// restart re-derives, an unrecorded hull is immediately eligible, and the worst case is one
-	// extra role change that spends nothing. Persisting it would add a write to the tick for a
-	// guard whose only job is to damp oscillation over minutes.
-	// stallMu guards stallSeen, the progress watchdog's LAST-OBSERVED REMAINING ledger (sp-zx0tu).
+	// Deliberately IN-MEMORY and per-process, following the pause state's precedent: a restart
+	// re-derives, an unrecorded hull is immediately eligible, and the worst case is one extra role
+	// change that spends nothing. Persisting it adds a write to the tick for a guard whose only job
+	// is to damp oscillation over minutes.
+	// stallMu guards stallSeen, the progress watchdog's LAST-OBSERVED REMAINING ledger.
 	//
 	// IT IS IN-MEMORY AND PER-PROCESS, following the buy-policy pause state and the reallocator's
 	// dwell ledger. A restart re-seeds it, and the FIRST tick after a restart deliberately reports
-	// nothing rather than guessing — see watchGateProgress. The cost of that is real and is stated
-	// there: a restart loop faster than the stall threshold can hide a stall. It is accepted because
-	// the alternative was persisting a (remaining, observed_at) snapshot, which needs a schema
-	// change, and the manufacturing models are NOT in the startup AutoMigrate list — a new column
-	// would ship a model the live table never got.
+	// nothing rather than guessing — see watchGateProgress. The cost is real and stated there: a
+	// restart loop faster than the stall threshold hides a stall. It is accepted because persisting
+	// a (remaining, observed_at) snapshot needs a schema change, and the manufacturing models are
+	// NOT in the startup AutoMigrate list, so a new column would ship a model the live table lacks.
 	stallMu   sync.Mutex
 	stallSeen map[string]materialObservation
 
-	// idleMu guards idleReported, the "why is the drain quiet" edge detector (sp-5vv65).
+	// idleMu guards idleReported, the "why is the drain quiet" edge detector.
 	//
 	// It stores the LAST REPORTED state, not a timestamp, because the line it gates is emitted on
-	// TRANSITION only. At 10:00 on the incident day the delivery fleet was paused on all 59 ticks of
-	// a perfectly healthy hour — a per-tick line there is 59 identical rows and becomes the noise it
-	// exists to cut through.
+	// TRANSITION only. A legitimately paused fleet stays paused for every tick of an hour, and a
+	// per-tick line there is identical rows and becomes the noise it exists to cut through.
 	idleMu       sync.Mutex
 	idleReported bool
 
@@ -257,18 +242,18 @@ func NewRunConstructionCoordinatorHandler(
 	}
 }
 
-// SetConstructionSiteSource wires the LIVE construction-site read used to reconcile the pipeline's
-// delivered counters each tick. It is the SAME shared ConstructionSiteRepository the
-// planner reads site requirements through — not a second fetch path.
+// SetConstructionSiteSource wires the LIVE construction-site read that reconciles the pipeline's
+// delivered counters each tick — the SAME shared ConstructionSiteRepository the planner reads site
+// requirements through, never a second fetch path.
 func (h *RunConstructionCoordinatorHandler) SetConstructionSiteSource(source manufacturing.ConstructionSiteRepository) {
 	h.siteSource = source
 }
 
-// SetTreeResolver wires the scarcity-gated supply-chain resolver so the drain PRODUCES a
-// FABRICATE material's scarce intermediates recursively instead of the flat one-level node. Optional
-// — the daemon injects the shared goodsResolver singleton; left unset the drain uses the one-level
-// fallback. A setter (not a constructor arg) keeps the existing coordinator
-// tests, which never build the resolver tree, unchanged (nil → fallback → byte-identical).
+// SetTreeResolver wires the scarcity-gated supply-chain resolver so the drain PRODUCES a FABRICATE
+// material's scarce intermediates recursively instead of using the flat one-level node. Optional:
+// the daemon injects the shared resolver singleton, and left unset the drain uses the one-level
+// fallback. A setter rather than a constructor arg keeps fixtures that build no resolver tree
+// working.
 func (h *RunConstructionCoordinatorHandler) SetTreeResolver(resolver ConstructionTreeResolver) {
 	h.resolver = resolver
 }
@@ -354,11 +339,11 @@ func (h *RunConstructionCoordinatorHandler) drainLoop(ctx context.Context, cmd *
 // pipelines, and hand each to a supply worker with a claimed idle hauler.
 //
 // The tick DISPATCHES its workers and returns; it does not join them. A construction haul runs for
-// tens of minutes under a deadline measured in hours, and joining it held the whole loop for that
-// long: the next activation pass — which is also the FAILED-task retry sweep — could not start, so
-// a recoverable leg sat dead and a hull bought mid-haul stayed unassigned until the slowest haul
-// finished. Activation, the sweep, site reconciliation and hull discovery therefore run on the
-// tick's cadence, and the hauls run underneath them.
+// tens of minutes under a deadline measured in hours, and joining it holds the whole loop that long:
+// the next activation pass — which is also the FAILED-task retry sweep — cannot start, so a
+// recoverable leg sits dead and a hull bought mid-haul stays unassigned until the slowest haul
+// finishes. Activation, the sweep, site reconciliation and hull discovery therefore run on the
+// tick's cadence, with the hauls underneath them.
 func (h *RunConstructionCoordinatorHandler) drainOnce(ctx context.Context, cmd *RunConstructionCoordinatorCommand) (*RunConstructionCoordinatorResponse, error) {
 	logger := common.LoggerFromContext(ctx)
 
@@ -370,11 +355,11 @@ func (h *RunConstructionCoordinatorHandler) drainOnce(ctx context.Context, cmd *
 
 	h.activateConstructionTasks(ctx, cmd.PlayerID)
 
-	// THE PROGRESS WATCHDOG RUNS BEFORE THE NO-WORK RETURN, AND THAT ORDER IS THE WHOLE POINT
-	// (sp-63r4f). A stalled pipeline very often has NO ready tasks — that is what the stall looks
-	// like from here — so a watchdog placed after the early return below would be silent in exactly
-	// the case it exists to report. It reads its own persisted history and reports; it dispatches
-	// nothing and cannot affect the tick's outcome.
+	// THE PROGRESS WATCHDOG RUNS BEFORE THE NO-WORK RETURN, AND THAT ORDER IS THE WHOLE POINT. A
+	// stalled pipeline very often has NO ready tasks — that is what the stall looks like from here —
+	// so a watchdog placed after the early return below would be silent in exactly the case it
+	// exists to report. It reads its own history and reports; it dispatches nothing and cannot
+	// affect the tick's outcome.
 	h.watchAllGateProgress(ctx, cmd.PlayerID)
 
 	tasks, err := h.readyConstructionTasks(ctx, cmd.PlayerID)
@@ -405,12 +390,11 @@ func (h *RunConstructionCoordinatorHandler) drainOnce(ctx context.Context, cmd *
 
 	// Re-role gate hulls BEFORE hauler discovery, so a re-tag is visible to THIS tick: AssignFleet
 	// invalidates the ship-list cache and claimIdentityFor reads the live tag, so a hull adopted
-	// here is discovered under its new pool and claimed under its new identity in the same tick.
-	// It moves only idle, unheld hulls and spends nothing.
+	// here is discovered under its new pool and claimed under its new identity in the same tick. It
+	// moves only idle, unheld hulls and spends nothing.
 	//
-	// It takes the RESOLVED systemSymbol, not cmd.SystemSymbol: an unset launch symbol would
-	// otherwise disable the in-system scoping entirely and let this drain re-role a gate hull
-	// parked in a system it cannot reach.
+	// It takes the RESOLVED systemSymbol, not cmd.SystemSymbol: an unset launch symbol would disable
+	// the in-system scoping and let this drain re-role a gate hull parked in a system it cannot reach.
 	h.reallocateGateRoles(ctx, systemSymbol, tasks, playerID)
 
 	// Discover the drain's OWN dedicated fleet FIRST, then supplement with opportunistic idle
@@ -609,19 +593,16 @@ const operationManufacturing = "manufacturing"
 // constructionSourcingNode builds the SupplyChainNode the drain hands to ProduceGood for one
 // construction material. Unified gate-fill ALWAYS resolves the full scarcity-gated dependency tree
 // via the shared SupplyChainResolver, ignoring the planner's frozen buy-vs-fabricate decision:
-// feeding is INHERENT in the tree, so a gate material whose good HAS a source factory is
-// fabricated+fed instead of bought cold (a pure-BUY feeds nothing — the bug this closes). The
-// resolver itself decides buy-vs-fabricate per node by live supply, so it PRODUCES a scarce
-// intermediate that has a factory (recursing its sub-chain to relieve the scarcity) and BUYS an
-// abundant one. The tree resolves under the run strategy (smart by default) and is bounded by the
-// pipeline's SupplyChainDepth (the depth backstop) + the resolver's cycle guard.
+// FEEDING IS INHERENT IN THE TREE, so a gate material whose good HAS a source factory is
+// fabricated and fed rather than bought cold, where a pure BUY feeds nothing. The resolver decides
+// buy-vs-fabricate per node by live supply — PRODUCING a scarce intermediate that has a factory,
+// BUYING an abundant one — under the run strategy, bounded by the pipeline's SupplyChainDepth and
+// the resolver's cycle guard.
 //
-// It falls back to the planner's frozen decision ONLY when the resolver is unwired (existing
-// coordinator tests) or cannot build the tree (stale/absent market data): a buy-final task
-// (FactorySymbol == "") becomes a bare BUY; a fabricate task becomes the one-level fabricate node.
-// A fabricate task whose good has no known recipe (should not happen — the planner never fabricates
-// a raw good) falls back to a BUY so the engine attempts a market source rather than polling forever
-// on a childless fabricate.
+// It falls back to the planner's frozen decision ONLY when the resolver is unwired or cannot build
+// the tree from stale/absent market data: a buy-final task becomes a bare BUY, a fabricate task the
+// one-level fabricate node. A fabricate task whose good has no known recipe falls back to a BUY so
+// the engine attempts a market source rather than polling forever on a childless fabricate.
 func (h *RunConstructionCoordinatorHandler) constructionSourcingNode(ctx context.Context, task *manufacturing.ManufacturingTask, systemSymbol string, playerID int) *goods.SupplyChainNode {
 	if tree := h.resolveFabricationTree(ctx, task, systemSymbol, playerID); tree != nil {
 		return tree
@@ -641,19 +622,19 @@ func (h *RunConstructionCoordinatorHandler) constructionSourcingNode(ctx context
 }
 
 // resolveFabricationTree builds the scarcity-gated dependency tree for a FABRICATE material via the
-// shared resolver. It stamps, on the tree-build ctx only (the buy-vs-fabricate decision is
-// baked into the tree at build time — ProduceGood just walks the shape, so produceCtx is untouched):
-//   - the per-run PRODUCTION strategy (WithProductionStrategy — smart by default), so a scarce
-//     intermediate with a factory fabricates while an abundant one is bought;
-//   - the pipeline's SupplyChainDepth as the fabricate depth cap (WithFabricateDepthCap — the safety
-//     backstop; a 0/unset pipeline resolves to the depth-3 default);
-//   - the pipeline's per-good overrides (WithGoodGatingOverrides), so a single bottleneck material
-//     can be pinned buy/fabricate without disturbing the rest.
+// shared resolver. It stamps the following on the TREE-BUILD ctx only — the buy-vs-fabricate
+// decision is baked into the tree at build time and ProduceGood just walks the shape, so produceCtx
+// is untouched:
+//   - the per-run PRODUCTION strategy, so a scarce intermediate with a factory fabricates while an
+//     abundant one is bought;
+//   - the pipeline's SupplyChainDepth as the fabricate depth cap (the safety backstop; a 0/unset
+//     pipeline resolves to the default);
+//   - the pipeline's per-good overrides, so a single bottleneck material can be pinned
+//     buy/fabricate without disturbing the rest.
 //
 // Returns nil — so constructionSourcingNode falls back to the one-level node — when the resolver is
-// unwired or errors (stale/absent market data). The pipeline is read the way remainingBill does
-// (FindByID); config fields (depth, overrides) are immutable post-creation, so this read needs no
-// lock (matching pipelineExecuting's unlocked read).
+// unwired or errors. The pipeline is read the way remainingBill does; config fields are immutable
+// post-creation, so this read needs no lock.
 func (h *RunConstructionCoordinatorHandler) resolveFabricationTree(ctx context.Context, task *manufacturing.ManufacturingTask, systemSymbol string, playerID int) *goods.SupplyChainNode {
 	if h.resolver == nil {
 		return nil
