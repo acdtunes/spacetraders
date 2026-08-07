@@ -41,10 +41,10 @@ func TestRecordWave_HeavyPublishesTheNoneReasonLabelNotAnEmptyOne(t *testing.T) 
 	c.RecordWave("1", WaveReaderGrowth, true, "")
 
 	got := gaugeSamples(t, c.waveProbeReason)
-	if v, ok := got["player_id=1;reason=none;"]; !ok || v != 1 {
+	if v, ok := got["player_id=1;reader=growth;reason=none;"]; !ok || v != 1 {
 		t.Fatalf("expected reason=none set to 1, got %v", got)
 	}
-	if _, ok := got["player_id=1;reason=;"]; ok {
+	if _, ok := got["player_id=1;reader=growth;reason=;"]; ok {
 		t.Fatalf("an EMPTY reason label was published — PromQL cannot tell it from a missing label: %v", got)
 	}
 }
@@ -56,7 +56,7 @@ func TestRecordWave_NamedProbeReasonIsPublishedVerbatim(t *testing.T) {
 	c.RecordWave("1", WaveReaderGrowth, false, "unreachable")
 
 	got := gaugeSamples(t, c.waveProbeReason)
-	if v, ok := got["player_id=1;reason=unreachable;"]; !ok || v != 1 {
+	if v, ok := got["player_id=1;reader=growth;reason=unreachable;"]; !ok || v != 1 {
 		t.Fatalf("expected reason=unreachable set to 1, got %v", got)
 	}
 }
@@ -71,10 +71,10 @@ func TestRecordWave_SupersededReasonIsZeroedNotLeftStanding(t *testing.T) {
 	c.RecordWave("1", WaveReaderGrowth, false, "unreachable")
 
 	got := gaugeSamples(t, c.waveProbeReason)
-	if v, ok := got["player_id=1;reason=lanes_served;"]; !ok || v != 0 {
+	if v, ok := got["player_id=1;reader=growth;reason=lanes_served;"]; !ok || v != 0 {
 		t.Fatalf("the superseded reason must read 0, got %v", got)
 	}
-	if v := got["player_id=1;reason=unreachable;"]; v != 1 {
+	if v := got["player_id=1;reader=growth;reason=unreachable;"]; v != 1 {
 		t.Fatalf("the current reason must read 1, got %v", got)
 	}
 }
@@ -104,10 +104,51 @@ func TestRecordWave_ReasonsAreScopedPerPlayer(t *testing.T) {
 	c.RecordWave("2", WaveReaderGrowth, false, "unreachable")
 
 	got := gaugeSamples(t, c.waveProbeReason)
-	if got["player_id=1;reason=lanes_served;"] != 1 {
+	if got["player_id=1;reader=growth;reason=lanes_served;"] != 1 {
 		t.Fatalf("player 1's reason was disturbed by player 2, got %v", got)
 	}
-	if got["player_id=2;reason=unreachable;"] != 1 {
+	if got["player_id=2;reader=growth;reason=unreachable;"] != 1 {
 		t.Fatalf("player 2's reason is missing, got %v", got)
+	}
+}
+
+// THE REASON SERIES IS PER READER, exactly like the wave beside it, and this is the assertion that
+// makes the second reader safe to add. Two consumers writing one {player,reason} series each drive
+// the other's live reason to 0 on their own tick: the drain would report "no reason" for a
+// coordinator that had just published one, and an operator reading either would see a reason
+// flapping at the beat frequency of two tick periods.
+//
+// It also buys the diagnosis the wave gauge alone cannot give. fleet_growth_wave says THAT the two
+// disagree; a per-reader reason says WHICH input they saw differently.
+func TestRecordWave_EachReaderKeepsItsOwnProbeReason(t *testing.T) {
+	c := NewFleetGrowthMetricsCollector()
+
+	c.RecordWave("1", WaveReaderGrowth, false, "lanes_served")
+	c.RecordWave("1", WaveReaderDrain, false, "unreachable")
+
+	got := gaugeSamples(t, c.waveProbeReason)
+	if got["player_id=1;reader=growth;reason=lanes_served;"] != 1 {
+		t.Fatalf("the growth reader's reason was zeroed by the drain, got %v", got)
+	}
+	if got["player_id=1;reader=drain;reason=unreachable;"] != 1 {
+		t.Fatalf("the drain reader's reason is missing, got %v", got)
+	}
+}
+
+// A reader's OWN superseded reason is still driven to 0 — the per-reader scoping narrows the
+// zeroing, it does not switch it off. Without this the fix above would trade one lingering series
+// for two.
+func TestRecordWave_SupersededReasonIsZeroedWithinOneReader(t *testing.T) {
+	c := NewFleetGrowthMetricsCollector()
+
+	c.RecordWave("1", WaveReaderDrain, false, "lanes_served")
+	c.RecordWave("1", WaveReaderDrain, true, "")
+
+	got := gaugeSamples(t, c.waveProbeReason)
+	if got["player_id=1;reader=drain;reason=lanes_served;"] != 0 {
+		t.Fatalf("the drain's superseded reason must read 0, got %v", got)
+	}
+	if got["player_id=1;reader=drain;reason=none;"] != 1 {
+		t.Fatalf("the drain's current reason must read 1, got %v", got)
 	}
 }

@@ -76,39 +76,37 @@ type BuyReport struct {
 	// refusal. A tick with Attempts > 0 and Bought == 0 and no Refusals is a
 	// contradiction — every path that burns an attempt without buying records one.
 	Refusals []BuyRefusal
+	// Wave is the regime this tick ran in, and WaveProbeReason names which clause forced
+	// PROBE (empty on the HEAVY wave). Both are published on EVERY return path that
+	// derived a regime, including those stopping before a floor is built: the growth
+	// coordinator publishes its own copy every tick, and two series disagreeing merely
+	// because a tick took a short path are indistinguishable from a split-brain.
+	//
+	// Wave is EMPTY only when no regime could be derived — the reader errored and the
+	// tick aborted. A third state, not a PROBE, and it must not be published as one.
+	Wave            common.Wave
+	WaveProbeReason common.WaveProbeReason
 	// HeavyReserveTarget is the ASK the fleet is saving toward for the next heavy —
-	// what the target yard charges, not what was withheld. Published on EVERY return
-	// path, including the ones that stop before a floor is built.
+	// what the target yard charges. Published on EVERY return path, including the ones
+	// that stop before a floor is built.
 	//
-	// RENAMED FROM HeavyReserve (sp-zg71k) rather than quietly re-pointed. The field
-	// used to be both numbers at once because the hold WAS the ask; now that the hold
-	// is treasury-bounded they diverge, and every reader has to say which one it meant.
+	// IT IS REPORTING ONLY. Since the wave owns the hold-back it reaches no floor and no
+	// guard; it is what tells an operator watching a HEAVY wave WHAT the fleet is
+	// pausing probe buying for.
 	HeavyReserveTarget common.HeavyReserveTarget
-	// HeavyReserveHeld is the credits actually held back for the next heavy this tick —
-	// HeavyReserveTarget.HoldAt(live treasury). While a heavy accumulates probe buying
-	// stands down, which on a thin treasury looks identical to sensing having died: a
-	// non-zero value here beside FloorHeld says "saving for a heavy" rather than
-	// "something is wrong".
-	//
-	// ZERO WHILE HeavyReserveTarget IS POSITIVE is a real and expected state, not a
-	// contradiction: the ask is out of reach this era, so nothing is withheld toward it
-	// and probe buying runs at full speed. That pair is precisely what sp-zg71k exists to
-	// make visible — the alternative was a floor above the balance and a frozen fleet.
-	//
-	// It is 0 on every path that never priced a tick (paused, nothing queued, probe cap
-	// held): no floor was built, so no credits were held from anything.
-	HeavyReserveHeld int64
-	// SpendingPaused reports that the operator's expansion switch is off, so this tick
-	// made no purchase at all — see BuyKnobs.SpendEnabled.
+	// SpendingPaused reports that this tick made no purchase at all because a purchase
+	// gate was shut — the operator's expansion switch (BuyKnobs.SpendEnabled) or a HEAVY
+	// wave. WHICH of the two is read off Wave, which is why both are published: an
+	// operator told only "paused" cannot tell "you switched this off" from "the fleet is
+	// saving for a hull", and would go hunting for a knob nobody touched.
 	//
 	// A SEPARATE FIELD RATHER THAN A FloorHeld VALUE, for the same reason
 	// ExpandReport.SpendingPaused is separate from Skipped: a floor or a cap is the
 	// fleet declining to afford a probe it still wants, and an operator reading one
-	// starts asking about the treasury. This is the operator's own choice, and the
-	// cycle line has to say so in those words. It is mutually exclusive with CapHeld
-	// and FloorHeld by construction — a paused tick never reads the treasury or the
-	// fleet count, so neither ceiling can be evaluated and the heartbeat reports
-	// exactly one reason.
+	// starts asking about the treasury. It is mutually exclusive with CapHeld and
+	// FloorHeld by construction — a paused tick never reads the treasury or the fleet
+	// count, so neither ceiling can be evaluated and the heartbeat reports exactly one
+	// reason.
 	SpendingPaused bool
 	// CapHeld and FloorHeld report which ceiling stopped the drain.
 	CapHeld, FloorHeld bool

@@ -29,7 +29,7 @@ const waveProbeReasonNoneLabel = "none"
 // wave gauges both of the wave's consumers publish:
 //
 //   - fleet_growth_wave{player_id,reader}: the regime as derived THIS TICK by THAT reader.
-//   - fleet_growth_wave_probe_reason{player_id,reason}: which clause forced PROBE.
+//   - fleet_growth_wave_probe_reason{player_id,reader,reason}: which clause forced PROBE, per reader.
 //   - growth_purchases_total / growth_blocked_total / growth_demand_hulls / growth_current_hulls /
 //     growth_zero_effect_alarm_total: the buy path, mirroring the autosizer's series.
 //   - growth_heavy_reserve_credits / growth_heavy_reserve_target_credits / growth_heavies_owned /
@@ -58,8 +58,9 @@ type FleetGrowthMetricsCollector struct {
 	growthEnabled *prometheus.GaugeVec
 
 	// mu guards seenReasons, which is how a superseded reason is driven to 0 rather than left
-	// standing. A gauge that only ever sets the CURRENT reason leaves the previous one reading 1
-	// forever, and an operator would then see two reasons claiming the same tick.
+	// standing: a gauge that only sets the CURRENT reason leaves the previous one reading 1 forever.
+	// Keyed per (player, READER) — scoped to the player alone, each reader would zero the other's
+	// live reason every tick, the same conflation the reader label removes one layer down.
 	mu          sync.Mutex
 	seenReasons map[string]map[string]struct{}
 }
@@ -74,8 +75,8 @@ func NewFleetGrowthMetricsCollector() *FleetGrowthMetricsCollector {
 		),
 		waveProbeReason: newGaugeVec(
 			"fleet_growth_wave_probe_reason",
-			"Which clause forced PROBE this tick, one series per reason, 1=this reason 0=not. PROBE otherwise has one name and several meanings, and an operator watching probe buying continue cannot tell 'the fleet cannot plausibly reach a hull this era' from 'the lane surface is down' without it. reason=none is the HEAVY path",
-			"player_id", "reason",
+			"Which clause forced PROBE this tick, one series per reader per reason, 1=this reason 0=not. PROBE otherwise has one name and several meanings, and an operator watching probe buying continue cannot tell 'the fleet cannot plausibly reach a hull this era' from 'the lane surface is down' without it. reason=none is the HEAVY path. Labelled by READER like fleet_growth_wave beside it: two readers writing one reason series would each drive the other's to 0, and a reason DIVERGENCE names which input the two consumers saw differently",
+			"player_id", "reader", "reason",
 		),
 		purchasesTotal: newCounterVec(
 			"growth_purchases_total",
@@ -168,12 +169,10 @@ func (c *FleetGrowthMetricsCollector) Register() error {
 	)
 }
 
-// RecordWave publishes one reader's regime for this tick, and — for the growth reader — which
-// clause forced PROBE.
-//
-// The reason series is driven to 0 for every reason previously published for this player before the
-// current one is set to 1, so a superseded reason cannot linger as a second series claiming the same
-// tick. The empty reason arrives here as the "none" label; see waveProbeReasonNoneLabel.
+// RecordWave publishes one reader's regime for this tick, and which clause forced PROBE for THAT
+// reader. Every reason previously published for this (player, reader) is driven to 0 before the
+// current one is set to 1, so a superseded reason cannot linger as a second series claiming the
+// same tick. The empty reason arrives here as the "none" label; see waveProbeReasonNoneLabel.
 func (c *FleetGrowthMetricsCollector) RecordWave(playerID, reader string, heavy bool, reason string) {
 	value := 0.0
 	if heavy {
@@ -185,20 +184,21 @@ func (c *FleetGrowthMetricsCollector) RecordWave(playerID, reader string, heavy 
 	if label == "" {
 		label = waveProbeReasonNoneLabel
 	}
+	scope := playerID + "\x00" + reader
 	c.mu.Lock()
-	seen := c.seenReasons[playerID]
+	seen := c.seenReasons[scope]
 	if seen == nil {
 		seen = make(map[string]struct{})
-		c.seenReasons[playerID] = seen
+		c.seenReasons[scope] = seen
 	}
 	for prior := range seen {
 		if prior != label {
-			c.waveProbeReason.WithLabelValues(playerID, prior).Set(0)
+			c.waveProbeReason.WithLabelValues(playerID, reader, prior).Set(0)
 		}
 	}
 	seen[label] = struct{}{}
 	c.mu.Unlock()
-	c.waveProbeReason.WithLabelValues(playerID, label).Set(1)
+	c.waveProbeReason.WithLabelValues(playerID, reader, label).Set(1)
 }
 
 // RecordGrowthEnabled sets the master-switch gauge from the value read this tick.

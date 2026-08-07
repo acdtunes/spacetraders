@@ -116,8 +116,15 @@ type heartbeat struct {
 func (h *RunProbeSensingCoordinatorHandler) heartbeat(ctx context.Context, cmd *RunProbeSensingCoordinatorCommand, cfg sensingConfig, hb heartbeat) {
 	h.publishYards(cmd.PlayerID.Value(), hb)
 
+	h.publishWave(cmd.PlayerID.Value(), hb)
+
 	held := ""
 	switch {
+	case hb.buy.Wave == common.WaveHeavy:
+		// NAMED BEFORE THE SWITCH ARM because it is the more specific answer, and both are true
+		// whenever the switch is off too — "expansion switch off" sends an operator hunting a knob
+		// nobody touched.
+		held = "heavy wave: probe buying is paused while the treasury climbs toward a heavy hull"
 	case hb.buy.SpendingPaused:
 		// FIRST, because it is the only reason on this list that is not the fleet
 		// declining to afford something. An operator hunting a money leak reads this
@@ -128,11 +135,6 @@ func (h *RunProbeSensingCoordinatorHandler) heartbeat(ctx context.Context, cmd *
 		held = "expansion switch: expansion_enabled is off, so no probe is bought"
 	case hb.buy.CapHeld:
 		held = "probe cap"
-	case hb.buy.FloorHeld && hb.buy.HeavyReserveHeld > 0:
-		// The HELD figure, never the target: since sp-zg71k the two differ, and naming the
-		// target here would tell an operator 1.5M was withheld when the floor took a fraction
-		// of it. The target is carried in the structured payload beside it.
-		held = fmt.Sprintf("buy floor, %d of a %d heavy reserved", hb.buy.HeavyReserveHeld, hb.buy.HeavyReserveTarget)
 	case hb.buy.FloorHeld:
 		held = "buy floor"
 	case hb.buy.HaltedPriceDrift:
@@ -212,20 +214,17 @@ func (h *RunProbeSensingCoordinatorHandler) heartbeat(ctx context.Context, cmd *
 			// refusal. attempts > 0 with bought == 0 and this empty is a
 			// contradiction — every attempt-burning path records one.
 			"buy_refusals": refusalPayload(hb.buy.Refusals),
-			// The operator's expansion switch, as the buy queue saw it. Queryable
-			// beside buy_bought so "the switch is off and money still moved" is one
-			// filter rather than a correlation across two engines' log lines.
+			// No purchase this tick because a purchase gate was shut. Queryable beside
+			// buy_bought so "the gate is shut and money still moved" is one filter
+			// rather than a correlation across two engines' log lines. WHICH gate is
+			// buy_wave below: the operator's switch, or the regime.
 			"buy_spending_paused": hb.buy.SpendingPaused,
 			"buy_cap_held":        hb.buy.CapHeld,
 			"buy_floor_held":      hb.buy.FloorHeld,
-			// Credits ACTUALLY held back for the NEXT heavy. Non-zero beside
-			// buy_floor_held means "saving for a heavy", NOT "sensing is broken" — the
-			// one signal that tells those two apart (spec risk 3).
-			"buy_heavy_reserve": hb.buy.HeavyReserveHeld,
-			// The ask being saved TOWARD. Zero held beside a positive target is the
-			// treasury bound working (sp-zg71k): the heavy is out of reach this era, so
-			// nothing is withheld for it and probe buying runs at full speed. Without
-			// this field that state is indistinguishable from "no heavy yard is priced".
+			// The regime, which clause forced PROBE, and what the pause is FOR. An EMPTY
+			// wave means no regime could be derived — a third state, never a PROBE.
+			"buy_wave":                 string(hb.buy.Wave),
+			"buy_wave_probe_reason":    string(hb.buy.WaveProbeReason),
 			"buy_heavy_reserve_target": int64(hb.buy.HeavyReserveTarget),
 			"buy_price_drift":          hb.buy.HaltedPriceDrift,
 			// Claims handed back because their system lost IN_SCOPE — the other
@@ -319,6 +318,16 @@ func (h *RunProbeSensingCoordinatorHandler) publishYards(playerID int, hb heartb
 	} {
 		h.recorder.RecordYardSlots(playerID, stage, count)
 	}
+}
+
+// publishWave republishes THIS reader's regime under the drain's own reader label: a gauge only the
+// growth coordinator writes cannot see a drain that disagreed with it, and a tick that derived NO
+// regime publishes nothing, because a fabricated PROBE reports a release the drain never made.
+func (h *RunProbeSensingCoordinatorHandler) publishWave(playerID int, hb heartbeat) {
+	if h.recorder == nil || hb.buy.Wave == "" {
+		return
+	}
+	h.recorder.RecordWave(playerID, hb.buy.Wave, hb.buy.WaveProbeReason)
 }
 
 // heldSuffix names the ceiling that stopped the drain, or nothing at all.

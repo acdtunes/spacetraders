@@ -350,3 +350,174 @@ func TestHeavyBuyerCapPort_LeftoverAutosizerDoesNotCaptureTheCap(t *testing.T) {
 	require.Equal(t, 9, value, "the DECLARED owner's cap must win over a leftover container's knob")
 	require.Empty(t, log.lines, "a leftover knob beside a live declared owner is expected, not a fault")
 }
+
+// --- the master switch, off the SAME row as the cap ---------------------------
+
+// growth_enabled OFF must reach the drain. Otherwise the drain evaluates a wave for a buyer that
+// has stopped reading and stopped buying, and pauses probe buying forever — a deadlock no spender
+// can clear.
+func TestHeavyBuyerCapPort_GrowthDisabledIsReadable(t *testing.T) {
+	port, db, pid := capPortDB(t)
+	addHeavyBuyer(t, db, pid, "c1", string(container.ContainerStatusRunning), `{"growth_enabled": 2}`)
+
+	enabled, exists, err := port.GrowthEnabled(context.Background(), pid)
+	require.NoError(t, err)
+	require.True(t, exists)
+	require.False(t, enabled, "a switched-off buyer must be visible to the drain, or probe buying pauses toward a purchase nothing can make")
+}
+
+// Absent key is the documented default: ON. `tune <key> 0` DELETES the key, so absence IS the
+// revert, and a coordinator nobody has tuned must not read as switched off.
+func TestHeavyBuyerCapPort_AbsentSwitchIsOn(t *testing.T) {
+	port, db, pid := capPortDB(t)
+	addHeavyBuyer(t, db, pid, "c1", string(container.ContainerStatusRunning), `{"heavy_cap": 5}`)
+
+	enabled, exists, err := port.GrowthEnabled(context.Background(), pid)
+	require.NoError(t, err)
+	require.True(t, exists)
+	require.True(t, enabled, "an untuned coordinator must read as ON")
+}
+
+// A revert lands as the DELETED key, but a 0 written by any other means must read the same way: as
+// the default, never as a third state.
+func TestHeavyBuyerCapPort_ZeroSwitchIsOn(t *testing.T) {
+	port, db, pid := capPortDB(t)
+	addHeavyBuyer(t, db, pid, "c1", string(container.ContainerStatusRunning), `{"growth_enabled": 0}`)
+
+	enabled, exists, err := port.GrowthEnabled(context.Background(), pid)
+	require.NoError(t, err)
+	require.True(t, exists)
+	require.True(t, enabled, "0 is the revert value, which is the documented default ON")
+}
+
+// An empty config is an untuned live buyer: ON, and existing.
+func TestHeavyBuyerCapPort_EmptyConfigBuyerIsOn(t *testing.T) {
+	port, db, pid := capPortDB(t)
+	addHeavyBuyer(t, db, pid, "c1", string(container.ContainerStatusRunning), ``)
+
+	enabled, exists, err := port.GrowthEnabled(context.Background(), pid)
+	require.NoError(t, err)
+	require.True(t, exists)
+	require.True(t, enabled)
+}
+
+// NO HEAVY BUYER AT ALL yields "no buyer" — a probe-only deployment. The drain turns that into the
+// PROBE wave: there is nothing to save for.
+func TestHeavyBuyerCapPort_NoBuyerIsNotEnabledAndNotExists(t *testing.T) {
+	port, _, pid := capPortDB(t)
+
+	enabled, exists, err := port.GrowthEnabled(context.Background(), pid)
+	require.NoError(t, err)
+	require.False(t, exists)
+	require.False(t, enabled)
+}
+
+// A TERMINATED buyer spends nothing, so it is not a buyer — the same status filter the cap read
+// applies, and it must not be possible for the two to disagree about which containers count.
+func TestHeavyBuyerCapPort_TerminatedBuyerIsNotABuyerForTheSwitch(t *testing.T) {
+	port, db, pid := capPortDB(t)
+	addHeavyBuyer(t, db, pid, "c1", "TERMINATED", `{"growth_enabled": 1}`)
+
+	enabled, exists, err := port.GrowthEnabled(context.Background(), pid)
+	require.NoError(t, err)
+	require.False(t, exists)
+	require.False(t, enabled)
+}
+
+// THE SWITCH AND THE CAP MUST COME OFF THE SAME CONTAINER. Reading them from two containers is the
+// split this port was built to close, one knob later: the leftover coordinator here carries BOTH
+// keys with the opposite values, so a second query that happened to select differently would be
+// visible in either answer.
+func TestHeavyBuyerCapPort_SwitchAndCapComeFromOneContainer(t *testing.T) {
+	port, db, pid := capPortDB(t)
+	addContainer(t, db, pid, "a1", otherCoordinator, string(container.ContainerStatusRunning), `{"heavy_cap": 5, "growth_enabled": 2}`)
+	addHeavyBuyer(t, db, pid, "g1", string(container.ContainerStatusRunning), `{"heavy_cap": 9, "growth_enabled": 1}`)
+
+	value, _, _, err := port.HeavyCap(context.Background(), pid)
+	require.NoError(t, err)
+	enabled, exists, err := port.GrowthEnabled(context.Background(), pid)
+	require.NoError(t, err)
+
+	require.True(t, exists)
+	require.Equal(t, 9, value, "the cap must resolve off the declared owner")
+	require.True(t, enabled, "the switch must resolve off the SAME declared owner, not off the stranger carrying the knob")
+}
+
+// THE SWITCH READ IS SILENT on the undeclared-buyer rung. Both public reads resolve the same row on
+// the same tick, so warning in both would double a line whose whole value is that it is rare — and
+// an operator learning to scroll past it is how the real one goes unnoticed.
+func TestHeavyBuyerCapPort_SwitchDoesNotRepeatTheUndeclaredBuyerWarn(t *testing.T) {
+	port, db, pid := capPortDB(t)
+	addContainer(t, db, pid, "a1", otherCoordinator, string(container.ContainerStatusRunning), `{"heavy_cap": 5, "growth_enabled": 2}`)
+
+	log := &warnLogger{}
+	enabled, exists, err := port.GrowthEnabled(logging.WithLogger(context.Background(), log), pid)
+
+	require.NoError(t, err)
+	require.True(t, exists, "a knob-carrying stranger still EXISTS for the switch, so the reserve read behind it runs and the WARN below still fires")
+	require.False(t, enabled)
+	require.Empty(t, log.lines, "the cap read beside this one carries the undeclared-buyer WARN; two copies per tick is noise")
+
+	// The pair: the cap read on the SAME state DOES warn, so the silence above is a scoping
+	// decision rather than a warning that was lost.
+	capLog := &warnLogger{}
+	_, _, _, err = port.HeavyCap(logging.WithLogger(context.Background(), capLog), pid)
+	require.NoError(t, err)
+	require.NotEmpty(t, capLog.lines, "the undeclared-buyer WARN must still fire somewhere, or heavy buying can change hands silently")
+}
+
+// THE SHAPE THE ABSENT-KEY DEFAULT MUST NOT BE APPLIED TO: a live container carrying a cap knob and
+// NO switch key, of a type no declaration claims. A coordinator that has stopped buying heavies
+// leaves its launch keys behind for as long as its row lives, so this is what a leftover looks like
+// — and reading its absent key as the documented ON is a heavy buyer conjured out of a number in a
+// config blob, whose HEAVY wave nothing can ever clear.
+//
+// It still EXISTS, which is the other half: the reserve read behind the switch is what fires the
+// undeclared-buyer WARN, so a genuinely stale declaration stays loud instead of going silent here.
+func TestHeavyBuyerCapPort_AbsentSwitchOnAStrangerIsNotOn(t *testing.T) {
+	port, db, pid := capPortDB(t)
+	addContainer(t, db, pid, "a1", string(container.ContainerTypeFleetAutosizer), string(container.ContainerStatusRunning), `{"autosizer_heavy_cap": 5}`)
+
+	enabled, exists, err := port.GrowthEnabled(context.Background(), pid)
+	require.NoError(t, err)
+	require.True(t, exists, "the stranger must still exist, or the cap read that carries the undeclared-buyer WARN never runs")
+	require.False(t, enabled, "a container no declaration claims cannot vouch for a switch it never had — reading absence as ON pauses probe buying for a buyer that does not exist")
+}
+
+// The CALIBRATION for the test above, and the line between the two rules: the SAME absent key on a
+// DECLARED owner is still the documented ON. Without this pair the fix reads as "absence is off",
+// which would switch heavy buying off for every untuned coordinator.
+func TestHeavyBuyerCapPort_AbsentSwitchOnTheDeclaredOwnerIsStillOn(t *testing.T) {
+	port, db, pid := capPortDB(t)
+	addHeavyBuyer(t, db, pid, "g1", string(container.ContainerStatusRunning), `{"growth_heavy_cap": 5}`)
+
+	enabled, exists, err := port.GrowthEnabled(context.Background(), pid)
+	require.NoError(t, err)
+	require.True(t, exists)
+	require.True(t, enabled, "the declared owner's untuned switch is ON; absence IS the revert")
+}
+
+// An EXPLICIT on-value does not promote a stranger either. The switch's question is "can a heavy
+// purchase happen", and only a declaration answers it: a value copied into a leftover launch config
+// is the same number the leftover would have carried anyway.
+func TestHeavyBuyerCapPort_ExplicitOnDoesNotPromoteAStranger(t *testing.T) {
+	port, db, pid := capPortDB(t)
+	addContainer(t, db, pid, "a1", otherCoordinator, string(container.ContainerStatusRunning), `{"heavy_cap": 3, "growth_enabled": 1}`)
+
+	enabled, exists, err := port.GrowthEnabled(context.Background(), pid)
+	require.NoError(t, err)
+	require.True(t, exists)
+	require.False(t, enabled, "only a declaration names a coordinator whose code buys heavies; a knob cannot")
+}
+
+// AN UNREADABLE SWITCH IS AN ERROR, NOT AN ANSWER. The drain fails the tick closed on it: a
+// switched-off buyer read as ON pauses probe buying forever, and a switched-on buyer read as OFF
+// releases spending on a signal nobody could read (RULINGS #4).
+func TestHeavyBuyerCapPort_UnreadableSwitchErrors(t *testing.T) {
+	port := NewHeavyBuyerCapPort(nil)
+
+	enabled, exists, err := port.GrowthEnabled(context.Background(), 1)
+	require.Error(t, err)
+	require.False(t, exists)
+	require.False(t, enabled)
+}

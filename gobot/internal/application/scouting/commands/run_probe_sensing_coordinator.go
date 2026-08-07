@@ -59,6 +59,10 @@ type ParkedSensingRecorder interface {
 	RecordYardCatalogue(playerID int, state string, count int)
 	RecordYardPresence(playerID int, outcome string, count int)
 	RecordYardSlots(playerID int, stage string, count int)
+
+	// RecordWave publishes the regime THIS reader derived under its own reader label,
+	// beside the growth coordinator's; the pair is what catches the two DISAGREEING.
+	RecordWave(playerID int, wave common.Wave, reason common.WaveProbeReason)
 }
 
 // RunProbeSensingCoordinatorCommand launches the standing coordinator for a

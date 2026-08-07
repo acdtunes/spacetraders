@@ -115,9 +115,9 @@ func NewHeavyReservePort(census heavyCensusCounter, yards heavyYardPricer, caps 
 // and every heartbeat, from "there is nothing to save for" — which is how a fleet never accumulates
 // a heavy and nobody ever finds out.
 //
-// The error return is kept deliberately: it is the HeavyReserveReader contract, and DrainBuyQueue
-// still fails CLOSED on any reader that does surface one. This implementation simply never needs
-// to, because "cannot tell" has a well-defined answer here, and it is zero.
+// The error return is kept deliberately: the wave port propagates it and the drain fails the tick
+// CLOSED on any reserve that does surface one. This implementation simply never needs to, because
+// "cannot tell" has a well-defined answer here, and it is zero.
 func (p *HeavyReservePort) Reserve(ctx context.Context, playerID int) (common.HeavyReserveTarget, error) {
 	heavyCap, capOK := p.resolveHeavyCap(ctx, playerID)
 	if !capOK {
@@ -275,6 +275,11 @@ func (p *HeavyReservePort) resolveHeavyCap(ctx context.Context, playerID int) (i
 // not a simplification: config.yaml writes ONLY the prefixed key and `tune` writes ONLY the bare
 // one, so either half alone makes an operator's cap invisible. The exact ladder, and why each rung
 // is shaped the way it is, is on the HeavyCap method below — read it before changing anything here.
+//
+// IT ALSO SERVES THE BUYER'S MASTER SWITCH, off the SAME row. The cap and the switch answer one
+// question between them — "is anyone buying heavies, and up to what ceiling" — so resolving them
+// from two containers is the split this port exists to close, one knob later. buyerConfig is the
+// shared half; neither public method re-issues the query.
 type HeavyBuyerCapPort struct {
 	db *gorm.DB
 }
@@ -315,8 +320,88 @@ func NewHeavyBuyerCapPort(db *gorm.DB) *HeavyBuyerCapPort { return &HeavyBuyerCa
 // flap between ticks. A DECLARED owner outranks any knob-carrying stranger, so a tune landing on
 // the wrong container cannot capture the cap while a real owner is live.
 func (p *HeavyBuyerCapPort) HeavyCap(ctx context.Context, playerID int) (int, bool, bool, error) {
+	cfg, buyerExists, undeclared, err := p.buyerConfig(ctx, playerID)
+	if err != nil || !buyerExists {
+		return 0, false, buyerExists, err
+	}
+	if undeclared != nil {
+		warnUndeclaredHeavyBuyer(ctx, playerID, undeclared)
+	}
+	value, present := heavyCapFromConfig(cfg)
+	return value, present, true, nil
+}
+
+// GrowthEnabled reports the heavy buyer's master switch, read off the SAME container row the cap
+// resolves from — through the same query and the same selection, so the two knobs can never come
+// off different containers. buyerExists=false means no heavy buyer container is deployed at all,
+// which is a quiet, expected configuration (a probe-only deployment) rather than a fault.
+//
+// IT MUST REACH THE DRAIN. A switched-off buyer with a priced target would otherwise leave the
+// drain pausing probe buying toward a purchase nothing can make — a deadlock no spender can clear.
+// That is why the switch is the wave predicate's FIRST clause rather than a detail of the
+// coordinator that owns it.
+//
+// 1=on, 2=off. Anything else — including the absent-key 0 — is the documented default, ON:
+// `tune <key> 0` DELETES the key, so absence IS the revert. The key and the off sentinel are the
+// buyer's own (hullbuy.HeavyBuyerSwitchKey), never a second spelling.
+//
+// THE SWITCH NEEDS A DECLARED OWNER; THE CAP DOES NOT — the one asymmetry between the two reads,
+// and the reason they are separate methods over one row rather than one method returning both.
+// The cap is a BOUND: resolved off a knob-carrying stranger it sizes the reservation against a
+// ceiling that may be nobody's, which is a strategic error, and the WARN beside it announces
+// exactly that. The switch answers a different question — CAN A HEAVY PURCHASE HAPPEN AT ALL — and
+// only a DECLARATION answers it, because a declaration names a coordinator whose code buys heavies
+// while a cap knob is just a number any container's config blob may carry. A coordinator that has
+// stopped buying leaves its launch keys behind for as long as its row lives, so "carries a cap
+// knob" and "is running a heavy buy path" are genuinely different facts.
+//
+// A STRANGER THEREFORE CANNOT VOUCH FOR A SWITCH IT NEVER HAD. Reading its ABSENT key as the
+// documented ON would let a leftover row derive HEAVY, and HEAVY pauses probe buying outright —
+// for a buyer that does not exist, with no spender able to reach the ask and clear it. That is the
+// deadlock this switch was added to prevent, one layer up. So a stranger reports the switch as NOT
+// ON while still EXISTING, and both halves of that matter: the drain then reads PROBE and keeps
+// buying (the recoverable direction, and the predicate's own "every cannot answer is PROBE"),
+// while the reserve read behind it still runs, so the undeclared-buyer WARN still fires and a
+// stale declaration stays loud rather than becoming the silent state.
+//
+// No money guard is touched (RULINGS #4): this authorises no spend. It only declines to PAUSE
+// probe buying, and every probe bought still passes the buy floor, the immutable reserve and the
+// probe cap. The cost of being wrong here is a deferred heavy while an operator declares the
+// container type the WARN names; the cost of being wrong the other way has no end.
+//
+// IT DOES NOT REPEAT THE UNDECLARED-BUYER WARN. Both public methods resolve the same row on the
+// same tick, so warning here would double a line whose whole value is that it is rare; the cap read
+// beside it carries it.
+func (p *HeavyBuyerCapPort) GrowthEnabled(ctx context.Context, playerID int) (bool, bool, error) {
+	cfg, buyerExists, undeclared, err := p.buyerConfig(ctx, playerID)
+	if err != nil || !buyerExists {
+		return false, false, err
+	}
+	if undeclared != nil {
+		return false, true, nil
+	}
+	return growthSwitchOn(cfg), true, nil
+}
+
+// growthSwitchOn reads the master switch out of a DECLARED buyer's config. An unreadable or absent
+// value is ON, which is the documented default rather than a guess — but only for a container the
+// declaration says owns the switch. A stranger never reaches here; see GrowthEnabled.
+func growthSwitchOn(cfg map[string]interface{}) bool {
+	value, ok := configInt(cfg[hullbuy.HeavyBuyerSwitchKey])
+	return !ok || value != hullbuy.HeavyBuyerSwitchOff
+}
+
+// buyerConfig finds the authoritative heavy buyer and returns its parsed config — the half both
+// public reads share, factored so the cap and the switch cannot be resolved off different rows.
+//
+// It reports the undeclared stranger it fell back to (nil when a declared owner won) rather than
+// warning here, so exactly one caller owns that line.
+//
+// A nil config with buyerExists=true is a live buyer carrying no config at all: every knob then
+// resolves to its documented default, which is what an untuned coordinator must read as.
+func (p *HeavyBuyerCapPort) buyerConfig(ctx context.Context, playerID int) (map[string]interface{}, bool, *persistence.ContainerModel, error) {
 	if p.db == nil {
-		return 0, false, false, fmt.Errorf("database not configured")
+		return nil, false, nil, fmt.Errorf("database not configured")
 	}
 	declared := hullbuy.HeavyBuyerContainers()
 	declaredTypes := make([]string, 0, len(declared))
@@ -337,7 +422,7 @@ func (p *HeavyBuyerCapPort) HeavyCap(ctx context.Context, playerID int) (int, bo
 		Order("CASE status WHEN 'RUNNING' THEN 0 ELSE 1 END, id ASC").
 		Find(&models).Error
 	if err != nil {
-		return 0, false, false, fmt.Errorf("read heavy buyer container for heavy_cap: %w", err)
+		return nil, false, nil, fmt.Errorf("read heavy buyer container for heavy_cap: %w", err)
 	}
 
 	// ONE authoritative container, read through the whole ladder. Scanning several and taking the
@@ -346,21 +431,18 @@ func (p *HeavyBuyerCapPort) HeavyCap(ctx context.Context, playerID int) (int, bo
 	authoritative, knobbed, knobbedCfg := selectHeavyBuyer(models, declaredTypes)
 	if authoritative == nil {
 		if knobbed == nil {
-			return 0, false, false, nil // nothing owns heavy buying ⇒ nothing to save for
+			return nil, false, nil, nil // nothing owns heavy buying ⇒ nothing to save for
 		}
-		warnUndeclaredHeavyBuyer(ctx, playerID, knobbed)
-		value, present := heavyCapFromConfig(knobbedCfg)
-		return value, present, true, nil
+		return knobbedCfg, true, knobbed, nil
 	}
 	if authoritative.Config == "" {
-		return 0, false, true, nil
+		return nil, true, nil, nil
 	}
 	cfg := map[string]interface{}{}
 	if err := json.Unmarshal([]byte(authoritative.Config), &cfg); err != nil {
-		return 0, false, true, fmt.Errorf("parse heavy buyer container %s config: %w", authoritative.ID, err)
+		return nil, true, nil, fmt.Errorf("parse heavy buyer container %s config: %w", authoritative.ID, err)
 	}
-	value, present := heavyCapFromConfig(cfg)
-	return value, present, true, nil
+	return cfg, true, nil, nil
 }
 
 // selectHeavyBuyer picks the authoritative DECLARED owner, and separately the best knob-carrying

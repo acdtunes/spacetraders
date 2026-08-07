@@ -19,10 +19,6 @@ type drainState struct {
 	floor    int64
 	owned    int64
 	probeCap int64
-	// heavyHold is the slice of `floor` that is the heavy reservation — carried out of the
-	// pricing step so the report can publish what was actually withheld beside what the fleet is
-	// saving toward. Reporting only, never re-added to the floor.
-	heavyHold int64
 }
 
 // DrainBuyQueue fills as many wanted placements as the treasury and the probe
@@ -38,9 +34,10 @@ type drainState struct {
 // started may not be by its third buy.
 //
 // THE TICK IS IN TWO HALVES: free work that fills a placement from a hull we
-// already own, and work that pays for a new one. BuyKnobs.SpendEnabled off runs
-// the first half and none of the second. A pass that can read a live price,
-// claim a placement for purchase, or pay a counter belongs below that gate.
+// already own, and work that pays for a new one. Either the operator's
+// BuyKnobs.SpendEnabled switch or a HEAVY wave runs the first half and none of
+// the second. A pass that can read a live price, claim a placement for purchase,
+// or pay a counter belongs below that gate.
 func DrainBuyQueue(
 	ctx context.Context,
 	p BuyPorts,
@@ -53,19 +50,15 @@ func DrainBuyQueue(
 		clock = shared.NewRealClock()
 	}
 
-	// The heavy TARGET is read FIRST, ahead of every gate, so rep.HeavyReserveTarget is populated
-	// on EVERY return path — including the two that stop before a floor is built (nothing queued,
-	// and the probe cap held). It is published beside the autosizer's own per-tick gauge and the two
-	// must not disagree merely because a tick took a short path. It does not break the
-	// cheapest-first ordering below: all three reads behind this port are LOCAL DB queries, never an
-	// API call — which is exactly why the treasury bound is NOT applied here. The credits actually
-	// withheld are resolved in openDrainBudget, behind the spend gate, where the live balance is
-	// already being read (sp-zg71k).
-	heavyTarget, err := readHeavyReserve(ctx, p, playerID)
+	// The WAVE is read FIRST, ahead of every gate, so rep.Wave is populated on EVERY return path —
+	// including the ones that stop before a floor is built. It is published beside the growth
+	// coordinator's own per-tick gauge, and the two must not disagree merely because a tick took a
+	// short path. Every read behind this port is a LOCAL DB query, so it costs no API call.
+	wave, waveReason, heavyTarget, err := readWave(ctx, p, playerID)
 	if err != nil {
 		return rep, err
 	}
-	rep.HeavyReserveTarget = heavyTarget
+	rep.Wave, rep.WaveProbeReason, rep.HeavyReserveTarget = wave, waveReason, heavyTarget
 
 	// Cheapest-first gate order: the ledger reads are local, the treasury and
 	// price reads are network. A tick with nothing to buy must not cost an API call.
@@ -77,22 +70,31 @@ func DrainBuyQueue(
 	// is off" and "the ordering never sees a shipyard" must read differently.
 	rep.YardsQueued, rep.YardsAtHead = yards.queued, yards.atHead
 
-	// THE SPEND GATE, and it sits AHEAD of every money read because a tick that may
-	// not buy must not price anything either. LiveCredits is an API call, and a
-	// ceiling evaluated against a purchase that cannot happen yields a
-	// CapHeld/FloorHeld the operator has to discount. The candidate list above is
-	// still built: the free passes in the loop below fill placements from hulls we
-	// already own, and need to know which placements are open. See
-	// BuyKnobs.SpendEnabled.
-	rep.SpendingPaused = !k.SpendEnabled
+	// THE TWO PURCHASE GATES, resolved into ONE local so a later edit cannot update three of the
+	// four sites that consult it. Both sit AHEAD of every money read because a tick that may not
+	// buy must not price anything either: LiveCredits is an API call, and a ceiling evaluated
+	// against a purchase that cannot happen yields a CapHeld/FloorHeld the operator has to
+	// discount. The candidate list above is still built, because the free passes below need to
+	// know which placements are open.
+	//
+	// WHY THE WAVE IS A BINARY GATE AND NOT A PRIORITY ORDERING. A heavy is a lump and probes are
+	// a trickle; interleaving the two spenders means the treasury never reaches the lump, so a
+	// reader who "simplifies" the wave into a per-class priority restores the exact condition this
+	// design exists to remove.
+	//
+	// IT PAUSES PURCHASES ONLY. The free half below still re-tasks an idle spare and still flies a
+	// surplus hull to a foothold, at zero credits and zero API calls, so a paused wave keeps
+	// coverage growing on hulls already paid for.
+	mayBuy := k.SpendEnabled && wave != common.WaveHeavy
+	rep.SpendingPaused = !mayBuy
 
 	// st stays zero-valued while paused, and every consumer of it below is behind
-	// the same k.SpendEnabled gate: a zero cap beside a zero owned count would
-	// otherwise read as "at the probe cap" and report a ceiling nobody consulted.
+	// the same gate: a zero cap beside a zero owned count would otherwise read as
+	// "at the probe cap" and report a ceiling nobody consulted.
 	var st drainState
-	if k.SpendEnabled {
+	if mayBuy {
 		var capHeld bool
-		st, capHeld, err = openDrainBudget(ctx, p, playerID, k, heavyTarget, clock.Now())
+		st, capHeld, err = openDrainBudget(ctx, p, playerID, k, clock.Now())
 		if err != nil {
 			return rep, err
 		}
@@ -100,13 +102,10 @@ func DrainBuyQueue(
 			rep.CapHeld = true
 			return rep, nil
 		}
-		// What the floor ACTUALLY withheld for the heavy, which is 0 on every path above: those
-		// return before a treasury is read, so no hold was ever taken from anything.
-		rep.HeavyReserveHeld = st.heavyHold
 	}
 
 	t := &drainTick{
-		p: p, playerID: playerID, k: k, st: &st, rep: &rep,
+		p: p, playerID: playerID, k: k, mayBuy: mayBuy, st: &st, rep: &rep,
 		// One memo per TICK, never longer: a refusal is re-learned from scratch next
 		// tick, so a counter merely having a bad minute is retried, not blacklisted.
 		memo: newRefusalMemo(&rep),
@@ -128,7 +127,7 @@ func DrainBuyQueue(
 		if rep.Attempts >= maxDrainAttempts {
 			break
 		}
-		if k.SpendEnabled && st.owned >= st.probeCap {
+		if mayBuy && st.owned >= st.probeCap {
 			rep.CapHeld = true
 			break
 		}
@@ -178,15 +177,16 @@ func (t *drainTick) fundPlacement(ctx context.Context, slot QueuedSlot, now time
 		return true, false, nil
 	}
 
-	// PAUSED: the free half is done for this placement, and everything past this
-	// point either prices a hull or pays for one. The foothold is still attempted:
-	// it fills a placement by flying a hull we ALREADY OWN across a gate — no
-	// credit, no API call — so switching it off with the purchases would starve the
-	// placement machine of destinations while saving nothing (see
+	// PAUSED — by the operator's switch or by a HEAVY wave, which stop purchases
+	// identically here. The free half is done for this placement, and everything
+	// past this point either prices a hull or pays for one. The foothold is still
+	// attempted: it fills a placement by flying a hull we ALREADY OWN across a gate
+	// — no credit, no API call — so switching it off with the purchases would starve
+	// the placement machine of destinations while saving nothing (see
 	// ExpandKnobs.SpendEnabled). A placement it cannot fill is left WANTED for the
-	// tick the switch comes back on, and is NOT counted as SkippedNoYard, which
-	// means something specific and would be a lie here.
-	if !t.k.SpendEnabled {
+	// tick the pause lifts, and is NOT counted as SkippedNoYard, which means
+	// something specific and would be a lie here.
+	if !t.mayBuy {
 		paused, err := t.footholds.fill(ctx, t.p, t.playerID, slot, t.rep)
 		return paused, false, err
 	}
@@ -231,18 +231,22 @@ func (t *drainTick) fundPlacement(ctx context.Context, slot QueuedSlot, now time
 	return t.rep.Bought > boughtBefore, halt, nil
 }
 
-func readHeavyReserve(ctx context.Context, p BuyPorts, playerID int) (common.HeavyReserveTarget, error) {
-	if p.HeavyReserve == nil {
-		return 0, nil
+// readWave resolves this tick's regime. AN UNWIRED READER IS THE PROBE WAVE, never HEAVY: a nil
+// seam means no heavy buyer is deployed, and failing the other way would let a wiring omission
+// pause probe buying forever. AN ERRORING READER FAILS THE TICK CLOSED, because a silently-PROBE
+// tick derived from an unreadable signal is the blind spend RULINGS #4 forbids.
+func readWave(ctx context.Context, p BuyPorts, playerID int) (common.Wave, common.WaveProbeReason, common.HeavyReserveTarget, error) {
+	if p.Wave == nil {
+		return common.WaveProbe, common.WaveProbeReasonGrowthDisabled, 0, nil
 	}
-	r, err := p.HeavyReserve.Reserve(ctx, playerID)
+	wave, reason, target, err := p.Wave.Wave(ctx, playerID)
 	if err != nil {
-		return 0, fmt.Errorf("heavy reserve unreadable, buying nothing this tick: %w", err)
+		return "", "", 0, fmt.Errorf("wave unreadable, buying nothing this tick: %w", err)
 	}
-	if r <= 0 {
-		return 0, nil
+	if target <= 0 {
+		target = 0
 	}
-	return r, nil
+	return wave, reason, target, nil
 }
 
 // openDrainBudget prices the tick. The second return reports the probe cap
@@ -252,7 +256,6 @@ func openDrainBudget(
 	p BuyPorts,
 	playerID int,
 	k BuyKnobs,
-	heavyTarget common.HeavyReserveTarget,
 	now time.Time,
 ) (drainState, bool, error) {
 	owned, err := p.Ledger.CountOwnedProbes(ctx, playerID)
@@ -274,25 +277,18 @@ func openDrainBudget(
 		// understand the least.
 		return drainState{}, false, fmt.Errorf("cargo spend unreadable, buying nothing this tick: %w", err)
 	}
-	// THE ASK IS BOUNDED AGAINST THE BALANCE BEFORE IT REACHES THE FLOOR (sp-zg71k). HoldAt is the
-	// ONE definition of that bound, shared with the fleet autosizer, and it is the reason the
-	// treasury read sits above this line rather than inside the reserve port. Withholding the
-	// target verbatim was the defect: a ~1.5M ask against a ~372k treasury made the floor exceed
-	// the balance outright, and probe buying stopped for good the moment a heavy yard was priced.
-	// The hold can now never exceed the surplus above the immutable floor, so the reservation
-	// alone can never price the fleet out of buying.
-	heavyHold := heavyTarget.HoldAt(credits)
-	// The heavy reservation is capex in the literal sense CapexReserve documents: credits held back
-	// for capex committed elsewhere. Folding it into that term stands probe buying down while a
-	// heavy accumulates, and resumes it the moment the heavy lands.
+	// THE WAVE OWNS THE HEAVY HOLD-BACK NOW, so no heavy term reaches this floor. A ramp and a
+	// binary gate are two mechanisms doing one job, and the ramp was the one that could only ever
+	// half-stop the trickle. NO GUARD IS RELAXED (RULINGS #4): ProbeBuyFloor floors its result at
+	// the immutable reserve, so dropping a non-negative addend can lower the floor only as far as
+	// that guard and never past it, and the capex reserve, runway term and probe cap all still bind.
 	return drainState{
-		credits:   credits,
-		owned:     owned,
-		probeCap:  int64(k.ProbeCap),
-		heavyHold: heavyHold,
+		credits:  credits,
+		owned:    owned,
+		probeCap: int64(k.ProbeCap),
 		floor: domainSensing.ProbeBuyFloor(
 			common.ImmutableReserveFloor,
-			k.CapexReserve+heavyHold,
+			k.CapexReserve,
 			domainSensing.CargoSpendPerHour(spend),
 			k.KMilli,
 		),
@@ -456,9 +452,13 @@ func postBuyCredits(before, price int64, probe BoughtProbe) int64 {
 }
 
 type drainTick struct {
-	p         BuyPorts
-	playerID  int
-	k         BuyKnobs
+	p        BuyPorts
+	playerID int
+	k        BuyKnobs
+	// mayBuy is the tick's ONE purchase verdict — the operator's switch AND the wave, resolved
+	// once at the top. Carried rather than re-derived so the loop's paused branch and the gate
+	// that set rep.SpendingPaused cannot answer differently.
+	mayBuy    bool
 	st        *drainState
 	rep       *BuyReport
 	memo      *refusalMemo

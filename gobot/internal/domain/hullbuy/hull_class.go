@@ -64,6 +64,16 @@ func DedicatedFleet(class HullClass) string {
 // source is what keeps the withholder and the spender saving toward the same cap.
 const DefaultHeavyCap = 5
 
+// HeavyBuyerSwitchKey is the heavy buyer's MASTER SWITCH and HeavyBuyerSwitchOff the value meaning
+// off, beside the cap because TWO readers must never disagree: the buyer reads the switch to decide
+// whether to run, the drain to decide whether there is anything to save for, and a different key or
+// sentinel there would pause probe buying toward a purchase nothing can make. 1=ON, 2=OFF —
+// `tune <key> 0` DELETES the key, so 0/1 would make "off" unexpressible and an absent key is ON.
+const (
+	HeavyBuyerSwitchKey = "growth_enabled"
+	HeavyBuyerSwitchOff = 2
+)
+
 // HeavyBuyerContainers declares WHICH COORDINATORS BUY HEAVY HULLS, and sits beside the cap they
 // resolve because owning heavy buying and owning the cap are one fact: the reservation withholds
 // treasury toward a heavy only while one of these is live, and reads the cap off whichever it finds.

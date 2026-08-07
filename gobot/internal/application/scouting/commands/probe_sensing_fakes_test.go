@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/application/parkedsensing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	domainScouting "github.com/andrescamacho/spacetraders-go/internal/domain/scouting"
@@ -1160,6 +1161,14 @@ type fakeRecorder struct {
 	yardCatalogs map[string]int
 	yardPresence map[string]int
 	yardSlots    map[string]int
+	// waves records every regime published, in call order, so a test can tell "published PROBE"
+	// from "published nothing" — the two mean different things and a map keyed by wave could not.
+	waves []recordedWave
+}
+
+type recordedWave struct {
+	wave   common.Wave
+	reason common.WaveProbeReason
 }
 
 func newFakeRecorder() *fakeRecorder {
@@ -1206,6 +1215,18 @@ func (f *fakeRecorder) RecordYardSlots(_ int, stage string, count int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.yardSlots[stage] = count
+}
+
+func (f *fakeRecorder) RecordWave(_ int, wave common.Wave, reason common.WaveProbeReason) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.waves = append(f.waves, recordedWave{wave: wave, reason: reason})
+}
+
+func (f *fakeRecorder) recordedWaves() []recordedWave {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]recordedWave(nil), f.waves...)
 }
 
 // --- helpers ------------------------------------------------------------------

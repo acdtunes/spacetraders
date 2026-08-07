@@ -1373,161 +1373,355 @@ func TestDrain_MissingActualPriceIsNotAFreeHull(t *testing.T) {
 	}
 }
 
-// --- the heavy reservation in the probe-buy floor (sp-fwk8z T3) ---------------
+// --- the wave gate: the drain's half of the ONE predicate ---------------------
 
-// fakeHeavyReserve is the ASK the fleet is saving toward for the next heavy — the TARGET, not the
-// hold: the drain bounds it against the live treasury itself (sp-zg71k). err ⇒ unreadable ⇒ fail
-// closed: buying probes against an unknown reserve could spend the treasury a heavy is accumulating.
-type fakeHeavyReserve struct {
+// waveReader is the drain's whole view of the regime — the ANSWER, never the inputs to it: a fake
+// carrying WaveInputs would be a second assembly of the predicate. err ⇒ unreadable ⇒ fail closed.
+type waveReader struct {
+	wave   common.Wave
+	reason common.WaveProbeReason
 	target common.HeavyReserveTarget
 	err    error
 	calls  int
 }
 
-func (f *fakeHeavyReserve) Reserve(_ context.Context, _ int) (common.HeavyReserveTarget, error) {
+func (f *waveReader) Wave(_ context.Context, _ int) (common.Wave, common.WaveProbeReason, common.HeavyReserveTarget, error) {
 	f.calls++
-	return f.target, f.err
+	return f.wave, f.reason, f.target, f.err
 }
 
-// THE PARTITION, END TO END. This is the accumulate-then-resume cycle the whole design exists for:
-// while a heavy is being saved for, probe buying stands down and treasury builds; the moment the
-// reserve clears (heavy bought, or capability closed) the same treasury buys probes again.
-//
-// Without the reserve term the small continuous spender wins every tick — the probe queue drains
-// the surplus below the heavy's threshold before it can ever accumulate, and the heavy is never
-// bought. That is the asymmetry §"Asymmetry, stated plainly" describes.
-func TestDrain_HeavyReserveRaisesTheFloorThenReleasesIt(t *testing.T) {
-	// capexKnobs floor = 750_000; treasury 780_000 − 23_540 probe = 756_460, which clears it.
-	// A 10_000 reserve lifts the floor to 760_000 and the same buy no longer clears.
-	held, _, heldPur, _ := oneFillPorts(780_000)
-	held.HeavyReserve = &fakeHeavyReserve{target: 10_000}
+// probeWave carries a REAL reason: a blank one would let a test pass against a reader that
+// answered nothing.
+func probeWave(target common.HeavyReserveTarget) *waveReader {
+	return &waveReader{wave: common.WaveProbe, reason: common.WaveProbeReasonUnreachable, target: target}
+}
 
-	rep, err := DrainBuyQueue(context.Background(), held, testPlayerID, capexKnobs, fixedClock{time.Unix(1_700_000_000, 0)})
+func heavyWave(target common.HeavyReserveTarget) *waveReader {
+	return &waveReader{wave: common.WaveHeavy, target: target}
+}
+
+// THE WAVE GATE. On HEAVY the drain buys no probe: a heavy is a lump and probes are a trickle, and
+// without pausing the trickle the treasury never reaches the lump. The fixture is the one
+// TestDrain_ExpansionSwitchOnStillBuysAtDefaultFloors proves BUYS, so "bought 0" is evidence.
+func TestDrain_HeavyWaveBuysNoProbe(t *testing.T) {
+	ports, led, pur, _ := oneFillPorts(780_000)
+	ports.Wave = heavyWave(1_916_613)
+
+	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, capexKnobs, fixedClock{time.Unix(1_700_000_000, 0)})
 	if err != nil {
 		t.Fatalf("DrainBuyQueue returned error: %v", err)
 	}
-	if len(heldPur.buys) != 0 {
-		t.Fatalf("bought %d probes while a heavy reserve was outstanding, want 0 — the partition is not holding", len(heldPur.buys))
+	if rep.Bought != 0 || len(pur.buys) != 0 {
+		t.Fatalf("bought %d probes (report Bought=%d) on a HEAVY wave — the trickle is not being paused, so the treasury never reaches the lump", len(pur.buys), rep.Bought)
 	}
-	if !rep.FloorHeld {
-		t.Fatalf("report does not flag FloorHeld while the reserve holds: %+v", rep)
+	if len(pur.quotes) != 0 {
+		t.Fatalf("read %d live shipyard prices on a HEAVY wave, want 0: a tick that may not buy must not price anything either", len(pur.quotes))
 	}
-
-	// Reserve cleared (heavy landed, or no yard sells one) ⇒ the SAME treasury buys again. This
-	// half is what proves the treasury was never the blocker — expansion resumes, it is not
-	// permanently taxed.
-	released, _, releasedPur, _ := oneFillPorts(780_000)
-	released.HeavyReserve = &fakeHeavyReserve{target: 0}
-
-	if _, err := DrainBuyQueue(context.Background(), released, testPlayerID, capexKnobs, fixedClock{time.Unix(1_700_000_000, 0)}); err != nil {
-		t.Fatalf("DrainBuyQueue returned error: %v", err)
+	if rep.Wave != common.WaveHeavy {
+		t.Fatalf("the report must carry the wave, got %q", rep.Wave)
 	}
-	if len(releasedPur.buys) != 1 {
-		t.Fatalf("with the reserve cleared the probe buy must resume, got %d buys", len(releasedPur.buys))
+	if !rep.SpendingPaused {
+		t.Fatalf("report does not say WHY nothing was bought: %+v", rep)
+	}
+	if got := led.transitionsTo(SlotStateQueued); len(got) != 0 {
+		t.Fatalf("a HEAVY wave claimed a slot for a purchase that cannot happen: %+v", got)
 	}
 }
 
-// The floor rises by EXACTLY the reserve — pinned at the boundary, one credit either side.
-func TestDrain_HeavyReserveRaisesFloorExactly(t *testing.T) {
-	// Treasury 780_000 − 23_540 = 756_460 spendable against a 750_000 base floor: 6_460 of slack.
-	// A 6_460 reserve is exactly affordable; 6_461 is one credit too much.
-	exact, _, exactPur, _ := oneFillPorts(780_000)
-	exact.HeavyReserve = &fakeHeavyReserve{target: 6_460}
+// THE FREE HALF STILL RUNS. Re-tasking an idle spare costs zero credits and zero API calls, so
+// stopping it would leave markets we already own hulls for unwatched, for nothing.
+func TestDrain_HeavyWaveStillReusesAParkedSpare(t *testing.T) {
+	led := &fakeBuyLedger{
+		slots: []QueuedSlot{
+			{Waypoint: "X1-AA-M1", System: "X1-AA", Kind: SlotKindMarket, State: SlotStateWanted},
+			{Waypoint: "X1-AA-S1", System: "X1-AA", Kind: SlotKindSpare, State: SlotStateParked, AssignedShip: "PROBE-SPARE"},
+		},
+		systems: []ScreenedSystem{{System: "X1-AA", DepthCredits: 900}},
+	}
+	pur := &fakePurchaser{price: 1_000}
+	ports := BuyPorts{
+		Treasury:   &fakeTreasury{credits: 10_000_000},
+		CargoSpend: &fakeCargoSpend{},
+		Purchaser:  pur,
+		Ledger:     led,
+		Yards:      &fakeYards{yards: map[string][]string{"X1-AA": {"X1-AA-Y1"}}},
+		Ships:      &fakeShipReader{docked: map[string]string{"X1-AA-Y1": "BUYER"}},
+		Fleet:      &fakeFleet{},
+		Wave:       heavyWave(1_916_613),
+	}
+
+	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, capexKnobs, fixedClock{time.Now()})
+	if err != nil {
+		t.Fatalf("DrainBuyQueue returned error: %v", err)
+	}
+	if rep.Reused != 1 {
+		t.Fatalf("report says Reused=%d, want 1 — a wave that also stops re-tasking hulls we already own saves nothing and blinds the markets we bought them for: %+v", rep.Reused, rep)
+	}
+	if rep.Bought != 0 || len(pur.buys) != 0 {
+		t.Fatalf("bought %d probes on a HEAVY wave: %v", len(pur.buys), pur.buys)
+	}
+}
+
+// FREE WORK SURVIVES, part two: the foothold. It has the strongest claim to being cut with the
+// purchases — it exists to make a system able to BUY — but it is still free, so it stays.
+func TestDrain_HeavyWaveStillFillsAFoothold(t *testing.T) {
+	ports, led, _ := footholdPorts(liveManned())
+	ports.Wave = heavyWave(1_916_613)
+
+	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{SpendEnabled: true, ProbeCap: 40}, fixedClock{})
+	if err != nil {
+		t.Fatalf("DrainBuyQueue returned error: %v", err)
+	}
+	if rep.Footholds == 0 {
+		t.Fatalf("no foothold established on a HEAVY wave; report %+v — the foothold spends nothing, so the pause must not reach it", rep)
+	}
+	if rep.Bought != 0 {
+		t.Fatalf("bought %d probes on a HEAVY wave", rep.Bought)
+	}
+	target := slotAt(t, led, "X1-GF41-Y1", SlotKindSpare)
+	if target.State != SlotStateInTransit || target.AssignedShip == "" {
+		t.Fatalf("foothold target not claimed on a HEAVY wave: %+v", target)
+	}
+}
+
+// A HEAVY WAVE COSTS NO MONEY READ. Written by BREAKING the reads: it is the one assertion that
+// fails if the gate moves BELOW them, where it would still buy nothing, still report
+// SpendingPaused, and pass every other test here while spending an API call per tick forever.
+func TestDrain_HeavyWaveReadsNeitherTreasuryNorFleetCount(t *testing.T) {
+	ports, led, pur, _ := oneFillPorts(780_000)
+	treasury := &fakeTreasury{credits: 999_999_999, err: errors.New("api down")}
+	ports.Treasury = treasury
+	led.ownedErr = errors.New("db down")
+	ports.Wave = heavyWave(1_916_613)
+
+	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, capexKnobs, fixedClock{time.Now()})
+	if err != nil {
+		t.Fatalf("a HEAVY-wave drain surfaced a money-read error it had no reason to take: %v", err)
+	}
+	if treasury.calls != 0 {
+		t.Fatalf("HEAVY-wave drain called LiveCredits %d times, want 0 (one live API read per tick, forever, to price nothing)", treasury.calls)
+	}
+	if rep.Bought != 0 || len(pur.buys) != 0 {
+		t.Fatalf("bought %d probes on a HEAVY wave: %v", len(pur.buys), pur.buys)
+	}
+}
+
+// THE WAVE READ ITSELF COSTS NO API CALL: every read behind the port is a LOCAL DB query, which is
+// what lets it sit ahead of the cheapest-first gate order and would break if the regime were
+// re-derived from a live balance. Asserted on the empty-queue path, which returns before any gate,
+// so a treasury call there could only have come from deriving the wave.
+func TestDrain_WaveReadCostsNoTreasuryCall(t *testing.T) {
+	ports, led, _, _ := oneFillPorts(780_000)
+	led.slots = nil // nothing queued ⇒ the tick returns before every gate
+	treasury := &fakeTreasury{credits: 999_999_999}
+	ports.Treasury = treasury
+	wave := probeWave(1_916_613)
+	ports.Wave = wave
+
+	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, capexKnobs, fixedClock{time.Unix(1_700_000_000, 0)})
+	if err != nil {
+		t.Fatalf("DrainBuyQueue returned error: %v", err)
+	}
+	if wave.calls != 1 {
+		t.Fatalf("the wave was read %d times, want exactly 1 — this test cannot see the cost of a read that did not happen", wave.calls)
+	}
+	if treasury.calls != 0 {
+		t.Fatalf("deriving the wave cost %d treasury reads, want 0: a tick with nothing to buy must not cost an API call", treasury.calls)
+	}
+	if rep.Wave != common.WaveProbe {
+		t.Fatalf("the wave must be published on the empty-queue path too, got %q", rep.Wave)
+	}
+}
+
+// ON THE PROBE WAVE THE FLOOR NO LONGER CARRIES THE HEAVY HOLD: a binary gate and a ramp are two
+// mechanisms doing one job. The fixture asserts the hold is LIVE before relying on its absence, so
+// the test cannot pass against a term that merely happened to be zero.
+func TestDrain_ProbeWaveFloorExcludesTheHeavyHold(t *testing.T) {
+	const reachableAsk = common.HeavyReserveTarget(1_000_000)
+	if hold := reachableAsk.HoldAt(780_000); hold <= 0 {
+		t.Fatalf("this fixture no longer exercises a live hold (HoldAt=%d): the test would pass against a floor that still carried the term", hold)
+	}
+
+	ports, _, pur, _ := oneFillPorts(780_000)
+	ports.Wave = probeWave(reachableAsk)
+
+	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, capexKnobs, fixedClock{time.Unix(1_700_000_000, 0)})
+	if err != nil {
+		t.Fatalf("DrainBuyQueue returned error: %v", err)
+	}
+	if rep.Bought != 1 || len(pur.buys) != 1 {
+		t.Fatalf("bought %d probes (report Bought=%d) on a PROBE wave with headroom, want 1 — the heavy hold is still reaching the floor", len(pur.buys), rep.Bought)
+	}
+	if rep.FloorHeld {
+		t.Fatalf("FloorHeld on a PROBE wave the treasury clears: %+v", rep)
+	}
+	if rep.HeavyReserveTarget != reachableAsk {
+		t.Fatalf("report says target %d, want %d — the ask must still be published, or an operator cannot see what a HEAVY wave would be for", rep.HeavyReserveTarget, reachableAsk)
+	}
+}
+
+// THE FLOOR IS EXACTLY THE UNCHANGED ONE, pinned one credit either side with a large ask
+// outstanding: a surviving term at ANY scale moves this boundary, which "it still buys" cannot see.
+func TestDrain_ProbeWaveFloorIsTheUnchangedFloorAtTheBoundary(t *testing.T) {
+	const ask = common.HeavyReserveTarget(1_000_000)
+	// The documented floor for capexKnobs: 50_000 immutable + 100_000 capex + 2h of a 300_000/h
+	// cargo runway. Derived from the shared function rather than restated, so a floor change fails
+	// here loudly instead of silently re-aiming the boundary.
+	floor := domainSensing.ProbeBuyFloor(common.ImmutableReserveFloor, capexKnobs.CapexReserve, domainSensing.CargoSpendPerHour(300_000), capexKnobs.KMilli)
+	const probePrice = int64(23_540)
+
+	exact, _, exactPur, _ := oneFillPorts(floor + probePrice)
+	exact.Wave = probeWave(ask)
 	if _, err := DrainBuyQueue(context.Background(), exact, testPlayerID, capexKnobs, fixedClock{time.Unix(1_700_000_000, 0)}); err != nil {
 		t.Fatalf("DrainBuyQueue returned error: %v", err)
 	}
 	if len(exactPur.buys) != 1 {
-		t.Fatalf("a reserve leaving EXACTLY enough must still buy, got %d buys", len(exactPur.buys))
+		t.Fatalf("a treasury leaving EXACTLY the floor must still buy, got %d buys — a heavy term is still in the floor", len(exactPur.buys))
 	}
 
-	oneShort, _, shortPur, _ := oneFillPorts(780_000)
-	oneShort.HeavyReserve = &fakeHeavyReserve{target: 6_461}
+	oneShort, _, shortPur, _ := oneFillPorts(floor + probePrice - 1)
+	oneShort.Wave = probeWave(ask)
 	if _, err := DrainBuyQueue(context.Background(), oneShort, testPlayerID, capexKnobs, fixedClock{time.Unix(1_700_000_000, 0)}); err != nil {
 		t.Fatalf("DrainBuyQueue returned error: %v", err)
 	}
 	if len(shortPur.buys) != 0 {
-		t.Fatalf("one credit too much reserved must block the buy, got %d buys", len(shortPur.buys))
+		t.Fatalf("one credit below the floor must block the buy, got %d buys — the floor has been lowered, not merely relieved of the heavy term", len(shortPur.buys))
 	}
 }
 
-// THE RULED BEHAVIOUR, from the drain's side. A reader that cannot see its inputs answers ZERO
-// (see HeavyReservePort.Reserve — a blind read reserves nothing and WARNs), and the drain must then
-// buy normally. This is the whole point of the ruling: an unreadable census must not stop probe
-// buying, because the fleet autosizer keeps spending on light hulls either way, and halting only
-// this half starves expansion on a blind signal.
-//
-// The treasury is the discriminator, not decoration: 780_000 − 23_540 = 756_460 clears the 750_000
-// floor, but the 1,565,500 a reserve would hold does not. So the buy happens BECAUSE the blind read
-// reserved zero.
-//
-// The WARN that makes this state visible belongs to the port and is asserted there
-// (TestHeavyReservePort_CensusErrorReservesNothingAndWarns and its yard twin). It is structurally
-// unobservable from here — this test substitutes the port wholesale, so Reserve never runs.
-func TestDrain_BlindReserveReadsZeroAndBuyingProceeds(t *testing.T) {
+// THE IMMUTABLE FLOOR STILL BINDS on the PROBE wave: removing the heavy hold removes ONE term and
+// does not touch the guard underneath it (RULINGS #4). The knobs are stripped to zero so this is
+// the immutable floor alone rather than the compound one.
+func TestDrain_ProbeWaveStillHoldsTheImmutableFloor(t *testing.T) {
+	bare := BuyKnobs{SpendEnabled: true, ProbeCap: 100}
+	const probePrice = int64(23_540)
+
+	below, _, belowPur, _ := oneFillPorts(common.ImmutableReserveFloor + probePrice - 1)
+	below.Wave = probeWave(0)
+	rep, err := DrainBuyQueue(context.Background(), below, testPlayerID, bare, fixedClock{time.Unix(1_700_000_000, 0)})
+	if err != nil {
+		t.Fatalf("DrainBuyQueue returned error: %v", err)
+	}
+	if len(belowPur.buys) != 0 || !rep.FloorHeld {
+		t.Fatalf("the immutable floor must still bind, bought=%d floorHeld=%v", len(belowPur.buys), rep.FloorHeld)
+	}
+
+	at, _, atPur, _ := oneFillPorts(common.ImmutableReserveFloor + probePrice)
+	at.Wave = probeWave(0)
+	if _, err := DrainBuyQueue(context.Background(), at, testPlayerID, bare, fixedClock{time.Unix(1_700_000_000, 0)}); err != nil {
+		t.Fatalf("DrainBuyQueue returned error: %v", err)
+	}
+	if len(atPur.buys) != 1 {
+		t.Fatalf("a balance leaving EXACTLY the immutable floor must buy, got %d — this half is what makes the refusal above evidence", len(atPur.buys))
+	}
+}
+
+// THE FLOOR CAN NEVER FALL BELOW THE IMMUTABLE RESERVE, whatever the knobs say — the property that
+// makes dropping an addend safe. Asserted against the exact call the drain makes, including the
+// adversarial negatives a malformed config could produce.
+func TestDrain_FloorNeverFallsBelowTheImmutableReserve(t *testing.T) {
+	for _, capex := range []int64{-1_000_000, -1, 0, 900_000} {
+		for _, cargo := range []int64{-1_000_000, 0, 300_000} {
+			for _, kMilli := range []int{-5000, 0, 2000} {
+				got := domainSensing.ProbeBuyFloor(common.ImmutableReserveFloor, capex, domainSensing.CargoSpendPerHour(cargo), kMilli)
+				if got < common.ImmutableReserveFloor {
+					t.Fatalf("floor %d is BELOW the immutable reserve %d at capex=%d cargo=%d k=%d", got, common.ImmutableReserveFloor, capex, cargo, kMilli)
+				}
+			}
+		}
+	}
+}
+
+// THE ANTI-DEADLOCK REGRESSION at the drain: a fleet whose PEAK treasury cannot reach the ask keeps
+// buying probes behind its own unchanged floor. The SWEEP is the point — under a live-treasury
+// regime the answer changed with where in the trade cycle the tick landed, so a single sample
+// proved nothing; the regime is now a property of the fleet, so every balance must agree.
+func TestDrain_UnreachableHeavyDoesNotPauseProbes(t *testing.T) {
+	for live := int64(119_000); live <= 1_500_000; live += 137_119 {
+		ports, _, pur, _ := oneFillPorts(live)
+		ports.Wave = probeWave(1_916_613)
+
+		rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, capexKnobs, fixedClock{time.Unix(1_700_000_000, 0)})
+		if err != nil {
+			t.Fatalf("live balance %d: %v", live, err)
+		}
+		if rep.Wave != common.WaveProbe {
+			t.Fatalf("an unreachable heavy must leave the drain on PROBE at live balance %d, got %q", live, rep.Wave)
+		}
+		if rep.SpendingPaused {
+			t.Fatalf("probe buying was paused for an unreachable heavy at live balance %d — this is the deadlock the reachability clause exists to prevent", live)
+		}
+		// The floor still decides whether this particular balance can afford a probe; what must not
+		// happen is the reservation deciding it.
+		if wantBuy := live-23_540 >= 750_000; wantBuy != (len(pur.buys) == 1) {
+			t.Fatalf("at live balance %d the unchanged floor says buy=%v but the drain made %d buys", live, wantBuy, len(pur.buys))
+		}
+	}
+}
+
+// THE OPERATOR SPEND SWITCH IS UNCHANGED and still independent: off buys nothing whatever the
+// regime says. Paired with TestDrain_HeavyWaveBuysNoProbe, it proves the gate is a CONJUNCTION.
+func TestDrain_SpendSwitchStillBindsOnTheProbeWave(t *testing.T) {
 	ports, _, pur, _ := oneFillPorts(780_000)
-	ports.HeavyReserve = &fakeHeavyReserve{target: 0}
+	ports.Wave = probeWave(0)
+
+	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, pausedCapexKnobs(), fixedClock{time.Unix(1_700_000_000, 0)})
+	if err != nil {
+		t.Fatalf("DrainBuyQueue returned error: %v", err)
+	}
+	if rep.Bought != 0 || len(pur.buys) != 0 {
+		t.Fatalf("bought %d probes with the operator switch off on a PROBE wave, want 0", len(pur.buys))
+	}
+	if !rep.SpendingPaused {
+		t.Fatalf("the operator switch must still bind: %+v", rep)
+	}
+}
+
+// FAIL-CLOSED ON AN UNREADABLE WAVE, and closed means "buy nothing this tick": the reader is a
+// swappable seam, so the drain must not treat an erroring implementation's zero as authoritative.
+func TestDrain_UnreadableWaveBuysNothing(t *testing.T) {
+	ports, _, pur, _ := oneFillPorts(5_000_000)
+	ports.Wave = &waveReader{err: errors.New("wave unreadable")}
+
+	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, capexKnobs, fixedClock{time.Unix(1_700_000_000, 0)})
+	if err == nil {
+		t.Fatal("an unreadable wave must abort the tick, got nil error")
+	}
+	if rep.Bought != 0 || len(pur.buys) != 0 {
+		t.Fatalf("bought %d probes on an unreadable wave, want 0", len(pur.buys))
+	}
+	if rep.Wave != "" {
+		t.Fatalf("a tick that derived no regime must publish none, got %q — an invented PROBE would report a release the drain did not make", rep.Wave)
+	}
+}
+
+// AN UNWIRED READER IS THE PROBE WAVE, never HEAVY: a deployment with no heavy buyer has nothing to
+// save for, and an omission that paused probe buying forever is the deadlock this gate avoids.
+func TestDrain_NilWaveReaderIsTheProbeWave(t *testing.T) {
+	ports, _, pur, _ := oneFillPorts(780_000)
+	ports.Wave = nil
 
 	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, capexKnobs, fixedClock{time.Unix(1_700_000_000, 0)})
 	if err != nil {
-		t.Fatalf("a blind reserve must not halt the drain: %v", err)
-	}
-	if len(pur.buys) != 1 {
-		t.Fatalf("bought %d probes on a zero reserve, want 1 — probe buying must proceed when the reserve cannot be computed", len(pur.buys))
-	}
-	if rep.HeavyReserveTarget != 0 {
-		t.Fatalf("report says HeavyReserveTarget=%d, want 0 — the heartbeat must show nothing held, which is what the port's WARN explains", rep.HeavyReserveTarget)
-	}
-	if rep.FloorHeld {
-		t.Fatalf("a zero reserve must not hold the floor: %+v", rep)
-	}
-}
-
-// DEFENCE IN DEPTH, deliberately kept. The shipped reader never returns an error — it answers zero
-// when blind (the test above) — so this path is unreachable in production today. It is retained
-// because HeavyReserveReader is an exported interface with an error in its contract and the port is
-// a swappable seam (a nil reader is already a supported wiring), so the drain cannot assume which
-// implementation it has. Without this branch the drain would treat an erroring reader's zero as
-// authoritative, which is the silent-zero outcome the whole ruling exists to prevent.
-//
-// The fake's message deliberately does NOT say "census": the census no longer reaches here.
-func TestDrain_ErroringReserveReaderStillFailsClosed(t *testing.T) {
-	ports, _, pur, _ := oneFillPorts(5_000_000)
-	ports.HeavyReserve = &fakeHeavyReserve{err: errors.New("reserve reader refused")}
-
-	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, capexKnobs, fixedClock{time.Unix(1_700_000_000, 0)}); err == nil {
-		t.Fatal("a reader that ERRORS must still fail the drain closed, got nil error")
-	}
-	if len(pur.buys) != 0 {
-		t.Fatalf("bought %d probes against an erroring reserve reader, want 0", len(pur.buys))
-	}
-}
-
-// An UNWIRED reader is byte-identical to today: no reserve, no behaviour change. This is what lets
-// the sensing engine run before/without the heavy feature rather than stalling on a nil port.
-func TestDrain_NilHeavyReserveReaderIsInert(t *testing.T) {
-	ports, _, pur, _ := oneFillPorts(780_000)
-	ports.HeavyReserve = nil
-
-	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, capexKnobs, fixedClock{time.Unix(1_700_000_000, 0)}); err != nil {
 		t.Fatalf("DrainBuyQueue returned error: %v", err)
 	}
 	if len(pur.buys) != 1 {
-		t.Fatalf("an unwired reserve reader must not change behaviour, got %d buys want 1", len(pur.buys))
+		t.Fatalf("an unwired wave reader must not change behaviour, got %d buys want 1", len(pur.buys))
+	}
+	if rep.Wave != common.WaveProbe || rep.WaveProbeReason != common.WaveProbeReasonGrowthDisabled {
+		t.Fatalf("an unwired reader must report the PROBE wave with the no-buyer reason, got %q/%q", rep.Wave, rep.WaveProbeReason)
 	}
 }
 
-// The heartbeat's buy_heavy_reserve must agree with the autosizer's per-tick gauge on EVERY tick,
-// including the ones that return before the floor is ever built. An operator correlating the two
-// halves sees them disagree otherwise — and "the two halves disagree" is the exact signal this
-// feature's diagnostics exist to make trustworthy.
-//
-// The probe-cap path is the one that matters most: it is a long-lived steady state, so the
-// heartbeat would read 0 for hours on end while a reserve was genuinely outstanding.
-func TestDrain_ReportsHeavyReserveOnEveryEarlyReturn(t *testing.T) {
+// THE WAVE IS PUBLISHED ON EVERY RETURN PATH THAT DERIVED ONE, including those that return before a
+// floor is built: two series disagreeing merely because a tick took a short path are
+// indistinguishable from the split-brain. The probe-cap path matters most — it is a long-lived
+// steady state, so the heartbeat would read a blank regime for hours.
+func TestDrain_ReportsTheWaveOnEveryEarlyReturn(t *testing.T) {
 	t.Run("probe cap held", func(t *testing.T) {
-		ports, led, pur, _ := oneFillPorts(5_000_000)
+		ports, led, _, _ := oneFillPorts(5_000_000)
 		led.owned = int64(capexKnobs.ProbeCap) // at the cap ⇒ returns before the floor is built
-		ports.HeavyReserve = &fakeHeavyReserve{target: 1_565_500}
+		ports.Wave = probeWave(1_565_500)
 
 		rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, capexKnobs, fixedClock{time.Unix(1_700_000_000, 0)})
 		if err != nil {
@@ -1536,18 +1730,15 @@ func TestDrain_ReportsHeavyReserveOnEveryEarlyReturn(t *testing.T) {
 		if !rep.CapHeld {
 			t.Fatalf("this test does not exercise the cap-held early return: %+v", rep)
 		}
-		if len(pur.buys) != 0 {
-			t.Fatalf("bought %d probes at the probe cap, want 0", len(pur.buys))
-		}
-		if rep.HeavyReserveTarget != 1_565_500 {
-			t.Fatalf("report says HeavyReserveTarget=%d at the probe cap, want 1565500 — the heartbeat reads 0 while a reserve is outstanding and disagrees with the autosizer gauge", rep.HeavyReserveTarget)
+		if rep.Wave != common.WaveProbe || rep.HeavyReserveTarget != 1_565_500 {
+			t.Fatalf("at the probe cap the report says wave=%q target=%d, want probe/1565500", rep.Wave, rep.HeavyReserveTarget)
 		}
 	})
 
 	t.Run("no candidates", func(t *testing.T) {
-		ports, led, pur, _ := oneFillPorts(5_000_000)
+		ports, led, _, _ := oneFillPorts(5_000_000)
 		led.slots = nil // nothing WANTED or QUEUED ⇒ returns before any money read
-		ports.HeavyReserve = &fakeHeavyReserve{target: 1_565_500}
+		ports.Wave = heavyWave(1_565_500)
 
 		rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, capexKnobs, fixedClock{time.Unix(1_700_000_000, 0)})
 		if err != nil {
@@ -1556,92 +1747,23 @@ func TestDrain_ReportsHeavyReserveOnEveryEarlyReturn(t *testing.T) {
 		if led.systemsCalls != 0 {
 			t.Fatalf("this test does not exercise the no-candidates early return (verdicts were read %d times)", led.systemsCalls)
 		}
-		if len(pur.buys) != 0 {
-			t.Fatalf("bought %d probes with nothing queued, want 0", len(pur.buys))
-		}
-		if rep.HeavyReserveTarget != 1_565_500 {
-			t.Fatalf("report says HeavyReserveTarget=%d on an empty queue, want 1565500", rep.HeavyReserveTarget)
+		if rep.Wave != common.WaveHeavy || rep.HeavyReserveTarget != 1_565_500 {
+			t.Fatalf("on an empty queue the report says wave=%q target=%d, want heavy/1565500", rep.Wave, rep.HeavyReserveTarget)
 		}
 	})
 }
 
-// ONE DEFINITION. The value sensing holds back must be the value common.HeavyReserve computes for
-// the same facts.
-//
-// TWO TESTS PROTECT THAT, and neither is a compile-time guard — nothing stops a second copy of the
-// predicate from COMPILING, because HeavyReserveInputs and every field on it are exported:
-//
-//   - TestHeavyReserveLockstep (internal/application/common) pins the ARITHMETIC, so a divergent
-//     second copy fails the suite rather than the economics;
-//   - TestDrain_ReserveMatchesTheSharedPredicate — this test — pins the CALLER, so nobody can
-//     massage the number on its way into the floor.
-//
-// BOTH HALVES are pinned since sp-zg71k: the target from common.HeavyReserve and the treasury
-// bound from HeavyReserveTarget.HoldAt. Re-deriving either one here — "the ask, capped at the
-// surplus", say — is the drift these tests exist to catch, and the second half is now the one
-// carrying the money decision.
-func TestDrain_ReserveMatchesTheSharedPredicate(t *testing.T) {
-	in := common.HeavyReserveInputs{
-		CapabilityOpen:  true,
-		HeaviesOwned:    1,
-		HeavyCap:        5,
-		TargetYardPrice: 1_565_500,
-	}
-	target := common.HeavyReserve(in)
-	if target != 1_565_500 {
-		t.Fatalf("shared predicate returned %d, want the target yard ask 1565500", target)
-	}
+// THE DRAIN NEVER RE-DERIVES THE REGIME: a second read could see a different regime within one tick.
+func TestDrain_ReadsTheWaveExactlyOncePerTick(t *testing.T) {
+	ports, _, _, _ := oneFillPorts(780_000)
+	wave := probeWave(1_916_613)
+	ports.Wave = wave
 
-	// A treasury comfortably past saturation, so the hold is the whole ask and the assertion is
-	// about the WIRING rather than about the bound (the bound has its own tests).
-	const treasury = int64(10_000_000)
-	want := target.HoldAt(treasury)
-	if want != 1_565_500 {
-		t.Fatalf("shared bound held %d at a %d treasury, want the full ask 1565500", want, treasury)
-	}
-
-	// The floor the queue builds with that reserve must equal the floor built by adding the
-	// shared predicate's own answer to the capex term — no scaling, no rounding, no second rule.
-	got := domainSensing.ProbeBuyFloor(common.ImmutableReserveFloor, capexKnobs.CapexReserve+want, 0, 0)
-	expected := domainSensing.ProbeBuyFloor(common.ImmutableReserveFloor, capexKnobs.CapexReserve+common.HeavyReserve(in).HoldAt(treasury), 0, 0)
-	if got != expected {
-		t.Fatalf("floor built from the sensing path = %d, from the shared predicate = %d — the two have diverged", got, expected)
-	}
-}
-
-// THE SENSING HALF OF THE sp-zg71k FIX, end to end through the real drain: a priced heavy whose ask
-// this era cannot reach must not stop probe buying, and the floor must carry NO heavy term at all.
-//
-// The numbers are the live ones. Era-5 evidence puts a heavy at 1,510,645. Before the bound, the
-// drain added that ask verbatim to its capex term and the probe-buy floor became 2,260,645 against
-// a 780,000 treasury — every subsequent tick FloorHeld, forever, with the fleet that earns the
-// difference standing still. The freeze armed itself on SUCCESS: it needed nothing but a probe
-// landing on one of the 46 known heavy-selling yards and reading its price.
-//
-// It asserts the pair, not just the buy. HeavyReserveTarget positive beside HeavyReserveHeld zero
-// is the state the fix creates and the one an operator has to be able to read: "saving toward a
-// heavy we are nowhere near, and therefore withholding nothing for it".
-func TestDrain_OutOfReachHeavyDoesNotFreezeProbeBuying(t *testing.T) {
-	const era5HeavyAsk = common.HeavyReserveTarget(1_510_645)
-
-	ports, _, pur, _ := oneFillPorts(780_000)
-	ports.HeavyReserve = &fakeHeavyReserve{target: era5HeavyAsk}
-
-	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, capexKnobs, fixedClock{time.Unix(1_700_000_000, 0)})
-	if err != nil {
+	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, capexKnobs, fixedClock{time.Unix(1_700_000_000, 0)}); err != nil {
 		t.Fatalf("DrainBuyQueue returned error: %v", err)
 	}
-	if len(pur.buys) != 1 {
-		t.Fatalf("bought %d probes with an out-of-reach heavy priced, want 1 — this is the sp-zg71k freeze", len(pur.buys))
-	}
-	if rep.FloorHeld {
-		t.Fatalf("FloorHeld with an out-of-reach heavy: %+v", rep)
-	}
-	if rep.HeavyReserveTarget != era5HeavyAsk {
-		t.Fatalf("report says target %d, want %d — the ask must still be published, or the operator cannot see what is being saved toward", rep.HeavyReserveTarget, era5HeavyAsk)
-	}
-	if rep.HeavyReserveHeld != 0 {
-		t.Fatalf("report says %d held toward an ask the treasury is nowhere near, want 0", rep.HeavyReserveHeld)
+	if wave.calls != 1 {
+		t.Fatalf("the wave was read %d times in one tick, want exactly 1", wave.calls)
 	}
 }
 

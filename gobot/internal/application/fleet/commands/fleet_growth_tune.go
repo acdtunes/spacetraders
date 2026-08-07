@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/liveconfig"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/hullbuy"
 )
 
 // The growth coordinator's live-tunable keys. heavy_cap and growth_enabled are BARE (unprefixed)
@@ -13,8 +14,9 @@ import (
 // growth knob remains a launch key, so adding to this list is a deliberate act.
 const (
 	// growthEnabledKey is the growth coordinator's MASTER SWITCH. Off, the coordinator skips the
-	// whole reconcile tick — see liveKnobs for why this gates the READS and not just the buy.
-	growthEnabledKey = "growth_enabled"
+	// whole reconcile tick — see liveKnobs for why this gates the READS and not just the buy. The
+	// name is the DOMAIN's because the drain resolves the same key off the same row.
+	growthEnabledKey = hullbuy.HeavyBuyerSwitchKey
 
 	// growthRunwayKey is the working-capital term's runway multiplier, in MILLI-hours. Live
 	// because the observation that drives a retune — "heavies are never affordable, the runway
@@ -27,11 +29,10 @@ const (
 	// decision to disable is a TUNE (which persists across daemon restarts).
 	defaultGrowthEnabled = 1
 
-	// growthDisabled is the sentinel that switches growth off.
-	//
-	// 1=ON, 2=OFF — deliberately NOT 0/1. `tune <key> 0` DELETES the key and means
-	// revert-to-default fleet-wide, so a 0/1 encoding would make "off" literally unexpressible.
-	growthDisabled = 2
+	// growthDisabled is the sentinel that switches growth off, shared with the drain's read of the
+	// same key (hullbuy.HeavyBuyerSwitchOff). 1=ON, 2=OFF — deliberately NOT 0/1, because
+	// `tune <key> 0` DELETES the key and would make "off" literally unexpressible.
+	growthDisabled = hullbuy.HeavyBuyerSwitchOff
 )
 
 // FleetGrowthTunableDefaults returns the coordinator's live-tunable knob → documented-default map

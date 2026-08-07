@@ -174,10 +174,15 @@ type SensingEnginePorts struct {
 	// idle against 1,067 unpriced systems, which is precisely the blind spot this
 	// port exists to close. Held fail-closed and LOUD instead.
 	UnpricedPool UnpricedSystemPool
-	// HeavyReserve holds treasury back for the next heavy so probe buying stands down
-	// while one accumulates (sp-fwk8z). OPTIONAL: nil is byte-identical to no reserve,
-	// which is what a deployment without the fleet autosizer should see.
-	HeavyReserve parkedsensing.HeavyReserveReader
+	// Wave answers which regime the tick is in: probe buying pauses on the HEAVY wave so
+	// the treasury can reach a hull's ask, and runs at full speed on the PROBE one. The
+	// name is the whole answer, not a reserve — the field used to carry only the ask,
+	// and a name that lies is how the next reader misuses it.
+	//
+	// OPTIONAL: nil is the PROBE wave, which is what a deployment with no heavy buyer
+	// should see. A nil-tolerant reserve was byte-identical to "no hold"; a nil-tolerant
+	// wave must be byte-identical to "nothing to save for", never to a pause.
+	Wave parkedsensing.WaveReader
 }
 
 // SensingEnginePortsFactory builds one player's engine surface. The daemon wires
@@ -309,8 +314,9 @@ func (p SensingEnginePorts) buyPorts(claimOwnerContainerID string, posts Sensing
 		// with. nil-safe: an unwired budget orders the queue as it was ordered
 		// before the term existed.
 		YardDemand: p.YardPresence,
-		// nil-safe: an unwired reserve means no hold-back, not a stalled drain.
-		HeavyReserve:          p.HeavyReserve,
+		// nil-safe: an unwired wave reader means the PROBE wave — no heavy buyer to save
+		// for — never a paused drain.
+		Wave:                  p.Wave,
 		ClaimOwnerContainerID: claimOwnerContainerID,
 	}
 }

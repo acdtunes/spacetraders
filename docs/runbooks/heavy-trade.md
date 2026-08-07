@@ -215,8 +215,13 @@ top to bottom; each rung is cheaper than the one after it.
    outcome. Absent → the autosizer is not running, or metrics are off; nothing below applies. The
    value is derived per tick and never stored, so a *frozen* line means frozen inputs, not a stale
    cache.
-2. **Do the two spenders agree?** The heartbeat's `buy_heavy_reserve` must equal that gauge. Both
-   call the same predicate, so a disagreement means one side is on a blind read — rung 3.
+2. **Do the two readers agree?** `fleet_growth_wave{reader="drain"}` must equal
+   `fleet_growth_wave{reader="growth"}`, and the heartbeat's `buy_wave` must match the drain's. Both
+   derive the regime from the same predicate, so a disagreement means one side saw a different
+   input — `fleet_growth_wave_probe_reason{reader=…}` names which clause, and rung 3 says whether
+   either read was blind. *(Sensing no longer withholds credits of its own, so there is no second
+   reserve number to compare: the drain's `buy_heavy_reserve_target` is the ASK being saved toward,
+   not a hold.)*
 3. **Is either side blind?** `sensing_heavy_reserve_blind` or `sensing_heavy_cap_unresolved` in the
    log. Either means sensing is reserving **nothing**: probe buying is proceeding unreserved and
    treasury is not accumulating. That is the degraded path above, not a stuck buyer.
@@ -247,6 +252,12 @@ top to bottom; each rung is cheaper than the one after it.
   autosizer container is RUNNING and its config is readable.
 - `WARNING … sensing_heavy_reserve_blind` → the census or the yard-price read failed. Same
   consequence, different input. See "The reserve went blind" above.
+- `WARNING … sensing_heavy_cap_undeclared_buyer` → the cap was resolved off a container whose type no
+  heavy-buyer declaration claims. **The drain stays on PROBE while this persists** — probe buying
+  continues and the treasury does not pause for a heavy — because only a declaration establishes that
+  something is running a heavy buy path, and pausing for a buyer that does not exist is a wait with
+  no end. Usually a **leftover** container still carrying its old launch cap key, which is harmless;
+  if heavy buying has genuinely moved, declare the new container type and the pause resumes.
 - `WARNING … heavy_census_unrecognised_frame` → a large hull carried a frame the known-heavy list
   does not contain. It was counted as heavy (the safe direction), and **the frame list needs that
   symbol added**. This is expected once, the first time a real heavy is seen.

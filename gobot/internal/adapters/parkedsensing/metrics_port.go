@@ -6,7 +6,12 @@ package parkedsensing
 // its handlers before it constructs the server that installs the metrics
 // collectors, so a reference captured at wiring time would be permanently nil.
 
-import "github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
+import (
+	"strconv"
+
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
+	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+)
 
 // MetricsPort publishes the parked-probe sensing gauges.
 //
@@ -47,4 +52,20 @@ func (MetricsPort) RecordYardPresence(playerID int, outcome string, count int) {
 // RecordYardSlots publishes one stage of the buy queue's dark-yard accounting.
 func (MetricsPort) RecordYardSlots(playerID int, stage string, count int) {
 	metrics.GetGlobalParkedSensingCollector().RecordYardSlots(playerID, stage, count)
+}
+
+// RecordWave publishes the regime the DRAIN derived this tick, onto the SAME series the growth
+// coordinator writes under its own reader label. One gauge, two readers: a divergence between them
+// is the split-brain the shared predicate forbids, and it is visible only because both write.
+//
+// It reaches the fleet-growth collector rather than the sensing one because the series belongs to
+// the wave, not to either consumer — a reader-labelled gauge split across two collectors would be
+// two gauges wearing one name.
+func (MetricsPort) RecordWave(playerID int, wave common.Wave, reason common.WaveProbeReason) {
+	metrics.RecordFleetGrowthWave(
+		strconv.Itoa(playerID),
+		metrics.WaveReaderDrain,
+		wave == common.WaveHeavy,
+		string(reason),
+	)
 }

@@ -232,15 +232,11 @@ type BuyPorts struct {
 	// OPTIONAL: nil quotes everything.
 	ListingMemo ProbeListingMemo
 	Fleet       FleetTagger
-	// HeavyReserve reports the ASK the fleet is saving toward for the NEXT heavy purchase.
-	// The credits actually withheld are derived from it against the live treasury — see
-	// common.HeavyReserveTarget.HoldAt. OPTIONAL: a nil reader means no reserve.
-	//
-	// A read ERROR fails CLOSED, as DEFENCE IN DEPTH: HeavyReserveReader is an
-	// exported interface carrying an error in its contract and this field is a
-	// swappable seam, so the drain cannot assume which implementation it holds and
-	// must not treat an erroring reader's zero as authoritative.
-	HeavyReserve HeavyReserveReader
+	// Wave answers which regime this tick is in, and what the fleet is saving toward.
+	// OPTIONAL: a nil reader means no heavy buyer, which is the PROBE wave — an
+	// unwired seam must never pause probe buying. A read ERROR fails CLOSED: this is
+	// a swappable seam, so an erroring implementation's zero is never authoritative.
+	Wave WaveReader
 
 	// Gates and MannedHulls serve the foothold path ONLY (foothold.go): the gate
 	// topology names which systems a surplus hull could be flown from, and the post
@@ -268,15 +264,15 @@ type BuyPorts struct {
 	ClaimOwnerContainerID string
 }
 
-// HeavyReserveReader reports the ask the fleet is saving toward for the next heavy purchase. The
-// value is computed by common.HeavyReserve — the ONE definition, shared with the fleet autosizer.
-// This port carries the answer; it must never re-derive it.
+// WaveReader answers which regime this tick is in, and what the fleet is saving toward.
 //
-// A TARGET, NOT A CREDIT COUNT (sp-zg71k). The named return type is what stops it being added
-// into a spend floor: the drain must first bound it against the live treasury with
-// HeavyReserveTarget.HoldAt, and the compiler refuses every path that skips that step.
-type HeavyReserveReader interface {
-	Reserve(ctx context.Context, playerID int) (common.HeavyReserveTarget, error)
+// IT RETURNS THE WHOLE ANSWER, not the inputs to it. The drain must not assemble a second
+// WaveInputs and call common.DeriveWave itself: two assemblies of one predicate is the split-brain
+// the one-definition rule exists to prevent, and this port is the seam where the growth
+// coordinator's facts and the drain's meet. The target is carried for the heartbeat, not for a
+// decision — since the wave owns the hold-back, no path may add it into a spend floor.
+type WaveReader interface {
+	Wave(ctx context.Context, playerID int) (common.Wave, common.WaveProbeReason, common.HeavyReserveTarget, error)
 }
 
 // BuyKnobs are the operator-set economics of the queue.
@@ -293,9 +289,11 @@ type BuyKnobs struct {
 	// credits and zero API calls. What it does not do is read a yard's live price,
 	// claim a placement for purchase, or pay a counter.
 	//
-	// It is NOT the money guard — ProbeBuyFloor, the probe cap and the heavy reserve
-	// are, unchanged either way (RULINGS #4). The zero value is the closed one: a call
-	// site that forgets to set it buys nothing.
+	// IT IS NOT THE WAVE: two independent gates side by side, this one the operator's
+	// choice and the wave the fleet's regime. Folding them together would leave an
+	// operator unable to tell "you switched this off" from "the fleet is saving for a
+	// hull". Neither is the money guard — ProbeBuyFloor and the probe cap are,
+	// unchanged either way (RULINGS #4). The zero value is the closed one.
 	SpendEnabled bool
 	// ProbeCap is the hard ceiling on probe hulls this engine may own.
 	ProbeCap int

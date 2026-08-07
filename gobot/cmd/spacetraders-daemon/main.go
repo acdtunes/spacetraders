@@ -57,6 +57,7 @@ import (
 	watchkeeper "github.com/andrescamacho/spacetraders-go/internal/captain"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/goods"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/ledger"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	domainTrading "github.com/andrescamacho/spacetraders-go/internal/domain/trading"
@@ -357,10 +358,33 @@ type sensingWiring struct {
 // the player has to be bound into the adapter — and the handler is a registered
 // singleton serving every player's ticks. The factory result is memoised per player.
 //
-// heavyTargetFinder is an explicit parameter rather than a field: the composition-root
-// pin test requires both of its consumers be handed the one instance by name.
+// heavyTargetFinder and unservedLaneReader are explicit parameters rather than fields: both are
+// SHARED with the fleet-growth coordinator, and the composition-root pin tests require each
+// consumer be handed the one instance by name. A field would let a second one be constructed here
+// without the wiring reading any differently.
+// sensingHighWaterPort and sensingLanePort narrow a concrete collaborator to the ONE port the wave
+// may judge, and drop a MISSING one to a genuine nil interface: a typed nil is NOT nil to an
+// interface, so an unwired repository would sail past the port's own fail-closed guard and panic
+// mid-tick. Named functions rather than inline conditionals for the same reason
+// growthHighWaterPort is — substituting a point read must be a visible edit to a documented
+// contract, not a plausible-looking one-word change.
+func sensingHighWaterPort(txns *persistence.GormTransactionRepository) ledger.TreasuryHighWaterReader {
+	if txns == nil {
+		return nil
+	}
+	return txns
+}
+
+func sensingLanePort(lanes *tradingQueries.UnservedLaneReader) parkedSensingAdapters.UnservedLaneCounter {
+	if lanes == nil {
+		return nil
+	}
+	return lanes
+}
+
 func (s sensingWiring) enginePorts(
 	heavyTargetFinder *shipyardQuery.HeavyTargetFinder,
+	unservedLaneReader *tradingQueries.UnservedLaneReader,
 	sensingPlayerID int,
 ) scoutingCmd.SensingEnginePorts {
 	// One catalog adapter instance serves the screen, the buy queue's yard lookup and
@@ -373,6 +397,10 @@ func (s sensingWiring) enginePorts(
 	// about which systems border which — the mover walks toward a placement
 	// over the same edges expansion used to decide the placement was reachable.
 	gateNeighbours := parkedSensingAdapters.NewGateNeighbourPort(s.gateEdgeRepo)
+	// ONE read of the heavy buyer's container row, serving both knobs the wave depends on: the cap
+	// the reservation is sized within, and the switch that says whether a buyer exists at all. They
+	// are one question, and splitting them is how a later change answers it twice.
+	heavyBuyerCaps := parkedSensingAdapters.NewHeavyBuyerCapPort(s.db)
 	return scoutingCmd.SensingEnginePorts{
 		Ledger:    s.ledger,
 		Waypoints: catalog,
@@ -454,18 +482,28 @@ func (s sensingWiring) enginePorts(
 		// The sensing surge's work list: charted systems we hold no price for
 		// (sp-zvywu). Same instance for every player — see its construction above.
 		UnpricedPool: s.unpricedPool,
-		// The heavy reservation: probe buying stands down while treasury accumulates
-		// toward the next heavy, and resumes the moment it lands. heavy_cap is read
-		// from the fleet autosizer's OWN persisted config — one dial, one enforcer —
-		// and an absent autosizer simply reserves nothing.
+		// THE WAVE: probe buying pauses while the treasury climbs toward a heavy hull's
+		// ask. It is the SECOND consumer of the predicate the fleet-growth coordinator
+		// spends on, and every fact behind it is shared with that coordinator by
+		// INSTANCE rather than by agreement — the same heavy target (so the two cannot
+		// save toward different yards), the same capacity-short signal, ONE container
+		// read serving both the cap and the buyer's master switch, and the ledger's
+		// PEAK-over-window reader. A point read in that last slot makes the regime a
+		// function of where in a trade cycle the tick landed, and every test of the
+		// predicate still passes.
 		//
-		// The price term is heavyTargetFinder — the SAME instance the autosizer reads,
-		// not a second query that happens to agree — so the spender and the withholder
-		// cannot end up saving toward different yards (sp-fwk8z).
-		HeavyReserve: parkedSensingAdapters.NewHeavyReservePort(
-			parkedSensingAdapters.NewShipRepoCensus(s.shipRepo),
-			heavyTargetFinder,
-			parkedSensingAdapters.NewHeavyBuyerCapPort(s.db),
+		// Every read behind it is LOCAL, which is what lets the drain consult it ahead of
+		// its cheapest-first gate order without pricing a tick that buys nothing.
+		Wave: parkedSensingAdapters.NewWavePort(
+			heavyBuyerCaps,
+			parkedSensingAdapters.NewHeavyReservePort(
+				parkedSensingAdapters.NewShipRepoCensus(s.shipRepo),
+				heavyTargetFinder,
+				heavyBuyerCaps,
+			),
+			sensingLanePort(unservedLaneReader),
+			sensingHighWaterPort(s.transactionRepo),
+			nil,
 		),
 		// The budget the whole model is sized against: sensing is the RESIDUAL
 		// consumer, so it reads how much of the ceiling everyone else is using.
@@ -1437,7 +1475,7 @@ func run(cfg *config.Config) error {
 		yardBudget:            yardBudget,
 	}
 	probeSensingHandler.SetEnginePortsFactory(func(sensingPlayerID int) scoutingCmd.SensingEnginePorts {
-		return sensing.enginePorts(heavyTargetFinder, sensingPlayerID)
+		return sensing.enginePorts(heavyTargetFinder, unservedLaneReader, sensingPlayerID)
 	})
 	// Per-tick live view of the persisted config, so `tune --operation sensing` takes
 	// effect on the NEXT reconcile rather than at the next rebuild (mirrors probeBuyer).
