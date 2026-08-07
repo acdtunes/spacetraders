@@ -320,7 +320,8 @@ func TestTour_Lookback_LiveAskCeilingAbortsBuy(t *testing.T) {
 	h := newTourHandler(t, fx, &tourFakeRoutingClient{}, &tourFakeTelemetry{})
 	cmd := &RunTourCoordinatorCommand{ShipSymbol: "TOUR-LB-CEIL", PlayerID: 1, ContainerID: "ctr-lb-ceil", MinMargin: 1}
 	resp := &RunTourCoordinatorResponse{}
-	// Cached prices: ask 100, sink bid 300 → ceiling = min(100*1.15=115, 300-1=299) = 115.
+	// Cached prices: ask 100, sink bid 300 → ceiling = min(100*1.15=115, 300-33=267) = 115. The
+	// tolerance term binds here; TestTour_Lookback_CeilingBindsOnTheLookbackFloor covers the other.
 	item := lookbackItem{Good: "PARTS", SourceWaypoint: "X1-HU21-A", Units: 20, SourceAsk: 100, DestBid: 300}
 
 	got := h.buyLookbackItem(context.Background(), cmd, resp, map[string]int{}, item, 10_000_000, 10_000_000, 0)
@@ -333,6 +334,89 @@ func TestTour_Lookback_LiveAskCeilingAbortsBuy(t *testing.T) {
 	fx.mu.Unlock()
 	if buys != 0 {
 		t.Fatalf("the ceiling abort must dispatch no completed purchase, got %d buys", buys)
+	}
+	if resp.TotalSpent != 0 {
+		t.Fatalf("a ceiling-aborted look-back buy spends nothing, got %d", resp.TotalSpent)
+	}
+}
+
+// --- the look-back spread floor, split from the solver's MinMargin ---
+
+// The floor is ACTIVE with no config set, and stays tunable (RULINGS #5).
+func TestLookbackFloor_ResolvesDefaultAndHonoursKnob(t *testing.T) {
+	if got := lookbackFloor(&RunTourCoordinatorCommand{}); got != lookbackMinMarginDefault {
+		t.Fatalf("an unset knob must resolve to the look-back default, got %d", got)
+	}
+	if got := lookbackFloor(&RunTourCoordinatorCommand{LookbackMinMargin: 250}); got != 250 {
+		t.Fatalf("an explicit lookback_min_margin must win, got %d", got)
+	}
+}
+
+// The split: the solver's MinMargin can no longer reach the look-back floor.
+func TestLookbackFloor_SolverMinMarginCannotLowerIt(t *testing.T) {
+	cmd := &RunTourCoordinatorCommand{MinMargin: 1}
+	if got := lookbackFloor(cmd); got != lookbackMinMarginDefault {
+		t.Fatalf("the solver's MinMargin must not lower the look-back floor, got %d", got)
+	}
+}
+
+// Capped-spread ranking ranks a DEEP thin bulk lane over a shallow rich one; the floor refuses it.
+func TestBuildLookbackManifest_DefaultFloorRefusesBulkThatOutranksOnDepth(t *testing.T) {
+	src := []trading.GoodListing{
+		gl("BULK", "HU21-D46", "EXPORT", 60, 70, 600),   // spread 13, capped 7800 — ranks FIRST
+		gl("RICH", "HU21-D47", "EXPORT", 3000, 3900, 6), // spread 1100, capped 6600
+	}
+	dest := []trading.GoodListing{
+		gl("BULK", "UQ16-A1", "IMPORT", 83, 999, 600),
+		gl("RICH", "UQ16-A2", "IMPORT", 5000, 9999, 6),
+	}
+
+	// Reference frame: unfloored, the bulk lane outranks the rich one and takes the whole hold.
+	if loose := buildLookbackManifest(src, dest, 400, 1); len(loose) == 0 || loose[0].Good != "BULK" || loose[0].Units != 400 {
+		t.Fatalf("fixture must reproduce bulk crowding out the rich lane, got %+v", loose)
+	}
+
+	manifest := buildLookbackManifest(src, dest, 400, lookbackMinMarginDefault)
+
+	for _, item := range manifest {
+		if item.Good == "BULK" {
+			t.Fatalf("a spread under the look-back floor must not load, got %+v", item)
+		}
+	}
+	if len(manifest) != 1 || manifest[0].Good != "RICH" || manifest[0].Units != 6 {
+		t.Fatalf("the hold must go to the lane that clears the floor, got %+v", manifest)
+	}
+}
+
+// The counterfactual: the floor discriminates on SPREAD, never on good identity.
+func TestBuildLookbackManifest_DefaultFloorAdmitsAFatLaneInACheapGood(t *testing.T) {
+	src := []trading.GoodListing{gl("BULK", "HU21-D46", "EXPORT", 60, 70, 600)}
+	dest := []trading.GoodListing{gl("BULK", "UQ16-A1", "IMPORT", 150, 999, 600)} // spread 80
+
+	manifest := buildLookbackManifest(src, dest, 400, lookbackMinMarginDefault)
+
+	if len(manifest) != 1 || manifest[0].Good != "BULK" {
+		t.Fatalf("a fat lane in a cheap good must still load — the floor is not a good blocklist, got %+v", manifest)
+	}
+	if manifest[0].Units != 400 {
+		t.Fatalf("a floor-clearing lane must still fill the hold, got %d units", manifest[0].Units)
+	}
+}
+
+// The second guard reads the SAME floor; here the floor term binds, not the tolerance term.
+func TestTour_Lookback_CeilingBindsOnTheLookbackFloor(t *testing.T) {
+	fx := lookbackFixture()
+	fx.ask["X1-HU21-A"]["PARTS"] = 110 // inside the 15% tolerance (115), outside destBid-floor (107)
+	h := newTourHandler(t, fx, &tourFakeRoutingClient{}, &tourFakeTelemetry{})
+	cmd := &RunTourCoordinatorCommand{ShipSymbol: "TOUR-LB-FLOORCEIL", PlayerID: 1, ContainerID: "ctr-lb-floorceil", MinMargin: 1}
+	resp := &RunTourCoordinatorResponse{}
+	// Cached ask 100 / sink bid 140 → ceiling = min(100*1.15=115, 140-33=107) = 107.
+	item := lookbackItem{Good: "PARTS", SourceWaypoint: "X1-HU21-A", Units: 20, SourceAsk: 100, DestBid: 140}
+
+	got := h.buyLookbackItem(context.Background(), cmd, resp, map[string]int{}, item, 10_000_000, 10_000_000, 0)
+
+	if got != 0 {
+		t.Fatalf("a live ask above destBid-floor must abort the buy, got %d units", got)
 	}
 	if resp.TotalSpent != 0 {
 		t.Fatalf("a ceiling-aborted look-back buy spends nothing, got %d", resp.TotalSpent)

@@ -30,11 +30,12 @@ type RunTourCoordinatorCommand struct {
 	// explicit system symbol pins the return to that system's first fresh market.
 	// Zero-values = open tours, byte-identical to today. Deliberately no CLI flag
 	// yet — arming is governance-owned.
-	ClosedTours  bool
-	AnchorSystem string
-	MaxSpend     int64 // 0 → 25% of live treasury (re-resolved per tour when Iterations != 0/1)
-	MinMargin    int
-	ReplanLimit  int // 0 → tourMaxReplansDefault (PER TOUR)
+	ClosedTours       bool
+	AnchorSystem      string
+	MaxSpend          int64 // 0 → 25% of live treasury (re-resolved per tour when Iterations != 0/1)
+	MinMargin         int
+	LookbackMinMargin int // the look-back manifest's own floor; 0 → lookbackMinMarginDefault
+	ReplanLimit       int // 0 → tourMaxReplansDefault (PER TOUR)
 	// Iterations is the tour count, unifying the container iteration semantics
 	// (registry invariant 3): -1 = CONTINUOUS (tour, re-plan from the new position,
 	// tour again — until margins die/starvation/stop), N>0 = exactly N tours, 0 =

@@ -47,6 +47,17 @@ import (
 // re-pools two populations that must not be averaged together.
 const lookbackLegIndex = trading.LookbackLegIndex
 
+// lookbackMinMarginDefault is the per-unit spread a look-back load must clear, for BOTH guards.
+// Look-back packs the hold by capped spread, so depth wins and an unfloored bulk lane takes slots.
+const lookbackMinMarginDefault = 33
+
+func lookbackFloor(cmd *RunTourCoordinatorCommand) int {
+	if cmd.LookbackMinMargin > 0 {
+		return cmd.LookbackMinMargin
+	}
+	return lookbackMinMarginDefault
+}
+
 // lookbackExportType is the GoodListing.TradeType value a look-back destination must NOT
 // carry: an exporter's Bid is a low sellback price, not a real import demand (sp-9mkf). It
 // mirrors domain/trading.tradeTypeExport, sourced from the market constant so the value
@@ -259,7 +270,7 @@ func (h *RunTourCoordinatorHandler) loadLookbackManifest(
 	if err != nil {
 		return 0
 	}
-	manifest := buildLookbackManifest(src, dst, ship.AvailableCargoSpace(), cmd.MinMargin)
+	manifest := buildLookbackManifest(src, dst, ship.AvailableCargoSpace(), lookbackFloor(cmd))
 	if len(manifest) == 0 {
 		logger.Log("INFO", fmt.Sprintf("Look-back: no %s export clears the min-margin floor into a %s import sink (candidates src=%d dst=%d) - jumping empty", fromSystem, toSystem, len(src), len(dst)), map[string]interface{}{
 			"ship_symbol": cmd.ShipSymbol, "from_system": fromSystem, "to_system": toSystem,
@@ -385,10 +396,7 @@ func (h *RunTourCoordinatorHandler) buyLookbackItem(
 	// price tolerance over the cached ask, but NEVER above destBid-floor — so even at the
 	// ceiling the load still clears the min-margin against the cached sink bid. The sell
 	// side is re-verified live at the destination by the post-jump re-plan.
-	floor := cmd.MinMargin
-	if floor < 1 {
-		floor = 1
-	}
+	floor := lookbackFloor(cmd)
 	maxAsk := item.SourceAsk + item.SourceAsk*tourPriceTolerancePct/100
 	if marginCeil := item.DestBid - floor; marginCeil < maxAsk {
 		maxAsk = marginCeil
