@@ -166,9 +166,8 @@ func (s *daemonServiceImpl) GetAPIBudget(ctx context.Context, req *pb.GetAPIBudg
 // TuneContainerConfig sets (or reverts, value 0) one live knob on a running
 // container (sp-vwek). Resolves the player from player_id or agent_symbol like the
 // other coordinator RPCs, then delegates the registry-validated, persisted-config
-// mutation to the daemon — the single writer (RULINGS #3). The running coordinator
-// re-reads its config at each tick start, so the tune lands on the next tick with
-// no restart.
+// mutation to the daemon — the single writer (RULINGS #3). WHEN it lands on the running
+// loop is a per-KNOB fact and travels back in Applies.
 func (s *daemonServiceImpl) TuneContainerConfig(ctx context.Context, req *pb.TuneContainerConfigRequest) (*pb.TuneContainerConfigResponse, error) {
 	var pid int32
 	if req.PlayerId != nil {
@@ -195,7 +194,21 @@ func (s *daemonServiceImpl) TuneContainerConfig(ctx context.Context, req *pb.Tun
 		Unit:          out.Unit,
 		DefaultValue:  int64(out.DefaultValue),
 		Changed:       out.Changed,
+		Applies:       tuneAppliesToProto(out.Applies),
 	}, nil
+}
+
+// tuneAppliesToProto carries the registry's per-knob "when does this bite" fact to the
+// client phrasing the confirmation. Unrecognised maps to UNSPECIFIED: claim nothing.
+func tuneAppliesToProto(a TuneApplies) pb.TuneApplies {
+	switch a {
+	case TuneAppliesLive:
+		return pb.TuneApplies_TUNE_APPLIES_LIVE
+	case TuneAppliesOnRebuild:
+		return pb.TuneApplies_TUNE_APPLIES_ON_REBUILD
+	default:
+		return pb.TuneApplies_TUNE_APPLIES_UNSPECIFIED
+	}
 }
 
 // ShowTunableConfig lists a container's live-tunable knobs with effective values,
@@ -229,6 +242,7 @@ func (s *daemonServiceImpl) ShowTunableConfig(ctx context.Context, req *pb.ShowT
 			Unit:         k.Bound.Unit,
 			Description:  k.Bound.Description,
 			DefaultValue: int64(k.Bound.Default),
+			Applies:      tuneAppliesToProto(k.Bound.Applies),
 		})
 	}
 	return resp, nil

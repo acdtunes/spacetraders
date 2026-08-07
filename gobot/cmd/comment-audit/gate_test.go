@@ -393,6 +393,15 @@ func isCensusExcluded(dir string) bool {
 	return false
 }
 
+// holdsCensusableSource asks the census's OWN question — would Scan have counted
+// anything here? — by running the same AnalyzeFile over the same files, so the two
+// cannot answer differently.
+//
+// A ".go file exists" test is not that question. AnalyzeFile drops generated files,
+// so a directory holding only generated code (pkg/proto/daemon) is legitimately
+// absent from the census, and the shallower test read that absence as git and the
+// census disagreeing about paths — failing every lane that regenerates a proto with
+// a message about directory naming that has nothing to do with the cause.
 func holdsCensusableSource(dir string) bool {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -400,7 +409,16 @@ func holdsCensusableSource(dir string) bool {
 	}
 	for _, e := range entries {
 		n := e.Name()
-		if !e.IsDir() && strings.HasSuffix(n, ".go") && !strings.HasSuffix(n, "_test.go") {
+		if e.IsDir() || !strings.HasSuffix(n, ".go") || strings.HasSuffix(n, "_test.go") {
+			continue
+		}
+		src, err := os.ReadFile(filepath.Join(dir, n))
+		if err != nil {
+			continue
+		}
+		// A parse error cannot hide a package here: Scan runs first and fails the
+		// gate outright on one, so reaching this point means every file parsed.
+		if st, err := AnalyzeFile(n, src); err == nil && st != nil {
 			return true
 		}
 	}

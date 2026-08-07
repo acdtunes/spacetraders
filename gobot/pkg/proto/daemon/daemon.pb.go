@@ -21,6 +21,67 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+// TuneApplies says WHEN a persisted tune reaches the RUNNING coordinator. It is a
+// per-KNOB fact, not a per-coordinator one: the sensing coordinator re-reads most of
+// its knobs every tick while inflight_cap and value_clamp_r bind at construction.
+//
+// UNSPECIFIED is the zero value on purpose. A knob whose timing is undeclared — an
+// old daemon answering a new CLI, or a knob added without classifying it — must read
+// as "not claimed", never as the confident live answer: a false "already applied" on
+// a spending switch is what stops an operator escalating.
+type TuneApplies int32
+
+const (
+	// Undeclared. Report the write as persisted and claim nothing about when it bites.
+	TuneApplies_TUNE_APPLIES_UNSPECIFIED TuneApplies = 0
+	// A live-config reader re-reads the knob each tick; the tune needs no restart.
+	TuneApplies_TUNE_APPLIES_LIVE TuneApplies = 1
+	// The knob binds when the coordinator is built. The running loop keeps its launch
+	// value until a restart or relaunch, however long the tune has been persisted.
+	TuneApplies_TUNE_APPLIES_ON_REBUILD TuneApplies = 2
+)
+
+// Enum value maps for TuneApplies.
+var (
+	TuneApplies_name = map[int32]string{
+		0: "TUNE_APPLIES_UNSPECIFIED",
+		1: "TUNE_APPLIES_LIVE",
+		2: "TUNE_APPLIES_ON_REBUILD",
+	}
+	TuneApplies_value = map[string]int32{
+		"TUNE_APPLIES_UNSPECIFIED": 0,
+		"TUNE_APPLIES_LIVE":        1,
+		"TUNE_APPLIES_ON_REBUILD":  2,
+	}
+)
+
+func (x TuneApplies) Enum() *TuneApplies {
+	p := new(TuneApplies)
+	*p = x
+	return p
+}
+
+func (x TuneApplies) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (TuneApplies) Descriptor() protoreflect.EnumDescriptor {
+	return file_pkg_proto_daemon_daemon_proto_enumTypes[0].Descriptor()
+}
+
+func (TuneApplies) Type() protoreflect.EnumType {
+	return &file_pkg_proto_daemon_daemon_proto_enumTypes[0]
+}
+
+func (x TuneApplies) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use TuneApplies.Descriptor instead.
+func (TuneApplies) EnumDescriptor() ([]byte, []int) {
+	return file_pkg_proto_daemon_daemon_proto_rawDescGZIP(), []int{0}
+}
+
 // NavigateShipRequest initiates ship navigation
 type NavigateShipRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -8076,7 +8137,10 @@ type TuneContainerConfigResponse struct {
 	Unit          string                 `protobuf:"bytes,8,opt,name=unit,proto3" json:"unit,omitempty"`
 	DefaultValue  int64                  `protobuf:"varint,9,opt,name=default_value,json=defaultValue,proto3" json:"default_value,omitempty"`
 	// changed is false when the verb was an idempotent no-op (no write, no audit).
-	Changed       bool `protobuf:"varint,10,opt,name=changed,proto3" json:"changed,omitempty"`
+	Changed bool `protobuf:"varint,10,opt,name=changed,proto3" json:"changed,omitempty"`
+	// applies is when this knob reaches the running loop, so the confirmation can say
+	// whether a restart is still required rather than assuming every target is live.
+	Applies       TuneApplies `protobuf:"varint,11,opt,name=applies,proto3,enum=daemon.TuneApplies" json:"applies,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -8181,6 +8245,13 @@ func (x *TuneContainerConfigResponse) GetChanged() bool {
 	return false
 }
 
+func (x *TuneContainerConfigResponse) GetApplies() TuneApplies {
+	if x != nil {
+		return x.Applies
+	}
+	return TuneApplies_TUNE_APPLIES_UNSPECIFIED
+}
+
 // ShowTunableConfigRequest lists a container's tunable knobs (sp-vwek --show).
 type ShowTunableConfigRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -8261,6 +8332,7 @@ type TunableKnobStatus struct {
 	Unit          string                 `protobuf:"bytes,6,opt,name=unit,proto3" json:"unit,omitempty"`
 	Description   string                 `protobuf:"bytes,7,opt,name=description,proto3" json:"description,omitempty"`
 	DefaultValue  int64                  `protobuf:"varint,8,opt,name=default_value,json=defaultValue,proto3" json:"default_value,omitempty"`
+	Applies       TuneApplies            `protobuf:"varint,9,opt,name=applies,proto3,enum=daemon.TuneApplies" json:"applies,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -8349,6 +8421,13 @@ func (x *TunableKnobStatus) GetDefaultValue() int64 {
 		return x.DefaultValue
 	}
 	return 0
+}
+
+func (x *TunableKnobStatus) GetApplies() TuneApplies {
+	if x != nil {
+		return x.Applies
+	}
+	return TuneApplies_TUNE_APPLIES_UNSPECIFIED
 }
 
 // ShowTunableConfigResponse is the full --show listing for one container.
@@ -13332,7 +13411,7 @@ const file_pkg_proto_daemon_daemon_proto_rawDesc = "" +
 	"\fagent_symbol\x18\x06 \x01(\tH\x01R\vagentSymbol\x88\x01\x01B\f\n" +
 	"\n" +
 	"_player_idB\x0f\n" +
-	"\r_agent_symbol\"\xd4\x02\n" +
+	"\r_agent_symbol\"\x83\x03\n" +
 	"\x1bTuneContainerConfigResponse\x12!\n" +
 	"\fcontainer_id\x18\x01 \x01(\tR\vcontainerId\x12%\n" +
 	"\x0econtainer_type\x18\x02 \x01(\tR\rcontainerType\x12\x10\n" +
@@ -13346,7 +13425,8 @@ const file_pkg_proto_daemon_daemon_proto_rawDesc = "" +
 	"\x04unit\x18\b \x01(\tR\x04unit\x12#\n" +
 	"\rdefault_value\x18\t \x01(\x03R\fdefaultValue\x12\x18\n" +
 	"\achanged\x18\n" +
-	" \x01(\bR\achanged\"\xc4\x01\n" +
+	" \x01(\bR\achanged\x12-\n" +
+	"\aapplies\x18\v \x01(\x0e2\x13.daemon.TuneAppliesR\aapplies\"\xc4\x01\n" +
 	"\x18ShowTunableConfigRequest\x12!\n" +
 	"\fcontainer_id\x18\x01 \x01(\tR\vcontainerId\x12\x1c\n" +
 	"\toperation\x18\x02 \x01(\tR\toperation\x12 \n" +
@@ -13354,7 +13434,7 @@ const file_pkg_proto_daemon_daemon_proto_rawDesc = "" +
 	"\fagent_symbol\x18\x04 \x01(\tH\x01R\vagentSymbol\x88\x01\x01B\f\n" +
 	"\n" +
 	"_player_idB\x0f\n" +
-	"\r_agent_symbol\"\xda\x01\n" +
+	"\r_agent_symbol\"\x89\x02\n" +
 	"\x11TunableKnobStatus\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x1c\n" +
 	"\teffective\x18\x02 \x01(\x03R\teffective\x12\x16\n" +
@@ -13363,7 +13443,8 @@ const file_pkg_proto_daemon_daemon_proto_rawDesc = "" +
 	"\x03max\x18\x05 \x01(\x03R\x03max\x12\x12\n" +
 	"\x04unit\x18\x06 \x01(\tR\x04unit\x12 \n" +
 	"\vdescription\x18\a \x01(\tR\vdescription\x12#\n" +
-	"\rdefault_value\x18\b \x01(\x03R\fdefaultValue\"\x96\x01\n" +
+	"\rdefault_value\x18\b \x01(\x03R\fdefaultValue\x12-\n" +
+	"\aapplies\x18\t \x01(\x0e2\x13.daemon.TuneAppliesR\aapplies\"\x96\x01\n" +
 	"\x19ShowTunableConfigResponse\x12!\n" +
 	"\fcontainer_id\x18\x01 \x01(\tR\vcontainerId\x12%\n" +
 	"\x0econtainer_type\x18\x02 \x01(\tR\rcontainerType\x12/\n" +
@@ -13810,7 +13891,11 @@ const file_pkg_proto_daemon_daemon_proto_rawDesc = "" +
 	"\r_agent_symbol\"E\n" +
 	"\x11StopDepotResponse\x12\x16\n" +
 	"\x06status\x18\x01 \x01(\tR\x06status\x12\x18\n" +
-	"\astopped\x18\x02 \x01(\x05R\astopped2\xd23\n" +
+	"\astopped\x18\x02 \x01(\x05R\astopped*_\n" +
+	"\vTuneApplies\x12\x1c\n" +
+	"\x18TUNE_APPLIES_UNSPECIFIED\x10\x00\x12\x15\n" +
+	"\x11TUNE_APPLIES_LIVE\x10\x01\x12\x1b\n" +
+	"\x17TUNE_APPLIES_ON_REBUILD\x10\x022\xd23\n" +
 	"\rDaemonService\x12I\n" +
 	"\fNavigateShip\x12\x1b.daemon.NavigateShipRequest\x1a\x1c.daemon.NavigateShipResponse\x12@\n" +
 	"\tRouteShip\x12\x18.daemon.RouteShipRequest\x1a\x19.daemon.RouteShipResponse\x12=\n" +
@@ -13906,389 +13991,393 @@ func file_pkg_proto_daemon_daemon_proto_rawDescGZIP() []byte {
 	return file_pkg_proto_daemon_daemon_proto_rawDescData
 }
 
+var file_pkg_proto_daemon_daemon_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
 var file_pkg_proto_daemon_daemon_proto_msgTypes = make([]protoimpl.MessageInfo, 179)
 var file_pkg_proto_daemon_daemon_proto_goTypes = []any{
-	(*NavigateShipRequest)(nil),                   // 0: daemon.NavigateShipRequest
-	(*NavigateShipResponse)(nil),                  // 1: daemon.NavigateShipResponse
-	(*RouteShipRequest)(nil),                      // 2: daemon.RouteShipRequest
-	(*RouteShipResponse)(nil),                     // 3: daemon.RouteShipResponse
-	(*WarpShipRequest)(nil),                       // 4: daemon.WarpShipRequest
-	(*WarpShipResponse)(nil),                      // 5: daemon.WarpShipResponse
-	(*DockShipRequest)(nil),                       // 6: daemon.DockShipRequest
-	(*DockShipResponse)(nil),                      // 7: daemon.DockShipResponse
-	(*OrbitShipRequest)(nil),                      // 8: daemon.OrbitShipRequest
-	(*OrbitShipResponse)(nil),                     // 9: daemon.OrbitShipResponse
-	(*RefuelShipRequest)(nil),                     // 10: daemon.RefuelShipRequest
-	(*RefuelShipResponse)(nil),                    // 11: daemon.RefuelShipResponse
-	(*JumpShipRequest)(nil),                       // 12: daemon.JumpShipRequest
-	(*JumpShipResponse)(nil),                      // 13: daemon.JumpShipResponse
-	(*ShipModuleInfo)(nil),                        // 14: daemon.ShipModuleInfo
-	(*ModuleFeasibility)(nil),                     // 15: daemon.ModuleFeasibility
-	(*InstallModuleRequest)(nil),                  // 16: daemon.InstallModuleRequest
-	(*InstallModuleResponse)(nil),                 // 17: daemon.InstallModuleResponse
-	(*RemoveModuleRequest)(nil),                   // 18: daemon.RemoveModuleRequest
-	(*RemoveModuleResponse)(nil),                  // 19: daemon.RemoveModuleResponse
-	(*ListShipModulesRequest)(nil),                // 20: daemon.ListShipModulesRequest
-	(*ListShipModulesResponse)(nil),               // 21: daemon.ListShipModulesResponse
-	(*TransferCargoRequest)(nil),                  // 22: daemon.TransferCargoRequest
-	(*TransferCargoResponse)(nil),                 // 23: daemon.TransferCargoResponse
-	(*BatchContractWorkflowRequest)(nil),          // 24: daemon.BatchContractWorkflowRequest
-	(*BatchContractWorkflowResponse)(nil),         // 25: daemon.BatchContractWorkflowResponse
-	(*ContractFleetCoordinatorRequest)(nil),       // 26: daemon.ContractFleetCoordinatorRequest
-	(*ContractFleetCoordinatorResponse)(nil),      // 27: daemon.ContractFleetCoordinatorResponse
-	(*ScoutTourRequest)(nil),                      // 28: daemon.ScoutTourRequest
-	(*ScoutTourResponse)(nil),                     // 29: daemon.ScoutTourResponse
-	(*ScoutPost)(nil),                             // 30: daemon.ScoutPost
-	(*ScoutPostCoordinatorRequest)(nil),           // 31: daemon.ScoutPostCoordinatorRequest
-	(*ScoutPostCoordinatorResponse)(nil),          // 32: daemon.ScoutPostCoordinatorResponse
-	(*TradeFleetCoordinatorRequest)(nil),          // 33: daemon.TradeFleetCoordinatorRequest
-	(*TradeFleetCoordinatorResponse)(nil),         // 34: daemon.TradeFleetCoordinatorResponse
-	(*FleetAutosizerCoordinatorRequest)(nil),      // 35: daemon.FleetAutosizerCoordinatorRequest
-	(*FleetAutosizerCoordinatorResponse)(nil),     // 36: daemon.FleetAutosizerCoordinatorResponse
-	(*FleetGrowthCoordinatorRequest)(nil),         // 37: daemon.FleetGrowthCoordinatorRequest
-	(*FleetGrowthCoordinatorResponse)(nil),        // 38: daemon.FleetGrowthCoordinatorResponse
-	(*LongHaulArbCoordinatorRequest)(nil),         // 39: daemon.LongHaulArbCoordinatorRequest
-	(*LongHaulArbCoordinatorResponse)(nil),        // 40: daemon.LongHaulArbCoordinatorResponse
-	(*BootstrapCoordinatorRequest)(nil),           // 41: daemon.BootstrapCoordinatorRequest
-	(*BootstrapCoordinatorResponse)(nil),          // 42: daemon.BootstrapCoordinatorResponse
-	(*CapacityReconcilerCoordinatorRequest)(nil),  // 43: daemon.CapacityReconcilerCoordinatorRequest
-	(*CapacityReconcilerCoordinatorResponse)(nil), // 44: daemon.CapacityReconcilerCoordinatorResponse
-	(*AutoOutfitCoordinatorRequest)(nil),          // 45: daemon.AutoOutfitCoordinatorRequest
-	(*AutoOutfitCoordinatorResponse)(nil),         // 46: daemon.AutoOutfitCoordinatorResponse
-	(*FrontierExpansionCoordinatorRequest)(nil),   // 47: daemon.FrontierExpansionCoordinatorRequest
-	(*FrontierExpansionCoordinatorResponse)(nil),  // 48: daemon.FrontierExpansionCoordinatorResponse
-	(*ShipyardBackfillCoordinatorRequest)(nil),    // 49: daemon.ShipyardBackfillCoordinatorRequest
-	(*ShipyardBackfillCoordinatorResponse)(nil),   // 50: daemon.ShipyardBackfillCoordinatorResponse
-	(*AddScoutPostRequest)(nil),                   // 51: daemon.AddScoutPostRequest
-	(*ScoutPostResponse)(nil),                     // 52: daemon.ScoutPostResponse
-	(*RemoveScoutPostRequest)(nil),                // 53: daemon.RemoveScoutPostRequest
-	(*RemoveScoutPostResponse)(nil),               // 54: daemon.RemoveScoutPostResponse
-	(*ListScoutPostsRequest)(nil),                 // 55: daemon.ListScoutPostsRequest
-	(*ListScoutPostsResponse)(nil),                // 56: daemon.ListScoutPostsResponse
-	(*ScoutMarketsRequest)(nil),                   // 57: daemon.ScoutMarketsRequest
-	(*ScoutMarketsResponse)(nil),                  // 58: daemon.ScoutMarketsResponse
-	(*MarketAssignment)(nil),                      // 59: daemon.MarketAssignment
-	(*AssignScoutingFleetRequest)(nil),            // 60: daemon.AssignScoutingFleetRequest
-	(*AssignScoutingFleetResponse)(nil),           // 61: daemon.AssignScoutingFleetResponse
-	(*ListContainersRequest)(nil),                 // 62: daemon.ListContainersRequest
-	(*ListContainersResponse)(nil),                // 63: daemon.ListContainersResponse
-	(*ContainerInfo)(nil),                         // 64: daemon.ContainerInfo
-	(*GetContainerRequest)(nil),                   // 65: daemon.GetContainerRequest
-	(*GetContainerResponse)(nil),                  // 66: daemon.GetContainerResponse
-	(*StopContainerRequest)(nil),                  // 67: daemon.StopContainerRequest
-	(*StopContainerResponse)(nil),                 // 68: daemon.StopContainerResponse
-	(*GetContainerLogsRequest)(nil),               // 69: daemon.GetContainerLogsRequest
-	(*GetContainerLogsResponse)(nil),              // 70: daemon.GetContainerLogsResponse
-	(*LogEntry)(nil),                              // 71: daemon.LogEntry
-	(*HealthCheckRequest)(nil),                    // 72: daemon.HealthCheckRequest
-	(*HealthCheckResponse)(nil),                   // 73: daemon.HealthCheckResponse
-	(*GetAPIBudgetRequest)(nil),                   // 74: daemon.GetAPIBudgetRequest
-	(*APIBudgetHullStats)(nil),                    // 75: daemon.APIBudgetHullStats
-	(*APIBudgetReport)(nil),                       // 76: daemon.APIBudgetReport
-	(*DutyCycleHullStats)(nil),                    // 77: daemon.DutyCycleHullStats
-	(*DutyCycleReport)(nil),                       // 78: daemon.DutyCycleReport
-	(*GetAPIBudgetResponse)(nil),                  // 79: daemon.GetAPIBudgetResponse
-	(*ListShipsRequest)(nil),                      // 80: daemon.ListShipsRequest
-	(*ListShipsResponse)(nil),                     // 81: daemon.ListShipsResponse
-	(*ShipInfo)(nil),                              // 82: daemon.ShipInfo
-	(*GetShipRequest)(nil),                        // 83: daemon.GetShipRequest
-	(*GetShipResponse)(nil),                       // 84: daemon.GetShipResponse
-	(*RefreshShipRequest)(nil),                    // 85: daemon.RefreshShipRequest
-	(*RefreshShipResponse)(nil),                   // 86: daemon.RefreshShipResponse
-	(*ReserveShipRequest)(nil),                    // 87: daemon.ReserveShipRequest
-	(*ReserveShipResponse)(nil),                   // 88: daemon.ReserveShipResponse
-	(*ReleaseShipRequest)(nil),                    // 89: daemon.ReleaseShipRequest
-	(*ReleaseShipResponse)(nil),                   // 90: daemon.ReleaseShipResponse
-	(*AssignShipFleetRequest)(nil),                // 91: daemon.AssignShipFleetRequest
-	(*AssignShipFleetResponse)(nil),               // 92: daemon.AssignShipFleetResponse
-	(*FleetHubRequest)(nil),                       // 93: daemon.FleetHubRequest
-	(*FleetHubResponse)(nil),                      // 94: daemon.FleetHubResponse
-	(*UnassignShipFleetRequest)(nil),              // 95: daemon.UnassignShipFleetRequest
-	(*UnassignShipFleetResponse)(nil),             // 96: daemon.UnassignShipFleetResponse
-	(*ListFleetsRequest)(nil),                     // 97: daemon.ListFleetsRequest
-	(*FleetShip)(nil),                             // 98: daemon.FleetShip
-	(*Fleet)(nil),                                 // 99: daemon.Fleet
-	(*ListFleetsResponse)(nil),                    // 100: daemon.ListFleetsResponse
-	(*ListWaypointsRequest)(nil),                  // 101: daemon.ListWaypointsRequest
-	(*ListWaypointsResponse)(nil),                 // 102: daemon.ListWaypointsResponse
-	(*GetWaypointRequest)(nil),                    // 103: daemon.GetWaypointRequest
-	(*GetWaypointResponse)(nil),                   // 104: daemon.GetWaypointResponse
-	(*WaypointDetail)(nil),                        // 105: daemon.WaypointDetail
-	(*ShipDetail)(nil),                            // 106: daemon.ShipDetail
-	(*PurchaseShipRequest)(nil),                   // 107: daemon.PurchaseShipRequest
-	(*PurchaseShipResponse)(nil),                  // 108: daemon.PurchaseShipResponse
-	(*BatchPurchaseShipsRequest)(nil),             // 109: daemon.BatchPurchaseShipsRequest
-	(*BatchPurchaseShipsResponse)(nil),            // 110: daemon.BatchPurchaseShipsResponse
-	(*GetShipyardListingsRequest)(nil),            // 111: daemon.GetShipyardListingsRequest
-	(*GetShipyardListingsResponse)(nil),           // 112: daemon.GetShipyardListingsResponse
-	(*ShipListing)(nil),                           // 113: daemon.ShipListing
-	(*CargoItem)(nil),                             // 114: daemon.CargoItem
-	(*RouteSegment)(nil),                          // 115: daemon.RouteSegment
-	(*ShipRoute)(nil),                             // 116: daemon.ShipRoute
-	(*TuneContainerConfigRequest)(nil),            // 117: daemon.TuneContainerConfigRequest
-	(*TuneContainerConfigResponse)(nil),           // 118: daemon.TuneContainerConfigResponse
-	(*ShowTunableConfigRequest)(nil),              // 119: daemon.ShowTunableConfigRequest
-	(*TunableKnobStatus)(nil),                     // 120: daemon.TunableKnobStatus
-	(*ShowTunableConfigResponse)(nil),             // 121: daemon.ShowTunableConfigResponse
-	(*GetFrontierStatusRequest)(nil),              // 122: daemon.GetFrontierStatusRequest
-	(*GetFrontierStatusResponse)(nil),             // 123: daemon.GetFrontierStatusResponse
-	(*ScanArbitrageOpportunitiesRequest)(nil),     // 124: daemon.ScanArbitrageOpportunitiesRequest
-	(*ArbitrageOpportunity)(nil),                  // 125: daemon.ArbitrageOpportunity
-	(*ScanArbitrageOpportunitiesResponse)(nil),    // 126: daemon.ScanArbitrageOpportunitiesResponse
-	(*StartArbitrageCoordinatorRequest)(nil),      // 127: daemon.StartArbitrageCoordinatorRequest
-	(*StartArbitrageCoordinatorResponse)(nil),     // 128: daemon.StartArbitrageCoordinatorResponse
-	(*JettisonCargoRequest)(nil),                  // 129: daemon.JettisonCargoRequest
-	(*JettisonCargoResponse)(nil),                 // 130: daemon.JettisonCargoResponse
-	(*StartTradeRouteRequest)(nil),                // 131: daemon.StartTradeRouteRequest
-	(*StartTradeRouteResponse)(nil),               // 132: daemon.StartTradeRouteResponse
-	(*StartWarehouseRequest)(nil),                 // 133: daemon.StartWarehouseRequest
-	(*StartWarehouseResponse)(nil),                // 134: daemon.StartWarehouseResponse
-	(*StartArbRunRequest)(nil),                    // 135: daemon.StartArbRunRequest
-	(*StartArbRunResponse)(nil),                   // 136: daemon.StartArbRunResponse
-	(*StartTourRunRequest)(nil),                   // 137: daemon.StartTourRunRequest
-	(*StartTourRunResponse)(nil),                  // 138: daemon.StartTourRunResponse
-	(*StartStockerRequest)(nil),                   // 139: daemon.StartStockerRequest
-	(*StartStockerResponse)(nil),                  // 140: daemon.StartStockerResponse
-	(*GasExtractionOperationRequest)(nil),         // 141: daemon.GasExtractionOperationRequest
-	(*GasExtractionOperationResponse)(nil),        // 142: daemon.GasExtractionOperationResponse
-	(*StartConstructionPipelineRequest)(nil),      // 143: daemon.StartConstructionPipelineRequest
-	(*StartConstructionPipelineResponse)(nil),     // 144: daemon.StartConstructionPipelineResponse
-	(*ConstructionMaterial)(nil),                  // 145: daemon.ConstructionMaterial
-	(*GetConstructionStatusRequest)(nil),          // 146: daemon.GetConstructionStatusRequest
-	(*GetConstructionStatusResponse)(nil),         // 147: daemon.GetConstructionStatusResponse
-	(*StopConstructionPipelineRequest)(nil),       // 148: daemon.StopConstructionPipelineRequest
-	(*StopConstructionPipelineResponse)(nil),      // 149: daemon.StopConstructionPipelineResponse
-	(*SensingRescreenRequest)(nil),                // 150: daemon.SensingRescreenRequest
-	(*SensingRescreenResponse)(nil),               // 151: daemon.SensingRescreenResponse
-	(*ConstructionGoodOverrideRequest)(nil),       // 152: daemon.ConstructionGoodOverrideRequest
-	(*ConstructionGoodOverrideResponse)(nil),      // 153: daemon.ConstructionGoodOverrideResponse
-	(*ConstructionWorkerCapRequest)(nil),          // 154: daemon.ConstructionWorkerCapRequest
-	(*ConstructionWorkerCapResponse)(nil),         // 155: daemon.ConstructionWorkerCapResponse
-	(*ConstructionDeliveryFloorsRequest)(nil),     // 156: daemon.ConstructionDeliveryFloorsRequest
-	(*ConstructionDeliveryFloorsResponse)(nil),    // 157: daemon.ConstructionDeliveryFloorsResponse
-	(*DepotElement)(nil),                          // 158: daemon.DepotElement
-	(*DepotSpec)(nil),                             // 159: daemon.DepotSpec
-	(*ApplyDepotTopologyRequest)(nil),             // 160: daemon.ApplyDepotTopologyRequest
-	(*ApplyDepotTopologyResponse)(nil),            // 161: daemon.ApplyDepotTopologyResponse
-	(*AddDepotRequest)(nil),                       // 162: daemon.AddDepotRequest
-	(*AddDepotResponse)(nil),                      // 163: daemon.AddDepotResponse
-	(*RemoveDepotRequest)(nil),                    // 164: daemon.RemoveDepotRequest
-	(*RemoveDepotResponse)(nil),                   // 165: daemon.RemoveDepotResponse
-	(*AddDepotElementRequest)(nil),                // 166: daemon.AddDepotElementRequest
-	(*RemoveDepotElementRequest)(nil),             // 167: daemon.RemoveDepotElementRequest
-	(*PlaceDepotElementRequest)(nil),              // 168: daemon.PlaceDepotElementRequest
-	(*DepotElementResponse)(nil),                  // 169: daemon.DepotElementResponse
-	(*ListDepotsRequest)(nil),                     // 170: daemon.ListDepotsRequest
-	(*ListDepotsResponse)(nil),                    // 171: daemon.ListDepotsResponse
-	(*StartDepotRequest)(nil),                     // 172: daemon.StartDepotRequest
-	(*StartDepotResponse)(nil),                    // 173: daemon.StartDepotResponse
-	(*StopDepotRequest)(nil),                      // 174: daemon.StopDepotRequest
-	(*StopDepotResponse)(nil),                     // 175: daemon.StopDepotResponse
-	nil,                                           // 176: daemon.ScoutMarketsResponse.AssignmentsEntry
-	nil,                                           // 177: daemon.APIBudgetReport.PurposeCountsEntry
-	nil,                                           // 178: daemon.APIBudgetReport.PurposeSharePctEntry
+	(TuneApplies)(0),                              // 0: daemon.TuneApplies
+	(*NavigateShipRequest)(nil),                   // 1: daemon.NavigateShipRequest
+	(*NavigateShipResponse)(nil),                  // 2: daemon.NavigateShipResponse
+	(*RouteShipRequest)(nil),                      // 3: daemon.RouteShipRequest
+	(*RouteShipResponse)(nil),                     // 4: daemon.RouteShipResponse
+	(*WarpShipRequest)(nil),                       // 5: daemon.WarpShipRequest
+	(*WarpShipResponse)(nil),                      // 6: daemon.WarpShipResponse
+	(*DockShipRequest)(nil),                       // 7: daemon.DockShipRequest
+	(*DockShipResponse)(nil),                      // 8: daemon.DockShipResponse
+	(*OrbitShipRequest)(nil),                      // 9: daemon.OrbitShipRequest
+	(*OrbitShipResponse)(nil),                     // 10: daemon.OrbitShipResponse
+	(*RefuelShipRequest)(nil),                     // 11: daemon.RefuelShipRequest
+	(*RefuelShipResponse)(nil),                    // 12: daemon.RefuelShipResponse
+	(*JumpShipRequest)(nil),                       // 13: daemon.JumpShipRequest
+	(*JumpShipResponse)(nil),                      // 14: daemon.JumpShipResponse
+	(*ShipModuleInfo)(nil),                        // 15: daemon.ShipModuleInfo
+	(*ModuleFeasibility)(nil),                     // 16: daemon.ModuleFeasibility
+	(*InstallModuleRequest)(nil),                  // 17: daemon.InstallModuleRequest
+	(*InstallModuleResponse)(nil),                 // 18: daemon.InstallModuleResponse
+	(*RemoveModuleRequest)(nil),                   // 19: daemon.RemoveModuleRequest
+	(*RemoveModuleResponse)(nil),                  // 20: daemon.RemoveModuleResponse
+	(*ListShipModulesRequest)(nil),                // 21: daemon.ListShipModulesRequest
+	(*ListShipModulesResponse)(nil),               // 22: daemon.ListShipModulesResponse
+	(*TransferCargoRequest)(nil),                  // 23: daemon.TransferCargoRequest
+	(*TransferCargoResponse)(nil),                 // 24: daemon.TransferCargoResponse
+	(*BatchContractWorkflowRequest)(nil),          // 25: daemon.BatchContractWorkflowRequest
+	(*BatchContractWorkflowResponse)(nil),         // 26: daemon.BatchContractWorkflowResponse
+	(*ContractFleetCoordinatorRequest)(nil),       // 27: daemon.ContractFleetCoordinatorRequest
+	(*ContractFleetCoordinatorResponse)(nil),      // 28: daemon.ContractFleetCoordinatorResponse
+	(*ScoutTourRequest)(nil),                      // 29: daemon.ScoutTourRequest
+	(*ScoutTourResponse)(nil),                     // 30: daemon.ScoutTourResponse
+	(*ScoutPost)(nil),                             // 31: daemon.ScoutPost
+	(*ScoutPostCoordinatorRequest)(nil),           // 32: daemon.ScoutPostCoordinatorRequest
+	(*ScoutPostCoordinatorResponse)(nil),          // 33: daemon.ScoutPostCoordinatorResponse
+	(*TradeFleetCoordinatorRequest)(nil),          // 34: daemon.TradeFleetCoordinatorRequest
+	(*TradeFleetCoordinatorResponse)(nil),         // 35: daemon.TradeFleetCoordinatorResponse
+	(*FleetAutosizerCoordinatorRequest)(nil),      // 36: daemon.FleetAutosizerCoordinatorRequest
+	(*FleetAutosizerCoordinatorResponse)(nil),     // 37: daemon.FleetAutosizerCoordinatorResponse
+	(*FleetGrowthCoordinatorRequest)(nil),         // 38: daemon.FleetGrowthCoordinatorRequest
+	(*FleetGrowthCoordinatorResponse)(nil),        // 39: daemon.FleetGrowthCoordinatorResponse
+	(*LongHaulArbCoordinatorRequest)(nil),         // 40: daemon.LongHaulArbCoordinatorRequest
+	(*LongHaulArbCoordinatorResponse)(nil),        // 41: daemon.LongHaulArbCoordinatorResponse
+	(*BootstrapCoordinatorRequest)(nil),           // 42: daemon.BootstrapCoordinatorRequest
+	(*BootstrapCoordinatorResponse)(nil),          // 43: daemon.BootstrapCoordinatorResponse
+	(*CapacityReconcilerCoordinatorRequest)(nil),  // 44: daemon.CapacityReconcilerCoordinatorRequest
+	(*CapacityReconcilerCoordinatorResponse)(nil), // 45: daemon.CapacityReconcilerCoordinatorResponse
+	(*AutoOutfitCoordinatorRequest)(nil),          // 46: daemon.AutoOutfitCoordinatorRequest
+	(*AutoOutfitCoordinatorResponse)(nil),         // 47: daemon.AutoOutfitCoordinatorResponse
+	(*FrontierExpansionCoordinatorRequest)(nil),   // 48: daemon.FrontierExpansionCoordinatorRequest
+	(*FrontierExpansionCoordinatorResponse)(nil),  // 49: daemon.FrontierExpansionCoordinatorResponse
+	(*ShipyardBackfillCoordinatorRequest)(nil),    // 50: daemon.ShipyardBackfillCoordinatorRequest
+	(*ShipyardBackfillCoordinatorResponse)(nil),   // 51: daemon.ShipyardBackfillCoordinatorResponse
+	(*AddScoutPostRequest)(nil),                   // 52: daemon.AddScoutPostRequest
+	(*ScoutPostResponse)(nil),                     // 53: daemon.ScoutPostResponse
+	(*RemoveScoutPostRequest)(nil),                // 54: daemon.RemoveScoutPostRequest
+	(*RemoveScoutPostResponse)(nil),               // 55: daemon.RemoveScoutPostResponse
+	(*ListScoutPostsRequest)(nil),                 // 56: daemon.ListScoutPostsRequest
+	(*ListScoutPostsResponse)(nil),                // 57: daemon.ListScoutPostsResponse
+	(*ScoutMarketsRequest)(nil),                   // 58: daemon.ScoutMarketsRequest
+	(*ScoutMarketsResponse)(nil),                  // 59: daemon.ScoutMarketsResponse
+	(*MarketAssignment)(nil),                      // 60: daemon.MarketAssignment
+	(*AssignScoutingFleetRequest)(nil),            // 61: daemon.AssignScoutingFleetRequest
+	(*AssignScoutingFleetResponse)(nil),           // 62: daemon.AssignScoutingFleetResponse
+	(*ListContainersRequest)(nil),                 // 63: daemon.ListContainersRequest
+	(*ListContainersResponse)(nil),                // 64: daemon.ListContainersResponse
+	(*ContainerInfo)(nil),                         // 65: daemon.ContainerInfo
+	(*GetContainerRequest)(nil),                   // 66: daemon.GetContainerRequest
+	(*GetContainerResponse)(nil),                  // 67: daemon.GetContainerResponse
+	(*StopContainerRequest)(nil),                  // 68: daemon.StopContainerRequest
+	(*StopContainerResponse)(nil),                 // 69: daemon.StopContainerResponse
+	(*GetContainerLogsRequest)(nil),               // 70: daemon.GetContainerLogsRequest
+	(*GetContainerLogsResponse)(nil),              // 71: daemon.GetContainerLogsResponse
+	(*LogEntry)(nil),                              // 72: daemon.LogEntry
+	(*HealthCheckRequest)(nil),                    // 73: daemon.HealthCheckRequest
+	(*HealthCheckResponse)(nil),                   // 74: daemon.HealthCheckResponse
+	(*GetAPIBudgetRequest)(nil),                   // 75: daemon.GetAPIBudgetRequest
+	(*APIBudgetHullStats)(nil),                    // 76: daemon.APIBudgetHullStats
+	(*APIBudgetReport)(nil),                       // 77: daemon.APIBudgetReport
+	(*DutyCycleHullStats)(nil),                    // 78: daemon.DutyCycleHullStats
+	(*DutyCycleReport)(nil),                       // 79: daemon.DutyCycleReport
+	(*GetAPIBudgetResponse)(nil),                  // 80: daemon.GetAPIBudgetResponse
+	(*ListShipsRequest)(nil),                      // 81: daemon.ListShipsRequest
+	(*ListShipsResponse)(nil),                     // 82: daemon.ListShipsResponse
+	(*ShipInfo)(nil),                              // 83: daemon.ShipInfo
+	(*GetShipRequest)(nil),                        // 84: daemon.GetShipRequest
+	(*GetShipResponse)(nil),                       // 85: daemon.GetShipResponse
+	(*RefreshShipRequest)(nil),                    // 86: daemon.RefreshShipRequest
+	(*RefreshShipResponse)(nil),                   // 87: daemon.RefreshShipResponse
+	(*ReserveShipRequest)(nil),                    // 88: daemon.ReserveShipRequest
+	(*ReserveShipResponse)(nil),                   // 89: daemon.ReserveShipResponse
+	(*ReleaseShipRequest)(nil),                    // 90: daemon.ReleaseShipRequest
+	(*ReleaseShipResponse)(nil),                   // 91: daemon.ReleaseShipResponse
+	(*AssignShipFleetRequest)(nil),                // 92: daemon.AssignShipFleetRequest
+	(*AssignShipFleetResponse)(nil),               // 93: daemon.AssignShipFleetResponse
+	(*FleetHubRequest)(nil),                       // 94: daemon.FleetHubRequest
+	(*FleetHubResponse)(nil),                      // 95: daemon.FleetHubResponse
+	(*UnassignShipFleetRequest)(nil),              // 96: daemon.UnassignShipFleetRequest
+	(*UnassignShipFleetResponse)(nil),             // 97: daemon.UnassignShipFleetResponse
+	(*ListFleetsRequest)(nil),                     // 98: daemon.ListFleetsRequest
+	(*FleetShip)(nil),                             // 99: daemon.FleetShip
+	(*Fleet)(nil),                                 // 100: daemon.Fleet
+	(*ListFleetsResponse)(nil),                    // 101: daemon.ListFleetsResponse
+	(*ListWaypointsRequest)(nil),                  // 102: daemon.ListWaypointsRequest
+	(*ListWaypointsResponse)(nil),                 // 103: daemon.ListWaypointsResponse
+	(*GetWaypointRequest)(nil),                    // 104: daemon.GetWaypointRequest
+	(*GetWaypointResponse)(nil),                   // 105: daemon.GetWaypointResponse
+	(*WaypointDetail)(nil),                        // 106: daemon.WaypointDetail
+	(*ShipDetail)(nil),                            // 107: daemon.ShipDetail
+	(*PurchaseShipRequest)(nil),                   // 108: daemon.PurchaseShipRequest
+	(*PurchaseShipResponse)(nil),                  // 109: daemon.PurchaseShipResponse
+	(*BatchPurchaseShipsRequest)(nil),             // 110: daemon.BatchPurchaseShipsRequest
+	(*BatchPurchaseShipsResponse)(nil),            // 111: daemon.BatchPurchaseShipsResponse
+	(*GetShipyardListingsRequest)(nil),            // 112: daemon.GetShipyardListingsRequest
+	(*GetShipyardListingsResponse)(nil),           // 113: daemon.GetShipyardListingsResponse
+	(*ShipListing)(nil),                           // 114: daemon.ShipListing
+	(*CargoItem)(nil),                             // 115: daemon.CargoItem
+	(*RouteSegment)(nil),                          // 116: daemon.RouteSegment
+	(*ShipRoute)(nil),                             // 117: daemon.ShipRoute
+	(*TuneContainerConfigRequest)(nil),            // 118: daemon.TuneContainerConfigRequest
+	(*TuneContainerConfigResponse)(nil),           // 119: daemon.TuneContainerConfigResponse
+	(*ShowTunableConfigRequest)(nil),              // 120: daemon.ShowTunableConfigRequest
+	(*TunableKnobStatus)(nil),                     // 121: daemon.TunableKnobStatus
+	(*ShowTunableConfigResponse)(nil),             // 122: daemon.ShowTunableConfigResponse
+	(*GetFrontierStatusRequest)(nil),              // 123: daemon.GetFrontierStatusRequest
+	(*GetFrontierStatusResponse)(nil),             // 124: daemon.GetFrontierStatusResponse
+	(*ScanArbitrageOpportunitiesRequest)(nil),     // 125: daemon.ScanArbitrageOpportunitiesRequest
+	(*ArbitrageOpportunity)(nil),                  // 126: daemon.ArbitrageOpportunity
+	(*ScanArbitrageOpportunitiesResponse)(nil),    // 127: daemon.ScanArbitrageOpportunitiesResponse
+	(*StartArbitrageCoordinatorRequest)(nil),      // 128: daemon.StartArbitrageCoordinatorRequest
+	(*StartArbitrageCoordinatorResponse)(nil),     // 129: daemon.StartArbitrageCoordinatorResponse
+	(*JettisonCargoRequest)(nil),                  // 130: daemon.JettisonCargoRequest
+	(*JettisonCargoResponse)(nil),                 // 131: daemon.JettisonCargoResponse
+	(*StartTradeRouteRequest)(nil),                // 132: daemon.StartTradeRouteRequest
+	(*StartTradeRouteResponse)(nil),               // 133: daemon.StartTradeRouteResponse
+	(*StartWarehouseRequest)(nil),                 // 134: daemon.StartWarehouseRequest
+	(*StartWarehouseResponse)(nil),                // 135: daemon.StartWarehouseResponse
+	(*StartArbRunRequest)(nil),                    // 136: daemon.StartArbRunRequest
+	(*StartArbRunResponse)(nil),                   // 137: daemon.StartArbRunResponse
+	(*StartTourRunRequest)(nil),                   // 138: daemon.StartTourRunRequest
+	(*StartTourRunResponse)(nil),                  // 139: daemon.StartTourRunResponse
+	(*StartStockerRequest)(nil),                   // 140: daemon.StartStockerRequest
+	(*StartStockerResponse)(nil),                  // 141: daemon.StartStockerResponse
+	(*GasExtractionOperationRequest)(nil),         // 142: daemon.GasExtractionOperationRequest
+	(*GasExtractionOperationResponse)(nil),        // 143: daemon.GasExtractionOperationResponse
+	(*StartConstructionPipelineRequest)(nil),      // 144: daemon.StartConstructionPipelineRequest
+	(*StartConstructionPipelineResponse)(nil),     // 145: daemon.StartConstructionPipelineResponse
+	(*ConstructionMaterial)(nil),                  // 146: daemon.ConstructionMaterial
+	(*GetConstructionStatusRequest)(nil),          // 147: daemon.GetConstructionStatusRequest
+	(*GetConstructionStatusResponse)(nil),         // 148: daemon.GetConstructionStatusResponse
+	(*StopConstructionPipelineRequest)(nil),       // 149: daemon.StopConstructionPipelineRequest
+	(*StopConstructionPipelineResponse)(nil),      // 150: daemon.StopConstructionPipelineResponse
+	(*SensingRescreenRequest)(nil),                // 151: daemon.SensingRescreenRequest
+	(*SensingRescreenResponse)(nil),               // 152: daemon.SensingRescreenResponse
+	(*ConstructionGoodOverrideRequest)(nil),       // 153: daemon.ConstructionGoodOverrideRequest
+	(*ConstructionGoodOverrideResponse)(nil),      // 154: daemon.ConstructionGoodOverrideResponse
+	(*ConstructionWorkerCapRequest)(nil),          // 155: daemon.ConstructionWorkerCapRequest
+	(*ConstructionWorkerCapResponse)(nil),         // 156: daemon.ConstructionWorkerCapResponse
+	(*ConstructionDeliveryFloorsRequest)(nil),     // 157: daemon.ConstructionDeliveryFloorsRequest
+	(*ConstructionDeliveryFloorsResponse)(nil),    // 158: daemon.ConstructionDeliveryFloorsResponse
+	(*DepotElement)(nil),                          // 159: daemon.DepotElement
+	(*DepotSpec)(nil),                             // 160: daemon.DepotSpec
+	(*ApplyDepotTopologyRequest)(nil),             // 161: daemon.ApplyDepotTopologyRequest
+	(*ApplyDepotTopologyResponse)(nil),            // 162: daemon.ApplyDepotTopologyResponse
+	(*AddDepotRequest)(nil),                       // 163: daemon.AddDepotRequest
+	(*AddDepotResponse)(nil),                      // 164: daemon.AddDepotResponse
+	(*RemoveDepotRequest)(nil),                    // 165: daemon.RemoveDepotRequest
+	(*RemoveDepotResponse)(nil),                   // 166: daemon.RemoveDepotResponse
+	(*AddDepotElementRequest)(nil),                // 167: daemon.AddDepotElementRequest
+	(*RemoveDepotElementRequest)(nil),             // 168: daemon.RemoveDepotElementRequest
+	(*PlaceDepotElementRequest)(nil),              // 169: daemon.PlaceDepotElementRequest
+	(*DepotElementResponse)(nil),                  // 170: daemon.DepotElementResponse
+	(*ListDepotsRequest)(nil),                     // 171: daemon.ListDepotsRequest
+	(*ListDepotsResponse)(nil),                    // 172: daemon.ListDepotsResponse
+	(*StartDepotRequest)(nil),                     // 173: daemon.StartDepotRequest
+	(*StartDepotResponse)(nil),                    // 174: daemon.StartDepotResponse
+	(*StopDepotRequest)(nil),                      // 175: daemon.StopDepotRequest
+	(*StopDepotResponse)(nil),                     // 176: daemon.StopDepotResponse
+	nil,                                           // 177: daemon.ScoutMarketsResponse.AssignmentsEntry
+	nil,                                           // 178: daemon.APIBudgetReport.PurposeCountsEntry
+	nil,                                           // 179: daemon.APIBudgetReport.PurposeSharePctEntry
 }
 var file_pkg_proto_daemon_daemon_proto_depIdxs = []int32{
-	14,  // 0: daemon.InstallModuleResponse.modules:type_name -> daemon.ShipModuleInfo
-	14,  // 1: daemon.RemoveModuleResponse.modules:type_name -> daemon.ShipModuleInfo
-	14,  // 2: daemon.ListShipModulesResponse.modules:type_name -> daemon.ShipModuleInfo
-	15,  // 3: daemon.ListShipModulesResponse.feasibility:type_name -> daemon.ModuleFeasibility
-	30,  // 4: daemon.ScoutPostResponse.post:type_name -> daemon.ScoutPost
-	30,  // 5: daemon.ListScoutPostsResponse.posts:type_name -> daemon.ScoutPost
-	176, // 6: daemon.ScoutMarketsResponse.assignments:type_name -> daemon.ScoutMarketsResponse.AssignmentsEntry
-	64,  // 7: daemon.ListContainersResponse.containers:type_name -> daemon.ContainerInfo
-	64,  // 8: daemon.GetContainerResponse.container:type_name -> daemon.ContainerInfo
-	71,  // 9: daemon.GetContainerLogsResponse.logs:type_name -> daemon.LogEntry
-	177, // 10: daemon.APIBudgetReport.purpose_counts:type_name -> daemon.APIBudgetReport.PurposeCountsEntry
-	178, // 11: daemon.APIBudgetReport.purpose_share_pct:type_name -> daemon.APIBudgetReport.PurposeSharePctEntry
-	75,  // 12: daemon.APIBudgetReport.per_hull:type_name -> daemon.APIBudgetHullStats
-	77,  // 13: daemon.DutyCycleReport.hulls:type_name -> daemon.DutyCycleHullStats
-	76,  // 14: daemon.GetAPIBudgetResponse.current:type_name -> daemon.APIBudgetReport
-	76,  // 15: daemon.GetAPIBudgetResponse.rolling_5m:type_name -> daemon.APIBudgetReport
-	78,  // 16: daemon.GetAPIBudgetResponse.duty_cycle:type_name -> daemon.DutyCycleReport
-	82,  // 17: daemon.ListShipsResponse.ships:type_name -> daemon.ShipInfo
-	106, // 18: daemon.GetShipResponse.ship:type_name -> daemon.ShipDetail
-	106, // 19: daemon.RefreshShipResponse.ship:type_name -> daemon.ShipDetail
-	98,  // 20: daemon.Fleet.ships:type_name -> daemon.FleetShip
-	99,  // 21: daemon.ListFleetsResponse.fleets:type_name -> daemon.Fleet
-	105, // 22: daemon.ListWaypointsResponse.waypoints:type_name -> daemon.WaypointDetail
-	105, // 23: daemon.GetWaypointResponse.waypoint:type_name -> daemon.WaypointDetail
-	114, // 24: daemon.ShipDetail.cargo_inventory:type_name -> daemon.CargoItem
-	113, // 25: daemon.GetShipyardListingsResponse.listings:type_name -> daemon.ShipListing
-	115, // 26: daemon.ShipRoute.segments:type_name -> daemon.RouteSegment
-	120, // 27: daemon.ShowTunableConfigResponse.knobs:type_name -> daemon.TunableKnobStatus
-	125, // 28: daemon.ScanArbitrageOpportunitiesResponse.opportunities:type_name -> daemon.ArbitrageOpportunity
-	116, // 29: daemon.GasExtractionOperationResponse.ship_routes:type_name -> daemon.ShipRoute
-	145, // 30: daemon.StartConstructionPipelineResponse.materials:type_name -> daemon.ConstructionMaterial
-	145, // 31: daemon.GetConstructionStatusResponse.materials:type_name -> daemon.ConstructionMaterial
-	158, // 32: daemon.DepotSpec.warehouses:type_name -> daemon.DepotElement
-	158, // 33: daemon.DepotSpec.stockers:type_name -> daemon.DepotElement
-	158, // 34: daemon.DepotSpec.delivery_hulls:type_name -> daemon.DepotElement
-	158, // 35: daemon.DepotSpec.source_hubs:type_name -> daemon.DepotElement
-	159, // 36: daemon.ApplyDepotTopologyRequest.depots:type_name -> daemon.DepotSpec
-	159, // 37: daemon.AddDepotRequest.depot:type_name -> daemon.DepotSpec
-	159, // 38: daemon.ListDepotsResponse.depots:type_name -> daemon.DepotSpec
-	159, // 39: daemon.StartDepotRequest.depot:type_name -> daemon.DepotSpec
-	59,  // 40: daemon.ScoutMarketsResponse.AssignmentsEntry.value:type_name -> daemon.MarketAssignment
-	0,   // 41: daemon.DaemonService.NavigateShip:input_type -> daemon.NavigateShipRequest
-	2,   // 42: daemon.DaemonService.RouteShip:input_type -> daemon.RouteShipRequest
-	4,   // 43: daemon.DaemonService.WarpShip:input_type -> daemon.WarpShipRequest
-	6,   // 44: daemon.DaemonService.DockShip:input_type -> daemon.DockShipRequest
-	8,   // 45: daemon.DaemonService.OrbitShip:input_type -> daemon.OrbitShipRequest
-	10,  // 46: daemon.DaemonService.RefuelShip:input_type -> daemon.RefuelShipRequest
-	12,  // 47: daemon.DaemonService.JumpShip:input_type -> daemon.JumpShipRequest
-	16,  // 48: daemon.DaemonService.InstallModule:input_type -> daemon.InstallModuleRequest
-	18,  // 49: daemon.DaemonService.RemoveModule:input_type -> daemon.RemoveModuleRequest
-	20,  // 50: daemon.DaemonService.ListShipModules:input_type -> daemon.ListShipModulesRequest
-	22,  // 51: daemon.DaemonService.TransferCargo:input_type -> daemon.TransferCargoRequest
-	24,  // 52: daemon.DaemonService.BatchContractWorkflow:input_type -> daemon.BatchContractWorkflowRequest
-	26,  // 53: daemon.DaemonService.ContractFleetCoordinator:input_type -> daemon.ContractFleetCoordinatorRequest
-	28,  // 54: daemon.DaemonService.ScoutTour:input_type -> daemon.ScoutTourRequest
-	57,  // 55: daemon.DaemonService.ScoutMarkets:input_type -> daemon.ScoutMarketsRequest
-	60,  // 56: daemon.DaemonService.AssignScoutingFleet:input_type -> daemon.AssignScoutingFleetRequest
-	31,  // 57: daemon.DaemonService.ScoutPostCoordinator:input_type -> daemon.ScoutPostCoordinatorRequest
-	33,  // 58: daemon.DaemonService.TradeFleetCoordinator:input_type -> daemon.TradeFleetCoordinatorRequest
-	35,  // 59: daemon.DaemonService.FleetAutosizerCoordinator:input_type -> daemon.FleetAutosizerCoordinatorRequest
-	37,  // 60: daemon.DaemonService.FleetGrowthCoordinator:input_type -> daemon.FleetGrowthCoordinatorRequest
-	39,  // 61: daemon.DaemonService.LongHaulArbCoordinator:input_type -> daemon.LongHaulArbCoordinatorRequest
-	41,  // 62: daemon.DaemonService.BootstrapCoordinator:input_type -> daemon.BootstrapCoordinatorRequest
-	43,  // 63: daemon.DaemonService.CapacityReconcilerCoordinator:input_type -> daemon.CapacityReconcilerCoordinatorRequest
-	45,  // 64: daemon.DaemonService.AutoOutfitCoordinator:input_type -> daemon.AutoOutfitCoordinatorRequest
-	47,  // 65: daemon.DaemonService.FrontierExpansionCoordinator:input_type -> daemon.FrontierExpansionCoordinatorRequest
-	49,  // 66: daemon.DaemonService.ShipyardBackfillCoordinator:input_type -> daemon.ShipyardBackfillCoordinatorRequest
-	51,  // 67: daemon.DaemonService.AddScoutPost:input_type -> daemon.AddScoutPostRequest
-	53,  // 68: daemon.DaemonService.RemoveScoutPost:input_type -> daemon.RemoveScoutPostRequest
-	55,  // 69: daemon.DaemonService.ListScoutPosts:input_type -> daemon.ListScoutPostsRequest
-	62,  // 70: daemon.DaemonService.ListContainers:input_type -> daemon.ListContainersRequest
-	65,  // 71: daemon.DaemonService.GetContainer:input_type -> daemon.GetContainerRequest
-	67,  // 72: daemon.DaemonService.StopContainer:input_type -> daemon.StopContainerRequest
-	69,  // 73: daemon.DaemonService.GetContainerLogs:input_type -> daemon.GetContainerLogsRequest
-	72,  // 74: daemon.DaemonService.HealthCheck:input_type -> daemon.HealthCheckRequest
-	74,  // 75: daemon.DaemonService.GetAPIBudget:input_type -> daemon.GetAPIBudgetRequest
-	80,  // 76: daemon.DaemonService.ListShips:input_type -> daemon.ListShipsRequest
-	83,  // 77: daemon.DaemonService.GetShip:input_type -> daemon.GetShipRequest
-	85,  // 78: daemon.DaemonService.RefreshShip:input_type -> daemon.RefreshShipRequest
-	87,  // 79: daemon.DaemonService.ReserveShip:input_type -> daemon.ReserveShipRequest
-	89,  // 80: daemon.DaemonService.ReleaseShip:input_type -> daemon.ReleaseShipRequest
-	91,  // 81: daemon.DaemonService.AssignShipFleet:input_type -> daemon.AssignShipFleetRequest
-	95,  // 82: daemon.DaemonService.UnassignShipFleet:input_type -> daemon.UnassignShipFleetRequest
-	97,  // 83: daemon.DaemonService.ListFleets:input_type -> daemon.ListFleetsRequest
-	93,  // 84: daemon.DaemonService.FleetHub:input_type -> daemon.FleetHubRequest
-	101, // 85: daemon.DaemonService.ListWaypoints:input_type -> daemon.ListWaypointsRequest
-	103, // 86: daemon.DaemonService.GetWaypoint:input_type -> daemon.GetWaypointRequest
-	107, // 87: daemon.DaemonService.PurchaseShip:input_type -> daemon.PurchaseShipRequest
-	109, // 88: daemon.DaemonService.BatchPurchaseShips:input_type -> daemon.BatchPurchaseShipsRequest
-	111, // 89: daemon.DaemonService.GetShipyardListings:input_type -> daemon.GetShipyardListingsRequest
-	117, // 90: daemon.DaemonService.TuneContainerConfig:input_type -> daemon.TuneContainerConfigRequest
-	119, // 91: daemon.DaemonService.ShowTunableConfig:input_type -> daemon.ShowTunableConfigRequest
-	122, // 92: daemon.DaemonService.GetFrontierStatus:input_type -> daemon.GetFrontierStatusRequest
-	124, // 93: daemon.DaemonService.ScanArbitrageOpportunities:input_type -> daemon.ScanArbitrageOpportunitiesRequest
-	127, // 94: daemon.DaemonService.StartArbitrageCoordinator:input_type -> daemon.StartArbitrageCoordinatorRequest
-	129, // 95: daemon.DaemonService.JettisonCargo:input_type -> daemon.JettisonCargoRequest
-	141, // 96: daemon.DaemonService.GasExtractionOperation:input_type -> daemon.GasExtractionOperationRequest
-	131, // 97: daemon.DaemonService.StartTradeRoute:input_type -> daemon.StartTradeRouteRequest
-	133, // 98: daemon.DaemonService.StartWarehouse:input_type -> daemon.StartWarehouseRequest
-	135, // 99: daemon.DaemonService.StartArbRun:input_type -> daemon.StartArbRunRequest
-	137, // 100: daemon.DaemonService.StartTourRun:input_type -> daemon.StartTourRunRequest
-	139, // 101: daemon.DaemonService.StartStocker:input_type -> daemon.StartStockerRequest
-	143, // 102: daemon.DaemonService.StartConstructionPipeline:input_type -> daemon.StartConstructionPipelineRequest
-	146, // 103: daemon.DaemonService.GetConstructionStatus:input_type -> daemon.GetConstructionStatusRequest
-	148, // 104: daemon.DaemonService.StopConstructionPipeline:input_type -> daemon.StopConstructionPipelineRequest
-	150, // 105: daemon.DaemonService.SensingRescreen:input_type -> daemon.SensingRescreenRequest
-	152, // 106: daemon.DaemonService.ConstructionGoodOverride:input_type -> daemon.ConstructionGoodOverrideRequest
-	154, // 107: daemon.DaemonService.ConstructionWorkerCap:input_type -> daemon.ConstructionWorkerCapRequest
-	156, // 108: daemon.DaemonService.ConstructionDeliveryFloors:input_type -> daemon.ConstructionDeliveryFloorsRequest
-	160, // 109: daemon.DaemonService.ApplyDepotTopology:input_type -> daemon.ApplyDepotTopologyRequest
-	162, // 110: daemon.DaemonService.AddDepot:input_type -> daemon.AddDepotRequest
-	164, // 111: daemon.DaemonService.RemoveDepot:input_type -> daemon.RemoveDepotRequest
-	166, // 112: daemon.DaemonService.AddDepotElement:input_type -> daemon.AddDepotElementRequest
-	167, // 113: daemon.DaemonService.RemoveDepotElement:input_type -> daemon.RemoveDepotElementRequest
-	168, // 114: daemon.DaemonService.PlaceDepotElement:input_type -> daemon.PlaceDepotElementRequest
-	170, // 115: daemon.DaemonService.ListDepots:input_type -> daemon.ListDepotsRequest
-	172, // 116: daemon.DaemonService.StartDepot:input_type -> daemon.StartDepotRequest
-	174, // 117: daemon.DaemonService.StopDepot:input_type -> daemon.StopDepotRequest
-	1,   // 118: daemon.DaemonService.NavigateShip:output_type -> daemon.NavigateShipResponse
-	3,   // 119: daemon.DaemonService.RouteShip:output_type -> daemon.RouteShipResponse
-	5,   // 120: daemon.DaemonService.WarpShip:output_type -> daemon.WarpShipResponse
-	7,   // 121: daemon.DaemonService.DockShip:output_type -> daemon.DockShipResponse
-	9,   // 122: daemon.DaemonService.OrbitShip:output_type -> daemon.OrbitShipResponse
-	11,  // 123: daemon.DaemonService.RefuelShip:output_type -> daemon.RefuelShipResponse
-	13,  // 124: daemon.DaemonService.JumpShip:output_type -> daemon.JumpShipResponse
-	17,  // 125: daemon.DaemonService.InstallModule:output_type -> daemon.InstallModuleResponse
-	19,  // 126: daemon.DaemonService.RemoveModule:output_type -> daemon.RemoveModuleResponse
-	21,  // 127: daemon.DaemonService.ListShipModules:output_type -> daemon.ListShipModulesResponse
-	23,  // 128: daemon.DaemonService.TransferCargo:output_type -> daemon.TransferCargoResponse
-	25,  // 129: daemon.DaemonService.BatchContractWorkflow:output_type -> daemon.BatchContractWorkflowResponse
-	27,  // 130: daemon.DaemonService.ContractFleetCoordinator:output_type -> daemon.ContractFleetCoordinatorResponse
-	29,  // 131: daemon.DaemonService.ScoutTour:output_type -> daemon.ScoutTourResponse
-	58,  // 132: daemon.DaemonService.ScoutMarkets:output_type -> daemon.ScoutMarketsResponse
-	61,  // 133: daemon.DaemonService.AssignScoutingFleet:output_type -> daemon.AssignScoutingFleetResponse
-	32,  // 134: daemon.DaemonService.ScoutPostCoordinator:output_type -> daemon.ScoutPostCoordinatorResponse
-	34,  // 135: daemon.DaemonService.TradeFleetCoordinator:output_type -> daemon.TradeFleetCoordinatorResponse
-	36,  // 136: daemon.DaemonService.FleetAutosizerCoordinator:output_type -> daemon.FleetAutosizerCoordinatorResponse
-	38,  // 137: daemon.DaemonService.FleetGrowthCoordinator:output_type -> daemon.FleetGrowthCoordinatorResponse
-	40,  // 138: daemon.DaemonService.LongHaulArbCoordinator:output_type -> daemon.LongHaulArbCoordinatorResponse
-	42,  // 139: daemon.DaemonService.BootstrapCoordinator:output_type -> daemon.BootstrapCoordinatorResponse
-	44,  // 140: daemon.DaemonService.CapacityReconcilerCoordinator:output_type -> daemon.CapacityReconcilerCoordinatorResponse
-	46,  // 141: daemon.DaemonService.AutoOutfitCoordinator:output_type -> daemon.AutoOutfitCoordinatorResponse
-	48,  // 142: daemon.DaemonService.FrontierExpansionCoordinator:output_type -> daemon.FrontierExpansionCoordinatorResponse
-	50,  // 143: daemon.DaemonService.ShipyardBackfillCoordinator:output_type -> daemon.ShipyardBackfillCoordinatorResponse
-	52,  // 144: daemon.DaemonService.AddScoutPost:output_type -> daemon.ScoutPostResponse
-	54,  // 145: daemon.DaemonService.RemoveScoutPost:output_type -> daemon.RemoveScoutPostResponse
-	56,  // 146: daemon.DaemonService.ListScoutPosts:output_type -> daemon.ListScoutPostsResponse
-	63,  // 147: daemon.DaemonService.ListContainers:output_type -> daemon.ListContainersResponse
-	66,  // 148: daemon.DaemonService.GetContainer:output_type -> daemon.GetContainerResponse
-	68,  // 149: daemon.DaemonService.StopContainer:output_type -> daemon.StopContainerResponse
-	70,  // 150: daemon.DaemonService.GetContainerLogs:output_type -> daemon.GetContainerLogsResponse
-	73,  // 151: daemon.DaemonService.HealthCheck:output_type -> daemon.HealthCheckResponse
-	79,  // 152: daemon.DaemonService.GetAPIBudget:output_type -> daemon.GetAPIBudgetResponse
-	81,  // 153: daemon.DaemonService.ListShips:output_type -> daemon.ListShipsResponse
-	84,  // 154: daemon.DaemonService.GetShip:output_type -> daemon.GetShipResponse
-	86,  // 155: daemon.DaemonService.RefreshShip:output_type -> daemon.RefreshShipResponse
-	88,  // 156: daemon.DaemonService.ReserveShip:output_type -> daemon.ReserveShipResponse
-	90,  // 157: daemon.DaemonService.ReleaseShip:output_type -> daemon.ReleaseShipResponse
-	92,  // 158: daemon.DaemonService.AssignShipFleet:output_type -> daemon.AssignShipFleetResponse
-	96,  // 159: daemon.DaemonService.UnassignShipFleet:output_type -> daemon.UnassignShipFleetResponse
-	100, // 160: daemon.DaemonService.ListFleets:output_type -> daemon.ListFleetsResponse
-	94,  // 161: daemon.DaemonService.FleetHub:output_type -> daemon.FleetHubResponse
-	102, // 162: daemon.DaemonService.ListWaypoints:output_type -> daemon.ListWaypointsResponse
-	104, // 163: daemon.DaemonService.GetWaypoint:output_type -> daemon.GetWaypointResponse
-	108, // 164: daemon.DaemonService.PurchaseShip:output_type -> daemon.PurchaseShipResponse
-	110, // 165: daemon.DaemonService.BatchPurchaseShips:output_type -> daemon.BatchPurchaseShipsResponse
-	112, // 166: daemon.DaemonService.GetShipyardListings:output_type -> daemon.GetShipyardListingsResponse
-	118, // 167: daemon.DaemonService.TuneContainerConfig:output_type -> daemon.TuneContainerConfigResponse
-	121, // 168: daemon.DaemonService.ShowTunableConfig:output_type -> daemon.ShowTunableConfigResponse
-	123, // 169: daemon.DaemonService.GetFrontierStatus:output_type -> daemon.GetFrontierStatusResponse
-	126, // 170: daemon.DaemonService.ScanArbitrageOpportunities:output_type -> daemon.ScanArbitrageOpportunitiesResponse
-	128, // 171: daemon.DaemonService.StartArbitrageCoordinator:output_type -> daemon.StartArbitrageCoordinatorResponse
-	130, // 172: daemon.DaemonService.JettisonCargo:output_type -> daemon.JettisonCargoResponse
-	142, // 173: daemon.DaemonService.GasExtractionOperation:output_type -> daemon.GasExtractionOperationResponse
-	132, // 174: daemon.DaemonService.StartTradeRoute:output_type -> daemon.StartTradeRouteResponse
-	134, // 175: daemon.DaemonService.StartWarehouse:output_type -> daemon.StartWarehouseResponse
-	136, // 176: daemon.DaemonService.StartArbRun:output_type -> daemon.StartArbRunResponse
-	138, // 177: daemon.DaemonService.StartTourRun:output_type -> daemon.StartTourRunResponse
-	140, // 178: daemon.DaemonService.StartStocker:output_type -> daemon.StartStockerResponse
-	144, // 179: daemon.DaemonService.StartConstructionPipeline:output_type -> daemon.StartConstructionPipelineResponse
-	147, // 180: daemon.DaemonService.GetConstructionStatus:output_type -> daemon.GetConstructionStatusResponse
-	149, // 181: daemon.DaemonService.StopConstructionPipeline:output_type -> daemon.StopConstructionPipelineResponse
-	151, // 182: daemon.DaemonService.SensingRescreen:output_type -> daemon.SensingRescreenResponse
-	153, // 183: daemon.DaemonService.ConstructionGoodOverride:output_type -> daemon.ConstructionGoodOverrideResponse
-	155, // 184: daemon.DaemonService.ConstructionWorkerCap:output_type -> daemon.ConstructionWorkerCapResponse
-	157, // 185: daemon.DaemonService.ConstructionDeliveryFloors:output_type -> daemon.ConstructionDeliveryFloorsResponse
-	161, // 186: daemon.DaemonService.ApplyDepotTopology:output_type -> daemon.ApplyDepotTopologyResponse
-	163, // 187: daemon.DaemonService.AddDepot:output_type -> daemon.AddDepotResponse
-	165, // 188: daemon.DaemonService.RemoveDepot:output_type -> daemon.RemoveDepotResponse
-	169, // 189: daemon.DaemonService.AddDepotElement:output_type -> daemon.DepotElementResponse
-	169, // 190: daemon.DaemonService.RemoveDepotElement:output_type -> daemon.DepotElementResponse
-	169, // 191: daemon.DaemonService.PlaceDepotElement:output_type -> daemon.DepotElementResponse
-	171, // 192: daemon.DaemonService.ListDepots:output_type -> daemon.ListDepotsResponse
-	173, // 193: daemon.DaemonService.StartDepot:output_type -> daemon.StartDepotResponse
-	175, // 194: daemon.DaemonService.StopDepot:output_type -> daemon.StopDepotResponse
-	118, // [118:195] is the sub-list for method output_type
-	41,  // [41:118] is the sub-list for method input_type
-	41,  // [41:41] is the sub-list for extension type_name
-	41,  // [41:41] is the sub-list for extension extendee
-	0,   // [0:41] is the sub-list for field type_name
+	15,  // 0: daemon.InstallModuleResponse.modules:type_name -> daemon.ShipModuleInfo
+	15,  // 1: daemon.RemoveModuleResponse.modules:type_name -> daemon.ShipModuleInfo
+	15,  // 2: daemon.ListShipModulesResponse.modules:type_name -> daemon.ShipModuleInfo
+	16,  // 3: daemon.ListShipModulesResponse.feasibility:type_name -> daemon.ModuleFeasibility
+	31,  // 4: daemon.ScoutPostResponse.post:type_name -> daemon.ScoutPost
+	31,  // 5: daemon.ListScoutPostsResponse.posts:type_name -> daemon.ScoutPost
+	177, // 6: daemon.ScoutMarketsResponse.assignments:type_name -> daemon.ScoutMarketsResponse.AssignmentsEntry
+	65,  // 7: daemon.ListContainersResponse.containers:type_name -> daemon.ContainerInfo
+	65,  // 8: daemon.GetContainerResponse.container:type_name -> daemon.ContainerInfo
+	72,  // 9: daemon.GetContainerLogsResponse.logs:type_name -> daemon.LogEntry
+	178, // 10: daemon.APIBudgetReport.purpose_counts:type_name -> daemon.APIBudgetReport.PurposeCountsEntry
+	179, // 11: daemon.APIBudgetReport.purpose_share_pct:type_name -> daemon.APIBudgetReport.PurposeSharePctEntry
+	76,  // 12: daemon.APIBudgetReport.per_hull:type_name -> daemon.APIBudgetHullStats
+	78,  // 13: daemon.DutyCycleReport.hulls:type_name -> daemon.DutyCycleHullStats
+	77,  // 14: daemon.GetAPIBudgetResponse.current:type_name -> daemon.APIBudgetReport
+	77,  // 15: daemon.GetAPIBudgetResponse.rolling_5m:type_name -> daemon.APIBudgetReport
+	79,  // 16: daemon.GetAPIBudgetResponse.duty_cycle:type_name -> daemon.DutyCycleReport
+	83,  // 17: daemon.ListShipsResponse.ships:type_name -> daemon.ShipInfo
+	107, // 18: daemon.GetShipResponse.ship:type_name -> daemon.ShipDetail
+	107, // 19: daemon.RefreshShipResponse.ship:type_name -> daemon.ShipDetail
+	99,  // 20: daemon.Fleet.ships:type_name -> daemon.FleetShip
+	100, // 21: daemon.ListFleetsResponse.fleets:type_name -> daemon.Fleet
+	106, // 22: daemon.ListWaypointsResponse.waypoints:type_name -> daemon.WaypointDetail
+	106, // 23: daemon.GetWaypointResponse.waypoint:type_name -> daemon.WaypointDetail
+	115, // 24: daemon.ShipDetail.cargo_inventory:type_name -> daemon.CargoItem
+	114, // 25: daemon.GetShipyardListingsResponse.listings:type_name -> daemon.ShipListing
+	116, // 26: daemon.ShipRoute.segments:type_name -> daemon.RouteSegment
+	0,   // 27: daemon.TuneContainerConfigResponse.applies:type_name -> daemon.TuneApplies
+	0,   // 28: daemon.TunableKnobStatus.applies:type_name -> daemon.TuneApplies
+	121, // 29: daemon.ShowTunableConfigResponse.knobs:type_name -> daemon.TunableKnobStatus
+	126, // 30: daemon.ScanArbitrageOpportunitiesResponse.opportunities:type_name -> daemon.ArbitrageOpportunity
+	117, // 31: daemon.GasExtractionOperationResponse.ship_routes:type_name -> daemon.ShipRoute
+	146, // 32: daemon.StartConstructionPipelineResponse.materials:type_name -> daemon.ConstructionMaterial
+	146, // 33: daemon.GetConstructionStatusResponse.materials:type_name -> daemon.ConstructionMaterial
+	159, // 34: daemon.DepotSpec.warehouses:type_name -> daemon.DepotElement
+	159, // 35: daemon.DepotSpec.stockers:type_name -> daemon.DepotElement
+	159, // 36: daemon.DepotSpec.delivery_hulls:type_name -> daemon.DepotElement
+	159, // 37: daemon.DepotSpec.source_hubs:type_name -> daemon.DepotElement
+	160, // 38: daemon.ApplyDepotTopologyRequest.depots:type_name -> daemon.DepotSpec
+	160, // 39: daemon.AddDepotRequest.depot:type_name -> daemon.DepotSpec
+	160, // 40: daemon.ListDepotsResponse.depots:type_name -> daemon.DepotSpec
+	160, // 41: daemon.StartDepotRequest.depot:type_name -> daemon.DepotSpec
+	60,  // 42: daemon.ScoutMarketsResponse.AssignmentsEntry.value:type_name -> daemon.MarketAssignment
+	1,   // 43: daemon.DaemonService.NavigateShip:input_type -> daemon.NavigateShipRequest
+	3,   // 44: daemon.DaemonService.RouteShip:input_type -> daemon.RouteShipRequest
+	5,   // 45: daemon.DaemonService.WarpShip:input_type -> daemon.WarpShipRequest
+	7,   // 46: daemon.DaemonService.DockShip:input_type -> daemon.DockShipRequest
+	9,   // 47: daemon.DaemonService.OrbitShip:input_type -> daemon.OrbitShipRequest
+	11,  // 48: daemon.DaemonService.RefuelShip:input_type -> daemon.RefuelShipRequest
+	13,  // 49: daemon.DaemonService.JumpShip:input_type -> daemon.JumpShipRequest
+	17,  // 50: daemon.DaemonService.InstallModule:input_type -> daemon.InstallModuleRequest
+	19,  // 51: daemon.DaemonService.RemoveModule:input_type -> daemon.RemoveModuleRequest
+	21,  // 52: daemon.DaemonService.ListShipModules:input_type -> daemon.ListShipModulesRequest
+	23,  // 53: daemon.DaemonService.TransferCargo:input_type -> daemon.TransferCargoRequest
+	25,  // 54: daemon.DaemonService.BatchContractWorkflow:input_type -> daemon.BatchContractWorkflowRequest
+	27,  // 55: daemon.DaemonService.ContractFleetCoordinator:input_type -> daemon.ContractFleetCoordinatorRequest
+	29,  // 56: daemon.DaemonService.ScoutTour:input_type -> daemon.ScoutTourRequest
+	58,  // 57: daemon.DaemonService.ScoutMarkets:input_type -> daemon.ScoutMarketsRequest
+	61,  // 58: daemon.DaemonService.AssignScoutingFleet:input_type -> daemon.AssignScoutingFleetRequest
+	32,  // 59: daemon.DaemonService.ScoutPostCoordinator:input_type -> daemon.ScoutPostCoordinatorRequest
+	34,  // 60: daemon.DaemonService.TradeFleetCoordinator:input_type -> daemon.TradeFleetCoordinatorRequest
+	36,  // 61: daemon.DaemonService.FleetAutosizerCoordinator:input_type -> daemon.FleetAutosizerCoordinatorRequest
+	38,  // 62: daemon.DaemonService.FleetGrowthCoordinator:input_type -> daemon.FleetGrowthCoordinatorRequest
+	40,  // 63: daemon.DaemonService.LongHaulArbCoordinator:input_type -> daemon.LongHaulArbCoordinatorRequest
+	42,  // 64: daemon.DaemonService.BootstrapCoordinator:input_type -> daemon.BootstrapCoordinatorRequest
+	44,  // 65: daemon.DaemonService.CapacityReconcilerCoordinator:input_type -> daemon.CapacityReconcilerCoordinatorRequest
+	46,  // 66: daemon.DaemonService.AutoOutfitCoordinator:input_type -> daemon.AutoOutfitCoordinatorRequest
+	48,  // 67: daemon.DaemonService.FrontierExpansionCoordinator:input_type -> daemon.FrontierExpansionCoordinatorRequest
+	50,  // 68: daemon.DaemonService.ShipyardBackfillCoordinator:input_type -> daemon.ShipyardBackfillCoordinatorRequest
+	52,  // 69: daemon.DaemonService.AddScoutPost:input_type -> daemon.AddScoutPostRequest
+	54,  // 70: daemon.DaemonService.RemoveScoutPost:input_type -> daemon.RemoveScoutPostRequest
+	56,  // 71: daemon.DaemonService.ListScoutPosts:input_type -> daemon.ListScoutPostsRequest
+	63,  // 72: daemon.DaemonService.ListContainers:input_type -> daemon.ListContainersRequest
+	66,  // 73: daemon.DaemonService.GetContainer:input_type -> daemon.GetContainerRequest
+	68,  // 74: daemon.DaemonService.StopContainer:input_type -> daemon.StopContainerRequest
+	70,  // 75: daemon.DaemonService.GetContainerLogs:input_type -> daemon.GetContainerLogsRequest
+	73,  // 76: daemon.DaemonService.HealthCheck:input_type -> daemon.HealthCheckRequest
+	75,  // 77: daemon.DaemonService.GetAPIBudget:input_type -> daemon.GetAPIBudgetRequest
+	81,  // 78: daemon.DaemonService.ListShips:input_type -> daemon.ListShipsRequest
+	84,  // 79: daemon.DaemonService.GetShip:input_type -> daemon.GetShipRequest
+	86,  // 80: daemon.DaemonService.RefreshShip:input_type -> daemon.RefreshShipRequest
+	88,  // 81: daemon.DaemonService.ReserveShip:input_type -> daemon.ReserveShipRequest
+	90,  // 82: daemon.DaemonService.ReleaseShip:input_type -> daemon.ReleaseShipRequest
+	92,  // 83: daemon.DaemonService.AssignShipFleet:input_type -> daemon.AssignShipFleetRequest
+	96,  // 84: daemon.DaemonService.UnassignShipFleet:input_type -> daemon.UnassignShipFleetRequest
+	98,  // 85: daemon.DaemonService.ListFleets:input_type -> daemon.ListFleetsRequest
+	94,  // 86: daemon.DaemonService.FleetHub:input_type -> daemon.FleetHubRequest
+	102, // 87: daemon.DaemonService.ListWaypoints:input_type -> daemon.ListWaypointsRequest
+	104, // 88: daemon.DaemonService.GetWaypoint:input_type -> daemon.GetWaypointRequest
+	108, // 89: daemon.DaemonService.PurchaseShip:input_type -> daemon.PurchaseShipRequest
+	110, // 90: daemon.DaemonService.BatchPurchaseShips:input_type -> daemon.BatchPurchaseShipsRequest
+	112, // 91: daemon.DaemonService.GetShipyardListings:input_type -> daemon.GetShipyardListingsRequest
+	118, // 92: daemon.DaemonService.TuneContainerConfig:input_type -> daemon.TuneContainerConfigRequest
+	120, // 93: daemon.DaemonService.ShowTunableConfig:input_type -> daemon.ShowTunableConfigRequest
+	123, // 94: daemon.DaemonService.GetFrontierStatus:input_type -> daemon.GetFrontierStatusRequest
+	125, // 95: daemon.DaemonService.ScanArbitrageOpportunities:input_type -> daemon.ScanArbitrageOpportunitiesRequest
+	128, // 96: daemon.DaemonService.StartArbitrageCoordinator:input_type -> daemon.StartArbitrageCoordinatorRequest
+	130, // 97: daemon.DaemonService.JettisonCargo:input_type -> daemon.JettisonCargoRequest
+	142, // 98: daemon.DaemonService.GasExtractionOperation:input_type -> daemon.GasExtractionOperationRequest
+	132, // 99: daemon.DaemonService.StartTradeRoute:input_type -> daemon.StartTradeRouteRequest
+	134, // 100: daemon.DaemonService.StartWarehouse:input_type -> daemon.StartWarehouseRequest
+	136, // 101: daemon.DaemonService.StartArbRun:input_type -> daemon.StartArbRunRequest
+	138, // 102: daemon.DaemonService.StartTourRun:input_type -> daemon.StartTourRunRequest
+	140, // 103: daemon.DaemonService.StartStocker:input_type -> daemon.StartStockerRequest
+	144, // 104: daemon.DaemonService.StartConstructionPipeline:input_type -> daemon.StartConstructionPipelineRequest
+	147, // 105: daemon.DaemonService.GetConstructionStatus:input_type -> daemon.GetConstructionStatusRequest
+	149, // 106: daemon.DaemonService.StopConstructionPipeline:input_type -> daemon.StopConstructionPipelineRequest
+	151, // 107: daemon.DaemonService.SensingRescreen:input_type -> daemon.SensingRescreenRequest
+	153, // 108: daemon.DaemonService.ConstructionGoodOverride:input_type -> daemon.ConstructionGoodOverrideRequest
+	155, // 109: daemon.DaemonService.ConstructionWorkerCap:input_type -> daemon.ConstructionWorkerCapRequest
+	157, // 110: daemon.DaemonService.ConstructionDeliveryFloors:input_type -> daemon.ConstructionDeliveryFloorsRequest
+	161, // 111: daemon.DaemonService.ApplyDepotTopology:input_type -> daemon.ApplyDepotTopologyRequest
+	163, // 112: daemon.DaemonService.AddDepot:input_type -> daemon.AddDepotRequest
+	165, // 113: daemon.DaemonService.RemoveDepot:input_type -> daemon.RemoveDepotRequest
+	167, // 114: daemon.DaemonService.AddDepotElement:input_type -> daemon.AddDepotElementRequest
+	168, // 115: daemon.DaemonService.RemoveDepotElement:input_type -> daemon.RemoveDepotElementRequest
+	169, // 116: daemon.DaemonService.PlaceDepotElement:input_type -> daemon.PlaceDepotElementRequest
+	171, // 117: daemon.DaemonService.ListDepots:input_type -> daemon.ListDepotsRequest
+	173, // 118: daemon.DaemonService.StartDepot:input_type -> daemon.StartDepotRequest
+	175, // 119: daemon.DaemonService.StopDepot:input_type -> daemon.StopDepotRequest
+	2,   // 120: daemon.DaemonService.NavigateShip:output_type -> daemon.NavigateShipResponse
+	4,   // 121: daemon.DaemonService.RouteShip:output_type -> daemon.RouteShipResponse
+	6,   // 122: daemon.DaemonService.WarpShip:output_type -> daemon.WarpShipResponse
+	8,   // 123: daemon.DaemonService.DockShip:output_type -> daemon.DockShipResponse
+	10,  // 124: daemon.DaemonService.OrbitShip:output_type -> daemon.OrbitShipResponse
+	12,  // 125: daemon.DaemonService.RefuelShip:output_type -> daemon.RefuelShipResponse
+	14,  // 126: daemon.DaemonService.JumpShip:output_type -> daemon.JumpShipResponse
+	18,  // 127: daemon.DaemonService.InstallModule:output_type -> daemon.InstallModuleResponse
+	20,  // 128: daemon.DaemonService.RemoveModule:output_type -> daemon.RemoveModuleResponse
+	22,  // 129: daemon.DaemonService.ListShipModules:output_type -> daemon.ListShipModulesResponse
+	24,  // 130: daemon.DaemonService.TransferCargo:output_type -> daemon.TransferCargoResponse
+	26,  // 131: daemon.DaemonService.BatchContractWorkflow:output_type -> daemon.BatchContractWorkflowResponse
+	28,  // 132: daemon.DaemonService.ContractFleetCoordinator:output_type -> daemon.ContractFleetCoordinatorResponse
+	30,  // 133: daemon.DaemonService.ScoutTour:output_type -> daemon.ScoutTourResponse
+	59,  // 134: daemon.DaemonService.ScoutMarkets:output_type -> daemon.ScoutMarketsResponse
+	62,  // 135: daemon.DaemonService.AssignScoutingFleet:output_type -> daemon.AssignScoutingFleetResponse
+	33,  // 136: daemon.DaemonService.ScoutPostCoordinator:output_type -> daemon.ScoutPostCoordinatorResponse
+	35,  // 137: daemon.DaemonService.TradeFleetCoordinator:output_type -> daemon.TradeFleetCoordinatorResponse
+	37,  // 138: daemon.DaemonService.FleetAutosizerCoordinator:output_type -> daemon.FleetAutosizerCoordinatorResponse
+	39,  // 139: daemon.DaemonService.FleetGrowthCoordinator:output_type -> daemon.FleetGrowthCoordinatorResponse
+	41,  // 140: daemon.DaemonService.LongHaulArbCoordinator:output_type -> daemon.LongHaulArbCoordinatorResponse
+	43,  // 141: daemon.DaemonService.BootstrapCoordinator:output_type -> daemon.BootstrapCoordinatorResponse
+	45,  // 142: daemon.DaemonService.CapacityReconcilerCoordinator:output_type -> daemon.CapacityReconcilerCoordinatorResponse
+	47,  // 143: daemon.DaemonService.AutoOutfitCoordinator:output_type -> daemon.AutoOutfitCoordinatorResponse
+	49,  // 144: daemon.DaemonService.FrontierExpansionCoordinator:output_type -> daemon.FrontierExpansionCoordinatorResponse
+	51,  // 145: daemon.DaemonService.ShipyardBackfillCoordinator:output_type -> daemon.ShipyardBackfillCoordinatorResponse
+	53,  // 146: daemon.DaemonService.AddScoutPost:output_type -> daemon.ScoutPostResponse
+	55,  // 147: daemon.DaemonService.RemoveScoutPost:output_type -> daemon.RemoveScoutPostResponse
+	57,  // 148: daemon.DaemonService.ListScoutPosts:output_type -> daemon.ListScoutPostsResponse
+	64,  // 149: daemon.DaemonService.ListContainers:output_type -> daemon.ListContainersResponse
+	67,  // 150: daemon.DaemonService.GetContainer:output_type -> daemon.GetContainerResponse
+	69,  // 151: daemon.DaemonService.StopContainer:output_type -> daemon.StopContainerResponse
+	71,  // 152: daemon.DaemonService.GetContainerLogs:output_type -> daemon.GetContainerLogsResponse
+	74,  // 153: daemon.DaemonService.HealthCheck:output_type -> daemon.HealthCheckResponse
+	80,  // 154: daemon.DaemonService.GetAPIBudget:output_type -> daemon.GetAPIBudgetResponse
+	82,  // 155: daemon.DaemonService.ListShips:output_type -> daemon.ListShipsResponse
+	85,  // 156: daemon.DaemonService.GetShip:output_type -> daemon.GetShipResponse
+	87,  // 157: daemon.DaemonService.RefreshShip:output_type -> daemon.RefreshShipResponse
+	89,  // 158: daemon.DaemonService.ReserveShip:output_type -> daemon.ReserveShipResponse
+	91,  // 159: daemon.DaemonService.ReleaseShip:output_type -> daemon.ReleaseShipResponse
+	93,  // 160: daemon.DaemonService.AssignShipFleet:output_type -> daemon.AssignShipFleetResponse
+	97,  // 161: daemon.DaemonService.UnassignShipFleet:output_type -> daemon.UnassignShipFleetResponse
+	101, // 162: daemon.DaemonService.ListFleets:output_type -> daemon.ListFleetsResponse
+	95,  // 163: daemon.DaemonService.FleetHub:output_type -> daemon.FleetHubResponse
+	103, // 164: daemon.DaemonService.ListWaypoints:output_type -> daemon.ListWaypointsResponse
+	105, // 165: daemon.DaemonService.GetWaypoint:output_type -> daemon.GetWaypointResponse
+	109, // 166: daemon.DaemonService.PurchaseShip:output_type -> daemon.PurchaseShipResponse
+	111, // 167: daemon.DaemonService.BatchPurchaseShips:output_type -> daemon.BatchPurchaseShipsResponse
+	113, // 168: daemon.DaemonService.GetShipyardListings:output_type -> daemon.GetShipyardListingsResponse
+	119, // 169: daemon.DaemonService.TuneContainerConfig:output_type -> daemon.TuneContainerConfigResponse
+	122, // 170: daemon.DaemonService.ShowTunableConfig:output_type -> daemon.ShowTunableConfigResponse
+	124, // 171: daemon.DaemonService.GetFrontierStatus:output_type -> daemon.GetFrontierStatusResponse
+	127, // 172: daemon.DaemonService.ScanArbitrageOpportunities:output_type -> daemon.ScanArbitrageOpportunitiesResponse
+	129, // 173: daemon.DaemonService.StartArbitrageCoordinator:output_type -> daemon.StartArbitrageCoordinatorResponse
+	131, // 174: daemon.DaemonService.JettisonCargo:output_type -> daemon.JettisonCargoResponse
+	143, // 175: daemon.DaemonService.GasExtractionOperation:output_type -> daemon.GasExtractionOperationResponse
+	133, // 176: daemon.DaemonService.StartTradeRoute:output_type -> daemon.StartTradeRouteResponse
+	135, // 177: daemon.DaemonService.StartWarehouse:output_type -> daemon.StartWarehouseResponse
+	137, // 178: daemon.DaemonService.StartArbRun:output_type -> daemon.StartArbRunResponse
+	139, // 179: daemon.DaemonService.StartTourRun:output_type -> daemon.StartTourRunResponse
+	141, // 180: daemon.DaemonService.StartStocker:output_type -> daemon.StartStockerResponse
+	145, // 181: daemon.DaemonService.StartConstructionPipeline:output_type -> daemon.StartConstructionPipelineResponse
+	148, // 182: daemon.DaemonService.GetConstructionStatus:output_type -> daemon.GetConstructionStatusResponse
+	150, // 183: daemon.DaemonService.StopConstructionPipeline:output_type -> daemon.StopConstructionPipelineResponse
+	152, // 184: daemon.DaemonService.SensingRescreen:output_type -> daemon.SensingRescreenResponse
+	154, // 185: daemon.DaemonService.ConstructionGoodOverride:output_type -> daemon.ConstructionGoodOverrideResponse
+	156, // 186: daemon.DaemonService.ConstructionWorkerCap:output_type -> daemon.ConstructionWorkerCapResponse
+	158, // 187: daemon.DaemonService.ConstructionDeliveryFloors:output_type -> daemon.ConstructionDeliveryFloorsResponse
+	162, // 188: daemon.DaemonService.ApplyDepotTopology:output_type -> daemon.ApplyDepotTopologyResponse
+	164, // 189: daemon.DaemonService.AddDepot:output_type -> daemon.AddDepotResponse
+	166, // 190: daemon.DaemonService.RemoveDepot:output_type -> daemon.RemoveDepotResponse
+	170, // 191: daemon.DaemonService.AddDepotElement:output_type -> daemon.DepotElementResponse
+	170, // 192: daemon.DaemonService.RemoveDepotElement:output_type -> daemon.DepotElementResponse
+	170, // 193: daemon.DaemonService.PlaceDepotElement:output_type -> daemon.DepotElementResponse
+	172, // 194: daemon.DaemonService.ListDepots:output_type -> daemon.ListDepotsResponse
+	174, // 195: daemon.DaemonService.StartDepot:output_type -> daemon.StartDepotResponse
+	176, // 196: daemon.DaemonService.StopDepot:output_type -> daemon.StopDepotResponse
+	120, // [120:197] is the sub-list for method output_type
+	43,  // [43:120] is the sub-list for method input_type
+	43,  // [43:43] is the sub-list for extension type_name
+	43,  // [43:43] is the sub-list for extension extendee
+	0,   // [0:43] is the sub-list for field type_name
 }
 
 func init() { file_pkg_proto_daemon_daemon_proto_init() }
@@ -14374,13 +14463,14 @@ func file_pkg_proto_daemon_daemon_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pkg_proto_daemon_daemon_proto_rawDesc), len(file_pkg_proto_daemon_daemon_proto_rawDesc)),
-			NumEnums:      0,
+			NumEnums:      1,
 			NumMessages:   179,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
 		GoTypes:           file_pkg_proto_daemon_daemon_proto_goTypes,
 		DependencyIndexes: file_pkg_proto_daemon_daemon_proto_depIdxs,
+		EnumInfos:         file_pkg_proto_daemon_daemon_proto_enumTypes,
 		MessageInfos:      file_pkg_proto_daemon_daemon_proto_msgTypes,
 	}.Build()
 	File_pkg_proto_daemon_daemon_proto = out.File

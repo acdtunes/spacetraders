@@ -1370,6 +1370,24 @@ message TuneContainerConfigRequest {
   optional string agent_symbol = 6;
 }
 
+// TuneApplies says WHEN a persisted tune reaches the RUNNING coordinator. It is a
+// per-KNOB fact, not a per-coordinator one: the sensing coordinator re-reads most of
+// its knobs every tick while inflight_cap and value_clamp_r bind at construction.
+//
+// UNSPECIFIED is the zero value on purpose. A knob whose timing is undeclared — an
+// old daemon answering a new CLI, or a knob added without classifying it — must read
+// as "not claimed", never as the confident live answer: a false "already applied" on
+// a spending switch is what stops an operator escalating.
+enum TuneApplies {
+  // Undeclared. Report the write as persisted and claim nothing about when it bites.
+  TUNE_APPLIES_UNSPECIFIED = 0;
+  // A live-config reader re-reads the knob each tick; the tune needs no restart.
+  TUNE_APPLIES_LIVE = 1;
+  // The knob binds when the coordinator is built. The running loop keeps its launch
+  // value until a restart or relaunch, however long the tune has been persisted.
+  TUNE_APPLIES_ON_REBUILD = 2;
+}
+
 // TuneContainerConfigResponse reports old -> new effective values with units.
 message TuneContainerConfigResponse {
   string container_id = 1;
@@ -1383,6 +1401,9 @@ message TuneContainerConfigResponse {
   int64 default_value = 9;
   // changed is false when the verb was an idempotent no-op (no write, no audit).
   bool changed = 10;
+  // applies is when this knob reaches the running loop, so the confirmation can say
+  // whether a restart is still required rather than assuming every target is live.
+  TuneApplies applies = 11;
 }
 
 // ShowTunableConfigRequest lists a container's tunable knobs (sp-vwek --show).
@@ -1403,6 +1424,7 @@ message TunableKnobStatus {
   string unit = 6;
   string description = 7;
   int64 default_value = 8;
+  TuneApplies applies = 9;
 }
 
 // ShowTunableConfigResponse is the full --show listing for one container.

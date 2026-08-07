@@ -35,10 +35,8 @@ type tuneRequest struct {
 }
 
 // runTune sets (value > 0) or reverts (value == 0) one live knob on a running
-// container and formats the operator-facing old -> new report. The coordinator
-// re-reads its config at each tick start, so the change lands on the NEXT tick —
-// no container restart. A no-op (the knob already carried the value) is reported
-// honestly rather than as a fresh change.
+// container and formats the operator-facing old -> new report. A no-op (the knob
+// already carried the value) is reported honestly rather than as a fresh change.
 func runTune(ctx context.Context, client containerTuner, req tuneRequest, playerIdent *PlayerIdentifier) (string, error) {
 	resp, err := client.TuneContainerConfig(ctx, req.containerID, req.operation, req.key, req.value, playerIdent)
 	if err != nil {
@@ -53,8 +51,24 @@ func runTune(ctx context.Context, client containerTuner, req tuneRequest, player
 	if resp.NewSource == "default" {
 		suffix = fmt.Sprintf(" (reverted to the documented default %d)", resp.DefaultValue)
 	}
-	return fmt.Sprintf("✓ %s %s: %s%s — the coordinator re-reads its config live and applies it on the next tick; no restart.\n",
-		resp.ContainerId, resp.Key, transition, suffix), nil
+	marker, effect := tuneEffectNotice(resp.GetApplies())
+	return fmt.Sprintf("%s %s %s: %s%s — %s\n",
+		marker, resp.ContainerId, resp.Key, transition, suffix, effect), nil
+}
+
+// tuneEffectNotice phrases what the write HAS and has NOT achieved, from the tuned
+// knob's own registry entry rather than one sentence assumed to fit every target. The
+// tick marker is reserved for the live case: a tune that cannot bite yet is not
+// finished work, and undeclared is not permission to claim it is.
+func tuneEffectNotice(applies pb.TuneApplies) (marker, effect string) {
+	switch applies {
+	case pb.TuneApplies_TUNE_APPLIES_LIVE:
+		return "✓", "the coordinator re-reads its config live and applies it on the next tick; no restart."
+	case pb.TuneApplies_TUNE_APPLIES_ON_REBUILD:
+		return "⚠", "PERSISTED, NOT YET IN EFFECT — this knob binds when the coordinator is built, so the running loop keeps its old value. Restart or relaunch the coordinator to apply."
+	default:
+		return "⚠", "PERSISTED. This knob does not declare when it reaches the running loop, so do not assume it is in effect — restart or relaunch the coordinator to be certain."
+	}
 }
 
 // runTuneShow renders a running container's live-tunable knobs — effective value, source
@@ -117,7 +131,20 @@ type tuneKnobJSON struct {
 	Max         int64  `json:"max"`
 	Default     int64  `json:"default"`
 	Unit        string `json:"unit"`
+	Applies     string `json:"applies"`
 	Description string `json:"description"`
+}
+
+// tuneAppliesLabel is the --json spelling: a stable token to gate on, not prose.
+func tuneAppliesLabel(applies pb.TuneApplies) string {
+	switch applies {
+	case pb.TuneApplies_TUNE_APPLIES_LIVE:
+		return "live"
+	case pb.TuneApplies_TUNE_APPLIES_ON_REBUILD:
+		return "rebuild"
+	default:
+		return "unspecified"
+	}
 }
 
 type tuneShowJSON struct {
@@ -132,7 +159,8 @@ func renderTuneJSON(resp *pb.ShowTunableConfigResponse, knobs []*pb.TunableKnobS
 	for _, k := range knobs {
 		out.Knobs = append(out.Knobs, tuneKnobJSON{
 			Key: k.Key, Effective: k.Effective, Source: k.Source,
-			Min: k.Min, Max: k.Max, Default: k.DefaultValue, Unit: k.Unit, Description: k.Description,
+			Min: k.Min, Max: k.Max, Default: k.DefaultValue, Unit: k.Unit,
+			Applies: tuneAppliesLabel(k.GetApplies()), Description: k.Description,
 		})
 	}
 	encoded, err := json.MarshalIndent(out, "", "  ")
@@ -226,15 +254,18 @@ WRITE (give a value):
 
 The daemon validates the (key, value) against its static bounds registry — an
 out-of-bounds or unknown-key tune is rejected before anything is written — then
-amends just the container's persisted config. A coordinator with a live-config
-reader (bootstrap, contract, scoutpost, ...) re-reads its config at each tick
-start, so the change takes effect on the NEXT reconcile tick. The SENSING
-coordinator has no live reader yet: a sensing tune persists immediately but is
-applied at the coordinator's next REBUILD (daemon restart or relaunch) — until
-then the RUNNING loop keeps its launch values, so do not rely on a sensing tune
-(e.g. tightening max_spend_per_cycle) taking effect without a bounce. Every tune
-survives daemon restarts (the config column is the recovery source), and every
-effective tune is recorded as a config.tuned captain audit event.
+amends just the container's persisted config. Every tune survives daemon restarts
+(the config column is the recovery source), and every effective tune is recorded
+as a config.tuned captain audit event.
+
+WHEN A TUNE BITES IS A PER-KNOB FACT, not a per-coordinator one. Most knobs are
+re-read from the config column at each tick start and need no restart. A few bind
+when the coordinator is BUILT — sensing's inflight_cap, value_clamp_r and
+pressure_half_life_secs — so they persist immediately but the RUNNING loop keeps
+its launch value until a daemon restart or relaunch. The write confirmation says
+which case it was for the knob you tuned, and --json reports it as "applies".
+Anything reported as anything other than live is NOT yet in effect: re-check
+rather than assuming a spending switch has taken hold.
 
 A value of 0 (or --reset) reverts the knob to its documented default.
 Tunable operations include the probe-sensing coordinator ("sensing"), the

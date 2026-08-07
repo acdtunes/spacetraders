@@ -19,6 +19,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
+	pb "github.com/andrescamacho/spacetraders-go/pkg/proto/daemon"
 	"gorm.io/gorm"
 )
 
@@ -451,3 +452,100 @@ func TestTune_Bootstrap_BareTuneKeySurvivesConfigRebuild(t *testing.T) {
 	require.Equal(t, "boot-x", config["container_id"], "identity keys survive the rebuild")
 	require.Equal(t, "A", config["agent_symbol"], "identity keys survive the rebuild")
 }
+
+// Every registered knob must SAY when a tune of it reaches the running loop. The
+// runtime falls back to the cautious message for an unclassified knob, but that is a
+// backstop: an operator who is told "restart to be certain" about a knob that is
+// actually live learns to distrust the whole confirmation, which is how the lying
+// version did its damage. Classify it here instead.
+func TestTuneRegistry_EveryKnobDeclaresWhenItApplies(t *testing.T) {
+	for containerType, knobs := range tunableKnobsByContainerType() {
+		for key, bound := range knobs {
+			require.NotEqual(t, TuneAppliesUnspecified, bound.Applies,
+				"%s.%s must declare whether a tune of it is live or needs a rebuild", containerType, key)
+		}
+	}
+}
+
+// The sensing knobs, pinned against the code that reads them: scannerFor builds the
+// scan rotation once per container and memoises it, and pressure_half_life_secs is
+// applied by the command factory at container BUILD — those three cannot bite until a
+// rebuild. expansion_enabled is re-resolved every tick by ReconcileOnce, so it is live
+// and the confirmation must keep saying so; the incident that filed this was a
+// coordinator-wide claim, not a wrong reading of this knob.
+func TestTuneRegistry_SensingRebuildBoundKnobsAreTheOnesThatBindAtConstruction(t *testing.T) {
+	knobs := tunableKnobsByContainerType()[sensingContainerType]
+	rebuildBound := map[string]bool{"inflight_cap": true, "value_clamp_r": true, "pressure_half_life_secs": true}
+
+	for key, bound := range knobs {
+		want := TuneAppliesLive
+		if rebuildBound[key] {
+			want = TuneAppliesOnRebuild
+		}
+		require.Equal(t, want, bound.Applies, "sensing.%s", key)
+	}
+	for key := range rebuildBound {
+		require.Contains(t, knobs, key, "the rebuild-bound set names a knob that no longer exists")
+	}
+}
+
+// The outcome carries the TUNED knob's timing, not the coordinator's average, so the
+// client can phrase a per-knob confirmation.
+func TestMutateContainerConfigKey_ReportsWhenTheTunedKnobApplies(t *testing.T) {
+	db, repo, playerID := tuneTestDB(t)
+	seedTuneContainer(t, db, playerID, tuneSensingContainerID, sensingContainerType, "probe_sensing_coordinator", "RUNNING", map[string]interface{}{
+		"container_id": tuneSensingContainerID,
+	})
+	s := &DaemonServer{containerRepo: repo}
+
+	live, err := s.MutateContainerConfigKey(context.Background(), tuneSensingContainerID, "", "expansion_enabled", 2, playerID)
+	require.NoError(t, err)
+	require.True(t, live.Changed)
+	require.Equal(t, TuneAppliesLive, live.Applies, "expansion_enabled is re-resolved every tick")
+
+	rebuild, err := s.MutateContainerConfigKey(context.Background(), tuneSensingContainerID, "", "inflight_cap", 5, playerID)
+	require.NoError(t, err)
+	require.True(t, rebuild.Changed)
+	require.Equal(t, TuneAppliesOnRebuild, rebuild.Applies, "inflight_cap binds when the scan rotation is built")
+}
+
+// The registry knows when a knob bites and the CLI has to phrase it, so the fact has
+// to survive the wire between them. Nothing else in the response can stand in for it:
+// dropped, every confirmation silently degrades to "restart to be certain", which is
+// the failure mode that trains an operator to ignore the line.
+func TestTuneContainerConfigRPC_CarriesWhenTheKnobApplies(t *testing.T) {
+	db, repo, playerID := tuneTestDB(t)
+	seedTuneContainer(t, db, playerID, tuneSensingContainerID, sensingContainerType, "probe_sensing_coordinator", "RUNNING", map[string]interface{}{
+		"container_id": tuneSensingContainerID,
+	})
+	svc := &daemonServiceImpl{daemon: &DaemonServer{containerRepo: repo}}
+
+	tune := func(key string, value int64) *pb.TuneContainerConfigResponse {
+		resp, err := svc.TuneContainerConfig(context.Background(), &pb.TuneContainerConfigRequest{
+			ContainerId: tuneSensingContainerID, Key: key, Value: value, PlayerId: int32Ptr(playerID),
+		})
+		require.NoError(t, err)
+		return resp
+	}
+
+	require.Equal(t, pb.TuneApplies_TUNE_APPLIES_LIVE, tune("expansion_enabled", 2).Applies)
+	require.Equal(t, pb.TuneApplies_TUNE_APPLIES_ON_REBUILD, tune("inflight_cap", 5).Applies)
+
+	show, err := svc.ShowTunableConfig(context.Background(), &pb.ShowTunableConfigRequest{
+		ContainerId: tuneSensingContainerID, PlayerId: int32Ptr(playerID),
+	})
+	require.NoError(t, err)
+	listed := map[string]pb.TuneApplies{}
+	for _, k := range show.Knobs {
+		listed[k.Key] = k.Applies
+	}
+	require.Equal(t, pb.TuneApplies_TUNE_APPLIES_LIVE, listed["expansion_enabled"])
+	require.Equal(t, pb.TuneApplies_TUNE_APPLIES_ON_REBUILD, listed["value_clamp_r"])
+	require.NotContains(t, listed, "", "every listed knob must carry a key")
+	for key, applies := range listed {
+		require.NotEqual(t, pb.TuneApplies_TUNE_APPLIES_UNSPECIFIED, applies,
+			"--show must not report %s as undeclared", key)
+	}
+}
+
+func int32Ptr(v int) *int32 { p := int32(v); return &p }

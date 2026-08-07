@@ -55,6 +55,7 @@ func TestRunTune_PrintsOldToNewWithUnits(t *testing.T) {
 		ContainerId: "market_freshness_sizer_coordinator-player-1-abc", ContainerType: "MARKET_FRESHNESS_SIZER_COORDINATOR",
 		Key: "purchase_cooldown_secs", OldEffective: 600, OldSource: "live-config",
 		NewEffective: 60, NewSource: "live-config", Unit: "seconds", DefaultValue: 60, Changed: true,
+		Applies: pb.TuneApplies_TUNE_APPLIES_LIVE,
 	}}
 
 	msg, err := runTune(context.Background(), client, tuneRequest{containerID: "market_freshness_sizer_coordinator-player-1-abc", key: "purchase_cooldown_secs", value: 60}, nil)
@@ -72,6 +73,7 @@ func TestRunTune_PrintsOldToNewWithUnits(t *testing.T) {
 		ContainerId: "c1", ContainerType: "MARKET_FRESHNESS_SIZER_COORDINATOR",
 		Key: "purchase_cooldown_secs", OldEffective: 120, OldSource: "live-config",
 		NewEffective: 60, NewSource: "default", Unit: "seconds", DefaultValue: 60, Changed: true,
+		Applies: pb.TuneApplies_TUNE_APPLIES_LIVE,
 	}
 	msg, err = runTune(context.Background(), client, tuneRequest{containerID: "c1", key: "purchase_cooldown_secs"}, nil)
 	require.NoError(t, err)
@@ -226,4 +228,80 @@ func TestParseTuneArgs_ReadAndWriteForms(t *testing.T) {
 	// A negative value is rejected.
 	_, err = parseTuneArgs([]string{"discovery_share", "-3"}, "frontier", false, false)
 	require.Error(t, err)
+}
+
+// The confirmation is read by someone stopping a live drain, so it must describe the
+// KNOB THEY TUNED. It used to be one constant sentence promising a live re-read for
+// every target; a sensing expansion_enabled tune printed it and two probes were
+// bought after, because the operator stopped escalating on the strength of it.
+//
+// Both directions are load-bearing. A confirmation that always demanded a restart
+// would be as wrong as the old one always promising none, and it would train the
+// operator to bounce the daemon over tunes that never needed it.
+func TestRunTune_ConfirmationTracksTheTunedKnobsOwnApplyTiming(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		applies    pb.TuneApplies
+		claimsLive bool
+	}{
+		{"live reader re-reads it each tick", pb.TuneApplies_TUNE_APPLIES_LIVE, true},
+		{"binds at coordinator build", pb.TuneApplies_TUNE_APPLIES_ON_REBUILD, false},
+		{"timing undeclared", pb.TuneApplies_TUNE_APPLIES_UNSPECIFIED, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := &fakeTuner{resp: &pb.TuneContainerConfigResponse{
+				ContainerId: "probe_sensing_coordinator-player-1-abc", ContainerType: "PROBE_SENSING_COORDINATOR",
+				Key: "expansion_enabled", OldEffective: 1, OldSource: "live-config",
+				NewEffective: 2, NewSource: "live-config", Unit: "flag", DefaultValue: 1,
+				Changed: true, Applies: tc.applies,
+			}}
+
+			msg, err := runTune(context.Background(), client, tuneRequest{operation: "sensing", key: "expansion_enabled", value: 2}, nil)
+			require.NoError(t, err)
+			require.Contains(t, msg, "1 -> 2 flag", "the transition is reported either way")
+			lower := strings.ToLower(msg)
+
+			if tc.claimsLive {
+				require.Contains(t, lower, "next tick", "a live knob must still promise the next tick")
+				require.Contains(t, lower, "no restart", "a live knob must still promise no restart")
+				require.Contains(t, msg, "✓", "a live knob's tune is finished work")
+				return
+			}
+
+			require.NotContains(t, lower, "no restart",
+				"a knob that cannot bite yet must not promise the operator a restart is unnecessary")
+			require.NotContains(t, lower, "applies it on the next tick",
+				"a knob that cannot bite yet must not claim the coordinator has already taken it")
+			require.Contains(t, lower, "persisted", "the write DID happen and must be reported")
+			require.Contains(t, lower, "restart or relaunch", "say plainly what is still required")
+			require.NotContains(t, msg, "✓", "an unapplied tune must not scan as finished work")
+		})
+	}
+}
+
+// --json carries the same fact as a stable token, so a script can gate on it instead
+// of pattern-matching the description prose.
+func TestRunTuneShow_JSONReportsWhenEachKnobApplies(t *testing.T) {
+	client := &fakeTuner{showResp: &pb.ShowTunableConfigResponse{
+		ContainerId: "probe_sensing_coordinator-player-1-abc", ContainerType: "PROBE_SENSING_COORDINATOR",
+		Knobs: []*pb.TunableKnobStatus{
+			{Key: "expansion_enabled", Effective: 1, Source: "default", Min: 1, Max: 2, Unit: "flag", DefaultValue: 1, Applies: pb.TuneApplies_TUNE_APPLIES_LIVE},
+			{Key: "inflight_cap", Effective: 3, Source: "default", Min: 1, Max: 8, Unit: "scans", DefaultValue: 3, Applies: pb.TuneApplies_TUNE_APPLIES_ON_REBUILD},
+			{Key: "mystery_knob", Effective: 1, Source: "default", Min: 1, Max: 2, Unit: "flag", DefaultValue: 1},
+		},
+	}}
+
+	out, err := runTuneShow(context.Background(), client, tuneRequest{operation: "sensing"}, true, nil)
+	require.NoError(t, err)
+
+	var decoded tuneShowJSON
+	require.NoError(t, json.Unmarshal([]byte(out), &decoded))
+	applies := map[string]string{}
+	for _, k := range decoded.Knobs {
+		applies[k.Key] = k.Applies
+	}
+	require.Equal(t, "live", applies["expansion_enabled"])
+	require.Equal(t, "rebuild", applies["inflight_cap"])
+	require.Equal(t, "unspecified", applies["mystery_knob"],
+		"an unclassified knob reads as unspecified, never as live")
 }
