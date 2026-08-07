@@ -66,7 +66,20 @@ func (b *YardScanBudget) refreshChartedCount(ctx context.Context) {
 	// Stamp the attempt either way, so a persistently failing counter is retried on
 	// the TTL rather than on every single admission.
 	b.chartedAt = b.now()
-	if err != nil || total < 0 {
+	// A ZERO IS A FAILED READING HERE, NOT A MAP SIZE. The count reaches this seam
+	// through an era scope that can degrade to a predicate no row matches, so an
+	// unreadable era arrives as a confident zero rather than as an error — the
+	// source refuses that case now, and this is the second half of the same guard,
+	// because any other route to an empty count would collapse the denominator just
+	// as completely. Accepting one drops the map size to the handful of yards this
+	// process happens to have been asked about, which shortens every interval and
+	// the anti-starvation bound with it; that bound admits UNCONDITIONALLY, above
+	// the token cap and above the value bar, so collapsing it forces every read
+	// through and leaves the allowance unenforced. Refusing costs only that an era
+	// with genuinely no charted yard paces against the previous count until the
+	// first one is charted — the direction that spends less. A real, SMALLER count
+	// is still adopted: this rejects an unreadable map, not a shrinking one.
+	if err != nil || total <= 0 {
 		return
 	}
 	if total != b.charted {

@@ -263,10 +263,26 @@ func (r *GormWaypointRepository) ListBySystemWithTrait(ctx context.Context, syst
 // apart. Era-scoped for the same reason every other read here is: a dead-era
 // waypoint is not a yard the fleet has to keep looking at, and counting it would
 // silently lengthen every live yard's interval.
+//
+// ERA-SCOPED FAIL-CLOSED, via OpenEraScope rather than
+// eraScopePredicate(openEraID). On the resolved path the two produce the same
+// predicate, so nothing about the ordinary reading changes; the difference is the
+// UNRESOLVED path, and for this reader that path is the whole risk. openEraID
+// answers an unreadable eras table with the same nil as a closed universe, and
+// eraScopePredicate turns that nil into `era_id IS NULL` — a clause a backfilled
+// table matches nowhere, so the count comes back as a confident ZERO with no error
+// beside it. A caller cannot tell that apart from a map with no shipyards in it,
+// and this particular caller divides a fixed request allowance by the answer:
+// a zero shortens every yard's scan interval and the anti-starvation bound with
+// it, which is how a paced budget silently stops being paced. Refusing outright
+// leaves the previous count standing, which spends less rather than more.
 func (r *GormWaypointRepository) ChartedShipyardCount(ctx context.Context) (int, error) {
 	var count int64
 	pattern := fmt.Sprintf("%%\"%s\"%%", "SHIPYARD")
-	predicate, args := eraScopePredicate(r.openEraID(ctx))
+	predicate, args, err := OpenEraScope(ctx, r.db)
+	if err != nil {
+		return 0, fmt.Errorf("failed to scope the charted-shipyard count to the open era: %w", err)
+	}
 	if err := r.db.WithContext(ctx).
 		Model(&WaypointModel{}).
 		Where("traits LIKE ?", pattern).
