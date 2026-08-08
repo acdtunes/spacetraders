@@ -34,7 +34,9 @@ type liquidationE2EShipRepo struct {
 	ship       *navigation.Ship
 	serverShip *navigation.Ship
 	syncErr    error
+	findErr    error
 	syncCalls  int
+	findCalls  int
 	claims     []contractShipClaim
 }
 
@@ -42,6 +44,10 @@ func (r *liquidationE2EShipRepo) FindAllByPlayer(_ context.Context, _ shared.Pla
 	return []*navigation.Ship{r.ship}, nil
 }
 func (r *liquidationE2EShipRepo) FindBySymbol(_ context.Context, _ string, _ shared.PlayerID) (*navigation.Ship, error) {
+	r.findCalls++
+	if r.findErr != nil {
+		return nil, r.findErr
+	}
 	return r.ship, nil
 }
 func (r *liquidationE2EShipRepo) SyncShipFromAPI(_ context.Context, _ string, _ shared.PlayerID) (*navigation.Ship, error) {
@@ -338,13 +344,53 @@ func TestFleetCoordinator_ServerConfirmsStrandedHold_WorkerStillSpawned(t *testi
 	require.Equal(t, "TORWIND-6", dispatched.ShipSymbol)
 }
 
-// Fails CLOSED: an unverifiable hold is not claimed. The cooldown still bounds the retry,
-// so a persistent verification failure cannot spin, and the hull is retried after it
-// (a deferral, never a permanent skip).
-func TestFleetCoordinator_HoldVerificationFails_NoSpawn_CooldownBoundsRetry(t *testing.T) {
+// THE DEADLOCK. The live read is the same call that strands the hull, so when it fails the
+// dispatch falls back to the persisted hold FilterUnrelatedCargo already parked on, and the
+// remedy still reaches an unreadable ship. Cooldown still bounds the retry.
+func TestFleetCoordinator_LiveReadFails_FallsBackToPersistedHold_AndDispatches(t *testing.T) {
+	repo := &liquidationE2EShipRepo{
+		ship:    ladenHull(t, "TORWIND-9", "FABRICS", "X1-KA42-A1", 54),
+		syncErr: errors.New("failed to get ship: max retries exceeded: server error (500)"),
+	}
+	daemonClient := &liquidationCapturingDaemonClient{}
+	clock := &shared.MockClock{}
+	handler := newLiquidationDispatchHandler(repo, daemonClient, clock)
+
+	handler.dispatchLiquidationForParked(context.Background(), liquidationCommand(false, 0), []string{"TORWIND-9"}, "IRON_ORE", map[string]time.Time{})
+
+	require.Equal(t, 1, repo.syncCalls, "the live read is still ATTEMPTED first - the fallback is not a shortcut")
+	require.Equal(t, 1, repo.findCalls, "and the persisted hold is what answers when it fails")
+	require.Equal(t, []daemon.ContainerKind{daemon.ContainerKindCargoLiquidation}, daemonClient.persistedKinds,
+		"a 500 on the hull being cleared must not block clearing it")
+	require.Len(t, repo.claims, 1)
+	require.Equal(t, "TORWIND-9", repo.claims[0].symbol)
+}
+
+// ANTI-VACUITY CONTROL for the test above: same failing live read, but the persisted hold says the
+// hull is CLEAR. The fallback must then reach errHoldAlreadyClear and spawn NOTHING - proving the
+// dispatch reads the fallback's CONTENT rather than treating any fallback as licence to spawn.
+func TestFleetCoordinator_LiveReadFails_PersistedHoldClear_NoSpawn(t *testing.T) {
+	repo := &liquidationE2EShipRepo{
+		ship:    ladenHull(t, "TORWIND-9", "IRON_ORE", "X1-KA42-A1", 54),
+		syncErr: errors.New("failed to get ship: max retries exceeded: server error (500)"),
+	}
+	daemonClient := &liquidationCapturingDaemonClient{}
+	handler := newLiquidationDispatchHandler(repo, daemonClient, &shared.MockClock{})
+
+	handler.dispatchLiquidationForParked(context.Background(), liquidationCommand(false, 0), []string{"TORWIND-9"}, "IRON_ORE", map[string]time.Time{})
+
+	require.Equal(t, 1, repo.findCalls, "the fallback was reached")
+	require.Empty(t, daemonClient.persistedKinds, "but a clear persisted hold still spawns nothing")
+	require.Empty(t, repo.claims)
+}
+
+// Fail-closed still applies where it belongs: BOTH reads unavailable and nothing is claimed. The
+// cooldown bounds the retry, so a persistent double failure cannot spin.
+func TestFleetCoordinator_BothReadsFail_NoSpawn_CooldownBoundsRetry(t *testing.T) {
 	repo := &liquidationE2EShipRepo{
 		ship:    ladenHull(t, "TORWIND-9", "FABRICS", "X1-KA42-A1", 54),
 		syncErr: errors.New("ship fetch failed: 503"),
+		findErr: errors.New("ship row unavailable"),
 	}
 	daemonClient := &liquidationCapturingDaemonClient{}
 	clock := &shared.MockClock{}
@@ -353,7 +399,7 @@ func TestFleetCoordinator_HoldVerificationFails_NoSpawn_CooldownBoundsRetry(t *t
 	cmd := liquidationCommand(false, 0)
 
 	handler.dispatchLiquidationForParked(context.Background(), cmd, []string{"TORWIND-9"}, "IRON_ORE", cooldown)
-	require.Empty(t, daemonClient.persistedKinds, "an unverifiable hold spawns nothing")
+	require.Empty(t, daemonClient.persistedKinds, "a hold unverifiable by BOTH reads spawns nothing")
 	require.Empty(t, repo.claims, "and the hull is not claimed")
 	require.Equal(t, 1, repo.syncCalls)
 
@@ -361,7 +407,7 @@ func TestFleetCoordinator_HoldVerificationFails_NoSpawn_CooldownBoundsRetry(t *t
 	require.Equal(t, 1, repo.syncCalls, "a hull within its cooldown is not re-verified — a persistent failure cannot spin")
 
 	clock.Advance(liquidationDispatchCooldown + time.Minute)
-	repo.syncErr = nil
+	repo.syncErr, repo.findErr = nil, nil
 	handler.dispatchLiquidationForParked(context.Background(), cmd, []string{"TORWIND-9"}, "IRON_ORE", cooldown)
 	require.Len(t, daemonClient.persistedKinds, 1, "once verification recovers the confirmed strand is dispatched — deferred, never skipped")
 }

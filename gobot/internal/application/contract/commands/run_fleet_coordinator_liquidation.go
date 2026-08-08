@@ -89,9 +89,12 @@ var errHoldAlreadyClear = errors.New("hold no longer holds cargo unrelated to th
 // within about a second, so a hull parked for the OUTGOING good is routinely clear by the time the
 // worker would run. Re-evaluating FilterUnrelatedCargo's own predicate against the API — the same
 // read the worker itself opens with, so no extra call is spent — is what makes decision and action
-// agree, and the sync persists the true hold so the hull re-enters candidacy next pass. Fails
-// CLOSED: an unverifiable hold is never claimed, and the caller's cooldown defers the retry rather
-// than skipping it (RULINGS #1).
+// agree, and the sync persists the true hold so the hull re-enters candidacy next pass.
+//
+// When that live read FAILS it falls back to the PERSISTED hold: the call that strands a hull is the
+// same one that would clear it, and an unreadable ship must not make its own remedy unreachable. No
+// freshness bound — FilterUnrelatedCargo parks on that very read, so a hold too stale to escape on
+// is too stale to have parked on. Fails CLOSED with BOTH reads unavailable (RULINGS #1).
 func (h *RunFleetCoordinatorHandler) spawnLiquidationWorker(
 	ctx context.Context,
 	cmd *RunFleetCoordinatorCommand,
@@ -102,7 +105,15 @@ func (h *RunFleetCoordinatorHandler) spawnLiquidationWorker(
 
 	ship, err := h.shipRepo.SyncShipFromAPI(ctx, shipSymbol, cmd.PlayerID)
 	if err != nil {
-		return "", fmt.Errorf("failed to verify hold of %s: %w", shipSymbol, err)
+		cached, cachedErr := h.shipRepo.FindBySymbol(ctx, shipSymbol, cmd.PlayerID)
+		if cachedErr != nil || cached == nil {
+			return "", fmt.Errorf("failed to verify hold of %s: %w", shipSymbol, err)
+		}
+		logger.Log("INFO", fmt.Sprintf("Auto-liquidation for parked hull %s fell back to the persisted hold - the live read failed (%v), and the unreadable ship is the one that needs clearing", shipSymbol, err), map[string]interface{}{
+			"action":      "liquidation_hold_fallback",
+			"ship_symbol": shipSymbol,
+		})
+		ship = cached
 	}
 	if cargo := ship.Cargo(); cargo == nil || !cargo.HasItemsOtherThan(requiredCargo) {
 		return "", errHoldAlreadyClear
