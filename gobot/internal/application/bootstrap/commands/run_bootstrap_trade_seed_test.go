@@ -209,7 +209,6 @@ func TestBootstrap_TradeSeedAcceptance_RoutesSecondAcquisitionToTrade(t *testing
 	h.SetShipRefresher(&fakeRefresher{})
 	h.SetWorldObserver(&fakeIncomeObserver{world: world})
 	h.SetProbeAcquirer(&fakeAcquirer{price: 40000, yard: "Y", readable: true})
-	h.SetScoutPostDeclarer(&fakeDeclarer{})
 	h.SetFrigateRetirer(&fakeRetirer{})
 	h.SetHaulerAcquirer(acq)
 	h.SetContractRunner(&fakeContractRunner{})

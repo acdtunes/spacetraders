@@ -87,19 +87,11 @@ func (s *daemonServiceImpl) ScoutTour(ctx context.Context, req *pb.ScoutTourRequ
 	return response, nil
 }
 
-// ScoutPostCoordinator starts the standing scout-post coordinator (sp-cxpq)
+// ScoutPostCoordinator is RETIRED (Admiral 2026-08-08): the standing reconciler that
+// circulated hulls over per-system market posts is deleted. The RPC refuses rather than
+// disappearing, so an operator reaching for it learns what replaced it.
 func (s *daemonServiceImpl) ScoutPostCoordinator(ctx context.Context, req *pb.ScoutPostCoordinatorRequest) (*pb.ScoutPostCoordinatorResponse, error) {
-	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, req.AgentSymbol)
-	if err != nil {
-		return nil, fmt.Errorf("failed to resolve player: %w", err)
-	}
-
-	containerID, err := s.daemon.ScoutPostCoordinator(ctx, playerID, int(req.TickIntervalSecs))
-	if err != nil {
-		return nil, fmt.Errorf("failed to start scout post coordinator: %w", err)
-	}
-
-	return &pb.ScoutPostCoordinatorResponse{ContainerId: containerID, Status: "RUNNING"}, nil
+	return nil, fmt.Errorf("scout-post coordinator removed: it was a second market-freshness engine beside parked sensing. Start a tour by hand during the bootstrap phase (`spacetraders scout tour <ship>` / `scout markets`); once the jump gate is built, freshness is the parked-sensing coordinator's")
 }
 
 // TradeFleetCoordinator starts the standing trade-fleet coordinator (sp-1278). The
@@ -220,23 +212,11 @@ func (s *daemonServiceImpl) FrontierExpansionCoordinator(ctx context.Context, re
 	return nil, fmt.Errorf("frontier expansion coordinator is retired; probe sensing supersedes it")
 }
 
-// ShipyardBackfillCoordinator starts the standing shipyard-backfill sweep (sp-s1ek — the launch
-// verb for the sp-rhju engine). EXPLICIT START ONLY — never boot-standing-armed (deploy-inert).
+// ShipyardBackfillCoordinator is RETIRED. It declared sweep-once scout posts for the
+// scout-post reconciler to man, and that reconciler was deleted with the legacy
+// market-freshness machinery. The RPC is kept so an operator who reaches for it gets an
+// answer rather than an unimplemented-method error; charted-but-unscanned shipyards are
+// parked sensing's, through its yard presence and catalogue.
 func (s *daemonServiceImpl) ShipyardBackfillCoordinator(ctx context.Context, req *pb.ShipyardBackfillCoordinatorRequest) (*pb.ShipyardBackfillCoordinatorResponse, error) {
-	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, req.AgentSymbol)
-	if err != nil {
-		return nil, fmt.Errorf("failed to resolve player: %w", err)
-	}
-
-	containerID, err := s.daemon.ShipyardBackfillCoordinator(
-		ctx,
-		playerID,
-		int(req.TickIntervalSecs),
-		int(req.MaxDispatchesPerCycle),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to start shipyard backfill coordinator: %w", err)
-	}
-
-	return &pb.ShipyardBackfillCoordinatorResponse{ContainerId: containerID, Status: "RUNNING"}, nil
+	return nil, fmt.Errorf("shipyard-backfill coordinator removed: it declared scout posts for the deleted scout-post reconciler; shipyard coverage belongs to the parked-sensing coordinator")
 }

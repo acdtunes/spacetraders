@@ -72,13 +72,11 @@ func (f *tuneFakeRecorder) Record(_ context.Context, e *captain.Event) error {
 }
 
 const (
-	tuneSensingContainerID        = "probe_sensing_coordinator-player-tune-test"
-	sensingContainerType          = "PROBE_SENSING_COORDINATOR"
-	scoutPostContainerType        = "SCOUT_POST_COORDINATOR"
-	shipyardBackfillContainerType = "SHIPYARD_BACKFILL_COORDINATOR"
-	contractCoordinatorType       = "CONTRACT_FLEET_COORDINATOR"
-	bootstrapContainerType        = "BOOTSTRAP_COORDINATOR"
-	tuneBootstrapContainerID      = "bootstrap-player-tune-test"
+	tuneSensingContainerID   = "probe_sensing_coordinator-player-tune-test"
+	sensingContainerType     = "PROBE_SENSING_COORDINATOR"
+	contractCoordinatorType  = "CONTRACT_FLEET_COORDINATOR"
+	bootstrapContainerType   = "BOOTSTRAP_COORDINATOR"
+	tuneBootstrapContainerID = "bootstrap-player-tune-test"
 )
 
 // ---- rejection: bounds + unknown keys, no write ------------------------------
@@ -271,8 +269,6 @@ func TestTuneRegistry_MatchesCoordinatorDefaults_AndNeverWeakensTreasuryGuard(t 
 		defaults      map[string]int
 	}{
 		{sensingContainerType, scoutingCmd.SensingTunableDefaults()},
-		{scoutPostContainerType, scoutingCmd.ScoutPostTunableDefaults()},
-		{shipyardBackfillContainerType, scoutingCmd.ShipyardBackfillTunableDefaults()},
 		{contractCoordinatorType, ContractCoordinatorTunableDefaults()},
 		{bootstrapContainerType, bootstrapCmd.BootstrapTunableDefaults()},
 		{string(container.ContainerTypeContractScaler), contractScalerCmd.ContractScalerTunableDefaults()},

@@ -14,7 +14,7 @@ import (
 // worker_interrupted, preserving the ship claim) and leaves the reclaim/re-evaluation to the
 // managing coordinator's reconcile pass. It wraps exactly ONE iteration — the whole ferry — and
 // the coordinator owns re-dispatch (CoordinatorOwnsIterations in the registry). Twin of
-// PersistScoutRepositionWorker. (Retained after the factory-ops retirement, sp-hoj8u: worker_ferry
+// the retired scout-reposition relay. (Retained after the factory-ops retirement, sp-hoj8u: worker_ferry
 // is a generic hull-move primitive the daemon's persist/start dispatch and container recovery still
 // reference; its former spawner — the worker_rebalancer_coordinator — was retired with the factories.)
 func (s *DaemonServer) PersistWorkerFerryWorker(
@@ -58,7 +58,7 @@ func (s *DaemonServer) PersistWorkerFerryWorker(
 }
 
 // StartWorkerFerry starts a previously persisted worker_ferry container (the
-// coordinator-managed ferry path). Mirrors StartScoutReposition: load the persisted model,
+// coordinator-managed ferry path). Load the persisted model,
 // rebuild the command from its config, and run it.
 func (s *DaemonServer) StartWorkerFerry(ctx context.Context, containerID string) error {
 	containerModel, err := s.findContainerModelByID(ctx, containerID)

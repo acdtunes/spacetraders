@@ -34,38 +34,32 @@ func (spec ContainerSpec) BuildCommand(config map[string]interface{}, playerID i
 	return cmd, nil
 }
 
-// containerSpecList is the registry AND the container lifecycle contract's per-type semantics table
-// (invariants 3+4). Every container type the daemon creates MUST appear here — a type absent from
-// this list is marked FAILED at restart recovery ("unknown command type") and its in-flight work is
-// abandoned. A type deliberately removed goes in retiredCommandTypes instead, which skips its
-// persisted rows cleanly rather than alarming.
+// containerSpecList is the registry AND the container lifecycle contract's per-type semantics table.
+// Every container type the daemon creates MUST appear here — a type absent from it is marked FAILED
+// at restart recovery and its in-flight work abandoned. A type deliberately removed goes in
+// retiredCommandTypes instead, which skips its persisted rows cleanly rather than alarming.
 //
 // ITERATION SEMANTICS (invariant 3) — one operator-facing meaning everywhere:
 //
-//	-1  = infinite: run until stopped/margin-death.
-//	N>0 = exactly N units of the type's own work unit.
-//	 0  = the type's documented default — NEVER "zero work".
+//	-1 = infinite (until stopped); N>0 = exactly N units of the type's own work unit;
+//	 0 = the type's documented default, NEVER "zero work".
 //
 // Who loops is declared per type via CoordinatorOwnsIterations. A type whose coordinator owns the
 // loop re-adopts itself across a restart; a WORKER (one carrying coordinator_id) is not recovered
-// standalone — markWorkerInterrupted preserves its claim and the parent re-dispatches it. Each
-// type's own file states what its restart resumes from.
+// standalone — markWorkerInterrupted preserves its claim and the parent re-dispatches it.
 //
 // HONEST COMPLETION (invariant 2): any coordinator whose run can end holding cargo bought that run,
-// or with its task incomplete, threads that through its response's common.CompletionReporter — the
-// runner's finishCleanExit refuses success=true (arb_run reports via non-nil error instead, valid
-// because its fixed lane resumes across retries). New cargo-leg coordinators MUST adopt one of those
-// two shapes and funnel every laden exit through a single epilogue (invariant 1's finish-current-leg
-// rule; run_trade_route_coordinator.go's runCircuit is the reference pattern).
+// or with its task incomplete, threads that through its response's common.CompletionReporter, and
+// finishCleanExit refuses success=true. New cargo-leg coordinators must adopt that shape and funnel
+// every laden exit through one epilogue (run_trade_route_coordinator.go's runCircuit is the
+// reference).
 func containerSpecList() []ContainerSpec {
 	return []ContainerSpec{
 		{CommandType: "scout_tour", build: buildScoutTourCommand, CoordinatorOwnsIterations: true},
-		{CommandType: "scout_post_coordinator", build: buildScoutPostCoordinatorCommand},
-		// probe_sensing_coordinator is the standing sensing engine. The retired market-freshness
-		// sizer and frontier expansion types are deliberately ABSENT from this list.
+		// probe_sensing_coordinator is the standing sensing engine. The retired freshness sizer,
+		// frontier expansion, scout-post, shipyard-backfill and scout-reposition types are
+		// deliberately ABSENT — see retiredCommandTypes.
 		{CommandType: "probe_sensing_coordinator", build: buildProbeSensingCoordinatorCommand},
-		{CommandType: "shipyard_backfill_coordinator", build: buildShipyardBackfillCoordinatorCommand},
-		{CommandType: "scout_reposition", build: buildScoutRepositionCommand, CoordinatorOwnsIterations: true},
 		{CommandType: "contract_workflow", build: buildContractWorkflowCommand},
 		{CommandType: "contract_fleet_coordinator", build: buildContractFleetCoordinatorCommand},
 		// trade_fleet_coordinator (sp-1278): a standing coordinator that loops forever
@@ -198,7 +192,7 @@ func (s *DaemonServer) buildCommandForType(commandType string, config map[string
 	// boot-loaded config.yaml on every build — creation and recovery alike — for both
 	// scout_tour and scout_post_coordinator, so a config edit + restart retunes a
 	// recovered scout and no persisted copy can shadow the live value.
-	if commandType == "scout_tour" || commandType == "scout_post_coordinator" {
+	if commandType == "scout_tour" {
 		s.resolveScoutingConfig(config)
 	}
 	// probe_sensing_coordinator resolves TWO things: the [sensing] knobs (the goods whitelist — a

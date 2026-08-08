@@ -160,32 +160,34 @@ func TestEnsureBootStandingCoordinators_IdempotentForBootstrap(t *testing.T) {
 		"a warm restart must not launch a duplicate bootstrap coordinator when one is already RUNNING")
 }
 
-// sp-9ujl (epic sp-difa, Auto-pilot Phase 1): the scout-post coordinator must be BOOT-STANDING. The
-// MarketFreshnessSizer (already boot-standing) only DECLARES a standing freshness post; the scout-post
-// coordinator is what MANS it — assigns a probe (SetAssignedHull), partitions the system, drives the
-// P90 rescans + idle-probe re-tasking. Its only previous launch path was the manual CLI, which a cold
-// start never runs, so a zero-intervention boot left the declared post UNMANNED with no standing owner
-// for market coverage. This tripwire fires if a future change drops it from the boot set.
-func TestBootStandingSet_IncludesScoutPostCoordinator(t *testing.T) {
-	require.Contains(t, bootStandingCoordinatorTypes, container.ContainerTypeScoutPostCoordinator,
-		"the scout-post coordinator must be boot-standing: it MANS the freshness posts the MarketFreshnessSizer declares — without it a cold-start post stays UNMANNED (sp-9ujl)")
+// The scout-post coordinator is DELETED (Admiral 2026-08-08) and must never come back to the
+// boot set. It was a second market-freshness engine beside parked sensing, circulating hulls
+// over systems parked sensing had already saturated. Boot-standing is exactly what made that
+// invisible — nothing had to launch it, so nothing had to notice it — which is why the
+// tripwire is worth keeping in the inverted direction.
+func TestBootStandingSet_ExcludesTheDeletedScoutPostCoordinator(t *testing.T) {
+	require.NotContains(t, bootStandingCoordinatorTypes, container.ContainerTypeScoutPostCoordinator,
+		"the scout-post coordinator is retired: market tours are operator-started during bootstrap only")
+	require.NotContains(t, bootStandingCoordinatorTypes, container.ContainerTypeShipyardBackfillCoordinator,
+		"the shipyard-backfill sweep declared posts for that reconciler and is retired with it")
 }
 
-// sp-9ujl: on a boot with a player present and no standing scout-post coordinator yet, exactly one must
-// be launched — the manner for the freshness posts the sizer declares.
-func TestEnsureBootStandingCoordinators_LaunchesScoutPostCoordinatorWhenAbsent(t *testing.T) {
+// The wiring half of the same fact: a boot with a player present must launch NO scout-post
+// coordinator. Excluding it from the list and still launching it from the switch would be a
+// half-retirement that the list assertion alone cannot see.
+func TestEnsureBootStandingCoordinators_LaunchesNoScoutPostCoordinator(t *testing.T) {
 	s, db, playerID := newRecoveryTestServer(t)
-	s.playerRepo = persistence.NewGormPlayerRepository(db) // the co-launched bootstrap resolves the agent symbol
+	s.playerRepo = persistence.NewGormPlayerRepository(db)
 
-	// The launched standing coordinators spawn background runners that block on the (blocking) test
-	// mediator; a cancelable context lets them exit cleanly when the test ends.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	s.ensureBootStandingCoordinators(ctx, playerID)
 
-	require.Equal(t, int64(1), countContainersOfType(t, db, playerID, container.ContainerTypeScoutPostCoordinator),
-		"boot must launch exactly one standing scout-post coordinator when none is running (sp-9ujl)")
+	require.Zero(t, countContainersOfType(t, db, playerID, container.ContainerTypeScoutPostCoordinator),
+		"boot must never launch the retired scout-post coordinator")
+	require.Positive(t, countContainersOfType(t, db, playerID, container.ContainerTypeProbeSensingCoordinator),
+		"control: the surviving sensing engine must still boot-launch, or this test would pass on a dead boot path")
 }
 
 // The probe-sensing coordinator REPLACES the market-freshness sizer in the boot-standing

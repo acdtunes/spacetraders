@@ -183,18 +183,3 @@ func autoOutfitStartSpec() coordinatorStartSpec {
 		authoritativeKeys: []string{"container_id", "auto_outfit_launch_dry_run"},
 	}
 }
-
-// scoutPostStartSpec is the scout-post-coordinator re-apply spec (sp-rsgc). container_id is
-// the new start's; tick_interval_secs overrides only when explicitly set. No safety knob:
-// the scout-post tunes (manning_stall_cycles, cross-system relay switch/hops) are manning /
-// relay behavior, none credit-moving. The [scouting] config.yaml knobs are re-injected from
-// config.yaml on every build (resolveScoutingConfig), so carrying a stale copy forward here
-// is harmless — it is cleared and refreshed — while these tune-only knobs are re-adopted.
-func scoutPostStartSpec() coordinatorStartSpec {
-	return coordinatorStartSpec{
-		containerType:     string(container.ContainerTypeScoutPostCoordinator),
-		label:             "scoutpost",
-		authoritativeKeys: []string{"container_id"},
-		overrideKeys:      []string{"tick_interval_secs"},
-	}
-}

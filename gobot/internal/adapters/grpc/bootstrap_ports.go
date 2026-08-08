@@ -40,11 +40,6 @@ const (
 	warehouseFleetTag     = "warehouse"
 	stockerFleetTag       = "stocker"
 	bootstrapIncomeWindow = time.Hour
-	// bootstrapHomeScoutPostFreshness is the SEED freshness SLA stamped on the cold-start home scout
-	// post (sp-pt7d). Transitional: the market-freshness sizer RESIZES the post's SLA + hull budget
-	// once the home system enters the scanned census, so this only paces the FIRST scans. 1h mirrors
-	// the sizer's baseline cadence.
-	bootstrapHomeScoutPostFreshness = time.Hour
 )
 
 // NewBootstrapCoordinatorHandler assembles the bootstrap reconciler (sp-3nbe M4), wiring every
@@ -81,11 +76,12 @@ func NewBootstrapCoordinatorHandler(
 	}
 	h.SetProbeAcquirer(acq)
 	h.SetHaulerAcquirer(&bootstrapHaulerAcquirer{bootstrapAcquirer: acq})
-	h.SetScoutPostDeclarer(&bootstrapScoutPostDeclarer{server: server})
 	// The cold-start shipyard-readability scanner. On a fresh universe nothing has visited the home
 	// shipyard, so its live (presence-gated) price is unreadable and the buy fails closed forever; this
 	// flies a hull to the yard so the next tick's live PriceCheck reads. Same deps as the acquirer
 	// (mediator navigate + ship/waypoint repos) — builds nothing new.
+	// The cold-start market tour: bootstrap starts it through the operator's own verb.
+	h.SetHomeTourStarter(&bootstrapHomeTourStarter{server: server})
 	h.SetShipyardScanner(&bootstrapShipyardScanner{med: med, shipRepo: shipRepo, waypointRepo: waypointRepo})
 	h.SetFrigateRetirer(&bootstrapFrigateRetirer{shipRepo: shipRepo})
 	h.SetContractRunner(&bootstrapContractRunner{server: server})

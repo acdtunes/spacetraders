@@ -62,12 +62,12 @@ func resolveBootstrapConfig(cmd *RunBootstrapCoordinatorCommand, live liveconfig
 
 // reconcileResult tallies one tick's effect for the heartbeat and the tests.
 type reconcileResult struct {
-	Phase            Phase
-	Purchased        int    // probes actually bought this tick (the scanning workstream)
-	HomePostDeclared bool   // the home scout-post coverage target was ensured this tick
-	Blocker          string // the one guard that blocked the highest-priority action (for the heartbeat)
+	Phase     Phase
+	Purchased int    // probes actually bought this tick (the scanning workstream)
+	Blocker   string // the one guard that blocked the highest-priority action (for the heartbeat)
 
 	// Contract-workstream tallies (Slice 2).
+	TourHulls          int  // probes put on the home market tour this tick
 	HaulersBought      int  // contract haulers actually bought this tick (staged: at most 1)
 	FrigateRetired     bool // the command frigate was retired from contract work this tick
 	ContractRun        bool // batch-contract was launched this tick
@@ -255,7 +255,7 @@ func (h *RunBootstrapCoordinatorHandler) reconcileOnce(ctx context.Context, cmd 
 	switch phase {
 	case PhaseColdStart:
 		// Scanning and contract income run TOGETHER, not in sequence. actData drives
-		// probes→target + the home scout post + shipyard readability; actIncome starts the contract
+		// probes→target + shipyard readability; actIncome starts the contract
 		// engine at HOUR-0 and stages haulers as their source markets appear (the contract engine holds
 		// an accepted-but-unsourceable contract gracefully — verified — and claims no ship until a
 		// market is known, so it cannot steal the idle hull bootstrap needs to buy probes). Contracts
@@ -410,13 +410,11 @@ func (h *RunBootstrapCoordinatorHandler) resetUnderScaledStreak(containerID stri
 	}
 }
 
-// actData runs the SCANNING workstream: (1) drive the probe fleet to probeTarget THIS tick —
-// buying up to (target-count) probes in a capital-gated loop, or (when the home shipyard price is not
-// yet readable) positioning a hull at the yard so the next tick's live read succeeds;
-// (2) declare the home-system scout post as a coverage target — the boot-standing scout-post
-// coordinator mans it by claiming an idle probe (bootstrap assigns NO probes itself). Both
-// actions are independently guarded and idempotent, so re-evaluation never double-acts. It executes
-// ALONGSIDE actIncome on every cold-start tick (the parallel model).
+// actData runs the SCANNING workstream: drive the probe fleet to probeTarget THIS tick, buying in a
+// capital-gated loop or (when the home shipyard price is unreadable) positioning a hull at the yard
+// so the next tick's live read succeeds. It leaves the probes IDLE — scanning them is an operator's
+// tour in this phase and parked sensing's once the gate is built. Idempotent, and it runs ALONGSIDE
+// actIncome on every cold-start tick.
 func (h *RunBootstrapCoordinatorHandler) actData(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, obs Observation, res *reconcileResult) {
 	// (1) Capital-gated probe acquisition — buy to target in ONE pass (a fresh universe must
 	// reach probeTarget fast, not one probe per 5-min tick). Guarded on the re-observed count, so a
@@ -427,17 +425,59 @@ func (h *RunBootstrapCoordinatorHandler) actData(ctx context.Context, cmd *RunBo
 		h.acquireProbesToTarget(ctx, cmd, obs, res)
 	}
 
-	// (2) Declare the home-system scout post as a COVERAGE target. Bootstrap does NOT
-	// assign probes to scout tours — a scout-all-markets sweep here HOLDS the probes and starves
-	// the now-boot-standing scout-post coordinator. Instead it declares the desired-state
-	// home post; the coordinator mans it by claiming an IDLE probe (→ VRP-partition → scan), seeding
-	// the initial home scan → census → the freshsizer takes over declaring the rest. Idempotent (the
-	// declarer skips a post that already exists), so re-declaring every tick is a no-op. Guarded
-	// on a resolved home system only — declare the coverage target even before the first probe lands,
-	// so manning starts the instant a probe is idle.
-	if obs.HomeSystem != "" {
-		h.declareHomeScoutPost(ctx, cmd, obs, res)
+	// (2) START the tour. The Admiral's cold-start arc is "buy 2 probes and start a 3 probe
+	// tour on the home system" — buying and leaving the probes idle fails it by one verb.
+	h.startHomeMarketTour(ctx, cmd, obs, res)
+}
+
+// startHomeMarketTour puts bootstrap's probes on a market tour of the home system, through the
+// SAME path the captain's `scout markets` verb uses.
+//
+// IDEMPOTENCY IS AN OBSERVATION, NOT A LATCH: it starts only when NO probe is scouting. The
+// tour path re-partitions every hull it is handed, tearing down whatever is flying, so an
+// unguarded per-tick call would restart the tour forever and never finish a circuit. Reading
+// the live fleet is also what makes it restart-safe — nothing is persisted.
+//
+// Deliberately NOT a re-manner: one probe dying leaves the others flying and is not
+// corrected. Re-growing the deleted standing engine one guard at a time inside bootstrap is
+// exactly the shape being cut.
+//
+// A BACKGROUND action in the ensureContractScalerEarly sense: it never claims res.Blocker,
+// which is single-valued and owned by the money guards — a tour that could not start must
+// never mask why a BUY could not. It surfaces on its own line and retries next tick.
+func (h *RunBootstrapCoordinatorHandler) startHomeMarketTour(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, obs Observation, res *reconcileResult) {
+	logger := common.LoggerFromContext(ctx)
+
+	if obs.HomeSystem == "" || obs.ProbeCount == 0 || obs.ProbesScouting > 0 {
+		return
 	}
+	if h.tourStarter == nil {
+		logger.Log("WARN", "Bootstrap cannot start the home market tour: no tour starter wired — probes are bought but nothing scans, so market data never flows", map[string]interface{}{
+			"action":       "bootstrap_tour_starter_missing",
+			"container_id": cmd.ContainerID,
+		})
+		return
+	}
+
+	hulls, err := h.tourStarter.StartHomeMarketTour(ctx, cmd.PlayerID, obs.HomeSystem)
+	if err != nil {
+		logger.Log("ERROR", fmt.Sprintf("Bootstrap failed to start the home market tour (retried next tick): %v", err), map[string]interface{}{
+			"action":       "bootstrap_tour_start_error",
+			"container_id": cmd.ContainerID,
+			"system":       obs.HomeSystem,
+		})
+		return
+	}
+	if hulls == 0 {
+		return // no idle probe to fly it yet; the next tick re-observes
+	}
+	res.TourHulls = hulls
+	logger.Log("INFO", fmt.Sprintf("Bootstrap started the home market tour: %d probe(s) touring %s", hulls, obs.HomeSystem), map[string]interface{}{
+		"action":       "bootstrap_home_tour_started",
+		"container_id": cmd.ContainerID,
+		"system":       obs.HomeSystem,
+		"hulls":        hulls,
+	})
 }
 
 // ensureContractScalerEarly ensures the standing dedicated contract auto-scaler is running DURING the
@@ -651,46 +691,12 @@ func buyBlockNote(affordable bool) string {
 	return "BLOCKED by the capital gate (would drop the cushion below the immutable reserve floor)"
 }
 
-// declareHomeScoutPost declares the STANDING home-system scout post as a coverage target:
-// the desired state the boot-standing scout-post coordinator mans by claiming an IDLE
-// probe. It does NOT assign or dedicate a probe — that is the coordinator's job — so bootstrap's
-// probes stay idle and claimable. Idempotent: the declarer skips a post that already exists, so
-// re-declaring every tick is a no-op. Caller has checked HomeSystem is resolved.
-func (h *RunBootstrapCoordinatorHandler) declareHomeScoutPost(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, obs Observation, res *reconcileResult) {
-	logger := common.LoggerFromContext(ctx)
-
-	if h.postDeclarer == nil {
-		res.Blocker = "no_scout_post_declarer"
-		logger.Log("WARN", "Bootstrap cannot declare the home scout post: no scout-post declarer wired — probes will be bought but no coverage target exists for the coordinator to man", map[string]interface{}{
-			"action":       "bootstrap_scout_post_blocked",
-			"container_id": cmd.ContainerID,
-			"blocker":      "no_scout_post_declarer",
-		})
-		return
-	}
-
-	if err := h.postDeclarer.DeclareHomeScoutPost(ctx, cmd.PlayerID, obs.HomeSystem, probeTarget); err != nil {
-		res.Blocker = "scout_post_error"
-		logger.Log("ERROR", fmt.Sprintf("Bootstrap home scout-post declaration failed: %v", err), map[string]interface{}{
-			"action":       "bootstrap_scout_post_error",
-			"container_id": cmd.ContainerID,
-		})
-		return
-	}
-	res.HomePostDeclared = true
-	logger.Log("INFO", fmt.Sprintf("Bootstrap ensured the home scout post %s (coverage target; the scout-post coordinator mans it by claiming an idle probe)", obs.HomeSystem), map[string]interface{}{
-		"action":       "bootstrap_home_scout_post_declared",
-		"container_id": cmd.ContainerID,
-		"system":       obs.HomeSystem,
-	})
-}
-
 // emitHeartbeat writes the per-tick progress line (phase · delta done · next action · blockers) so
 // a wedged reconciler is visible, never a silent stall (captain L61, spec §Observability).
 func (h *RunBootstrapCoordinatorHandler) emitHeartbeat(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, phase Phase, obs Observation, res reconcileResult) {
 	logger := common.LoggerFromContext(ctx)
 
-	delta := fmt.Sprintf("bought=%d home_post=%v haulers_bought=%d trade_seeded=%v frigate_retired=%v batch_contract=%v frigate_loop=%v purchaser_released=%v construction_started=%v mfg_ensured=%v mfg_bounced=%v workers_released=%d gate_workers_bought=%d construction_hulls_to_trade=%d handoff=%v", res.Purchased, res.HomePostDeclared, res.HaulersBought, res.TradeHullSeeded, res.FrigateRetired, res.ContractRun, res.FrigateLoopStarted, res.PurchaserReleased, res.ConstructionStartRan, res.MfgEnsured, res.MfgBounced, res.WorkersReleased, res.GateWorkersBought, res.ConstructionHullsToTrade, res.HandoffLaunched)
+	delta := fmt.Sprintf("bought=%d tour_hulls=%d haulers_bought=%d trade_seeded=%v frigate_retired=%v batch_contract=%v frigate_loop=%v purchaser_released=%v construction_started=%v mfg_ensured=%v mfg_bounced=%v workers_released=%d gate_workers_bought=%d construction_hulls_to_trade=%d handoff=%v", res.Purchased, res.TourHulls, res.HaulersBought, res.TradeHullSeeded, res.FrigateRetired, res.ContractRun, res.FrigateLoopStarted, res.PurchaserReleased, res.ConstructionStartRan, res.MfgEnsured, res.MfgBounced, res.WorkersReleased, res.GateWorkersBought, res.ConstructionHullsToTrade, res.HandoffLaunched)
 	next := h.nextAction(phase, obs)
 	blockers := res.Blocker
 	if blockers == "" {
@@ -720,7 +726,6 @@ func (h *RunBootstrapCoordinatorHandler) emitHeartbeat(ctx context.Context, cmd 
 		"batch_contract":     res.ContractRun,
 		"frigate_loop":       res.FrigateLoopStarted,
 		"purchaser_released": res.PurchaserReleased,
-		"home_post_declared": res.HomePostDeclared,
 		"gate_site":          obs.GateSite,
 		"construction_pct":   obs.ConstructionPercent,
 		"gate_workers":       obs.GateWorkers,
@@ -741,7 +746,7 @@ func (h *RunBootstrapCoordinatorHandler) nextAction(phase Phase, obs Observation
 			return fmt.Sprintf("buy probes to target (%d/%d, capital-gated; positions a hull at the yard first if the price is cold)", obs.ProbeCount, probeTarget)
 		}
 		if obs.ProbeCount > 0 && obs.ProbesScouting < obs.ProbeCount {
-			return "home scout post declared — awaiting the scout-post coordinator to man idle probe(s) (sp-pt7d)"
+			return "probes idle — start a market tour on one (`spacetraders scout tour`) to grow coverage"
 		}
 		if obs.CommandFrigateOnContract {
 			return "retire the command frigate from contract work"

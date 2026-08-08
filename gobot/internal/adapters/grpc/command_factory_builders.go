@@ -38,43 +38,6 @@ func buildScoutTourCommand(cfg *configReader, playerID int, containerID string) 
 	}
 }
 
-// buildScoutPostCoordinatorCommand rebuilds the standing scout-post coordinator
-// from its persisted launch config so restart recovery re-adopts it (sp-cxpq): it
-// reloads the posts table and respawns each post's tour. Like
-// contract_fleet_coordinator it loops forever inside one Handle() call, so the
-// container-level iteration budget is irrelevant and it is NOT a
-// CoordinatorOwnsIterations type. tick_interval_secs, market_drift_threshold, and
-// market_drift_max_age_secs are all optional (0 → the coordinator's own default) —
-// the latter two bound the debounced market-set re-cut (RULINGS #5).
-// budget_change_debounce_cycles (0 → default) bounds the debounced hull-budget
-// re-partition that absorbs the freshness sizer's ±1 demand-noise swings.
-func buildScoutPostCoordinatorCommand(cfg *configReader, playerID int, containerID string) interface{} {
-	return &scoutingCmd.RunScoutPostCoordinatorCommand{
-		PlayerID:                        shared.MustNewPlayerID(playerID),
-		ContainerID:                     cfg.RequiredNonEmptyString("container_id"),
-		TickIntervalSecs:                cfg.OptionalInt("tick_interval_secs", 0),
-		MarketDriftThreshold:            cfg.OptionalInt("market_drift_threshold", 0),
-		MarketDriftMaxAgeSecs:           cfg.OptionalInt("market_drift_max_age_secs", 0),
-		BudgetChangeDebounceCycles:      cfg.OptionalInt("budget_change_debounce_cycles", 0),
-		UndersizedAvgHopSecs:            cfg.OptionalInt("undersized_avg_hop_secs", 0),
-		UndersizedRewarnCooldownSecs:    cfg.OptionalInt("undersized_rewarn_cooldown_secs", 0),
-		StartJitterMaxSecs:              cfg.OptionalInt("tour_start_jitter_max_seconds", 0),
-		MaxRepositionJumps:              cfg.OptionalInt("max_reposition_jumps", 0),
-		RepositionFailureCooldownSecs:   cfg.OptionalInt("reposition_failure_cooldown_secs", 0),
-		RespawnAttemptCap:               cfg.OptionalInt("respawn_attempt_cap", 0),
-		ManningStallCycles:              cfg.OptionalInt("manning_stall_cycles", 0),
-		ManningStallCorrectionCap:       cfg.OptionalInt("manning_stall_correction_cap", 0),
-		GateReconcileEnabled:            cfg.OptionalBool("gate_reconcile_enabled"),
-		GateReconcileMaxDispatch:        cfg.OptionalInt("gate_reconcile_max_dispatch", 0),
-		GateReconcileMarketlessDisabled: cfg.OptionalBool("gate_reconcile_marketless_disabled"),
-		// sp-u8jc cross-system reuse relay: an int-mode flag (0=off, byte-identical) + a hop bound,
-		// threaded config→command like sp-6vep's probe_reuse_enabled/edge_relay_max_hops. Absent from
-		// config.yaml ⇒ OptionalInt returns 0 ⇒ the relay is off and byte-identical to today.
-		ScoutCrossSystemRelayEnabled: cfg.OptionalInt("scout_cross_system_relay_enabled", 0),
-		ScoutRelayMaxHops:            cfg.OptionalInt("scout_relay_max_hops", 0),
-	}
-}
-
 // buildTradeFleetCoordinatorCommand rebuilds the standing trade-fleet coordinator
 // command from a persisted launch config so a daemon restart re-adopts it.
 // The [trade_fleet] knobs are resolved LIVE from config.yaml just before this runs
@@ -156,7 +119,7 @@ func buildLongHaulArbWorkerCommand(cfg *configReader, playerID int, containerID 
 }
 
 // buildWorkerFerryCommand rebuilds a one-shot cross-system ferry from its persisted launch
-// config so restart recovery re-adopts it (twin of buildScoutRepositionCommand). A
+// config so restart recovery re-adopts it (twin of buildWorkerFerryCommand). A
 // coordinator-spawned ferry (coordinator_id present) is skipped by recovery and reclaimed
 // by the worker_rebalancer_coordinator, but the command is still rebuilt here so the
 // coordinator's StartWorkerFerry path can reconstruct it. Re-running after a restart is
@@ -263,22 +226,6 @@ func csvValues(raw string) []string {
 	return out
 }
 
-// buildShipyardBackfillCoordinatorCommand rebuilds the standing shipyard-backfill sweep from
-// its persisted launch config so restart recovery re-adopts it byte-identically (RULINGS #2,
-// sp-rhju). Like the frontier coordinator it is a reconcile-loop coordinator (NOT a
-// CoordinatorOwnsIterations type — it loops forever inside one Handle()). Every knob is
-// optional (0 → the coordinator's own default, RULINGS #5), so creation and recovery share one
-// construction and can never drift.
-func buildShipyardBackfillCoordinatorCommand(cfg *configReader, playerID int, containerID string) interface{} {
-	return &scoutingCmd.RunShipyardBackfillCoordinatorCommand{
-		PlayerID:              shared.MustNewPlayerID(playerID),
-		ContainerID:           cfg.RequiredNonEmptyString("container_id"),
-		TickIntervalSecs:      cfg.OptionalInt("tick_interval_secs", 0),
-		MaxDispatchesPerCycle: cfg.OptionalInt("max_dispatches_per_cycle", 0),
-		MaxHops:               cfg.OptionalInt("backfill_max_hops", 0),
-	}
-}
-
 // buildAutoOutfitCoordinatorCommand rebuilds the standing guarded auto-outfit coordinator
 // from its persisted launch config so restart recovery re-adopts it byte-identically
 // (RULINGS #2, sp-buyd). Like the autosizer it is a reconcile-loop coordinator (NOT a
@@ -301,35 +248,6 @@ func buildAutoOutfitCoordinatorCommand(cfg *configReader, playerID int, containe
 		InstallFeeEstimate:     cfg.OptionalInt("install_fee_estimate", 0),
 		HopCost:                cfg.OptionalInt("hop_cost", 0),
 		TelemetryWindowSecs:    cfg.OptionalInt("telemetry_window_secs", 0),
-	}
-}
-
-// buildScoutRepositionCommand rebuilds a one-shot cross-gate reposition relay from its
-// persisted launch config so restart recovery re-adopts it. A coordinator-
-// spawned relay (coordinator_id present) is skipped by recovery and re-dispatched by
-// the scout_post_coordinator, but the command is still rebuilt here so the coordinator's
-// StartScoutReposition path can reconstruct it. Re-running after a restart is safe:
-// travel() waits out any in-transit leg and re-plans the gate path from the
-// hull's CURRENT position, so a mid-relay restart resumes rather than strands.
-func buildScoutRepositionCommand(cfg *configReader, playerID int, containerID string) interface{} {
-	return &scoutingCmd.ScoutRepositionCommand{
-		PlayerID:            shared.MustNewPlayerID(playerID),
-		ShipSymbol:          cfg.RequiredString("ship_symbol"),
-		DestinationWaypoint: cfg.RequiredString("destination"),
-		CoordinatorID:       cfg.OptionalString("coordinator_id"),
-		// Reload the expendable-probe reposition bound the coordinator selected.
-		// Without it, the rebuilt relay runs unbounded — travelWithJumpBound degrades to the
-		// strict fetch-through resolver, which fails a >5-jump post with the verbatim
-		// ErrUnroutable "within N jumps". Absent (0) is the strict-resolver fallback, so a
-		// legacy/mis-wired config can never accidentally relax the unreadable-gate
-		// discipline; only an explicitly persisted positive bound routes past unreadable
-		// gates. resolveScoutingConfig deliberately does NOT run for scout_reposition (only
-		// scout_tour/scout_post_coordinator), so this per-relay value is never clobbered.
-		MaxRepositionJumps: cfg.OptionalInt("max_reposition_jumps", 0),
-		// sp-4yse: reload the 0-hop gate-charting intent. Absent (false) is the plain market
-		// reposition — a legacy/manning relay never charts the gate; only a relay the sweep
-		// explicitly flagged charts on arrival.
-		ChartGateOnArrival: cfg.OptionalBool("chart_gate_on_arrival"),
 	}
 }
 

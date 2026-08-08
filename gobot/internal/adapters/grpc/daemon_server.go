@@ -101,6 +101,11 @@ type DaemonServer struct {
 	// signal, no eviction), mirroring the storageRecovery/depotSinkOverride convention.
 	gateGraph depotHomeRouter
 
+	// phaseGate is the shared EXPANSION reader the market-tour verbs refuse past (Admiral
+	// 2026-08-08). Injected post-construction from main.go, like gateGraph. nil fails CLOSED —
+	// see refuseTourOutsideBootstrap.
+	phaseGate bootstrapPhaseGate
+
 	// Ship state scheduler (timer-based state transitions)
 	shipStateScheduler *ShipStateScheduler
 

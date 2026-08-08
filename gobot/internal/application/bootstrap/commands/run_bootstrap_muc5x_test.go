@@ -124,7 +124,6 @@ func TestBootstrap_Muc5x_ProbeBuy_SeedsHaulerPriceCache(t *testing.T) {
 	h.SetShipRefresher(&fakeRefresher{})
 	h.SetWorldObserver(&fakeObserver{obs: obs})
 	h.SetProbeAcquirer(probeAcq)
-	h.SetScoutPostDeclarer(&fakeDeclarer{})
 	h.SetHaulerAcquirer(haulAcq) // wired so the probe-buy seed can read the hauler price at the yard
 
 	if _, err := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd()); err != nil {
@@ -155,7 +154,6 @@ func TestBootstrap_Muc5x_SeedFeedsPivotGuard_EndToEnd(t *testing.T) {
 	h.SetShipRefresher(&fakeRefresher{})
 	h.SetWorldObserver(obsSrc)
 	h.SetProbeAcquirer(probeAcq)
-	h.SetScoutPostDeclarer(&fakeDeclarer{})
 	h.SetFrigateRetirer(ret)
 	h.SetHaulerAcquirer(haulAcq)
 	h.SetContractRunner(&fakeContractRunner{})

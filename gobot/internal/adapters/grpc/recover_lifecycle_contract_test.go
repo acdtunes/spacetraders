@@ -229,7 +229,10 @@ func TestEveryPersistedCommandTypeIsRegistered(t *testing.T) {
 
 	created := []string{
 		// coordinators / one-shots
-		"scout_tour", "scout_post_coordinator", "probe_sensing_coordinator",
+		// scout_post_coordinator / shipyard_backfill_coordinator / scout_reposition are
+		// deliberately ABSENT: no container_ops site creates them any more, and their types
+		// are in retiredCommandTypes so a leftover row is skipped rather than orphaned.
+		"scout_tour", "probe_sensing_coordinator",
 		"contract_workflow", "contract_fleet_coordinator",
 		"purchase_ship", "batch_purchase_ships",
 		"gas_coordinator", "trade_route", "arb_run", "tour_run",

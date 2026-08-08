@@ -201,10 +201,10 @@ func TestSensingBuild_AppliesTunedPressureHalfLifeToClient(t *testing.T) {
 
 	// Scoped to the sensing type: another coordinator's config carrying the key
 	// must never touch the process-global client state.
-	_, err = s.buildCommandForType("scout_post_coordinator", jsonRoundTrip(t, map[string]interface{}{
-		"container_id":            "scout-post-x",
+	_, err = s.buildCommandForType("bootstrap", jsonRoundTrip(t, map[string]interface{}{
+		"container_id":            "bootstrap-x",
 		"pressure_half_life_secs": 45,
-	}), 9, "scout-post-x")
+	}), 9, "bootstrap-x")
 	require.NoError(t, err)
 	require.Empty(t, fake.halfLives, "the half-life application is sensing-scoped, never another type's side effect")
 }

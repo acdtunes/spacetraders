@@ -91,16 +91,6 @@ func (c *DaemonClientLocal) PersistContainer(
 			return daemon.ErrInvalidCommandType
 		}
 		return c.server.PersistScoutTourWorker(ctx, containerID, cmd.ShipSymbol, cmd.Markets, cmd.Iterations, int(cmd.ScanInterval.Seconds()), int(playerID), cmd.CoordinatorID)
-	case daemon.ContainerKindScoutReposition:
-		cmd, ok := command.(*scoutingCmd.ScoutRepositionCommand)
-		if !ok {
-			return daemon.ErrInvalidCommandType
-		}
-		// Forward MaxRepositionJumps — the segment that dropped the bound on the way to
-		// the persisted config, degrading the live relay to the strict 5-jump resolver.
-		// sp-4yse: forward ChartGateOnArrival for the same reason — the worker's start path rebuilds
-		// the command FROM config (StartScoutReposition), so a flag dropped here never charts.
-		return c.server.PersistScoutRepositionWorker(ctx, containerID, cmd.ShipSymbol, cmd.DestinationWaypoint, int(playerID), cmd.CoordinatorID, cmd.MaxRepositionJumps, cmd.ChartGateOnArrival)
 	case daemon.ContainerKindWorkerFerry:
 		cmd, ok := command.(*tradingCmd.WorkerFerryCommand)
 		if !ok {
@@ -131,8 +121,6 @@ func (c *DaemonClientLocal) StartContainer(
 		return c.server.StartStorageShipContainer(ctx, containerID)
 	case daemon.ContainerKindScoutTour:
 		return c.server.StartScoutTour(ctx, containerID)
-	case daemon.ContainerKindScoutReposition:
-		return c.server.StartScoutReposition(ctx, containerID)
 	case daemon.ContainerKindWorkerFerry:
 		return c.server.StartWorkerFerry(ctx, containerID)
 	case daemon.ContainerKindCargoLiquidation:

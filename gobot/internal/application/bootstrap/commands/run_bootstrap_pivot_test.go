@@ -336,7 +336,6 @@ func TestBootstrap_Pivot_ColdPrice_EndToEnd_DeadlockToBuy(t *testing.T) {
 	h.SetShipRefresher(&fakeRefresher{})
 	h.SetWorldObserver(&fakeIncomeObserver{world: world})
 	h.SetProbeAcquirer(&fakeAcquirer{price: 40000, yard: "Y", readable: true})
-	h.SetScoutPostDeclarer(&fakeDeclarer{})
 	h.SetFrigateRetirer(ret)
 	h.SetHaulerAcquirer(acq)
 	h.SetContractRunner(&fakeContractRunner{world: world})

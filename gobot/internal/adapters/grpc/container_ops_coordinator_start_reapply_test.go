@@ -159,40 +159,6 @@ func TestAutoOutfitStart_LiveRelaunchClearsPriorLaunchDryRun_TunesSurvive(t *tes
 	require.Equal(t, 100000, ceiling, "the operator's tune still carries across the relaunch")
 }
 
-// A relaunch of a stopped scout-post coordinator re-adopts its persisted tunes
-// (manning_stall_cycles, scout_cross_system_relay_enabled) as source=live-config. The
-// scout-post knobs are manning/relay behavior — none credit-moving — so the same re-adopt
-// bug applies, just without a safety-critical guard.
-func TestScoutPostStart_RelaunchReAppliesPersistedTunes(t *testing.T) {
-	db, repo, playerID := tuneTestDB(t)
-	const oldID = "scout_post_coordinator-player-OLD"
-	const newID = "scout_post_coordinator-player-NEW"
-	seedTuneContainer(t, db, playerID, oldID, scoutPostContainerType, "scout_post_coordinator", "STOPPED", map[string]interface{}{
-		"container_id":                     oldID,
-		"manning_stall_cycles":             30,
-		"scout_cross_system_relay_enabled": 1,
-	})
-	s := &DaemonServer{containerRepo: repo}
-	ctx := context.Background()
-
-	base := map[string]interface{}{"container_id": newID, "tick_interval_secs": 0}
-	merged, warnings, err := s.coordinatorStartConfig(ctx, playerID, base, scoutPostStartSpec())
-	require.NoError(t, err)
-	require.Empty(t, warnings, "scout-post has no credit-moving knob to warn about")
-
-	seedTuneContainer(t, db, playerID, newID, scoutPostContainerType, "scout_post_coordinator", "RUNNING", merged)
-	show, err := s.ShowTunableConfig(ctx, "", "scoutpost", playerID)
-	require.NoError(t, err)
-
-	stall := reapplyKnob(t, show, "manning_stall_cycles")
-	require.Equal(t, 30, stall.Effective, "a tuned manning-stall window must survive the relaunch")
-	require.Equal(t, "live-config", stall.Source)
-
-	relay := reapplyKnob(t, show, "scout_cross_system_relay_enabled")
-	require.Equal(t, 1, relay.Effective, "a tuned relay flag must survive the relaunch")
-	require.Equal(t, "live-config", relay.Source)
-}
-
 // The generic safety-warning hook warns ONLY when a credit-moving guard resolves permissive
 // (effective <= 0): a knob whose documented default is 0 (disabled — frontier's max_probe_price
 // shape) warns when the config carries no positive value; a knob whose default is a positive

@@ -10,7 +10,6 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/ship"
 	shipNav "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
-	domainScouting "github.com/andrescamacho/spacetraders-go/internal/domain/scouting"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
@@ -18,11 +17,9 @@ import (
 // spends in flight is booked under — the refuels and gate fees the route executor
 // records on the way to a post's markets.
 //
-// Deliberately NOT parkedsensing.SensingCoverageOperationType, and deliberately
-// not shared with the relay below: three DIFFERENT coordinators fly probes, and
-// one label across them leaves the ledger unable to answer "which one spent
-// this" — the same reasoning that gave the parked-sensing engine its own name
-// rather than "fleet expansion". Spaced and lower-case to match the column's
+// Deliberately NOT parkedsensing.SensingCoverageOperationType: two different engines fly
+// probes, and one label across both leaves the ledger unable to answer "which one spent
+// this". Spaced and lower-case to match the column's
 // other human-readable values, because operation_type is read off a Grafana
 // legend and typed by hand into ad-hoc SQL.
 const ScoutTourOperationType = "scout tour"
@@ -182,26 +179,12 @@ type ScoutTourHandler struct {
 	// market seconds apart and both pay for the same observation. Optional
 	// injection (SetScanDedupWindow); 0 leaves every scan ungated.
 	scanDedupWindow time.Duration
-	// dormancy is the post park-in-place read: while the tour's system is
-	// dormant (rotated out of scanning under API pressure) the probe sleeps in
-	// place instead of flying. Optional injection (SetDormancyReader); nil
-	// means never dormant, so an unwired tour is byte-identical.
-	dormancy domainScouting.DormancyReader
-}
-
-// SetDormancyReader wires the scout-post dormancy read the tour parks on. A
-// dormant post's probe sleeps one scan interval at a time WITHOUT flying or
-// scanning — rotation sheds the SCANNING, never the probe — and resumes the
-// moment the bit clears.
-func (h *ScoutTourHandler) SetDormancyReader(reader domainScouting.DormancyReader) {
-	h.dormancy = reader
 }
 
 // SetScanDedupWindow wires the recent-scan dedup window, the same window the
 // trade coordinators stamp, so the fleet keeps ONE definition of "already
-// scanned recently enough". It must stay far below the freshness sizer's
-// tightest per-activity SLA — it removes redundant observations, it must never
-// become a second, competing scan policy.
+// scanned recently enough". It removes redundant observations and must never become a
+// second, competing scan policy.
 func (h *ScoutTourHandler) SetScanDedupWindow(window time.Duration) {
 	h.scanDedupWindow = window
 }
@@ -245,7 +228,7 @@ func (h *ScoutTourHandler) Handle(ctx context.Context, request common.Request) (
 	// through books the refuels and any gate fee the leg costs. Those leaf recorders
 	// read the operation context off ctx and label the row "manual" when they find
 	// none — which is not a category but the else branch, read by an operator as "a
-	// human did this". Stamped here, a scout post's flying costs land under
+	// human did this". Stamped here, a tour's flying costs land under
 	// ScoutTourOperationType beside the sensing engine's own line.
 	//
 	// The container is the SPAWNING COORDINATOR's, matching the gas/storage worker
@@ -298,101 +281,6 @@ func (h *ScoutTourHandler) waitStartJitter(ctx context.Context, cmd *ScoutTourCo
 	return h.sleepInterruptibly(ctx, jitter)
 }
 
-// holdWhileDormant parks the tour in place while its system's post is dormant
-// (rotated out of scanning under API pressure): it sleeps one scan interval at
-// a time WITHOUT flying or scanning — a parked probe costs zero API — and
-// re-checks after each sleep, resuming the moment the rotation clears the bit.
-// A read ERROR reads as not-dormant even when the value alongside it says
-// otherwise: sensing is the fleet's sensor, and a blind signal must fail
-// toward scanning, never silently park the fleet; the failure is WARNed at
-// most once per circuit/cycle (the error path returns immediately). Returns
-// false when ctx was cancelled during the hold, mirroring
-// sleepInterruptibly's contract.
-func (h *ScoutTourHandler) holdWhileDormant(ctx context.Context, cmd *ScoutTourCommand, response *ScoutTourResponse) bool {
-	if h.dormancy == nil || len(cmd.Markets) == 0 {
-		return true
-	}
-	system := shared.ExtractSystemSymbol(cmd.Markets[0])
-	interval := effectiveScanInterval(cmd.ScanInterval)
-	logger := common.LoggerFromContext(ctx)
-	for {
-		dormant, err := h.dormancy.IsDormant(ctx, cmd.PlayerID.Value(), system)
-		if err != nil {
-			logger.Log("WARN", "Dormancy read failed — scanning anyway", map[string]interface{}{
-				"ship_symbol": cmd.ShipSymbol,
-				"action":      "dormancy_read_failed",
-				"system":      system,
-				"error":       err.Error(),
-			})
-			return true
-		}
-		if !dormant {
-			return true
-		}
-		logger.Log("INFO", "Scout post dormant — parking in place", map[string]interface{}{
-			"ship_symbol": cmd.ShipSymbol,
-			"action":      "dormant_park",
-			"system":      system,
-			"duration":    interval.String(),
-		})
-		if !h.sleepInterruptibly(ctx, interval) {
-			logger.Log("INFO", "Scout tour cancelled by context", map[string]interface{}{
-				"ship_symbol":          cmd.ShipSymbol,
-				"action":               "tour_cancelled",
-				"iterations_completed": response.Iterations,
-			})
-			return false
-		}
-	}
-}
-
-// hotCircuit restricts a STANDING tour's circuit to its post's stage-2 hot
-// set — the markets that DEAL IN whitelisted goods — read fresh each circuit
-// so a stage flip lands on the next circuit without a respawn. Every failure
-// direction flies the FULL circuit, in check order: an unwired reader; a
-// finite tour (a sweep/first-scan pass must see every market); a read error —
-// the error wins even over a non-empty list returned beside it, because a
-// blind signal may widen scanning, never narrow it; an empty set (stage 1 /
-// cold start); and an intersection under two legs — a lone repeated waypoint
-// is a no-op navigate that never rescans, so restricting that far would blind
-// the post's only hot market.
-func (h *ScoutTourHandler) hotCircuit(ctx context.Context, cmd *ScoutTourCommand, tourOrder []string) []string {
-	if h.dormancy == nil || len(tourOrder) < 2 {
-		return tourOrder
-	}
-	if cmd.Iterations != -1 {
-		return tourOrder
-	}
-	system := shared.ExtractSystemSymbol(tourOrder[0])
-	hot, err := h.dormancy.HotWaypoints(ctx, cmd.PlayerID.Value(), system)
-	if err != nil {
-		common.LoggerFromContext(ctx).Log("WARN", "Hot-set read failed — flying the full circuit", map[string]interface{}{
-			"ship_symbol": cmd.ShipSymbol,
-			"action":      "hot_circuit_read_failed",
-			"system":      system,
-			"error":       err.Error(),
-		})
-		return tourOrder
-	}
-	if len(hot) == 0 {
-		return tourOrder
-	}
-	hotSet := make(map[string]bool, len(hot))
-	for _, waypoint := range hot {
-		hotSet[waypoint] = true
-	}
-	restricted := make([]string, 0, len(tourOrder))
-	for _, waypoint := range tourOrder {
-		if hotSet[waypoint] {
-			restricted = append(restricted, waypoint)
-		}
-	}
-	if len(restricted) < 2 {
-		return tourOrder
-	}
-	return restricted
-}
-
 // loadShipAndPrepareTour loads ship data, rotates tour to start at current location, and initializes response
 func (h *ScoutTourHandler) loadShipAndPrepareTour(
 	ctx context.Context,
@@ -422,12 +310,6 @@ func (h *ScoutTourHandler) executeStationaryScout(
 	marketWaypoint string,
 	response *ScoutTourResponse,
 ) error {
-	// Dormancy gates the FIRST visit too: a post parked before the probe ever
-	// flew must not spend the navigate + initial scan.
-	if !h.holdWhileDormant(ctx, cmd, response) {
-		return nil
-	}
-
 	if err := h.navigateToMarketIfNeeded(ctx, ship, marketWaypoint, cmd.PlayerID, cmd.ShipSymbol); err != nil {
 		return err
 	}
@@ -551,12 +433,6 @@ func (h *ScoutTourHandler) continuousMarketScanning(
 	interval := effectiveScanInterval(cmd.ScanInterval)
 
 	for iteration := 1; iteration < cmd.Iterations || cmd.Iterations == -1; iteration++ {
-		// A stationary post's scan cycle is its circuit: a dormant post skips
-		// the scan and sleeps in place instead (zero API), waking in turn.
-		if !h.holdWhileDormant(ctx, cmd, response) {
-			return nil
-		}
-
 		logger.Log("INFO", "Waiting before next market scan", map[string]interface{}{
 			"ship_symbol": cmd.ShipSymbol,
 			"action":      "wait_scan",
@@ -638,14 +514,7 @@ func (h *ScoutTourHandler) executeMultiMarketTour(
 	interval := effectiveScanInterval(cmd.ScanInterval)
 
 	for iteration := 0; iteration < cmd.Iterations || cmd.Iterations == -1; iteration++ {
-		// Circuit start is the dormancy gate: a parked circuit never flies its
-		// first leg, and the hold consumes no iteration — when the post wakes,
-		// this circuit flies in full.
-		if !h.holdWhileDormant(ctx, cmd, response) {
-			return nil
-		}
-
-		legs := h.hotCircuit(ctx, cmd, tourOrder)
+		legs := tourOrder
 		circuitStart := h.clock.Now()
 
 		for _, marketWaypoint := range legs {

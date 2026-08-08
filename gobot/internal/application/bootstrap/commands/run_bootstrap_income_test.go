@@ -292,7 +292,6 @@ func newIncomeHandler(obs Observation, ret *fakeRetirer, acq *fakeHaulerAcquirer
 	h.SetShipRefresher(&fakeRefresher{})
 	h.SetWorldObserver(&fakeObserver{obs: obs})
 	h.SetProbeAcquirer(&fakeAcquirer{price: 40000, yard: "Y", readable: true}) // present but unused by the contract workstream
-	h.SetScoutPostDeclarer(&fakeDeclarer{})
 	h.SetFrigateRetirer(ret)
 	h.SetHaulerAcquirer(acq)
 	h.SetContractRunner(run)
@@ -733,7 +732,6 @@ func TestBootstrap_Income_FrigateLoopStartedExactlyOnce(t *testing.T) {
 	h.SetShipRefresher(&fakeRefresher{})
 	h.SetWorldObserver(&fakeIncomeObserver{world: world})
 	h.SetProbeAcquirer(&fakeAcquirer{price: 40000, yard: "Y", readable: true})
-	h.SetScoutPostDeclarer(&fakeDeclarer{})
 	h.SetFrigateRetirer(&fakeRetirer{})
 	h.SetHaulerAcquirer(&fakeHaulerAcquirer{price: 300000, yard: "Y", readable: true})
 	h.SetContractRunner(&fakeContractRunner{})
@@ -772,7 +770,6 @@ func TestBootstrap_IncomeAcceptance_RetiresLaunchesRampsHaulers(t *testing.T) {
 	h.SetShipRefresher(&fakeRefresher{})
 	h.SetWorldObserver(&fakeIncomeObserver{world: world})
 	h.SetProbeAcquirer(&fakeAcquirer{price: 40000, yard: "Y", readable: true})
-	h.SetScoutPostDeclarer(&fakeDeclarer{})
 	h.SetFrigateRetirer(ret)
 	h.SetHaulerAcquirer(acq)
 	h.SetContractRunner(run)

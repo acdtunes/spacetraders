@@ -38,6 +38,14 @@ var retiredCommandTypes = map[string]bool{
 	// fleet the sensing drain already supplies. It spent 245,316 credits on 9 hulls in five minutes
 	// on the live fleet before it was stopped by hand. Deleted outright, not disabled.
 	"probe_buyer_coordinator": true,
+	// The legacy market-freshness retirement (Admiral 2026-08-08): the standing scout-post
+	// coordinator, the shipyard-backfill sweep that fed it posts, and the reposition relay
+	// it dispatched. A circulating second freshness engine beside parked sensing, which it
+	// duplicated market-for-market and could not fund. Market tours survive only as an
+	// operator-started, bootstrap-phase-gated verb.
+	"scout_post_coordinator":        true,
+	"shipyard_backfill_coordinator": true,
+	"scout_reposition":              true,
 	// The fleet-autosizer retirement: growth owns trade capacity and the scaler owns contract capacity,
 	// so the second buyer sizing into the same pools against one treasury is gone. A persisted row is
 	// marked terminated on the first post-retirement boot rather than alarming as an unexplained loss,

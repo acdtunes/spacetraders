@@ -18,7 +18,7 @@ type Phase string
 
 const (
 	// PhaseColdStart is the cold start, and it drives TWO PARALLEL workstreams every tick: scanning
-	// (buy probes to target, declare the home scout post so market data flows) and contract income
+	// (buy probes to target so market data can flow) and contract income
 	// (retire the frigate, run batch-contract, stage the hub haulers). Each self-guards to a no-op
 	// once its own work is done, so one finishing never holds the other back.
 	PhaseColdStart Phase = "COLDSTART"
@@ -45,7 +45,7 @@ type Observation struct {
 	// system probes scout and where probes are bought. "" when it could not be resolved.
 	HomeSystem string
 	// ProbeCount is how many probe/satellite hulls exist NOW, counting every nav status: a
-	// freshly-bought probe still navigating to its scout post counts, so re-observation after a
+	// freshly-bought probe still navigating counts, so re-observation after a
 	// buy never re-triggers the buy (the idempotency that makes a mid-purchase restart a non-event).
 	ProbeCount int
 	// ProbesScouting is how many probes are already assigned to a scout-tour — the idempotency

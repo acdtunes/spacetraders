@@ -17,7 +17,6 @@ func graduationIncomeHandler(obs Observation, ret *fakeRetirer, acq *fakeHaulerA
 	h.SetShipRefresher(&fakeRefresher{})
 	h.SetWorldObserver(&fakeObserver{obs: obs})
 	h.SetProbeAcquirer(&fakeAcquirer{price: 40000, yard: "Y", readable: true})
-	h.SetScoutPostDeclarer(&fakeDeclarer{})
 	h.SetFrigateRetirer(ret)
 	h.SetHaulerAcquirer(acq)
 	h.SetContractRunner(run)

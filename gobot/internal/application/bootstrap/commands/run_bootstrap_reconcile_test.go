@@ -76,23 +76,6 @@ func (f *fakeAcquirer) Buy(ctx context.Context, playerID int, shipType, yard str
 	return BuyResult{ShipSymbol: "PROBE-NEW", Price: f.price}, nil
 }
 
-// fakeDeclarer is the ScoutPostDeclarer test double (sp-pt7d). Declaring a coverage post does NOT
-// scout probes (that is the scout-post coordinator's job, not modeled here), so it only records the
-// declaration calls — it never touches the scripted world's probesScouting.
-type fakeDeclarer struct {
-	calls    int
-	systems  []string
-	minHulls []int // the manning-floor (probe_target) passed on each call
-	err      error
-}
-
-func (f *fakeDeclarer) DeclareHomeScoutPost(ctx context.Context, playerID int, system string, minHulls int) error {
-	f.calls++
-	f.systems = append(f.systems, system)
-	f.minHulls = append(f.minHulls, minHulls)
-	return f.err
-}
-
 // fakeScanner is the shipyard-readability port. dispatched/err are what it returns; it records the
 // purchaser each call named ("" = the scanner picks a free hull itself). readyAcq/readyHaul (optional)
 // are flipped readable when it "dispatches", modeling the hull arriving at the yard so the NEXT tick's
@@ -285,7 +268,6 @@ func TestBootstrap_LiveByDefault_BuysProbeOnColdAgent(t *testing.T) {
 	h.SetShipRefresher(&fakeRefresher{})
 	h.SetWorldObserver(&fakeObserver{obs: obs})
 	h.SetProbeAcquirer(acq)
-	h.SetScoutPostDeclarer(&fakeDeclarer{})
 
 	log := &capturingLogger{}
 	res, err := h.reconcileOnce(ctxWithLogger(log), baseCmd())
@@ -304,13 +286,11 @@ func TestBootstrap_LiveByDefault_BuysProbeOnColdAgent(t *testing.T) {
 
 func TestBootstrap_Disabled_TakesNoAction(t *testing.T) {
 	acq := &fakeAcquirer{price: 40000, yard: "Y", readable: true}
-	declarer := &fakeDeclarer{}
 	ref := &fakeRefresher{}
 	h := NewRunBootstrapCoordinatorHandler(nil)
 	h.SetShipRefresher(ref)
 	h.SetWorldObserver(&fakeObserver{obs: Observation{ProbeCount: 0, HasIdlePurchaser: true, Treasury: 999999, Readable: true}})
 	h.SetProbeAcquirer(acq)
-	h.SetScoutPostDeclarer(declarer)
 
 	cmd := baseCmd()
 	cmd.Disabled = true
@@ -318,8 +298,8 @@ func TestBootstrap_Disabled_TakesNoAction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reconcileOnce: %v", err)
 	}
-	if acq.buys != 0 || declarer.calls != 0 || ref.calls != 0 {
-		t.Fatalf("disabled coordinator must not act: buys=%d declares=%d refresh=%d", acq.buys, declarer.calls, ref.calls)
+	if acq.buys != 0 || ref.calls != 0 {
+		t.Fatalf("disabled coordinator must not act: buys=%d refresh=%d", acq.buys, ref.calls)
 	}
 	if res.Purchased != 0 {
 		t.Fatalf("disabled: expected 0 purchases, got %d", res.Purchased)
@@ -340,16 +320,13 @@ func TestBootstrap_DerivePhase_ColdStartWithoutEconomicSignal(t *testing.T) {
 
 // Probes at target + scouting: the scanning workstream self-guards to a no-op (no probe buy) while the
 // arc stays in COLDSTART and the contract workstream keeps running. The home coverage post is still
-// ensured every tick — the declarer is idempotent, so re-ensuring it writes nothing.
 func TestBootstrap_ProvisionedProbes_StayColdStart_NoProbeBuy(t *testing.T) {
 	obs := Observation{HomeSystem: "X1-HQ", ProbeCount: 3, ProbesScouting: 3, HasIdlePurchaser: true, Treasury: 500000, MarketsTotal: 10, MarketsCovered: 2, Readable: true}
 	acq := &fakeAcquirer{price: 40000, yard: "Y", readable: true}
-	declarer := &fakeDeclarer{}
 	h := NewRunBootstrapCoordinatorHandler(nil)
 	h.SetShipRefresher(&fakeRefresher{})
 	h.SetWorldObserver(&fakeObserver{obs: obs})
 	h.SetProbeAcquirer(acq)
-	h.SetScoutPostDeclarer(declarer)
 
 	log := &capturingLogger{}
 	res, err := h.reconcileOnce(ctxWithLogger(log), baseCmd())
@@ -361,9 +338,6 @@ func TestBootstrap_ProvisionedProbes_StayColdStart_NoProbeBuy(t *testing.T) {
 	}
 	if acq.buys != 0 {
 		t.Fatalf("probes at target: the probe buy must be a no-op; buys=%d", acq.buys)
-	}
-	if declarer.calls != 1 {
-		t.Fatalf("the home coverage post is still ensured each tick (idempotent), got %d declares", declarer.calls)
 	}
 	if log.has("bootstrap_phase_not_implemented") {
 		t.Fatalf("every derived phase is live: must not log a 'phase not yet implemented' hold")
@@ -379,7 +353,6 @@ func TestBootstrap_RefreshesBeforeObserving(t *testing.T) {
 	h.SetShipRefresher(ref)
 	h.SetWorldObserver(obsvr)
 	h.SetProbeAcquirer(&fakeAcquirer{price: 40000, yard: "Y", readable: true})
-	h.SetScoutPostDeclarer(&fakeDeclarer{})
 
 	if _, err := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd()); err != nil {
 		t.Fatalf("reconcileOnce: %v", err)
@@ -400,7 +373,6 @@ func TestBootstrap_RefreshFailure_FailsClosed(t *testing.T) {
 	h.SetShipRefresher(ref)
 	h.SetWorldObserver(obsvr)
 	h.SetProbeAcquirer(acq)
-	h.SetScoutPostDeclarer(&fakeDeclarer{})
 
 	res, err := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
 	if err != nil {
@@ -425,7 +397,6 @@ func TestBootstrap_CapitalGate_BlocksUnaffordableProbe(t *testing.T) {
 	h.SetShipRefresher(&fakeRefresher{})
 	h.SetWorldObserver(&fakeObserver{obs: obs})
 	h.SetProbeAcquirer(acq)
-	h.SetScoutPostDeclarer(&fakeDeclarer{})
 
 	log := &capturingLogger{}
 	res, err := h.reconcileOnce(ctxWithLogger(log), baseCmd())
@@ -456,7 +427,7 @@ func TestBootstrap_CapitalGate_AllowsAffordableProbe(t *testing.T) {
 	// ≥ the 50k floor.
 	obs := Observation{HomeSystem: "X1-HQ", ProbeCount: 1, ProbesScouting: 1, HasIdlePurchaser: true, Treasury: 150000, Readable: true}
 	acq := &fakeAcquirer{price: 40000, yard: "Y", readable: true}
-	h := newWiredHandler(obs, acq, &fakeDeclarer{})
+	h := newWiredHandler(obs, acq)
 	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
 	if acq.buys != 2 || res.Purchased != 2 {
 		t.Fatalf("affordable probes should buy to target (2 remaining): buys=%d purchased=%d", acq.buys, res.Purchased)
@@ -468,7 +439,7 @@ func TestBootstrap_CapitalGate_AllowsAffordableProbe(t *testing.T) {
 func TestBootstrap_NoPurchaser_Blocks(t *testing.T) {
 	obs := Observation{HomeSystem: "X1-HQ", ProbeCount: 1, ProbesScouting: 1, HasIdlePurchaser: false, Treasury: 150000, Readable: true}
 	acq := &fakeAcquirer{price: 40000, yard: "Y", readable: true}
-	h := newWiredHandler(obs, acq, &fakeDeclarer{})
+	h := newWiredHandler(obs, acq)
 	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
 	if acq.buys != 0 || acq.priceChks != 0 {
 		t.Fatalf("no purchaser: must not price-check or buy; priceChks=%d buys=%d", acq.priceChks, acq.buys)
@@ -483,7 +454,7 @@ func TestBootstrap_NoPurchaser_Blocks(t *testing.T) {
 func TestBootstrap_PriceUnreadable_FailsClosed(t *testing.T) {
 	obs := Observation{HomeSystem: "X1-HQ", ProbeCount: 1, HasIdlePurchaser: true, Treasury: 150000, Readable: true}
 	acq := &fakeAcquirer{price: 0, yard: "", readable: false}
-	h := newWiredHandler(obs, acq, &fakeDeclarer{})
+	h := newWiredHandler(obs, acq)
 	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
 	if acq.buys != 0 {
 		t.Fatalf("unreadable price must fail closed (no buy), got %d buys", acq.buys)
@@ -499,7 +470,7 @@ func TestBootstrap_BuysToTargetInOneTick(t *testing.T) {
 	// 0/3 probes, ample treasury → buy all 3 THIS tick (the old behavior was exactly 1).
 	obs := Observation{HomeSystem: "X1-HQ", ProbeCount: 0, HasIdlePurchaser: true, Treasury: 500000, Readable: true}
 	acq := &fakeAcquirer{price: 40000, yard: "Y", readable: true}
-	h := newWiredHandler(obs, acq, &fakeDeclarer{})
+	h := newWiredHandler(obs, acq)
 	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
 	if res.Purchased != 3 || acq.buys != 3 {
 		t.Fatalf("short by 3 must buy to target (3) in one tick: purchased=%d buys=%d", res.Purchased, acq.buys)
@@ -514,7 +485,7 @@ func TestBootstrap_BuyLoop_CapitalGateStopsPartway(t *testing.T) {
 	// tick, blocker capital_gate.
 	obs := Observation{HomeSystem: "X1-HQ", ProbeCount: 0, HasIdlePurchaser: true, Treasury: 100000, Readable: true}
 	acq := &fakeAcquirer{price: 40000, yard: "Y", readable: true}
-	h := newWiredHandler(obs, acq, &fakeDeclarer{})
+	h := newWiredHandler(obs, acq)
 	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
 	if res.Purchased != 1 || acq.buys != 1 {
 		t.Fatalf("decrementing capital gate should allow exactly 1 buy from 100k: purchased=%d buys=%d", res.Purchased, acq.buys)
@@ -528,44 +499,13 @@ func TestBootstrap_BuyLoop_CapitalGateStopsPartway(t *testing.T) {
 // boot-standing scout-post coordinator can man an idle probe. Bootstrap assigns/dedicates
 // NO probe itself — the old probe-holding scout-all-markets sweep is gone. ---
 
-// The home post is declared whenever the home system is resolved — independent of how many probes
-// are already scouting (that is the coordinator's business). The declarer is idempotent in the
-// adapter, so declaring every tick is a no-op there.
-func TestBootstrap_DeclaresHomeScoutPost_WhenHomeResolved(t *testing.T) {
-	obs := Observation{HomeSystem: "X1-HQ", ProbeCount: 3, ProbesScouting: 0, HasIdlePurchaser: true, Treasury: 500000, Readable: true}
-	declarer := &fakeDeclarer{}
-	h := newWiredHandler(obs, &fakeAcquirer{price: 40000, yard: "Y", readable: true}, declarer)
-	h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
-	if declarer.calls != 1 || len(declarer.systems) != 1 || declarer.systems[0] != "X1-HQ" {
-		t.Fatalf("bootstrap must declare the home scout post in X1-HQ, got calls=%d systems=%v", declarer.calls, declarer.systems)
-	}
-	// The declaration carries the permanent home manning FLOOR = probeTarget (default 3),
-	// parametrized from config (RULINGS #5), NOT hardcoded — so the freshsizer never strands a
-	// bought home probe below it.
-	if len(declarer.minHulls) != 1 || declarer.minHulls[0] != 3 {
-		t.Fatalf("home post must be declared with a probe_target floor of 3, got minHulls=%v", declarer.minHulls)
-	}
-}
-
-// The declaration is guarded on a resolved home system: with none, bootstrap declares nothing (it
-// would otherwise upsert a post for an empty/garbage system symbol).
-func TestBootstrap_SkipsHomeScoutPost_WhenHomeUnresolved(t *testing.T) {
-	obs := Observation{HomeSystem: "", ProbeCount: 3, ProbesScouting: 0, HasIdlePurchaser: true, Treasury: 500000, Readable: true}
-	declarer := &fakeDeclarer{}
-	h := newWiredHandler(obs, &fakeAcquirer{price: 40000, yard: "Y", readable: true}, declarer)
-	h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
-	if declarer.calls != 0 {
-		t.Fatalf("no home system: bootstrap must not declare a post, got %d calls", declarer.calls)
-	}
-}
-
 // --- dry-run: observes + logs would-buy but takes NO action ---
 
 // --- heartbeat emitted every tick (captain L61: never a silent stall) ---
 
 func TestBootstrap_HeartbeatEmittedEveryTick(t *testing.T) {
 	obs := Observation{HomeSystem: "X1-HQ", ProbeCount: 2, ProbesScouting: 2, HasIdlePurchaser: true, Treasury: 500000, MarketsTotal: 10, MarketsCovered: 4, Readable: true}
-	h := newWiredHandler(obs, &fakeAcquirer{price: 40000, yard: "Y", readable: true}, &fakeDeclarer{})
+	h := newWiredHandler(obs, &fakeAcquirer{price: 40000, yard: "Y", readable: true})
 	log := &capturingLogger{}
 	h.reconcileOnce(ctxWithLogger(log), baseCmd())
 	hb, ok := log.find("bootstrap_heartbeat")
@@ -584,7 +524,7 @@ func TestBootstrap_HeartbeatEmittedEveryTick(t *testing.T) {
 func TestBootstrap_RecordsMetrics(t *testing.T) {
 	obs := Observation{HomeSystem: "X1-HQ", ProbeCount: 0, HasIdlePurchaser: true, Treasury: 500000, Readable: true}
 	m := &fakeMetrics{}
-	h := newWiredHandler(obs, &fakeAcquirer{price: 40000, yard: "Y", readable: true}, &fakeDeclarer{})
+	h := newWiredHandler(obs, &fakeAcquirer{price: 40000, yard: "Y", readable: true})
 	h.SetMetricsSink(m)
 	h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
 	if len(m.phases) != 1 || m.phases[0] != "COLDSTART" {
@@ -604,7 +544,6 @@ func TestBootstrap_UnreadableWorld_FailsClosedButHeartbeats(t *testing.T) {
 	h.SetShipRefresher(&fakeRefresher{})
 	h.SetWorldObserver(&fakeObserver{obs: Observation{Readable: false, Reason: "treasury read failed"}})
 	h.SetProbeAcquirer(acq)
-	h.SetScoutPostDeclarer(&fakeDeclarer{})
 	log := &capturingLogger{}
 	res, _ := h.reconcileOnce(ctxWithLogger(log), baseCmd())
 	if acq.buys != 0 {
@@ -625,7 +564,7 @@ func TestBootstrap_Recovery_NoBuyWhenTargetMet(t *testing.T) {
 	// had completed the buy): the fresh handler must NOT buy again.
 	obs := Observation{HomeSystem: "X1-HQ", ProbeCount: 3, ProbesScouting: 3, HasIdlePurchaser: true, Treasury: 500000, MarketsTotal: 10, MarketsCovered: 5, Readable: true}
 	acq := &fakeAcquirer{price: 40000, yard: "Y", readable: true}
-	h := newWiredHandler(obs, acq, &fakeDeclarer{})
+	h := newWiredHandler(obs, acq)
 	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
 	if acq.buys != 0 || res.Purchased != 0 {
 		t.Fatalf("target met on restart: must not double-buy; buys=%d", acq.buys)
@@ -639,16 +578,14 @@ func TestBootstrap_Recovery_NoBuyWhenTargetMet(t *testing.T) {
 // TestScoutPost_UnmannedPost_ClaimsIdleSatellite. This is the sp-pt7d seed-propagation contract on the
 // bootstrap side: declares the post + buys probes + leaves them idle + no scan sweep. ---
 
-func TestBootstrap_ScanningAcceptance_ReachesTargetProbes_DeclaresHomePost_LeavesIdle(t *testing.T) {
+func TestBootstrap_ScanningAcceptance_ReachesTargetProbes_LeavesThemIdle(t *testing.T) {
 	world := &scriptedWorld{probeCount: 0, probesScouting: 0, treasury: 500000, homeSystem: "X1-HQ", hasPurchaser: true, marketsTotal: 10, marketsCovered: 0}
 	acq := &fakeAcquirer{price: 40000, yard: "X1-HQ-YARD", readable: true, world: world}
-	declarer := &fakeDeclarer{}
 	obsvr := &fakeObserver{world: world}
 	h := NewRunBootstrapCoordinatorHandler(nil)
 	h.SetShipRefresher(&fakeRefresher{})
 	h.SetWorldObserver(obsvr)
 	h.SetProbeAcquirer(acq)
-	h.SetScoutPostDeclarer(declarer)
 
 	// Tick 0 buys the whole 3-probe remainder to target; every tick also (idempotently) declares
 	// the home coverage post. A few ticks reach steady state.
@@ -672,12 +609,9 @@ func TestBootstrap_ScanningAcceptance_ReachesTargetProbes_DeclaresHomePost_Leave
 	if acq.buys != 3 {
 		t.Fatalf("Scanning acceptance: expected exactly 3 buys total (no overshoot), got %d", acq.buys)
 	}
-	// Bootstrap declares the home coverage post so the coordinator has something to man...
-	if declarer.calls < 1 || declarer.systems[0] != "X1-HQ" {
-		t.Fatalf("Scanning acceptance: bootstrap must declare the home scout post X1-HQ, got calls=%d systems=%v", declarer.calls, declarer.systems)
-	}
-	// ...but assigns NO probe itself — they stay IDLE for the coordinator to claim (ProbesScouting is
-	// never advanced by bootstrap; the old probe-holding sweep that inflated it is gone).
+	// Bootstrap assigns NO probe itself — they stay IDLE. That was true when a coordinator claimed
+	// them and it is still true now that nothing does: the probes bootstrap buys are the supply an
+	// operator's manual tour, and later parked sensing, draw from.
 	if final.ProbesScouting != 0 {
 		t.Fatalf("Scanning acceptance: bootstrap must leave probes IDLE (assign none itself), got %d scouting", final.ProbesScouting)
 	}
@@ -698,7 +632,6 @@ func TestBootstrap_FreshBuyCountSync_NoOverBuyWhenObservationLags(t *testing.T) 
 	h.SetShipRefresher(&fakeRefresher{})
 	h.SetWorldObserver(&fakeObserver{world: world})
 	h.SetProbeAcquirer(acq)
-	h.SetScoutPostDeclarer(&fakeDeclarer{})
 	cmd := baseCmd()
 
 	// Tick 0: observes 0/3, buys the whole 3-probe remainder. The buys are NOT yet visible (sync lag).
@@ -748,7 +681,6 @@ func TestBootstrap_FreshBuyCountSync_BridgeDecays_ReplacesLostProbe(t *testing.T
 	h.SetShipRefresher(&fakeRefresher{})
 	h.SetWorldObserver(&fakeObserver{world: world})
 	h.SetProbeAcquirer(acq)
-	h.SetScoutPostDeclarer(&fakeDeclarer{})
 	cmd := baseCmd()
 
 	h.reconcileOnce(ctxWithLogger(&capturingLogger{}), cmd) // tick 0: buy 3 (not yet visible)
@@ -777,12 +709,11 @@ func TestBootstrap_FreshBuyCountSync_BridgeDecays_ReplacesLostProbe(t *testing.T
 
 // newWiredHandler builds a handler with a fixed observation and the standard refresher, for the
 // single-tick guard pins.
-func newWiredHandler(obs Observation, acq ProbeAcquirer, declarer ScoutPostDeclarer) *RunBootstrapCoordinatorHandler {
+func newWiredHandler(obs Observation, acq ProbeAcquirer) *RunBootstrapCoordinatorHandler {
 	h := NewRunBootstrapCoordinatorHandler(nil)
 	h.SetShipRefresher(&fakeRefresher{})
 	h.SetWorldObserver(&fakeObserver{obs: obs})
 	h.SetProbeAcquirer(acq)
-	h.SetScoutPostDeclarer(declarer)
 	return h
 }
 
@@ -795,7 +726,7 @@ func TestBootstrap_PriceUnreadable_PositionsHullAtShipyard(t *testing.T) {
 	obs := Observation{HomeSystem: "X1-HQ", ProbeCount: 1, ProbesScouting: 1, HasIdlePurchaser: true, Treasury: 150000, Readable: true}
 	acq := &fakeAcquirer{price: 0, yard: "", readable: false} // cold shipyard: no priced listing yet
 	scanner := &fakeScanner{dispatched: true}
-	h := newWiredHandler(obs, acq, &fakeDeclarer{})
+	h := newWiredHandler(obs, acq)
 	h.SetShipyardScanner(scanner)
 
 	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
@@ -819,7 +750,7 @@ func TestBootstrap_PriceUnreadable_ScannerAlreadyPositioned_Waits(t *testing.T) 
 	obs := Observation{HomeSystem: "X1-HQ", ProbeCount: 1, ProbesScouting: 1, HasIdlePurchaser: true, Treasury: 150000, Readable: true}
 	acq := &fakeAcquirer{readable: false}
 	scanner := &fakeScanner{dispatched: false}
-	h := newWiredHandler(obs, acq, &fakeDeclarer{})
+	h := newWiredHandler(obs, acq)
 	h.SetShipyardScanner(scanner)
 
 	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
@@ -837,7 +768,7 @@ func TestBootstrap_ColdShipyard_PositionsThenBuysToTarget(t *testing.T) {
 	obs := Observation{HomeSystem: "X1-HQ", ProbeCount: 0, HasIdlePurchaser: true, Treasury: 500000, Readable: true}
 	acq := &fakeAcquirer{price: 40000, yard: "X1-HQ-YARD", readable: false} // starts cold
 	scanner := &fakeScanner{dispatched: true, readyAcq: acq}                // dispatch → price reads next tick
-	h := newWiredHandler(obs, acq, &fakeDeclarer{})
+	h := newWiredHandler(obs, acq)
 	h.SetShipyardScanner(scanner)
 
 	res0, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
@@ -867,7 +798,6 @@ func TestBootstrap_ParallelWorkstreams_ContractsStartAtHour0WhileScanning(t *tes
 	h.SetShipRefresher(&fakeRefresher{})
 	h.SetWorldObserver(&fakeObserver{obs: obs})
 	h.SetProbeAcquirer(acq)
-	h.SetScoutPostDeclarer(&fakeDeclarer{})
 	h.SetFrigateRetirer(&fakeRetirer{})
 	h.SetHaulerAcquirer(&fakeHaulerAcquirer{price: 300000, yard: "Y", readable: true})
 	h.SetContractRunner(run)

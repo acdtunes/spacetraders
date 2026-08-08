@@ -11,8 +11,13 @@ import (
 	"github.com/andrescamacho/spacetraders-go/pkg/utils"
 )
 
-// ScoutTour handles market scouting tour requests (single ship)
+// ScoutTour starts an operator-invoked market scouting tour on ONE named hull — the only
+// market-tour path that survives the retirement of the touring model, and only inside the
+// bootstrap phase (see refuseTourOutsideBootstrap).
 func (s *DaemonServer) ScoutTour(ctx context.Context, containerID string, shipSymbol string, markets []string, iterations, playerID int) (string, error) {
+	if err := s.refuseTourOutsideBootstrap(ctx, playerID); err != nil {
+		return "", err
+	}
 	config := map[string]interface{}{
 		"ship_symbol": shipSymbol,
 		"markets":     markets,
@@ -124,91 +129,9 @@ func (s *DaemonServer) StartScoutTour(ctx context.Context, containerID string) e
 	return nil
 }
 
-// PersistScoutRepositionWorker persists (but does NOT start) a scout_reposition
-// container the scout_post_coordinator manages. Like a scout_tour worker it
-// carries a coordinator_id and a parent link, so daemon restart recovery SKIPS it
-// (marks it worker_interrupted, preserving the ship claim) and leaves re-dispatch to
-// the coordinator's reconcile pass. It wraps exactly ONE iteration — the whole relay —
-// and the coordinator owns re-dispatch (CoordinatorOwnsIterations in the registry).
-func (s *DaemonServer) PersistScoutRepositionWorker(
-	ctx context.Context,
-	containerID string,
-	shipSymbol string,
-	destinationWaypoint string,
-	playerID int,
-	coordinatorID string,
-	maxRepositionJumps int,
-	chartGateOnArrival bool,
-) error {
-	config := map[string]interface{}{
-		"ship_symbol":    shipSymbol,
-		"destination":    destinationWaypoint,
-		"coordinator_id": coordinatorID,
-		// Persist the expendable-probe reposition bound the coordinator resolved so
-		// the container's rebuild (buildScoutRepositionCommand) reloads it and the worker flies
-		// the stored-adjacency RepositionPath at that reach. Written unconditionally (not guarded
-		// on != 0 like the daemon-wide injectScoutingConfig knobs): this is a concrete per-relay
-		// decision the coordinator already made, and dropping a 0 would silently re-introduce the
-		// strict-cap regression. A 0 here is an explicit "use the strict resolver" fallback.
-		"max_reposition_jumps": maxRepositionJumps,
-		// sp-4yse: persist the 0-hop gate-charting intent so the worker's start-path rebuild
-		// (StartScoutReposition -> buildScoutRepositionCommand) charts the target gate on arrival.
-		// Dropping it here would silently degrade the relay to a plain market navigate that never
-		// charts — exactly the boundary the bound was lost across.
-		"chart_gate_on_arrival": chartGateOnArrival,
-	}
-
-	containerEntity := container.NewContainer(
-		containerID,
-		container.ContainerTypeScoutReposition,
-		playerID,
-		1, // one iteration = the whole relay; the coordinator owns re-dispatch
-		&coordinatorID,
-		config,
-		nil, // Use default RealClock for production
-	)
-
-	if err := s.containerRepo.Add(ctx, containerEntity, "scout_reposition"); err != nil {
-		return fmt.Errorf("failed to persist scout reposition worker: %w", err)
-	}
-	return nil
-}
-
-// StartScoutReposition starts a previously persisted scout_reposition container (the
-// coordinator-managed relay path). Mirrors StartScoutTour: load the persisted model,
-// rebuild the command from its config, and run it.
-func (s *DaemonServer) StartScoutReposition(ctx context.Context, containerID string) error {
-	containerModel, err := s.findContainerModelByID(ctx, containerID)
-	if err != nil {
-		return err
-	}
-
-	var config map[string]interface{}
-	if err := json.Unmarshal([]byte(containerModel.Config), &config); err != nil {
-		return fmt.Errorf("failed to parse config: %w", err)
-	}
-
-	cmd, err := s.buildCommandForType("scout_reposition", config, containerModel.PlayerID, containerModel.ID)
-	if err != nil {
-		return fmt.Errorf("failed to create command: %w", err)
-	}
-
-	containerEntity := container.NewContainer(
-		containerModel.ID,
-		container.ContainerType(containerModel.ContainerType),
-		containerModel.PlayerID,
-		1, // one iteration = the whole relay
-		containerModel.ParentContainerID,
-		config,
-		nil,
-	)
-
-	s.startContainerRunner(containerEntity, cmd, containerID, "Container")
-
-	return nil
-}
-
-// ScoutMarkets handles fleet deployment for market scouting (multi-ship with VRP)
+// ScoutMarkets is the multi-hull operator tour: a VRP partition of a system's markets
+// across named hulls. Same era rule as the single-hull verb — it spawns tours, so it stops
+// where tours stop.
 func (s *DaemonServer) ScoutMarkets(
 	ctx context.Context,
 	shipSymbols []string,
@@ -217,6 +140,9 @@ func (s *DaemonServer) ScoutMarkets(
 	iterations int,
 	playerID int,
 ) ([]string, map[string][]string, []string, error) {
+	if err := s.refuseTourOutsideBootstrap(ctx, playerID); err != nil {
+		return nil, nil, nil, err
+	}
 	cmd := &scoutingCmd.ScoutMarketsCommand{
 		PlayerID:     shared.MustNewPlayerID(int(playerID)),
 		ShipSymbols:  shipSymbols,

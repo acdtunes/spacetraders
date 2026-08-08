@@ -712,11 +712,9 @@ func run(cfg *config.Config) error {
 	// The same recent-scan window the trade coordinators stamp, so the fleet keeps
 	// one definition of "already scanned recently enough" rather than two that drift.
 	scoutTourHandler.SetScanDedupWindow(cfg.TradeImpact.ResolvedScanMaxAge())
-	// The scout-post dormancy bit the tour parks on: without this reader every tour
-	// scans unconditionally and the probe-sensing coordinator's pressure rotation is
-	// inert fleet-wide. The repo is shared with the scout-post/probe-sensing wiring below.
+	// The posts table survives only so leftover rows can be listed and cleared; the sensing
+	// cutover is its last reader.
 	scoutPostRepo := persistence.NewGormScoutPostRepository(db)
-	scoutTourHandler.SetDormancyReader(scoutPostRepo)
 	if err := mediator.RegisterHandler[*scoutingCmd.ScoutTourCommand](med, scoutTourHandler); err != nil {
 		return fmt.Errorf("failed to register ScoutTour handler: %w", err)
 	}
@@ -918,24 +916,6 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("failed to register AssignScoutingFleet handler: %w", err)
 	}
 
-	// Register the standing scout-post coordinator (sp-cxpq): reconciles the
-	// desired-state posts table every tick — respawns dead tours, claims idle
-	// satellites for unmanned posts, retires completed sweep-once posts. The posts
-	// table (scoutPostRepo, constructed with the scout-tour wiring above) and waypoint
-	// repo are read directly; the container repo supplies tour liveness
-	// (ListByStatusSimple), daemonClientLocal spawns/stops tour workers.
-	scoutPostCoordinatorHandler := scoutingCmd.NewRunScoutPostCoordinatorHandler(
-		scoutPostRepo,
-		shipRepo,
-		daemonClientLocal,
-		containerRepo,
-		waypointRepo,
-		nil, // nil = use RealClock
-	)
-	if err := mediator.RegisterHandler[*scoutingCmd.RunScoutPostCoordinatorCommand](med, scoutPostCoordinatorHandler); err != nil {
-		return fmt.Errorf("failed to register ScoutPostCoordinator handler: %w", err)
-	}
-
 	// Register the standing trade-fleet coordinator: it watches every 'trade'-dedicated hull
 	// and relaunches a continuous tour on any hull parked by an honest tour exit, after a
 	// per-hull cooldown. It claims nothing itself; each tour it spawns claims its own hull
@@ -1128,9 +1108,6 @@ func run(cfg *config.Config) error {
 	// sell leg through it BEFORE spending. Shared by the trade-route circuit, the
 	// one-shot arb, and the reachable-yard ranking so they all see one
 	// cache/graph. Constructed here, ahead of the growth wiring that consumes it.
-	// Captured so the gate-reconcile widening can read backoff markers straight from
-	// the SAME store the gate graph routes over (one cache/graph, era-scoped) — see
-	// scoutPostCoordinatorHandler.SetUnreadableGateProvider below.
 	// The healthy-edge freshness window is the configured topology-cache TTL
 	// ([routing] gate_cache_ttl, 24h default) — the per-tick lane/reposition neighbor scan
 	// hits this cache instead of re-reading gate topology live.
@@ -1300,65 +1277,7 @@ func run(cfg *config.Config) error {
 	// handler keeps its exact fail-closed behaviour.
 	navigateRouteHandler.WithCrossSystemRouter(tradeRouteCoordinatorHandler)
 
-	// Wire the scout-post coordinator for cross-gate satellite repositioning.
-	// It shares the SAME persisted gate graph as the trade circuit (one cache/graph) to
-	// BFS-rank the fleet-wide nearest idle satellite for an unmanned frontier post, and
-	// dispatches the relay as a scout_reposition worker whose handler REUSES the trade
-	// coordinator's multi-jump travel() (RepositionToWaypoint) — no new jump logic.
-	// Manning stays in-system only (the sp-qxa4 invariant); repositioning just moves the
-	// hull there first. nil gate graph would leave the pre-s232 park behavior intact.
-	scoutPostCoordinatorHandler.SetGateGraph(gateGraphService)
-	// Wire the presence-free waypoint discoverer so a reposition target with no
-	// KNOWN market waypoint (a virgin frontier system) is charted via the API and serviced
-	// the same tick, instead of parking forever on the s232 bootstrap chicken-and-egg. Same
-	// graphService the `waypoint` verb and scout-markets planner use — one cache/graph,
-	// era-scoped persistence. nil would leave the pre-nn0y park behavior intact.
-	scoutPostCoordinatorHandler.SetGraphProvider(graphService)
-	// Wire the VRP fleet partitioner so a multi-probe post splits its markets into
-	// N disjoint per-probe tours. Reuses the SAME routing client the scout-markets verb uses —
-	// the routing service already solves the partition problem. nil would leave multi-probe
-	// posts parked (fail-closed); single-hull posts never partition and are unaffected.
-	scoutPostCoordinatorHandler.SetRoutingClient(routingClient)
-	// sp-k7q5 layer 1: wire the captain event outbox so the coordinator warns (deferred)
-	// on a standing post whose circuit math cannot meet its freshness contract — the
-	// SAME store the watchkeeper reads, so the warning rides the next wake. nil would
-	// leave the warning off.
-	scoutPostCoordinatorHandler.SetEventStore(captainEventRepo)
-	// sp-dp92 P7: wire the scout_freshness_actual_seconds gauge's data source — the SAME
-	// GORM market repository the rest of the coordinator already reads through, so no
-	// extra DB connection or cache. nil (the pre-dp92 default) leaves the gauge unrecorded;
-	// this is pure OBSERVATION and never affects manning (RULINGS #4).
-	scoutPostCoordinatorHandler.SetMarketFreshnessProvider(marketRepo)
-	// Wire the traffic-marker enumeration that widens the gate-reconcile sweep onto
-	// MARKETLESS transit gates (uncharted systems a stale backoff marker proves traffic jumps
-	// THROUGH — the residual GetJumpGate-400 source the market-scoped sweep structurally cannot
-	// reach). The SAME GORM gate-edge store the gate graph routes over, so one cache/graph and
-	// era scoping. nil (the pre-ywh1 default) leaves the sweep market-only; the widening also
-	// self-guards on GateReconcileEnabled and is reversible live via gate_reconcile_marketless_disabled.
-	scoutPostCoordinatorHandler.SetUnreadableGateProvider(gateEdgeRepo)
-	// Manning watchdog: wire the SAME SystemsFreshness census the freshness sizer
-	// reconciles against, so the watchdog re-mans a fully-manned-but-silent standing
-	// post the sizer stopped hoarding probes for — detected via the census's worst-case market
-	// age breaching the post's freshness target without advancing. nil disables the
-	// watchdog; it never affects manning when unwired.
-	scoutPostCoordinatorHandler.SetSystemFreshnessReader(marketRepo)
-	// sp-u8jc cross-system reuse relay: wire the per-system freshsizer-demand source over the SAME
-	// SystemsFreshness census (cycle/sla default to the freshness sizer's own defaults so the two
-	// agree). This makes the relay ARM-able by a knob flip (scout_cross_system_relay_enabled=1);
-	// while that flag is 0 (the default) the reader is read by nothing, so the coordinator is
-	// byte-identical to today. Demand HONORS age-driven raises, so a breaching core system reads a
-	// high demand and is never raided — only comfortably-fresh over-provisioned systems donate.
-	scoutPostCoordinatorHandler.SetProbeDemandReader(scoutingCmd.NewCensusProbeDemandReader(marketRepo, 0, 0))
 	containerConfigReader := grpc.NewContainerConfigReader(containerRepo)
-	// The watchdog's manning_stall_* knobs are live-tunable — snapshot this
-	// container's own persisted config each tick (the SAME reader the freshness sizer uses) so a
-	// `spacetraders tune scoutpost ...` lands on the next tick with no restart. sp-u8jc's two knobs
-	// ride the same snapshot.
-	scoutPostCoordinatorHandler.SetLiveConfigReader(containerConfigReader)
-	scoutRepositionHandler := scoutingCmd.NewScoutRepositionHandler(tradeRouteCoordinatorHandler)
-	if err := mediator.RegisterHandler[*scoutingCmd.ScoutRepositionCommand](med, scoutRepositionHandler); err != nil {
-		return fmt.Errorf("failed to register ScoutReposition handler: %w", err)
-	}
 
 	// Wire the `ship route` verb — a thin operator-facing cross-system
 	// point-to-point move. Its handler REUSES the trade-route coordinator's exported
@@ -1376,7 +1295,7 @@ func run(cfg *config.Config) error {
 	// light-haulers to worker-starved FACTORY systems, which no longer exist. The worker_ferry
 	// primitive it drove is retained (below) for the daemon's persist/start dispatch + container recovery.
 	// The ferry worker reuses the trade-route coordinator's RepositionToWaypoint (the SAME
-	// multi-jump travel() the arb/trade circuits use) — twin of scoutRepositionHandler.
+	// multi-jump travel() the arb/trade circuits use).
 	workerFerryHandler := tradeRouteCmd.NewWorkerFerryHandler(tradeRouteCoordinatorHandler)
 	if err := mediator.RegisterHandler[*tradeRouteCmd.WorkerFerryCommand](med, workerFerryHandler); err != nil {
 		return fmt.Errorf("failed to register WorkerFerry handler: %w", err)
@@ -1410,13 +1329,19 @@ func run(cfg *config.Config) error {
 	// recurring spend is the scans, paced fleet-wide by a single rotation against whatever
 	// rate-limiter headroom the rest of the fleet leaves. It owns no algorithm: each tick it
 	// composes the five engines in internal/application/parkedsensing (screen → buy queue →
-	// placements → expansion → scan rotation) over the durable sensing ledger, and on its
-	// FIRST tick it cuts over from the retired touring model (screening the known map offline,
-	// retiring every scout post but home, adopting the orphaned probes as spares).
+	// placements → expansion → scan rotation) over the durable sensing ledger, and on its FIRST tick
+	// it cuts over from the touring model (screening the known map offline, adopting orphaned probes).
 	//
-	// expansionPhase is the era gate that holds the whole tick inert — cutover included —
-	// until the home jump gate is built; before then bootstrap provisions probes and the
-	// scout-post coordinator mans them. marketRepo serves the cutover's offline census only.
+	// expansionPhase is the era gate that holds the whole tick inert — cutover included — until the
+	// home jump gate is built; before then bootstrap provisions probes and the scout-post
+	// coordinator tours them, retiring itself at the same boundary this gate opens on.
+	// The market-tour era rule (Admiral 2026-08-08), both halves off ONE reader. The tour
+	// verbs refuse once expansionPhase reads EXPANSION, and the sensing coordinator — whose
+	// whole tick begins at that same edge — stops any tour still flying and returns its probe.
+	// Sharing the reader is what makes "tours before the gate, parked sensing after" a single
+	// boundary rather than two that can drift apart.
+	daemonServer.SetBootstrapPhaseGate(expansionPhase)
+
 	probeSensingHandler := scoutingCmd.NewRunProbeSensingCoordinatorHandler(
 		marketRepo, scoutPostRepo, shipRepo, apiClient.LimiterPressure(), expansionPhase, nil, // nil = use RealClock
 	)
@@ -1463,6 +1388,9 @@ func run(cfg *config.Config) error {
 	})
 	// Per-tick live view of the persisted config, so `tune --operation sensing` takes
 	// effect on the NEXT reconcile rather than at the next rebuild (mirrors probeBuyer).
+	// The graduation sweep's arm into the container registry: it stops any market tour still
+	// flying past the gate and returns its probe to the pool this engine buys from.
+	probeSensingHandler.SetLegacyTourSweeper(grpc.NewLegacyTourSweeper(daemonServer))
 	probeSensingHandler.SetLiveConfigReader(containerConfigReader)
 	probeSensingHandler.SetEventRecorder(captainEventRepo) // emit coordinator error-loop events on reconcile streak breach
 	// Resolves the collector lazily per call: the metrics collectors are installed by
@@ -1483,35 +1411,6 @@ func run(cfg *config.Config) error {
 	// The probe-sensing coordinator owns probe supply: its drain buys what its own placements need,
 	// behind a floor and a cap, and reuses hulls it already owns first. A second engine buying into
 	// the same fleet could only double-spend, and did — 245,316 credits on 9 hulls in five minutes.
-
-	// Shipyard-backfill sweep (sp-rhju): the standing catch-up coordinator that closes the
-	// charted-but-unscanned shipyard blind spot the market-tour-only scan left behind.
-	// It enumerates known-shipyard systems the depth frontier reached but no market tour toured —
-	// intersecting the era-agnostic SHIPYARD-trait set (waypointRepo.ListWithTrait) with the
-	// CURRENT gate-reachable frontier (a dedicated ExpansionScanner for hop depth + reachability)
-	// minus the era-scoped scanned set (shipyardInventoryRepo.ScannedSystems) — and declares
-	// deeper-first sweep-once posts through the SAME scout-post repo the reconciler mans, bounded
-	// by min(rate knob, idle probe supply). The probe's arrival rides the sp-rhju decoupled
-	// shipyard scan and a heavy hit fires the existing heavy_yard_discovered event. It moves and
-	// claims NOTHING; self-quiescing once the blind spot drains. Registration + restart-recovery +
-	// live-tune are wired here; a thin launch verb calls DaemonServer.ShipyardBackfillCoordinator.
-	shipyardBackfillHandler := scoutingCmd.NewRunShipyardBackfillCoordinatorHandler(
-		expansionAdapters.NewChartedShipyardEnumerator(
-			expansionAdapters.NewExpansionScanner(gateGraphService, marketRepoAdapter, shipRepo, playerRepo, waypointRepo),
-			waypointRepo,
-			// reach is passed PER TICK by the coordinator (the live-tunable backfill_max_hops
-			// knob, full gate graph by default) — a charted shipyard is in-graph + relay-reachable,
-			// so the sweep must reach the DEEP in-graph yards, not just the shallow frontier (sp-b8lf).
-		),
-		shipyardInventoryRepo,
-		expansionAdapters.NewIdleProbeCounter(shipRepo),
-		scoutPostRepo,
-		nil, // nil = use RealClock
-	)
-	shipyardBackfillHandler.SetLiveConfigReader(containerConfigReader)
-	if err := mediator.RegisterHandler[*scoutingCmd.RunShipyardBackfillCoordinatorCommand](med, shipyardBackfillHandler); err != nil {
-		return fmt.Errorf("failed to register ShipyardBackfillCoordinator handler: %w", err)
-	}
 
 	// The dedicated contract scaler (registered above) is the ONE contract-fleet capacity owner;
 	// there is deliberately no capacity-reconciler stack beside it (no SENSE/PLAN/DIFF/GOVERN/

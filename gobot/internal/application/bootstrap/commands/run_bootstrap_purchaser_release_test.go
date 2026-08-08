@@ -144,7 +144,6 @@ func TestBootstrap_StrandedPurchaser_ReleaseAndPivotReachAFixedPoint(t *testing.
 	h.SetShipRefresher(&fakeRefresher{})
 	h.SetWorldObserver(&fakeIncomeObserver{world: world})
 	h.SetProbeAcquirer(&fakeAcquirer{price: 40_000, yard: "Y", readable: true})
-	h.SetScoutPostDeclarer(&fakeDeclarer{})
 	h.SetFrigateRetirer(ret)
 	h.SetHaulerAcquirer(acq)
 	h.SetContractRunner(&fakeContractRunner{world: world})

@@ -145,55 +145,6 @@ func (f *opCtxSpyRepositioner) RepositionToSystemGateAndChart(ctx context.Contex
 	return nil
 }
 
-// The cross-gate relay is the scouting subsystem's JUMPING path — crossing gates is all
-// it does — so its gate fees are the ones most worth attributing. Both relay shapes are
-// covered: a mis-stamp on the gate-charting branch would leave exactly the reconcile
-// traffic unattributed.
-func TestScoutReposition_StampsItsOwnOperationContext(t *testing.T) {
-	const coordinator = "scout_post_coordinator-player-7"
-
-	for name, chartOnArrival := range map[string]bool{
-		"the plain market relay":        false,
-		"the gate-charting 0-hop relay": true,
-	} {
-		t.Run(name, func(t *testing.T) {
-			spy := &opCtxSpyRepositioner{}
-			_, err := NewScoutRepositionHandler(spy).Handle(context.Background(), &ScoutRepositionCommand{
-				PlayerID:            shared.MustNewPlayerID(testPlayerID),
-				ShipSymbol:          "SAT-1",
-				DestinationWaypoint: "X1-FAR-A1",
-				CoordinatorID:       coordinator,
-				ChartGateOnArrival:  chartOnArrival,
-			})
-			require.NoError(t, err)
-
-			seen := append(append([]*shared.OperationContext{}, spy.plain...), spy.chart...)
-			require.Len(t, seen, 1, "precondition: exactly one move is delegated, and it is the one under test")
-			require.NotNil(t, seen[0], "the relay flew on an UNSTAMPED context: its gate fees book as 'manual'")
-			require.Equal(t, ScoutRepositionOperationType, seen[0].NormalizedOperationType())
-			require.NotEqual(t, "manual", seen[0].NormalizedOperationType())
-			require.Equal(t, coordinator, seen[0].ContainerID)
-		})
-	}
-}
-
-// A relay with no spawning coordinator is a DIRECT/CLI dispatch, and it stays 'manual'
-// on purpose. Labelling an operator's own action as automated is the same defect as
-// losing attribution, pointing the other way — so the absence is asserted, not tolerated.
-func TestScoutReposition_WithoutACoordinator_StaysHonestlyUnattributed(t *testing.T) {
-	spy := &opCtxSpyRepositioner{}
-	_, err := NewScoutRepositionHandler(spy).Handle(context.Background(), &ScoutRepositionCommand{
-		PlayerID:            shared.MustNewPlayerID(testPlayerID),
-		ShipSymbol:          "SAT-1",
-		DestinationWaypoint: "X1-FAR-A1",
-	})
-	require.NoError(t, err)
-
-	require.Len(t, spy.plain, 1)
-	require.Nil(t, spy.plain[0],
-		"a CLI-launched relay must NOT be dressed up as coordinator work — 'manual' is correct there")
-}
-
 // --- the scout tour -------------------------------------------------------------
 
 // opCtxSpyTourMediator answers a navigation instantly and records the operation context
@@ -249,7 +200,6 @@ func TestScoutingOperationTypes_AreDistinctAndHumanReadable(t *testing.T) {
 	names := []string{
 		parkedsensing.SensingCoverageOperationType,
 		ScoutTourOperationType,
-		ScoutRepositionOperationType,
 	}
 	seen := map[string]bool{}
 	for _, name := range names {
@@ -259,5 +209,4 @@ func TestScoutingOperationTypes_AreDistinctAndHumanReadable(t *testing.T) {
 		seen[name] = true
 	}
 	require.Equal(t, "scout tour", ScoutTourOperationType)
-	require.Equal(t, "scout reposition", ScoutRepositionOperationType)
 }

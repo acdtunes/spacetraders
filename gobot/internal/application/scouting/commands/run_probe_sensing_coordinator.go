@@ -142,6 +142,9 @@ type RunProbeSensingCoordinatorResponse struct {
 type RunProbeSensingCoordinatorHandler struct {
 	depthReader MarketDepthReader
 	postRepo    SensingPostRepository
+	// tourSweeper stops market tours left flying past the graduation edge (see
+	// legacy_tour_sweep.go). Optional; nil only forgoes the sweep.
+	tourSweeper LegacyTourSweeper
 	fleetRepo   FleetReader
 	pressure    domainScouting.PressureReader
 	phase       expansionPhaseReader
@@ -409,6 +412,11 @@ func (h *RunProbeSensingCoordinatorHandler) ReconcileOnce(ctx context.Context, c
 		h.observeStall(ctx, cmd, sensingStallCoordinator, health.TickIdle())
 		return nil
 	}
+
+	// Past the gate, market tours are over. Run FIRST, ahead of the ports check: the sweep
+	// needs none of the engine surface, and a half-wired engine must not be the reason a
+	// probe stays locked inside a tour this engine wants to place.
+	h.sweepLegacyTours(ctx, cmd)
 
 	logger := common.LoggerFromContext(ctx)
 	playerID := cmd.PlayerID.Value()

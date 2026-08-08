@@ -15,9 +15,8 @@ import (
 
 // ScoutMarketsCommand orchestrates fleet deployment for market scouting
 // Uses VRP optimization to distribute markets across multiple ships
-// Transactional reset (sp-8k9m): it re-partitions every requested hull, computing the
-// whole re-man plan before tearing any existing tour down, so a failure never strands a
-// post (see ScoutMarketsHandler.Handle).
+// Transactional reset: it re-partitions every requested hull, computing the whole plan
+// before tearing any existing tour down, so a failure never strands a hull.
 type ScoutMarketsCommand struct {
 	PlayerID     shared.PlayerID
 	ShipSymbols  []string
@@ -111,22 +110,18 @@ func (h *ScoutMarketsHandler) Handle(ctx context.Context, request common.Request
 		return nil, err
 	}
 
-	// A degenerate plan — no ship assigned ANY market (e.g. a VRP that returned an empty
-	// partition rather than erroring) — is NOT a re-man (sp-8k9m). Refuse LOUDLY here,
-	// before any teardown: tearing the posts down for a zero-market plan and reporting
-	// success is the false-success class the captain flagged (a reset that reads "complete"
-	// while it darkened the system). The old posts keep running.
+	// A degenerate plan — no ship assigned ANY market (a VRP that returned an empty partition
+	// rather than erroring). Refuse LOUDLY here, BEFORE any teardown: tearing the running
+	// tours down for a zero-market plan and reporting success darkens the system while
+	// reading "complete". The old tours keep running.
 	if totalAssignedMarkets(assignments) == 0 {
 		return nil, fmt.Errorf("scout reset for %s computed no market assignments across %d ship(s) over %d market(s) — refusing to tear down existing posts for an empty re-man", cmd.SystemSymbol, len(cmd.ShipSymbols), len(cmd.Markets))
 	}
 
-	// Refuse a CROSS-SYSTEM assignment at the spawn seam (sp-8k9m finding f). A scout tour
-	// is IN-SYSTEM by design — a scout post is per-system, and crossing gates is the
-	// reconciler's ferry job, not a tour's. NavigateRoute is in-system, so a hull handed a
-	// market in another system crash-loops on that waypoint ("not found in cache for system
-	// <origin>") and sits claimed but idle — the 7 KN67 probes stuck touring PA62 markets.
-	// Refuse LOUDLY here (before any teardown) rather than spawn a doomed tour: the hull must
-	// be repositioned into the target system first, then manned in-system.
+	// Refuse a CROSS-SYSTEM assignment at the spawn seam. A tour is IN-SYSTEM by design:
+	// NavigateRoute is in-system, so a hull handed a market in another system crash-loops on
+	// that waypoint and sits claimed but idle. Refuse LOUDLY before any teardown rather than
+	// spawn a doomed tour — the hull must already be in the target system.
 	if err := validateInSystemAssignments(assignments, shipConfigs); err != nil {
 		return nil, err
 	}

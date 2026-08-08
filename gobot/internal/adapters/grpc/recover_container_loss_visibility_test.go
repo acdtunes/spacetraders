@@ -174,19 +174,18 @@ func TestRecoveryAllRecoveredEmitsNoLostEvent(t *testing.T) {
 
 	s, db, playerID := newRecoveryTestServer(t)
 	// Two top-level coordinators with no singular ship_symbol both re-instantiate
-	// live (mirrors TestRecoveryRestartsTopLevelCoordinator /
-	// TestRecoveryRestartsScoutPostCoordinator).
+	// live (mirrors TestRecoveryRestartsTopLevelCoordinator).
 	insertRunningContainer(t, db, "fleet-ok", "contract_fleet_coordinator", "CONTRACT_FLEET_COORDINATOR",
 		`{"ship_symbols":[],"container_id":"fleet-ok"}`, playerID, nil)
-	insertRunningContainer(t, db, "scoutpost-ok", "scout_post_coordinator", "SCOUT_POST_COORDINATOR",
-		`{"container_id":"scoutpost-ok","tick_interval_secs":30}`, playerID, nil)
+	insertRunningContainer(t, db, "sensing-ok", "probe_sensing_coordinator", "PROBE_SENSING_COORDINATOR",
+		`{"container_id":"sensing-ok"}`, playerID, nil)
 
 	require.NoError(t, s.RecoverRunningContainers(context.Background()))
 
 	// Both recovered live; stop their background runner goroutines before the
 	// final assertion. cancelFunc emits at most a workflow event, never a
 	// container.lost, so the count below is unaffected.
-	for _, id := range []string{"fleet-ok", "scoutpost-ok"} {
+	for _, id := range []string{"fleet-ok", "sensing-ok"} {
 		requireContainerState(t, db, id, "RUNNING", "")
 		if r := s.registeredRunner(id); r != nil {
 			r.cancelFunc()

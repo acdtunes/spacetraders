@@ -125,16 +125,6 @@ const (
 	// re-accrues from 0, and the exit is a pure loop-exit (no spend, no assignment), so it never
 	// double-acts. 3 ticks ≈ 2.25 min at the 45s cadence.
 	expansionHandoffRetryTicks = 3
-
-	// expansionHomeMinHulls is the home scout post's manning floor from EXPANSION on. Cold start pins
-	// probeTarget probes on home (the MinHulls floor the probe-sensing coordinator honours) so market
-	// data flows before the standing economy exists; reaching EXPANSION means that reinforcement's job
-	// is done, so the hand-off lowers the floor and the sensing coordinator resizes home to its
-	// standard rule on its own next tick — the freed probes go idle and become the sensing buyer's
-	// supply. 1 and not 0, deliberately: a floored (MinHulls > 0) post is also PERMANENT to the
-	// sensing coordinator — never removed even when home falls out of sensing scope — so home always
-	// keeps a probe. Part of the cold-start shape, so a constant, not a knob (RULINGS #5).
-	expansionHomeMinHulls = 1
 )
 
 // DefaultTickInterval is defaultBootstrapTickSeconds as a wall-clock duration. The container
@@ -171,19 +161,16 @@ type ProbeAcquirer interface {
 	Buy(ctx context.Context, playerID int, shipType, yard string) (BuyResult, error)
 }
 
-// ScoutPostDeclarer declares the STANDING scout-post COVERAGE target for a system — the
-// desired-state post the boot-standing scout-post coordinator mans by claiming an idle
-// probe. It is a coverage declaration, NOT a probe assignment: bootstrap declares the home post and
-// leaves its probes IDLE, and the coordinator does the manning (claim → VRP-partition → scan),
-// which seeds the initial home scan → census → the freshsizer takes over declaring the rest.
-// Idempotent — a post already declared for the system is preserved, not re-touched — so bootstrap
-// can call it every tick. minHulls is the manning FLOOR stamped on the home post
-// through the equality-guarded min_hulls-only write (a floor already at the
-// requested value is a zero-write no-op): probeTarget through cold start so the sensing coordinator
-// never sizes home below the probes bootstrap bought, lowered to expansionHomeMinHulls at the
-// EXPANSION hand-off, which releases the reinforcement to the sensing coordinator's standard rule.
-type ScoutPostDeclarer interface {
-	DeclareHomeScoutPost(ctx context.Context, playerID int, system string, minHulls int) error
+// HomeTourStarter starts the cold-start market tour over the home system's markets, on the
+// probes bootstrap has already bought. It is the SAME path the captain's `scout markets`
+// verb invokes — one code path, two callers — so the tour an operator starts and the tour
+// the DATA phase starts are the same object, subject to the same bootstrap-phase gate and
+// swept by the same graduation edge. There is no desired-state post behind it and nothing
+// re-mans it: bootstrap re-derives from the live world each tick, like every other action.
+//
+// It reports how many hulls were put on tour so the caller can log an honest delta.
+type HomeTourStarter interface {
+	StartHomeMarketTour(ctx context.Context, playerID int, homeSystem string) (int, error)
 }
 
 // ShipyardScanner makes a cold home shipyard readable. A yard's ship listing is presence-gated —
@@ -406,12 +393,11 @@ func (r *RunBootstrapCoordinatorResponse) RunTerminal() bool { return r.Done }
 type RunBootstrapCoordinatorHandler struct {
 	clock shared.Clock
 
-	refresher    ShipRefresher
-	observer     WorldObserver
-	acquirer     ProbeAcquirer
-	postDeclarer ScoutPostDeclarer
-	scanner      ShipyardScanner // Positions a hull at the home yard so the cold price reads
-	metrics      MetricsSink
+	refresher ShipRefresher
+	observer  WorldObserver
+	acquirer  ProbeAcquirer
+	scanner   ShipyardScanner // Positions a hull at the home yard so the cold price reads
+	metrics   MetricsSink
 
 	// Contract-workstream collaborators. Each is nil-safe: a nil collaborator degrades the contract
 	// action it drives to a logged skip (surfaced as a blocker), never a panic.
@@ -427,6 +413,7 @@ type RunBootstrapCoordinatorHandler struct {
 	gateReleaser  GateSurplusReleaser // Un-dedicate surplus idle gate workers → idle pool (scaler adopts)
 	gateAcquirer  GateWorkerAcquirer
 	handoff       HandoffLauncher
+	tourStarter   HomeTourStarter
 
 	// liveConfig snapshots the container's OWN persisted config at each tick start,
 	// so a `spacetraders tune --operation bootstrap` of a knob takes effect on the NEXT tick with
@@ -462,15 +449,6 @@ type RunBootstrapCoordinatorHandler struct {
 	// (no spend, no assignment), so it can never double-act.
 	expansionHoldStreakMu sync.Mutex
 	expansionHoldStreaks  map[string]int
-
-	// homeReinforcementReleased marks, per container, that this run already lowered the home scout
-	// post's manning floor at EXPANSION, so the hold ticks and any runner re-entry after the terminal
-	// exit issue ZERO further floor writes. Keyed by ContainerID for the same singleton reason as the
-	// streaks; homeReinforcementMu guards the MAP only (one container's ticks are sequential). NOT a
-	// progress cursor — dropped on restart, where the single re-issued release is absorbed by the
-	// declarer's equality-guarded min_hulls write (a floor already at the target is a zero-write no-op).
-	homeReinforcementMu       sync.Mutex
-	homeReinforcementReleased map[string]bool
 }
 
 // NewRunBootstrapCoordinatorHandler wires the coordinator. clock defaults to the real clock when
@@ -493,12 +471,6 @@ func (h *RunBootstrapCoordinatorHandler) SetWorldObserver(o WorldObserver) { h.o
 // SetProbeAcquirer wires the price-check + buy path (reuses shipyard list/purchase). Unset → the
 // coordinator evaluates and logs but never spends (an implicit dry-run, surfaced loudly).
 func (h *RunBootstrapCoordinatorHandler) SetProbeAcquirer(a ProbeAcquirer) { h.acquirer = a }
-
-// SetScoutPostDeclarer wires the home scout-post declaration (AddScoutPost). Unset → the home
-// coverage post is not declared (surfaced loudly); bootstrap still buys probes and leaves them idle.
-func (h *RunBootstrapCoordinatorHandler) SetScoutPostDeclarer(s ScoutPostDeclarer) {
-	h.postDeclarer = s
-}
 
 // SetShipyardScanner wires the cold-start shipyard-readability positioner: when the home
 // shipyard price is unreadable, it flies an idle hull to the yard so the next tick's live price read
@@ -555,6 +527,12 @@ func (h *RunBootstrapCoordinatorHandler) SetGateSurplusReleaser(r GateSurplusRel
 // fleet assign). Unset → GATE repurposes but never buys the top-up delta (surfaced loudly).
 func (h *RunBootstrapCoordinatorHandler) SetGateWorkerAcquirer(a GateWorkerAcquirer) {
 	h.gateAcquirer = a
+}
+
+// SetHomeTourStarter wires the cold-start market tour. Unset ⇒ bootstrap buys its probes
+// and leaves them idle, and says so on its own line rather than failing silently.
+func (h *RunBootstrapCoordinatorHandler) SetHomeTourStarter(t HomeTourStarter) {
+	h.tourStarter = t
 }
 
 // SetHandoffLauncher wires the EXPANSION hand-off (launch the autosizer + standing coordinators). Unset →

@@ -194,21 +194,20 @@ func TestRecoveryRestartsTopLevelCoordinator(t *testing.T) {
 	runner.cancelFunc()
 }
 
-// TestRecoveryRestartsScoutPostCoordinator (sp-cxpq): the standing scout-post
-// coordinator is a top-level coordinator (no coordinator_id, not a worker type),
-// so a daemon restart must re-instantiate it live — it then reloads its posts and
-// respawns each post's tour on its first reconcile tick.
-func TestRecoveryRestartsScoutPostCoordinator(t *testing.T) {
+// RULINGS #2, inverted: a persisted scout_post_coordinator row must NOT resurrect the
+// deleted engine at the next boot. Recovery marks it terminated under the retired-type skip
+// instead of rebuilding it, and no runner is registered — the row outlives the code, so this
+// is the half that decides whether the retirement is real.
+func TestRecoveryRefusesToResurrectTheRetiredScoutPostCoordinator(t *testing.T) {
 	s, db, playerID := newRecoveryTestServer(t)
 	insertRunningContainer(t, db, "scoutpost-1", "scout_post_coordinator", "SCOUT_POST_COORDINATOR",
 		`{"container_id":"scoutpost-1","tick_interval_secs":30}`, playerID, nil)
 
 	require.NoError(t, s.RecoverRunningContainers(context.Background()))
 
-	runner := s.registeredRunner("scoutpost-1")
-	require.NotNil(t, runner, "the scout-post coordinator must re-adopt at restart (sp-7yej)")
-	requireContainerState(t, db, "scoutpost-1", "RUNNING", "")
-	runner.cancelFunc()
+	require.Nil(t, s.registeredRunner("scoutpost-1"),
+		"a retired coordinator must never be re-instantiated from a leftover row")
+	requireContainerState(t, db, "scoutpost-1", "FAILED", "retired_command_type")
 }
 
 // TestRecoverySkipsCoordinatorSpawnedScoutTour (sp-cxpq): a scout_tour spawned as

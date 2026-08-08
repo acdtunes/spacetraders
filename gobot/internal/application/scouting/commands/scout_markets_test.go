@@ -139,6 +139,26 @@ func (c *fakeMarketsRouting) PartitionFleet(_ context.Context, req *routing.VRPR
 	return &routing.VRPResponse{Assignments: assignments}, nil
 }
 
+// newScoutTestSatellite / newScoutTestShip were re-homed here from the deleted
+// scout-post coordinator suite: the manual `scout markets` verb is now the only caller.
+func newScoutTestSatellite(t *testing.T, symbol, waypoint string) *navigation.Ship {
+	t.Helper()
+	return newScoutTestShip(t, symbol, waypoint, "SATELLITE", "FRAME_PROBE")
+}
+
+func newScoutTestShip(t *testing.T, symbol, waypoint, role, frame string) *navigation.Ship {
+	t.Helper()
+	loc, err := shared.NewWaypoint(waypoint, 0, 0)
+	require.NoError(t, err)
+	fuel, err := shared.NewFuel(100, 100)
+	require.NoError(t, err)
+	cargo, err := shared.NewCargo(0, 0, nil)
+	require.NoError(t, err)
+	ship, err := navigation.NewShip(symbol, shared.MustNewPlayerID(1), loc, fuel, 100, 0, cargo, 30, frame, role, nil, navigation.NavStatusInOrbit)
+	require.NoError(t, err)
+	return ship
+}
+
 func newMannedScoutShip(t *testing.T, symbol, waypoint, containerID string, clock shared.Clock) *navigation.Ship {
 	t.Helper()
 	ship := newScoutTestSatellite(t, symbol, waypoint)

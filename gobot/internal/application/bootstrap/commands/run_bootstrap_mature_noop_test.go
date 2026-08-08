@@ -48,7 +48,6 @@ type coldStartSpies struct {
 	construct *fakeConstruction
 	contracts *fakeContractRunner
 	frigate   *fakeFrigateLoop
-	posts     *fakeDeclarer
 	refresher *fakeRefresher
 }
 
@@ -61,7 +60,6 @@ func spiedHandler(obs Observation, ho HandoffLauncher) (*RunBootstrapCoordinator
 		construct: &fakeConstruction{},
 		contracts: &fakeContractRunner{},
 		frigate:   &fakeFrigateLoop{},
-		posts:     &fakeDeclarer{},
 		refresher: &fakeRefresher{},
 	}
 	h := NewRunBootstrapCoordinatorHandler(nil)
@@ -73,7 +71,6 @@ func spiedHandler(obs Observation, ho HandoffLauncher) (*RunBootstrapCoordinator
 	h.SetConstructionManager(s.construct)
 	h.SetContractRunner(s.contracts)
 	h.SetFrigateContractLoopStarter(s.frigate)
-	h.SetScoutPostDeclarer(s.posts)
 	h.SetManufacturingController(&fakeManufacturing{})
 	h.SetWorkerRepurposer(&fakeRepurposer{})
 	if ho != nil {
@@ -250,9 +247,6 @@ func TestBootstrap_FreshFleet_NeverTerminal_ColdStartUnaffected(t *testing.T) {
 	}
 	if spies.probes.buys == 0 {
 		t.Fatalf("a fresh fleet must still buy probes")
-	}
-	if spies.posts.calls == 0 {
-		t.Fatalf("a fresh fleet must still declare the home scout post")
 	}
 }
 

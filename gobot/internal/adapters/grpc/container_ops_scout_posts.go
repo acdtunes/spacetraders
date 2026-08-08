@@ -6,146 +6,28 @@ import (
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	domainScouting "github.com/andrescamacho/spacetraders-go/internal/domain/scouting"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
-	"github.com/andrescamacho/spacetraders-go/pkg/utils"
 )
 
-// ScoutPostCoordinator creates and starts the standing scout-post coordinator for
-// a player (sp-cxpq), mirroring ContractFleetCoordinator. One coordinator per
-// player reconciles the desired-state posts table; the container id is keyed by
-// player so a restart re-adopts the same one. tickIntervalSecs is parametrized
-// (RULINGS #5); 0 uses the coordinator's default.
-func (s *DaemonServer) ScoutPostCoordinator(ctx context.Context, playerID int, tickIntervalSecs int) (string, error) {
-	// Double-launch guard (sp-9ujl): ONE standing scout-post coordinator per player. GenerateContainerID
-	// mints a fresh RANDOM id each call (it is not keyed by player), so without this guard a second
-	// launch — e.g. a captain's manual `scout post-coordinator` while the boot-standing one (sp-9ujl,
-	// bootStandingCoordinatorTypes) is already up — spawns a TWIN reconcile loop, and the two fight over
-	// the same posts and idle probes (double SetAssignedHull / re-partition / relay dispatch). Refuse
-	// loudly and name the live one, mirroring CapacityReconcilerCoordinator's guard. A warm restart
-	// re-adopts the persisted RUNNING container through RecoverRunningContainers, never this path, so
-	// recovery is unaffected.
-	existingID, err := firstContainerIDOfType(ctx, s.containerRepo, playerID, container.ContainerTypeScoutPostCoordinator)
-	if err != nil {
-		return "", fmt.Errorf("failed to check for a running scout-post coordinator: %w", err)
-	}
-	if existingID != "" {
-		return "", fmt.Errorf("scout-post coordinator already running for player %d (container %s) — stop it first: spacetraders container stop %s",
-			playerID, existingID, existingID)
-	}
-
-	containerID := utils.GenerateContainerID("scout_post_coordinator", fmt.Sprintf("player-%d", playerID))
-
-	config := map[string]interface{}{
-		"container_id":       containerID,
-		"tick_interval_secs": tickIntervalSecs,
-	}
-
-	// Re-adopt the last persisted live-tuned config for this player's scout-post
-	// coordinator so a relaunch of a stopped one keeps its tunes (manning-stall window,
-	// cross-system relay switch/hops) instead of silently reverting to defaults — the same
-	// re-adopt the daemon-restart recovery path already does. The [scouting] config.yaml
-	// knobs are re-injected from config.yaml in buildCommandForType (resolveScoutingConfig),
-	// so any stale copy carried forward here is cleared and refreshed.
-	config, warnings, err := s.coordinatorStartConfig(ctx, playerID, config, scoutPostStartSpec())
-	if err != nil {
-		return "", fmt.Errorf("failed to resolve scoutpost start config: %w", err)
-	}
-	printCoordinatorStartWarnings("scoutpost", playerID, warnings)
-
-	cmd, err := s.buildCommandForType("scout_post_coordinator", config, playerID, containerID)
-	if err != nil {
-		return "", fmt.Errorf("failed to create command: %w", err)
-	}
-
-	containerEntity := container.NewContainer(
-		containerID,
-		container.ContainerTypeScoutPostCoordinator,
-		playerID,
-		-1,  // Infinite iterations (reconcile loop)
-		nil, // No parent container
-		config,
-		nil, // Use default RealClock for production
-	)
-
-	if err := s.containerRepo.Add(ctx, containerEntity, "scout_post_coordinator"); err != nil {
-		return "", fmt.Errorf("failed to persist container: %w", err)
-	}
-
-	s.startContainerRunner(containerEntity, cmd, containerID, "Container")
-
-	return containerID, nil
-}
-
-// AddScoutPost adds or updates a desired-state scout post for a system (sp-cxpq).
-// The daemon is the single writer of post state (RULINGS #3); the captain's CLI
-// reaches this only through the RPC. An existing post's live assignment — including
-// every multi-probe slot and its frozen partition — is preserved, so a
-// freshness/kind edit never evicts a hull. hulls is the probe budget N (0 ⇒ 1); if it
-// CHANGES from the existing budget the coordinator re-partitions on its next tick
-// (ensurePartitions), tearing down and rebuilding the slots.
+// AddScoutPost is RETIRED (Admiral 2026-08-08). Declaring a post meant asking the standing
+// scout-post reconciler to man a system with a circulating hull, and that reconciler is
+// deleted — so a post written now would be desired state with nobody to satisfy it, which
+// reads as a working CLI and is not one.
+//
+// It REFUSES rather than being unwired, because the wire surface outlives the engine: a
+// captain reaching for the old verb gets the reason and the replacement, not a silent write.
+// ListScoutPosts and RemoveScoutPost survive for the mirror reason — leftover rows outlive
+// the code, and an operator must be able to see and clear them.
 func (s *DaemonServer) AddScoutPost(ctx context.Context, playerID int, systemSymbol string, freshness time.Duration, kind domainScouting.PostKind, hulls int) (*domainScouting.ScoutPost, error) {
-	if !kind.Valid() {
-		return nil, fmt.Errorf("invalid post kind %q (want standing or sweep_once)", kind)
-	}
-	if hulls < 1 {
-		hulls = 1
-	}
-
-	repo := persistence.NewGormScoutPostRepository(s.db)
-
-	existing, err := repo.ListActive(ctx, playerID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load existing posts: %w", err)
-	}
-
-	post := &domainScouting.ScoutPost{
-		PlayerID:        playerID,
-		SystemSymbol:    systemSymbol,
-		FreshnessTarget: freshness,
-		Kind:            kind,
-		Hulls:           hulls,
-		CreatedAt:       time.Now(),
-	}
-	// Preserve ALL live state (primary slot + extra slots + frozen partitions) when
-	// updating an existing post, so a freshness/kind change never disturbs manning.
-	// The coordinator alone re-partitions, and only when the budget actually changes.
-	for _, p := range existing {
-		if p.SystemSymbol == systemSymbol {
-			post.AssignedHull = p.AssignedHull
-			post.TourContainerID = p.TourContainerID
-			post.RepositionContainerID = p.RepositionContainerID
-			post.PrimaryPartition = p.PrimaryPartition
-			post.ExtraSlots = p.ExtraSlots
-			post.CreatedAt = p.CreatedAt
-			// Preserve the manning floor — bootstrap owns it via the narrow
-			// UpdateScoutPostMinHulls seam, so a full-row re-add here (a CLI `scout posts
-			// add`) must not zero the home post's probe_target floor.
-			post.MinHulls = p.MinHulls
-			break
-		}
-	}
-
-	if err := repo.Upsert(ctx, post); err != nil {
-		return nil, fmt.Errorf("failed to save scout post: %w", err)
-	}
-	return post, nil
+	return nil, fmt.Errorf("scout posts are retired: the standing reconciler that manned them was deleted, so declaring one for %s would create desired state nothing satisfies. Market tours now run only as an operator-started tour during the bootstrap phase (`spacetraders scout tour` / `scout markets`); steady-state freshness belongs to the parked-sensing coordinator, which parks a probe per market and needs no post", systemSymbol)
 }
 
-// UpdateScoutPostMinHulls sets ONLY the manning-floor column of the (playerID, systemSymbol)
-// post — the narrow seam bootstrap uses to stamp the home post's permanent probe_target floor
-// without disturbing the freshsizer's Hulls resize or the reconciler's manning. A
-// missing post is a no-op (the caller creates it first, then stamps the floor).
-func (s *DaemonServer) UpdateScoutPostMinHulls(ctx context.Context, playerID int, systemSymbol string, minHulls int) error {
-	repo := persistence.NewGormScoutPostRepository(s.db)
-	return repo.UpdateMinHulls(ctx, playerID, systemSymbol, minHulls)
-}
-
-// RemoveScoutPost deletes a scout post for a system and releases its hull if one
-// is manning it, so the freed satellite flows to another post on the next
-// reconcile tick.
+// RemoveScoutPost deletes a leftover scout post and releases any hull still recorded
+// against it. Nothing declares posts any more, so this is the operator's cleanup verb for
+// rows the retired reconciler left behind; the freed hull returns to the general pool,
+// where parked sensing adopts it.
 func (s *DaemonServer) RemoveScoutPost(ctx context.Context, playerID int, systemSymbol string) error {
 	repo := persistence.NewGormScoutPostRepository(s.db)
 

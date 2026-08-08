@@ -146,7 +146,6 @@ func TestBootstrap_ScaledGate_UnderScaledRidesOutSpike_AtTargetEntersGate(t *tes
 	h.SetShipRefresher(&fakeRefresher{})
 	h.SetWorldObserver(obsvr)
 	h.SetProbeAcquirer(&fakeAcquirer{price: 40000, yard: "Y", readable: true})
-	h.SetScoutPostDeclarer(&fakeDeclarer{})
 	h.SetLiveConfigReader(live)
 	cmd := baseCmd()
 
