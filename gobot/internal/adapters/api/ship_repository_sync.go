@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strconv"
 
 	"gorm.io/gorm/clause"
 
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
@@ -26,6 +28,8 @@ func (r *ShipRepository) SyncAllFromAPI(ctx context.Context, playerID shared.Pla
 	if err != nil {
 		return 0, fmt.Errorf("failed to list ships from API: %w", err)
 	}
+
+	r.reportUnreadableHulls(ctx, playerID, shipsData, readReport)
 
 	now := r.clock.Now()
 	models := make([]persistence.ShipModel, 0, len(shipsData))
@@ -138,6 +142,77 @@ func (r *ShipRepository) upsertShipModels(ctx context.Context, models []persiste
 	return nil
 }
 
+// reportUnreadableHulls names every hull the live read could not deliver, at WARNING
+// and on a counter, once per pass. Surviving a poisoned hull is what lets this fail
+// QUIETLY, so the counter is the only thing that surfaces it.
+func (r *ShipRepository) reportUnreadableHulls(ctx context.Context, playerID shared.PlayerID, live []*navigation.ShipData, read FleetReadReport) {
+	if !read.Partial() {
+		return
+	}
+	for _, symbol := range r.unreadableHullNames(ctx, playerID, liveSymbolsOf(live), read) {
+		log.Printf("WARNING [fleet_hull_unreadable] player=%d ship=%s: we own this hull and the API would not serve its record this pass; it is PRESENT-BUT-UNKNOWN — its row is kept, it is counted in the fleet, and nothing acts on it",
+			playerID.Value(), symbol)
+		metrics.RecordHullUnreadable(symbol, strconv.Itoa(playerID.Value()))
+	}
+}
+
+const unidentifiedHull = "<unidentified>"
+
+// unreadableHullNames names the hulls the live read did not deliver, best evidence
+// first: a symbol the payload yielded, then OUR-ROWS-MINUS-READABLE (a 500 carries no
+// payload, so a refused page is identifiable only by INDEX and our rows are the only
+// other witness), then unidentifiedHull. The row diff is not a claim about WHICH hull
+// is poisoned — "unreadable" and "sold" are indistinguishable on a partial read, hence
+// the suppressed prune. It never returns empty for a partial read: a hull we hold no
+// row for is unnameable, and reporting NOTHING is the invisible failure itself.
+// Inventing a row would create the symbol-less row decodeFleetElement refuses.
+func (r *ShipRepository) unreadableHullNames(ctx context.Context, playerID shared.PlayerID, readable []string, read FleetReadReport) []string {
+	if !read.Partial() {
+		return nil
+	}
+	readableSet := make(map[string]bool, len(readable))
+	for _, symbol := range readable {
+		readableSet[symbol] = true
+	}
+
+	var names []string
+	seen := make(map[string]bool)
+	add := func(symbol string) {
+		if symbol == "" || readableSet[symbol] || seen[symbol] {
+			return
+		}
+		seen[symbol] = true
+		names = append(names, symbol)
+	}
+
+	for _, u := range read.Unreadable {
+		add(u.Symbol)
+	}
+
+	var rows []persistence.ShipModel
+	if err := r.db.WithContext(ctx).
+		Where("player_id = ?", playerID.Value()).
+		Find(&rows).Error; err != nil {
+		log.Printf("Warning: could not name the unreadable hulls for player %d: %v", playerID.Value(), err)
+	}
+	for _, row := range rows {
+		add(row.ShipSymbol)
+	}
+
+	if len(names) == 0 {
+		return []string{unidentifiedHull}
+	}
+	return names
+}
+
+func liveSymbolsOf(live []*navigation.ShipData) []string {
+	symbols := make([]string, 0, len(live))
+	for _, d := range live {
+		symbols = append(symbols, d.Symbol)
+	}
+	return symbols
+}
+
 // fleetReadReporter is the fleet read that also reports what it could NOT read.
 // The domain port's ListShips cannot carry that — it is implemented by test
 // doubles throughout the tree — so the real client widens it here and the sync
@@ -184,10 +259,7 @@ func (r *ShipRepository) reconcileFleetToLive(ctx context.Context, playerID shar
 			playerID.Value(), len(read.Unreadable), len(live))
 		return nil
 	}
-	liveSymbols := make([]string, 0, len(live))
-	for _, d := range live {
-		liveSymbols = append(liveSymbols, d.Symbol)
-	}
+	liveSymbols := liveSymbolsOf(live)
 	// Delete everything for this agent (all eras) except the live rows we just
 	// wrote under playerID. The agent is resolved from the DB, not the caller,
 	// so it stays correct even when the player token/struct is supplied by a

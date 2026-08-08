@@ -34,4 +34,7 @@ type DaemonConfig struct {
 	// Wired at boot via SpaceTradersClient.SetLimiterPressureHalfLife
 	// (RULINGS #5: an operational tuning number, not a rebuild).
 	LimiterPressureHalfLifeSeconds int `mapstructure:"limiter_pressure_half_life_seconds"`
+
+	// 0/unset = default; see SpaceTradersClient.SetFleetIsolationAbortStreak (RULINGS #5).
+	FleetIsolationAbortStreak int `mapstructure:"fleet_isolation_abort_streak"`
 }

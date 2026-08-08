@@ -75,13 +75,69 @@ func TestFleetHealthMetrics_LabelsAndValues(t *testing.T) {
 	}
 }
 
+// The unreadable-hull counter is the only thing that surfaces a hull the API will not
+// serve, now that the fleet read SURVIVES one instead of stopping the fleet (sp-2br34).
+// It must register, export by name, and carry the hull's own symbol — a counter that
+// registers but never exports, or exports without the ship label, leaves the operator
+// back where the two-day freeze started.
+func TestFleetHealthMetrics_UnreadableHullRegistersAndNamesTheShip(t *testing.T) {
+	prev := Registry
+	t.Cleanup(func() { Registry = prev })
+	Registry = prometheus.NewRegistry()
+
+	c := NewFleetHealthMetricsCollector()
+	if err := c.Register(); err != nil {
+		t.Fatalf("Register() error: %v", err)
+	}
+
+	c.RecordHullUnreadable("TORWIND-5", "6")
+	c.RecordHullUnreadable("TORWIND-5", "6")
+	c.RecordHullUnreadable("TORWIND-9", "6")
+
+	const name = "spacetraders_daemon_fleet_hull_unreadable_total"
+	families, err := Registry.Gather()
+	if err != nil {
+		t.Fatalf("Gather() error: %v", err)
+	}
+	exported := false
+	for _, f := range families {
+		if f.GetName() == name {
+			exported = true
+		}
+	}
+	if !exported {
+		t.Fatalf("metric %s registered but not exported on the registry", name)
+	}
+
+	cases := []struct {
+		name   string
+		labels map[string]string
+		want   float64
+	}{
+		{"the poisoned hull, twice", map[string]string{"ship": "TORWIND-5", "player": "6"}, 2},
+		{"a second hull on its own series", map[string]string{"ship": "TORWIND-9", "player": "6"}, 1},
+	}
+	for _, tc := range cases {
+		got, ok := gatherCounter(t, Registry, name, tc.labels)
+		if !ok {
+			t.Errorf("%s: series %s%v not found", tc.name, name, tc.labels)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("%s: %s%v = %v, want %v", tc.name, name, tc.labels, got, tc.want)
+		}
+	}
+}
+
 // TestFleetHealthMetrics_NilSafe mirrors the sibling collectors' guarantee: a recording miss
 // on a typed-nil receiver or an uninitialized collector must degrade to a no-op, never a
 // SIGSEGV that would take down the reposition/tour path (RULINGS #4 — observation only).
 func TestFleetHealthMetrics_NilSafe(t *testing.T) {
 	var nilC *FleetHealthMetricsCollector
 	nilC.RecordHullStranded("TORWIND-2C", "X1-PD21")
+	nilC.RecordHullUnreadable("TORWIND-5", "6")
 
 	empty := &FleetHealthMetricsCollector{}
 	empty.RecordHullStranded("TORWIND-2C", "X1-PD21")
+	empty.RecordHullUnreadable("TORWIND-5", "6")
 }

@@ -46,9 +46,10 @@ func (r FleetReadReport) Partial() bool { return len(r.Unreadable) > 0 }
 
 // UnreadableShip identifies a dropped element as precisely as the broken
 // payload allows. Symbol is best-effort: naming the hull is the difference
-// between an operator diagnosing TORWIND-5 in minutes and re-running the outage.
+// between an operator diagnosing it in minutes and re-running the outage.
 type UnreadableShip struct {
-	Page   int
+	Page int
+	// Index is the position WITHIN Page on BOTH paths — decode failure and isolation.
 	Index  int
 	Symbol string
 	Reason string
@@ -97,8 +98,13 @@ func (c *SpaceTradersClient) ListShips(ctx context.Context, token string) ([]*na
 // otherwise be upserted as a real row under an empty ship_symbol; a corrupt row
 // is worse than an absent one.
 //
-// A page that will not split into elements at all stays fatal. Nothing is
-// recoverable from it, and silently returning a fleet 20 hulls lighter is
+// A page the SERVER refuses outright (HTTP 500) is not fatal either — a hull the
+// server cannot serve poisons every window containing it, so a failed page is
+// re-read one hull at a time (isolatePoisonedPage). Fail-closed means "take
+// no action on the ship we cannot read", not "take no action at all": one bad hull
+// stopping every other hull is its blast radius being wrong, not the guard working.
+// Still fatal: a page that will not split into elements, and a read that recovers
+// NOTHING — a fleet 20 hulls lighter, or an empty one, returned as success is
 // precisely the destructive lie this report exists to prevent.
 //
 // Pagination is unchanged in spirit: it pages at the API maximum of 20
@@ -119,22 +125,20 @@ func (c *SpaceTradersClient) ListShipsWithReport(ctx context.Context, token stri
 	limit := apiPageLimitMax
 
 	for {
-		path := fmt.Sprintf("/my/ships?page=%d&limit=%d", page, limit)
-
-		var response struct {
-			// []json.RawMessage rather than []shipDTO: deferring the per-ship
-			// decode is the whole mechanism that keeps one bad element from
-			// failing the entire page.
-			Data []json.RawMessage `json:"data"`
-			Meta struct {
-				Total int `json:"total"`
-				Page  int `json:"page"`
-				Limit int `json:"limit"`
-			} `json:"meta"`
-		}
-
-		if err := c.request(ctx, "GET", path, token, nil, &response); err != nil {
-			return nil, FleetReadReport{}, fmt.Errorf("failed to list ships (page %d): %w", page, err)
+		response, err := c.fetchFleetPage(ctx, token, page, limit, nil)
+		if err != nil {
+			sweep, sweepErr := c.isolatePoisonedPage(ctx, token, page, limit)
+			if sweepErr != nil {
+				return nil, FleetReadReport{}, fmt.Errorf("failed to list ships (page %d): %w", page, sweepErr)
+			}
+			allShips = append(allShips, sweep.ships...)
+			report.Unreadable = append(report.Unreadable, sweep.unreadable...)
+			rawRead += sweep.accounted
+			if sweep.endOfFleet {
+				break
+			}
+			page++
+			continue
 		}
 
 		if len(response.Data) == 0 {
@@ -162,9 +166,103 @@ func (c *SpaceTradersClient) ListShipsWithReport(ctx context.Context, token stri
 		page++
 	}
 
+	if len(allShips) == 0 && report.Partial() {
+		return nil, FleetReadReport{}, fmt.Errorf("failed to list ships: no hull of %d was readable — treating an unreadable fleet as an empty one would let every coordinator act on a stale snapshot", len(report.Unreadable))
+	}
+
 	report.logPartial(len(allShips))
 
 	return allShips, report, nil
+}
+
+// fleetPage is one raw GET /my/ships response, elements still undecoded.
+type fleetPage struct {
+	// []json.RawMessage, not []shipDTO: deferring the per-ship decode is what keeps
+	// one bad element from failing the entire page.
+	Data []json.RawMessage `json:"data"`
+	Meta struct {
+		Total int `json:"total"`
+		Page  int `json:"page"`
+		Limit int `json:"limit"`
+	} `json:"meta"`
+}
+
+func (c *SpaceTradersClient) fetchFleetPage(ctx context.Context, token string, page, limit int, serverErrorRetryCap *int) (fleetPage, error) {
+	path := fmt.Sprintf("/my/ships?page=%d&limit=%d", page, limit)
+	var response fleetPage
+	if err := c.requestWithRetryCap(ctx, "GET", path, token, nil, &response, serverErrorRetryCap); err != nil {
+		return fleetPage{}, err
+	}
+	return response, nil
+}
+
+// fleetPageSweep is what one hull-at-a-time re-read of a failed page recovered.
+type fleetPageSweep struct {
+	ships      []*navigation.ShipData
+	unreadable []UnreadableShip
+	// accounted is how many hull slots got a definite verdict, readable or not — the
+	// page length the failed request never delivered, and like it a count of what the
+	// SERVER holds, not of what we parsed.
+	accounted  int
+	endOfFleet bool
+}
+
+// isolatePoisonedPage re-reads a failed page's span one hull at a time, turning
+// "this page is unreadable" into "THIS HULL is unreadable" — a page is 20 hulls and
+// a poisoned record is one. The span is addressable because SpaceTraders pages by
+// (page, limit) over a stable order: window (P, L) is indices [(P-1)L, PL), so hull
+// i is exactly (page=i+1, limit=1).
+//
+// It errors rather than return a PARTIAL sweep when the abort streak was reached or
+// nothing was recovered: hulls past an abort point would be neither readable nor
+// reported — silently ABSENT, and absence is what buys a replacement hull.
+func (c *SpaceTradersClient) isolatePoisonedPage(ctx context.Context, token string, page, limit int) (fleetPageSweep, error) {
+	var sweep fleetPageSweep
+	firstIndex := (page - 1) * limit
+	abortStreak := c.isolationAbortStreak()
+	probeRetries := defaultFleetIsolationProbeRetries
+	streak := 0
+
+	for offset := 0; offset < limit; offset++ {
+		index := firstIndex + offset
+		probe, err := c.fetchFleetPage(ctx, token, index+1, 1, &probeRetries)
+		if err != nil {
+			streak++
+			if streak >= abortStreak {
+				return fleetPageSweep{}, fmt.Errorf("fleet-read isolation abandoned at hull index %d: %d consecutive per-hull reads failed, which is the API failing rather than a poisoned record: %w", index, streak, err)
+			}
+			sweep.unreadable = append(sweep.unreadable, UnreadableShip{
+				Page:   page,
+				Index:  offset,
+				Reason: fmt.Sprintf("server refused GET /my/ships?page=%d&limit=1, this hull's own record: %v", index+1, err),
+			})
+			sweep.accounted++
+			continue
+		}
+		streak = 0
+
+		if len(probe.Data) == 0 {
+			sweep.endOfFleet = true
+			break
+		}
+
+		ship, unreadable := decodeFleetElement(probe.Data[0], page, offset)
+		if unreadable != nil {
+			sweep.unreadable = append(sweep.unreadable, *unreadable)
+		} else {
+			sweep.ships = append(sweep.ships, ship)
+		}
+		sweep.accounted++
+	}
+
+	if len(sweep.ships) == 0 && !sweep.endOfFleet {
+		return fleetPageSweep{}, fmt.Errorf("fleet-read isolation recovered no hull from page %d (%d unreadable): the whole page is unreadable, which is an outage rather than a poisoned record", page, len(sweep.unreadable))
+	}
+
+	log.Printf("WARNING [fleet_read_page_isolated] page=%d readable=%d unreadable=%d: GET /my/ships refused this page outright; it was re-read one hull at a time so the failure costs only the hulls that cause it",
+		page, len(sweep.ships), len(sweep.unreadable))
+
+	return sweep, nil
 }
 
 // decodeFleetElement turns one element of GET /my/ships into a hull, or explains

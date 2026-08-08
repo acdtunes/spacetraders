@@ -41,6 +41,18 @@ const (
 	// apiPageLimitMax is the largest page size SpaceTraders accepts (openapi.json: limit maximum 20).
 	apiPageLimitMax = 20
 
+	// defaultFleetIsolationAbortStreak: consecutive per-hull probe failures that end
+	// an isolation sweep and fail the read CLOSED — the line between "one poisoned
+	// record" and "the API is down". Tunable (RULINGS #5).
+	defaultFleetIsolationAbortStreak = 3
+
+	// defaultFleetIsolationProbeRetries caps ONE probe's server-error ladder, far
+	// below maxRetries: the page read already spent the long one, so minutes of
+	// backoff have not cleared it. The fault is INTERMITTENT per hull, making a cheap
+	// give-up right — the hull is present-but-unknown for this pass and re-probed on
+	// the next, where it will likely read. 429s exempt (serverErrorRetryCap).
+	defaultFleetIsolationProbeRetries = 1
+
 	errCodeAgentHasContract = 4511
 	errCodeShipMustBeDocked = 4214
 	errCodeShipNotDocked    = 4244
@@ -73,6 +85,8 @@ type SpaceTradersClient struct {
 	clock            shared.Clock
 	metricsCollector APIMetricsRecorder
 	budgetTracker    *metrics.APIBudgetTracker
+
+	fleetIsolationAbortStreak int // 0 selects the default; written once at boot
 
 	// limiterPressure is the always-on smoothed rate-limiter-wait signal
 	// (see LimiterPressure). It is updated at the same site that records the
@@ -250,6 +264,20 @@ func (c *SpaceTradersClient) SetLimiterPressureHalfLife(halfLife time.Duration) 
 	c.limiterPressure.SetHalfLife(halfLife)
 }
 
+// SetFleetIsolationAbortStreak overrides how many consecutive per-hull probe
+// failures end an isolation sweep (boot-time setter injection, RULINGS #5; <=0
+// selects the default). It tunes the isolation, it does not arm it.
+func (c *SpaceTradersClient) SetFleetIsolationAbortStreak(streak int) {
+	c.fleetIsolationAbortStreak = streak
+}
+
+func (c *SpaceTradersClient) isolationAbortStreak() int {
+	if c.fleetIsolationAbortStreak > 0 {
+		return c.fleetIsolationAbortStreak
+	}
+	return defaultFleetIsolationAbortStreak
+}
+
 // acquireRateToken acquires exactly ONE token from the shared rate limiter before
 // an API attempt, ordered by the call's priority (endpoint classification,
 // overridable via WithPriority). Every token still comes from the SAME limiter,
@@ -261,7 +289,13 @@ func (c *SpaceTradersClient) acquireRateToken(ctx context.Context, endpoint stri
 
 // request makes an HTTP request with rate limiting and exponential backoff retries
 func (c *SpaceTradersClient) request(ctx context.Context, method, path, token string, body interface{}, result interface{}) error {
-	return c.doWithRetry(ctx, apiRequest{method: method, path: path, token: token, body: body}, func(statusCode int, respBody []byte) error {
+	return c.requestWithRetryCap(ctx, method, path, token, body, result, nil)
+}
+
+// requestWithRetryCap is request() with a per-call server-error ceiling; nil is request().
+func (c *SpaceTradersClient) requestWithRetryCap(ctx context.Context, method, path, token string, body interface{}, result interface{}, serverErrorRetryCap *int) error {
+	call := apiRequest{method: method, path: path, token: token, body: body, serverErrorRetryCap: serverErrorRetryCap}
+	return c.doWithRetry(ctx, call, func(statusCode int, respBody []byte) error {
 		if statusCode < 200 || statusCode >= 300 {
 			// Typed so callers can classify a permanent 4xx apart from a transient failure via
 			// errors.As (negative-cache a 400'd jump gate). APIError.Error() preserves

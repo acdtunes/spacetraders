@@ -563,6 +563,7 @@ func run(cfg *config.Config) error {
 	// against (RULINGS #5 — an operational tuning number, not a rebuild). 0/unset -> the
 	// client's built-in 30s default; a persisted sensing-container tune overrides at rebuild.
 	apiClient.SetLimiterPressureHalfLife(time.Duration(cfg.Daemon.LimiterPressureHalfLifeSeconds) * time.Second)
+	apiClient.SetFleetIsolationAbortStreak(cfg.Daemon.FleetIsolationAbortStreak)
 	fmt.Println("API client initialized")
 
 	// Declared as the interface up here and assigned below, once graphService —

@@ -147,6 +147,43 @@ groups:
             origin gate is uncharted / probe-backed-off. The tour coordinator's "hull
             stranded" WARN names the same ship + system.
 
+      # UnreadableHull: a hull we own whose record the API would not serve this pass (sp-2br34).
+      # The fleet read now isolates such a hull and proceeds on the rest — which is exactly why
+      # this alert has to exist. The failure no longer announces itself by stopping the fleet,
+      # so nothing else surfaces it; the episode this comes from was found only by a human
+      # reading identical log lines by hand.
+      #
+      # WHY A RECURRENCE COUNT AND NO `for:`. The fault is INTERMITTENT per hull — a hull can
+      # 500 on one pass and trade normally minutes later — so a single unreadable pass is not
+      # news, and the probe's short retry ladder is designed around exactly that. What matters
+      # is RECURRENCE. A `for:` clause cannot express it: one increment holds increase[6h] > 0
+      # for the whole six hours, so ANY `for:` shorter than the window is satisfied by a single
+      # pass, which is the opposite of the intent. The threshold IS the debounce (the
+      # StrandedHull rule above debounces the same way, inside its detector). Warning, not
+      # critical: the fleet trades on, one hull is skipped, nothing is on fire.
+      #
+      # Per-series {ship,player} labels name the exact hull, which is the entire point. A ship
+      # label of "<unidentified>" means the read could not attribute the failure to any hull we
+      # hold a row for — real, and worth more attention than a named one, not less.
+      - alert: UnreadableHull
+        expr: |
+          increase(spacetraders_daemon_fleet_hull_unreadable_total[6h]) >= 3
+        labels:
+          severity: warning
+        annotations:
+          summary: "Hull unreadable: {{ $labels.ship }} (player {{ $labels.player }}) — the API keeps refusing its record"
+          description: >-
+            {{ $labels.ship }} is a hull we own that GET /my/ships has refused on 3+ separate
+            fleet syncs in 6h (sp-2br34). The refusal is server-side and we cannot heal it. The
+            hull is present-but-unknown: its row is kept, it is still counted in the fleet, and
+            no coordinator gains a new path to act on it — so the rest of the fleet keeps
+            trading. Runbook: confirm with `curl -H "Authorization: Bearer $TOKEN"
+            https://api.spacetraders.io/v2/my/ships/{{ $labels.ship }}/cargo`, expecting an
+            INTERMITTENT 500 (retry a few times before concluding it is healthy). The daemon's
+            "fleet_hull_unreadable" WARN names the same hull and the isolation WARN carries the
+            exact per-hull request. If it reproduces, file it upstream at
+            github.com/SpaceTradersAPI/api-docs with the requestId from the 500.
+
       # AgentDark: the agent stopped trading entirely while its coordinators kept running.
       #
       # WHY A CONJUNCTION. Neither half is a signal alone. A quiet stretch is normal for a

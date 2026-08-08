@@ -22,6 +22,12 @@ type FleetHealthMetricsCollector struct {
 	// dark-looping. Keyed by ship+system exactly (the ship symbol is globally unique and
 	// already agent-scoped), so the alert can name the specific stranded hull and where.
 	hullStrandedTotal *prometheus.CounterVec
+
+	// hullUnreadableTotal increments once per fleet-sync pass for a hull we own that
+	// the API would not serve (its record is corrupt SERVER-side). The decision it
+	// serves: page the watch, because the fleet read now SURVIVES that hull, which is
+	// what lets it fail quietly. Keyed by ship so the alert names the hull.
+	hullUnreadableTotal *prometheus.CounterVec
 }
 
 // NewFleetHealthMetricsCollector creates a new fleet-health metrics collector.
@@ -32,6 +38,12 @@ func NewFleetHealthMetricsCollector() *FleetHealthMetricsCollector {
 			"Stranded-hull episodes: a hull whose origin has no durable gate adjacency AND a gate-inaccessible live probe, detected once per episode of N consecutive empty reposition discoveries (sp-686e)",
 			"ship",
 			"system",
+		),
+		hullUnreadableTotal: newCounterVec(
+			"fleet_hull_unreadable_total",
+			"Fleet-sync passes in which a hull we own could not be read from the API — its record is unreadable server-side, so it is present-but-unknown: kept, counted, and acted on by nothing (sp-2br34)",
+			"ship",
+			"player",
 		),
 	}
 }
@@ -44,6 +56,7 @@ func (c *FleetHealthMetricsCollector) Register() error {
 	}
 	return registerAll(
 		c.hullStrandedTotal,
+		c.hullUnreadableTotal,
 	)
 }
 
@@ -55,6 +68,14 @@ func (c *FleetHealthMetricsCollector) RecordHullStranded(ship, systemSymbol stri
 		return // Recording is best-effort; never panic a reposition/tour path (RULINGS #4).
 	}
 	c.hullStrandedTotal.WithLabelValues(ship, systemSymbol).Inc()
+}
+
+// RecordHullUnreadable records one pass in which a hull we own was unreadable.
+func (c *FleetHealthMetricsCollector) RecordHullUnreadable(ship, player string) {
+	if c == nil || c.hullUnreadableTotal == nil {
+		return // Recording is best-effort; never fail a fleet sync on a metrics miss (RULINGS #4).
+	}
+	c.hullUnreadableTotal.WithLabelValues(ship, player).Inc()
 }
 
 // globalFleetHealthCollector is the singleton fleet-health collector.
@@ -73,5 +94,12 @@ func SetGlobalFleetHealthCollector(collector *FleetHealthMetricsCollector) {
 func RecordHullStranded(ship, system string) {
 	if globalFleetHealthCollector != nil {
 		globalFleetHealthCollector.RecordHullStranded(ship, system)
+	}
+}
+
+// RecordHullUnreadable records one unreadable-hull sync pass globally.
+func RecordHullUnreadable(ship, player string) {
+	if globalFleetHealthCollector != nil {
+		globalFleetHealthCollector.RecordHullUnreadable(ship, player)
 	}
 }

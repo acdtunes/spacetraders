@@ -90,6 +90,22 @@ type apiRequest struct {
 	path   string
 	token  string
 	body   interface{}
+
+	// serverErrorRetryCap, when non-nil, lowers THIS call's ladder for server/network
+	// failures only. Rate limiting keeps the client-wide one: a 429 is the limiter
+	// telling us to wait, and shortening it turns backpressure into a failed call.
+	serverErrorRetryCap *int
+}
+
+// retryCapFor: the call's own cap for a server/network failure, else client-wide.
+func (r apiRequest) retryCapFor(decision retryDecision, clientMax int) int {
+	if r.serverErrorRetryCap == nil || decision.metricReason == "rate_limited_429" {
+		return clientMax
+	}
+	if *r.serverErrorRetryCap < clientMax {
+		return *r.serverErrorRetryCap
+	}
+	return clientMax
 }
 
 func (c *SpaceTradersClient) sendOnce(ctx context.Context, call apiRequest) (attemptOutcome, error) {
@@ -175,7 +191,7 @@ func (c *SpaceTradersClient) doWithRetry(ctx context.Context, call apiRequest, o
 		if collector := c.getMetricsCollector(); collector != nil {
 			collector.RecordAPIRetry(call.method, endpoint, decision.metricReason)
 		}
-		if attempt >= c.maxRetries {
+		if attempt >= call.retryCapFor(decision, c.maxRetries) {
 			finalStatusCode = outcome.statusCode
 			break
 		}
