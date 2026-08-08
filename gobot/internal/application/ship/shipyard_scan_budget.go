@@ -26,9 +26,13 @@ import (
 // about to spend millions at. quartermaster_cadence_secs stays a floor the
 // budget may not scan past, never the thing that sets the rate.
 
-// defaultYardBudgetReqPerSec is the shipyard-read allowance, ~6% of the 2.00 req/s
-// ceiling. Constant in map size: a bigger map lengthens intervals, not traffic.
-const defaultYardBudgetReqPerSec = 0.12
+// The shipyard-read allowance, ~6% of the 2.00 req/s ceiling; constant in map size,
+// so a bigger map lengthens intervals rather than traffic. The MILLI form is for
+// consumers that DERIVE a cadence from it rather than merely drawing on it.
+const (
+	defaultYardBudgetReqPerSec = 0.12
+	YardBudgetMilliReqPerSec   = int(defaultYardBudgetReqPerSec * 1000)
+)
 
 // defaultYardValueClampR is how much more attention the most valuable yard may
 // earn than a yard selling nothing we want. It matches the market budget's clamp

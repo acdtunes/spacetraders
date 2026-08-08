@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/fleetgrowth"
@@ -155,18 +156,21 @@ func (h *RunFleetGrowthCoordinatorHandler) readHeavyDemand(in growthTickInputs) 
 	})
 }
 
-// advanceShortfallStreak moves the anti-thrash counter every tick, on the DEMAND alone. It is
-// advanced HERE (where the tick state lives) and JUDGED by guardDemand.
+// advanceShortfallDwell moves the anti-thrash WINDOW every tick, on the DEMAND alone. It is advanced
+// HERE (where the tick state lives) and JUDGED by guardDemand.
 //
-// IT IS DELIBERATELY OUTSIDE THE WAVE GATE. A shortfall that persisted through a PROBE stretch
-// persisted; resetting it on a wave flip would make the streak a measure of the regime rather than
-// of the demand, and a fleet whose wave alternates would never accumulate three consecutive ticks.
-func (h *RunFleetGrowthCoordinatorHandler) advanceShortfallStreak(st *growthState, d ClassDemand) {
-	if d.Readable && d.Shortfall() > 0 {
-		st.heavyShortfallStreak++
+// IT ANCHORS RATHER THAN COUNTS: set once when a shortfall appears and left alone while it stands,
+// so the window grows with wall clock however often the coordinator looked. DELIBERATELY OUTSIDE THE
+// WAVE GATE — resetting on a wave flip would measure the regime rather than the demand. An UNREADABLE
+// demand clears it: a blind tick is not evidence the shortfall held.
+func (h *RunFleetGrowthCoordinatorHandler) advanceShortfallDwell(st *growthState, d ClassDemand, now time.Time) {
+	if !d.Readable || d.Shortfall() <= 0 {
+		st.heavyShortfallSince = time.Time{}
 		return
 	}
-	st.heavyShortfallStreak = 0
+	if st.heavyShortfallSince.IsZero() {
+		st.heavyShortfallSince = now
+	}
 }
 
 // buyHeavy runs the tick's demand→guard→buy for the heavy class. It reports whether a hull was
@@ -273,9 +277,11 @@ func (h *RunFleetGrowthCoordinatorHandler) buildPurchaseRequest(
 		Class:    HullClassHeavy,
 		ShipType: shipType,
 
-		Shortfall:          d.Shortfall(),
-		ShortfallStreak:    st.heavyShortfallStreak,
-		ShortfallStreakMin: cfg.UnservedLanesMin,
+		Shortfall: d.Shortfall(),
+		// The anti-thrash window as facts: how long the shortfall stood, and the pool it stands against.
+		ShortfallHeld:  st.heldFor(h.clock.Now()),
+		ShortfallDwell: cfg.ShortfallDwell,
+		PoolCurrent:    d.Current,
 
 		HeaviesOwned:         in.heaviesOwned,
 		HeavyCap:             cfg.HeavyCap,

@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/application/liveconfig"
@@ -18,18 +19,19 @@ func TestGrowthHandle_RejectsTheWrongRequestType(t *testing.T) {
 	}
 }
 
-// THE ANTI-THRASH STREAK IS PER-CONTAINER. The handler is a registered singleton serving every
-// player's ticks, so a streak shared across containers would let one coordinator's persistent
+// THE ANTI-THRASH WINDOW IS PER-CONTAINER. The handler is a registered singleton serving every
+// player's ticks, so a window shared across containers would let one coordinator's persistent
 // shortfall authorise another's seven-figure purchase on its first tick.
 func TestGrowthState_IsPerContainer(t *testing.T) {
 	h := NewRunFleetGrowthCoordinatorHandler(nil)
+	anchor := time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC)
 
-	h.coordinatorState("growth-1").heavyShortfallStreak = 3
-	if got := h.coordinatorState("growth-2").heavyShortfallStreak; got != 0 {
-		t.Fatalf("a second container inherited a streak of %d — the state is not per-container", got)
+	h.coordinatorState("growth-1").heavyShortfallSince = anchor
+	if got := h.coordinatorState("growth-2").heavyShortfallSince; !got.IsZero() {
+		t.Fatalf("a second container inherited an anchor of %v — the state is not per-container", got)
 	}
-	if got := h.coordinatorState("growth-1").heavyShortfallStreak; got != 3 {
-		t.Fatalf("the first container's streak was disturbed, got %d", got)
+	if got := h.coordinatorState("growth-1").heavyShortfallSince; !got.Equal(anchor) {
+		t.Fatalf("the first container's window was disturbed, got %v", got)
 	}
 }
 

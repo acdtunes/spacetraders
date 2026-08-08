@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/fleetgrowth"
 )
@@ -63,28 +64,33 @@ func TestGuard_Demand_ZeroShortfallBlocks(t *testing.T) {
 // Deleting the streak term from guardDemand makes the mid-streak rows approve a purchase the fleet
 // deliberately holds.
 func TestGuard_Demand_BlocksUntilTheShortfallPersistsTheStreak(t *testing.T) {
+	// The window is WALL CLOCK now (sp-739gf), and it applies to a MARGINAL shortfall — one the pool
+	// serving it is large enough to make a close call. A pool of 40 against a shortfall of 17 is that
+	// case; the decisive case has its own tests in fleet_growth_dwell_test.go.
+	const dwell = 30 * time.Minute
 	cases := []struct {
-		streak    int
+		held      time.Duration
 		wantBlock bool
 	}{
-		{streak: 0, wantBlock: true},  // first tick of the episode
-		{streak: 1, wantBlock: true},  // mid-streak
-		{streak: 2, wantBlock: true},  // one short of the minimum
-		{streak: 3, wantBlock: false}, // == minimum → the need is settled, buy
-		{streak: 9, wantBlock: false}, // long-standing
+		{held: 0, wantBlock: true},                   // first tick of the episode
+		{held: 10 * time.Minute, wantBlock: true},    // mid-window
+		{held: dwell - time.Second, wantBlock: true}, // one second short
+		{held: dwell, wantBlock: false},              // == the dwell → the need is settled, buy
+		{held: 3 * time.Hour, wantBlock: false},      // long-standing
 	}
 	for _, tc := range cases {
 		r := heavyRequest()
 		r.Shortfall = 17
-		r.ShortfallStreak = tc.streak
-		r.ShortfallStreakMin = 3
+		r.PoolCurrent = 40
+		r.ShortfallHeld = tc.held
+		r.ShortfallDwell = dwell
 		d := EvaluateGuards(r)
 		if blocked := d.BlockedBy == GuardDemand; blocked != tc.wantBlock {
-			t.Errorf("streak %d/3: demand blocked=%v, want %v — arithmetic: %s", tc.streak, blocked, tc.wantBlock, d.Arithmetic())
+			t.Errorf("held %s/%s: demand blocked=%v, want %v — arithmetic: %s", tc.held, dwell, blocked, tc.wantBlock, d.Arithmetic())
 		}
-		// The whole go/no-go must be readable on the ONE line — the streak used to log separately.
-		if !strings.Contains(d.Arithmetic(), fmt.Sprintf("persisting %d/3 ticks", tc.streak)) {
-			t.Errorf("streak %d/3: the demand term must carry the streak arithmetic, got: %s", tc.streak, d.Arithmetic())
+		// The whole go/no-go must be readable on the ONE line — the window used to log separately.
+		if !strings.Contains(d.Arithmetic(), fmt.Sprintf("held %s of %s", tc.held.Round(time.Second), dwell)) {
+			t.Errorf("held %s/%s: the demand term must carry the window arithmetic, got: %s", tc.held, dwell, d.Arithmetic())
 		}
 	}
 }

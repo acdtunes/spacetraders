@@ -205,8 +205,14 @@ type growthFixture struct {
 	yardAsk      int64
 	heaviesOwned int
 	tradeHulls   int
-	streak       int
+	// shortfallHeld pre-loads the anti-thrash WINDOW: how long the shortfall has already stood when
+	// the fixture's first tick runs. It replaced a tick count (sp-739gf) — the window is wall clock.
+	shortfallHeld time.Duration
 }
+
+// growthSettledWindow is "the anti-thrash window is already satisfied", the state most of these
+// fixtures want so that the guard each test is about is the one that decides.
+const growthSettledWindow = 2 * time.Hour
 
 func growthCmd() *RunFleetGrowthCoordinatorCommand {
 	return &RunFleetGrowthCoordinatorCommand{PlayerID: 1, ContainerID: "growth-1"}
@@ -249,8 +255,8 @@ func newGrowthHandlerWith(t *testing.T, f growthFixture) *RunFleetGrowthCoordina
 		h.SetGrowthConfigReader(stubGrowthConfig{growthEnabledKey: growthDisabled})
 	}
 
-	if f.streak > 0 {
-		h.coordinatorState(growthCmd().ContainerID).heavyShortfallStreak = f.streak
+	if f.shortfallHeld > 0 {
+		h.coordinatorState(growthCmd().ContainerID).heavyShortfallSince = h.clock.Now().Add(-f.shortfallHeld)
 	}
 	return h
 }
@@ -309,7 +315,7 @@ func TestGrowthReconcile_DisabledPublishesProbeAndBuysNothing(t *testing.T) {
 func TestGrowthReconcile_DisabledReadsNoPrices(t *testing.T) {
 	prices := &growthYardPriceCounter{ask: 1_000_000}
 	h := newGrowthHandlerWith(t, growthFixture{
-		lanes: &fakeLanes{count: 9, readable: true}, treasury: 12_000_000, yardAsk: 1_000_000, streak: 3,
+		lanes: &fakeLanes{count: 9, readable: true}, treasury: 12_000_000, yardAsk: 1_000_000, shortfallHeld: growthSettledWindow,
 		growthEnabled: boolPtr(false),
 	})
 	h.SetYardPriceReader(prices)
@@ -333,11 +339,11 @@ func TestGrowthReconcile_DisabledReadsNoPrices(t *testing.T) {
 func TestGrowthReconcile_ProbeWaveBuysNoHeavy(t *testing.T) {
 	buyer := &growthPurchaseRecorder{}
 	h := newGrowthHandlerWith(t, growthFixture{
-		lanes:     &fakeLanes{count: 9, readable: true},
-		treasury:  12_000_000, // momentarily flush, and it must not matter
-		highWater: 400_000,    // the peak across the cycle cannot reach the ask
-		yardAsk:   1_000_000,
-		streak:    3,
+		lanes:         &fakeLanes{count: 9, readable: true},
+		treasury:      12_000_000, // momentarily flush, and it must not matter
+		highWater:     400_000,    // the peak across the cycle cannot reach the ask
+		yardAsk:       1_000_000,
+		shortfallHeld: growthSettledWindow,
 	})
 	h.SetPurchaser(buyer)
 
@@ -356,10 +362,10 @@ func TestGrowthReconcile_ProbeWaveBuysNoHeavy(t *testing.T) {
 func TestGrowthReconcile_HeavyBuyOrderCarriesTheCoordinatorsContainer(t *testing.T) {
 	buyer := &growthPurchaseRecorder{}
 	h := newGrowthHandlerWith(t, growthFixture{
-		lanes:    &fakeLanes{count: 9, readable: true},
-		treasury: 12_000_000,
-		yardAsk:  1_000_000,
-		streak:   3,
+		lanes:         &fakeLanes{count: 9, readable: true},
+		treasury:      12_000_000,
+		yardAsk:       1_000_000,
+		shortfallHeld: growthSettledWindow,
 	})
 	h.SetPurchaser(buyer)
 
@@ -378,10 +384,10 @@ func TestGrowthReconcile_HeavyBuyOrderCarriesTheCoordinatorsContainer(t *testing
 func TestGrowthReconcile_HeavyWaveBuysOne(t *testing.T) {
 	buyer := &growthPurchaseRecorder{}
 	h := newGrowthHandlerWith(t, growthFixture{
-		lanes:    &fakeLanes{count: 9, readable: true},
-		treasury: 12_000_000,
-		yardAsk:  1_000_000,
-		streak:   3, // the anti-thrash streak already satisfied
+		lanes:         &fakeLanes{count: 9, readable: true},
+		treasury:      12_000_000,
+		yardAsk:       1_000_000,
+		shortfallHeld: growthSettledWindow, // the anti-thrash streak already satisfied
 	})
 	h.SetPurchaser(buyer)
 
@@ -397,39 +403,62 @@ func TestGrowthReconcile_HeavyWaveBuysOne(t *testing.T) {
 	}
 }
 
-// THE ANTI-THRASH STREAK LIVES ON THE BUY, NOT THE PREDICATE. A transient spike in the lane
-// ranking must not trigger a seven-figure purchase; a transient spike in the WAVE costs only a
-// paused probe tick, which is why the streak is deliberately asymmetric.
-func TestGrowthReconcile_HeavyBuyWaitsForTheStreak(t *testing.T) {
+// THE ANTI-THRASH WINDOW LIVES ON THE BUY, NOT THE PREDICATE. A transient spike in the lane ranking
+// must not trigger a seven-figure purchase; a transient spike in the WAVE costs only a paused probe
+// tick, which is why the window is deliberately asymmetric.
+//
+// The fixture is the MARGINAL regime — 9 unserved lanes against a pool of 9 already flying them —
+// because that is the only regime the window governs since sp-739gf: a shortfall larger than the pool
+// serving it survives halving the surface, so waiting on it buys no information. The clock STEPS, so
+// what elapses here is wall time rather than a tick count.
+func TestGrowthReconcile_HeavyBuyWaitsForTheDwell(t *testing.T) {
 	buyer := &growthPurchaseRecorder{}
 	h := newGrowthHandlerWith(t, growthFixture{
-		lanes: &fakeLanes{count: 9, readable: true}, treasury: 12_000_000, yardAsk: 1_000_000,
+		lanes: &fakeLanes{count: 9, readable: true}, tradeHulls: 9, treasury: 12_000_000, yardAsk: 1_000_000,
+		// A pool of nine that has traded: the cold-pool exception in readWorkingCapital does not
+		// apply once hulls exist, so the ledger has to have something in it or the working-capital
+		// rung refuses before the demand guard is ever consulted.
+		outflow: &fakeOutflow{obs: observedOutflow(100_000, 100_000, 50_000)},
 	})
+	clock := &steppingGrowthClock{now: time.Unix(1_700_000_000, 0)}
+	h.clock = clock
 	h.SetPurchaser(buyer)
 
-	// Ticks 1 and 2 are inside the 3-tick streak: HEAVY wave, no purchase.
+	// Two ticks a minute apart, well inside the dwell: HEAVY wave, no purchase.
 	for i := 0; i < 2; i++ {
 		if _, err := h.reconcileOnce(context.Background(), growthCmd()); err != nil {
 			t.Fatalf("tick %d: %v", i, err)
 		}
+		clock.step(time.Minute)
 	}
 	if buyer.calls != 0 {
-		t.Fatalf("no heavy may be bought before the streak is met, got %d", buyer.calls)
+		t.Fatalf("no heavy may be bought before a MARGINAL shortfall settles, got %d", buyer.calls)
 	}
+
+	// Past the dwell, the same unchanged shortfall buys.
+	clock.step(defaultGrowthShortfallDwell)
 	if _, err := h.reconcileOnce(context.Background(), growthCmd()); err != nil {
-		t.Fatalf("tick 3: %v", err)
+		t.Fatalf("settled tick: %v", err)
 	}
 	if buyer.calls != 1 {
-		t.Fatalf("the third consecutive tick must buy, got %d", buyer.calls)
+		t.Fatalf("a shortfall that has stood the whole dwell must buy, got %d", buyer.calls)
 	}
 }
+
+// steppingGrowthClock is fixedGrowthClock that can be moved forward, which is what a WALL-CLOCK
+// window needs a test to be able to do.
+type steppingGrowthClock struct{ now time.Time }
+
+func (c *steppingGrowthClock) Now() time.Time       { return c.now }
+func (c *steppingGrowthClock) Sleep(time.Duration)  {}
+func (c *steppingGrowthClock) step(d time.Duration) { c.now = c.now.Add(d) }
 
 // The working-capital term reaches the guard. A treasury that clears price+margin+floor but
 // not the observed cargo commitment must refuse the buy.
 func TestGrowthReconcile_WorkingCapitalBlocksTheBuy(t *testing.T) {
 	buyer := &growthPurchaseRecorder{}
 	h := newGrowthHandlerWith(t, growthFixture{
-		lanes: &fakeLanes{count: 9, readable: true}, treasury: 5_000_000, yardAsk: 1_000_000, streak: 3,
+		lanes: &fakeLanes{count: 9, readable: true}, treasury: 5_000_000, yardAsk: 1_000_000, shortfallHeld: growthSettledWindow,
 		tradeHulls: 4,
 		outflow:    &fakeOutflow{obs: observedOutflow(2_000_000, 0, 100_000)},
 	})
@@ -457,7 +486,7 @@ func TestGrowthReconcile_HighVelocityFleetIsHeldToItsFloatNotItsTurnover(t *test
 	atTreasury := func(treasury int64) *growthPurchaseRecorder {
 		buyer := &growthPurchaseRecorder{}
 		h := newGrowthHandlerWith(t, growthFixture{
-			lanes: &fakeLanes{count: 73, readable: true}, treasury: treasury, yardAsk: 1_742_500, streak: 3,
+			lanes: &fakeLanes{count: 73, readable: true}, treasury: treasury, yardAsk: 1_742_500, shortfallHeld: growthSettledWindow,
 			tradeHulls: 9,
 			outflow:    &fakeOutflow{obs: observedOutflow(4_319_078, 4_750_000, 182_000)},
 		})
@@ -483,7 +512,7 @@ func TestGrowthReconcile_HighVelocityFleetIsHeldToItsFloatNotItsTurnover(t *test
 func TestGrowthReconcile_UnrecoveredSpendOnTheSameFrameStillRefuses(t *testing.T) {
 	buyer := &growthPurchaseRecorder{}
 	h := newGrowthHandlerWith(t, growthFixture{
-		lanes: &fakeLanes{count: 73, readable: true}, treasury: 3_630_500, yardAsk: 1_742_500, streak: 3,
+		lanes: &fakeLanes{count: 73, readable: true}, treasury: 3_630_500, yardAsk: 1_742_500, shortfallHeld: growthSettledWindow,
 		tradeHulls: 9,
 		outflow:    &fakeOutflow{obs: observedOutflow(4_319_078, 0, 182_000)},
 	})
@@ -507,7 +536,7 @@ func TestGrowthReconcile_ColdStartRunwayArmStillBinds(t *testing.T) {
 	coldStart := func(recovered int64) *growthPurchaseRecorder {
 		buyer := &growthPurchaseRecorder{}
 		h := newGrowthHandlerWith(t, growthFixture{
-			lanes: &fakeLanes{count: 5, readable: true}, treasury: 1_500_000, yardAsk: 1_000_000, streak: 3,
+			lanes: &fakeLanes{count: 5, readable: true}, treasury: 1_500_000, yardAsk: 1_000_000, shortfallHeld: growthSettledWindow,
 			tradeHulls: 2,
 			outflow:    &fakeOutflow{obs: observedOutflow(500_000, recovered, 80_000)},
 		})
@@ -533,7 +562,7 @@ func TestGrowthReconcile_ColdStartRunwayArmStillBinds(t *testing.T) {
 func TestGrowthReconcile_DecisionLineNamesTheBindingWorkingCapitalArm(t *testing.T) {
 	logger := &capturingLogger{}
 	h := newGrowthHandlerWith(t, growthFixture{
-		lanes: &fakeLanes{count: 73, readable: true}, treasury: 3_630_499, yardAsk: 1_742_500, streak: 3,
+		lanes: &fakeLanes{count: 73, readable: true}, treasury: 3_630_499, yardAsk: 1_742_500, shortfallHeld: growthSettledWindow,
 		tradeHulls: 9,
 		outflow:    &fakeOutflow{obs: observedOutflow(4_319_078, 4_750_000, 182_000)},
 	})
@@ -554,7 +583,7 @@ func TestGrowthReconcile_DecisionLineNamesTheBindingWorkingCapitalArm(t *testing
 func TestGrowthReconcile_BothWorkingCapitalArmsReachTheMetricsSink(t *testing.T) {
 	sink := &recordingCapitalSink{}
 	h := newGrowthHandlerWith(t, growthFixture{
-		lanes: &fakeLanes{count: 73, readable: true}, treasury: 3_630_500, yardAsk: 1_742_500, streak: 3,
+		lanes: &fakeLanes{count: 73, readable: true}, treasury: 3_630_500, yardAsk: 1_742_500, shortfallHeld: growthSettledWindow,
 		tradeHulls: 9,
 		outflow:    &fakeOutflow{obs: observedOutflow(4_319_078, 4_750_000, 182_000)},
 	})
@@ -580,7 +609,7 @@ func TestGrowthReconcile_BothWorkingCapitalArmsReachTheMetricsSink(t *testing.T)
 func TestGrowthReconcile_TruncatedLedgerWindowFallsBackToGross(t *testing.T) {
 	buyer := &growthPurchaseRecorder{}
 	h := newGrowthHandlerWith(t, growthFixture{
-		lanes: &fakeLanes{count: 5, readable: true}, treasury: 1_500_000, yardAsk: 1_000_000, streak: 3,
+		lanes: &fakeLanes{count: 5, readable: true}, treasury: 1_500_000, yardAsk: 1_000_000, shortfallHeld: growthSettledWindow,
 		tradeHulls: 2,
 		outflow: &fakeOutflow{obs: fleetgrowth.CargoOutflow{
 			Spent: 500_000, Recovered: 500_000, Largest: 80_000, Complete: false,
@@ -600,7 +629,7 @@ func TestGrowthReconcile_TruncatedLedgerWindowFallsBackToGross(t *testing.T) {
 func TestGrowthReconcile_UnreadableOutflowBuysNothing(t *testing.T) {
 	buyer := &growthPurchaseRecorder{}
 	h := newGrowthHandlerWith(t, growthFixture{
-		lanes: &fakeLanes{count: 9, readable: true}, treasury: 12_000_000, yardAsk: 1_000_000, streak: 3,
+		lanes: &fakeLanes{count: 9, readable: true}, treasury: 12_000_000, yardAsk: 1_000_000, shortfallHeld: growthSettledWindow,
 		outflow: &fakeOutflow{err: errors.New("ledger down")},
 	})
 	h.SetPurchaser(buyer)
@@ -620,7 +649,7 @@ func TestGrowthReconcile_UnreadableOutflowBuysNothing(t *testing.T) {
 func TestGrowthReconcile_TradeHullsWithNoObservedSpendBuysNothing(t *testing.T) {
 	buyer := &growthPurchaseRecorder{}
 	h := newGrowthHandlerWith(t, growthFixture{
-		lanes: &fakeLanes{count: 9, readable: true}, treasury: 12_000_000, yardAsk: 1_000_000, streak: 3,
+		lanes: &fakeLanes{count: 9, readable: true}, treasury: 12_000_000, yardAsk: 1_000_000, shortfallHeld: growthSettledWindow,
 		tradeHulls: 4,
 		outflow:    &fakeOutflow{}, // the window held no cargo purchase at all
 	})
@@ -640,7 +669,7 @@ func TestGrowthReconcile_TradeHullsWithNoObservedSpendBuysNothing(t *testing.T) 
 func TestGrowthReconcile_EmptyTradePoolBuysOnTheImmutableFloorAlone(t *testing.T) {
 	buyer := &growthPurchaseRecorder{}
 	h := newGrowthHandlerWith(t, growthFixture{
-		lanes: &fakeLanes{count: 9, readable: true}, treasury: 12_000_000, yardAsk: 1_000_000, streak: 3,
+		lanes: &fakeLanes{count: 9, readable: true}, treasury: 12_000_000, yardAsk: 1_000_000, shortfallHeld: growthSettledWindow,
 		tradeHulls: 0,
 		outflow:    &fakeOutflow{},
 	})
@@ -802,8 +831,8 @@ func TestResolveFleetGrowthConfig_Defaults(t *testing.T) {
 	if cfg.HeavyCap != defaultGrowthHeavyCap {
 		t.Errorf("heavy cap default = %d, want %d", cfg.HeavyCap, defaultGrowthHeavyCap)
 	}
-	if cfg.UnservedLanesMin != defaultGrowthUnservedLanesMin {
-		t.Errorf("unserved-lanes-min default = %d, want %d", cfg.UnservedLanesMin, defaultGrowthUnservedLanesMin)
+	if cfg.ShortfallDwell != defaultGrowthShortfallDwell {
+		t.Errorf("shortfall dwell default = %v, want %v", cfg.ShortfallDwell, defaultGrowthShortfallDwell)
 	}
 	if cfg.RunwayMilliHours != defaultGrowthRunwayMilliHours {
 		t.Errorf("runway default = %d, want %d", cfg.RunwayMilliHours, defaultGrowthRunwayMilliHours)
@@ -900,10 +929,10 @@ func TestFleetGrowthTunableDefaults_MatchTheCoordinator(t *testing.T) {
 func TestGrowthReconcile_ALargeShortfallBuysNoFasterThanOnePerTick(t *testing.T) {
 	buyer := &growthPurchaseRecorder{}
 	h := newGrowthHandlerWith(t, growthFixture{
-		lanes:    &fakeLanes{count: 900, readable: true},
-		treasury: 1_000_000_000,
-		yardAsk:  1_000_000,
-		streak:   defaultGrowthUnservedLanesMin,
+		lanes:         &fakeLanes{count: 900, readable: true},
+		treasury:      1_000_000_000,
+		yardAsk:       1_000_000,
+		shortfallHeld: growthSettledWindow,
 	})
 	h.SetPurchaser(buyer)
 

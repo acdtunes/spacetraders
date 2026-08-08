@@ -47,10 +47,10 @@ func (r *recordingStallObserver) forScope(scope string) []health.TickOutcome {
 func blockedGrowthHandler(t *testing.T) (*RunFleetGrowthCoordinatorHandler, *recordingStallObserver) {
 	t.Helper()
 	h := newGrowthHandlerWith(t, growthFixture{
-		lanes:    &fakeLanes{count: 9, readable: true},
-		treasury: 12_000_000,
-		yardAsk:  1_000_000,
-		streak:   3,
+		lanes:         &fakeLanes{count: 9, readable: true},
+		treasury:      12_000_000,
+		yardAsk:       1_000_000,
+		shortfallHeld: growthSettledWindow,
 	})
 	obs := &recordingStallObserver{}
 	h.SetStallObserver(obs)

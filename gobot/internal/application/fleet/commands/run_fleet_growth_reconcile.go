@@ -19,7 +19,8 @@ type growthRunConfig struct {
 	// the class; every other bound is economic.
 	HeavyCap int
 
-	UnservedLanesMin int
+	// ShortfallDwell is the window a MARGINAL shortfall must stand; waived for a decisive one.
+	ShortfallDwell time.Duration
 	// RunwayMilliHours is the working-capital runway arm's multiplier on the fleet's UNRECOVERED
 	// cargo position — spend net of what was sold back, never gross spend.
 	RunwayMilliHours int
@@ -46,7 +47,7 @@ func resolveFleetGrowthConfig(cmd *RunFleetGrowthCoordinatorCommand) growthRunCo
 	c := growthRunConfig{
 		Tick:                      time.Duration(cmd.TickIntervalSecs) * time.Second,
 		HeavyCap:                  resolveGrowthHeavyCap(cmd.HeavyCap),
-		UnservedLanesMin:          cmd.UnservedLanesMin,
+		ShortfallDwell:            time.Duration(cmd.ShortfallDwellSecs) * time.Second,
 		RunwayMilliHours:          cmd.RunwayMilliHours,
 		PurchaseMarginOverFloor:   cmd.PurchaseMarginOverFloor,
 		TreasuryPctPerPurchase:    cmd.TreasuryPctPerPurchase,
@@ -60,9 +61,8 @@ func resolveFleetGrowthConfig(cmd *RunFleetGrowthCoordinatorCommand) growthRunCo
 	if c.Tick <= 0 {
 		c.Tick = defaultGrowthTickSeconds * time.Second
 	}
-	if c.UnservedLanesMin <= 0 {
-		c.UnservedLanesMin = defaultGrowthUnservedLanesMin
-	}
+	// Resolved AGAIN inside guardDemand: the pure guard must not depend on a caller filling this in.
+	c.ShortfallDwell = resolveShortfallDwell(c.ShortfallDwell)
 	if c.RunwayMilliHours <= 0 {
 		c.RunwayMilliHours = defaultGrowthRunwayMilliHours
 	}
@@ -175,13 +175,13 @@ func (h *RunFleetGrowthCoordinatorHandler) reconcileOnce(ctx context.Context, cm
 	// whole job is to make a LATER tick's price readable — which is what lets the wave ever flip.
 	h.runHeavyPricingErrand(ctx, cmd, cfg, in)
 
-	// The streak advances on the DEMAND, every tick, so it is not reset by a wave flip.
+	// The anti-thrash WINDOW advances on the DEMAND, every tick, so it is not reset by a wave flip.
 	demand := h.readHeavyDemand(in)
 	res.Shortfall = demand.Shortfall()
 	if h.metrics != nil {
 		h.metrics.RecordDemand(HullClassHeavy, demand.Demand, demand.Current)
 	}
-	h.advanceShortfallStreak(st, demand)
+	h.advanceShortfallDwell(st, demand, h.clock.Now())
 
 	if wave != common.WaveHeavy {
 		logger.Log("INFO", fmt.Sprintf("Fleet growth tick: PROBE wave (%s) — shortfall %d, no heavy considered", reason, res.Shortfall), map[string]interface{}{

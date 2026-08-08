@@ -19,11 +19,11 @@ import (
 // fixture short of any of them would pass with the term deleted entirely.
 func saturatedGrowthFixture(saturated bool) growthFixture {
 	return growthFixture{
-		lanes:     &fakeLanes{count: 9, readable: true, saturated: saturated},
-		treasury:  12_000_000,
-		highWater: 12_000_000,
-		yardAsk:   1_000_000,
-		streak:    3,
+		lanes:         &fakeLanes{count: 9, readable: true, saturated: saturated},
+		treasury:      12_000_000,
+		highWater:     12_000_000,
+		yardAsk:       1_000_000,
+		shortfallHeld: growthSettledWindow,
 	}
 }
 

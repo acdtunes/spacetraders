@@ -50,7 +50,7 @@ import (
 // strategic 15-minute tick it is 45 minutes: slower in absolute terms, but the measured
 // production failure there was eighteen consecutive blocked ticks (4.5 HOURS) with nothing
 // raised at all, so this catches it at tick three with fifteen still to run. The codebase's own
-// anti-thrash streaks sit in the same family (heavy_unserved_lanes_min = 3, crashLoopThreshold =
+// anti-thrash windows sit in the same family (the heavy buy's shortfall dwell, crashLoopThreshold =
 // 5, zero_effect_alarm_ticks = 4).
 const StallEscalationTicks = 3
 

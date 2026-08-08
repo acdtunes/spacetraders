@@ -810,7 +810,7 @@ func TestReconcile_PricingErrandStandsDownWhenThereIsNothingToPrice(t *testing.T
 func TestReconcile_PricingErrandUnwired_TickIsUnaffected(t *testing.T) {
 	buyer := &growthPurchaseRecorder{}
 	h := newGrowthHandlerWith(t, growthFixture{
-		lanes: &fakeLanes{count: 9, readable: true}, treasury: 12_000_000, yardAsk: 1_000_000, streak: 3,
+		lanes: &fakeLanes{count: 9, readable: true}, treasury: 12_000_000, yardAsk: 1_000_000, shortfallHeld: growthSettledWindow,
 	})
 	h.SetPurchaser(buyer)
 

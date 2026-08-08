@@ -46,8 +46,18 @@ type fleetYardPriceReader struct {
 //
 // TWO NUMBERS, TWO QUESTIONS. price is the TARGET's ask, and restricting it to yards we occupy can
 // RAISE it — correct, because the cheapest ask on the map under-reserves whenever the yard we can
-// transact at is dearer. cheapest stays the cheapest ask KNOWN, occupied or not: narrowing it too
-// would raise the premium ceiling (RULINGS #4) and hide the presence premium from its own metric.
+// transact at is dearer. cheapest stays the cheapest ask KNOWN, occupied or not: it is guardPrice's
+// DENOMINATOR, so narrowing it would raise the premium ceiling (RULINGS #4).
+//
+// PRESENCE GATES THE READ, NOT MERELY THE RANKING. Pricing every SHIPYARD-trait waypoint live and
+// only then asking which one a buyer stands on charges the discovery fan-out to the buy decision:
+// these are Earning reads (no trait filter, no rescan window, never declined) on a PriorityLow
+// endpoint, so each BLOCKS on a contended rate-limit token behind every trade call.
+// THE NARROWING IS PER-YARD AND CONDITIONAL ON COVERAGE, which is the safety argument: a live read is
+// dropped only where the scan surface ALREADY KNOWS AN ASK FOR THAT YARD, so every yard that fed the
+// reference still feeds it. A walked yard the store never priced is read live; no ranker, an
+// unreadable or cold store, or a non-heavy class leaves the walk as it was. FRESHNESS is traded, not
+// coverage — the TARGET's ask stays live, re-verified before credits move.
 func (r *fleetYardPriceReader) PriceFor(ctx context.Context, playerID int, class hullbuy.HullClass, shipType string, preferProximal bool) (int64, int64, string, bool, error) {
 	if r.waypointRepo == nil {
 		return 0, 0, "", false, nil
@@ -62,6 +72,11 @@ func (r *fleetYardPriceReader) PriceFor(ctx context.Context, playerID int, class
 	}
 	manned, rosterOK := buyerRoster(ctx, r.posts, playerID)
 	buyers := purchaseBuyers(ships, manned, rosterOK)
+	// ONE store read doing two jobs: the premium reference, and the per-yard licence to skip a read.
+	candidates := r.scannedYardCandidates(ctx, playerID, class, shipType, ships)
+	scanned := cheapestCandidateAsk(candidates)
+	covered := scannedAskByYard(candidates)
+
 	var cheapest, target int64
 	var cheapestYard, targetYard string
 	for _, system := range distinctShipSystems(ships) {
@@ -73,6 +88,11 @@ func (r *fleetYardPriceReader) PriceFor(ctx context.Context, playerID int, class
 			if wp == nil {
 				continue
 			}
+			_, standing := standingBuyerAt(buyers, wp.Symbol)
+			// Nothing stands here, so this yard can never be the target, and the surface has its ask.
+			if _, known := covered[wp.Symbol]; known && !standing {
+				continue
+			}
 			price, ok := r.priceAtShipyard(ctx, system, wp.Symbol, shipType, pid)
 			if !ok {
 				continue
@@ -80,7 +100,7 @@ func (r *fleetYardPriceReader) PriceFor(ctx context.Context, playerID int, class
 			if cheapestYard == "" || price < cheapest {
 				cheapest, cheapestYard = price, wp.Symbol
 			}
-			if _, standing := standingBuyerAt(buyers, wp.Symbol); !standing {
+			if !standing {
 				continue
 			}
 			if targetYard == "" || price < target {
@@ -88,12 +108,68 @@ func (r *fleetYardPriceReader) PriceFor(ctx context.Context, playerID int, class
 			}
 		}
 	}
+	cheapest = lowerAsk(cheapest, scanned)
 	if targetYard == "" {
-		// The scanned surface knows yards outside this walk; the live cheapest goes with it so the
-		// premium reference still spans everything known.
-		return r.scannedYardFallback(ctx, playerID, class, shipType, ships, buyers, cheapest)
+		return r.scannedYardFallback(candidates, buyers, cheapest)
 	}
 	return target, cheapest, targetYard, true, nil
+}
+
+// scannedYardCandidates is the persisted scan surface for the type, or nil when it cannot be a
+// source. HEAVY-ONLY, matching scannedYardFallback's gate: opening the light tier to remote yards is
+// a policy change this seam does not make. Nil ranker, a read error or another class yields nil and
+// PriceFor walks fully. Asked from the OCCUPIED SYSTEMS, which narrowing would shrink.
+func (r *fleetYardPriceReader) scannedYardCandidates(ctx context.Context, playerID int, class hullbuy.HullClass, shipType string, ships []*navigation.Ship) []shipyardQueries.YardCandidate {
+	if class != hullbuy.HullClassHeavy || r.scannedYards == nil {
+		return nil
+	}
+	candidates, err := r.scannedYards.NearestYardsSelling(ctx, playerID, []string{shipType}, distinctShipSystems(ships))
+	if err != nil {
+		return nil
+	}
+	return candidates
+}
+
+// cheapestCandidateAsk is the minimum PRICED ask; 0 means none. A zero reference makes guardPrice
+// SKIP the premium test, so unpriced rows are dropped.
+func cheapestCandidateAsk(candidates []shipyardQueries.YardCandidate) int64 {
+	var cheapest int64
+	for _, c := range candidates {
+		if c.PurchasePrice <= 0 {
+			continue
+		}
+		if cheapest == 0 || int64(c.PurchasePrice) < cheapest {
+			cheapest = int64(c.PurchasePrice)
+		}
+	}
+	return cheapest
+}
+
+// scannedAskByYard indexes which WAYPOINTS the scan surface can already price — the licence to skip
+// a live read, since the yard contributes its stored ask. An unpriced row is not coverage.
+func scannedAskByYard(candidates []shipyardQueries.YardCandidate) map[string]int64 {
+	out := make(map[string]int64, len(candidates))
+	for _, c := range candidates {
+		if c.WaypointSymbol == "" || c.PurchasePrice <= 0 {
+			continue
+		}
+		if prior, seen := out[c.WaypointSymbol]; seen && prior <= int64(c.PurchasePrice) {
+			continue
+		}
+		out[c.WaypointSymbol] = int64(c.PurchasePrice)
+	}
+	return out
+}
+
+// lowerAsk folds two asks with 0 meaning "unknown", so the reference can only ever move DOWN.
+func lowerAsk(a, b int64) int64 {
+	if a <= 0 {
+		return b
+	}
+	if b <= 0 || a < b {
+		return a
+	}
+	return b
 }
 
 // PriceForSystem finds the cheapest priced listing for the ship type at a SHIPYARD-trait waypoint
@@ -135,27 +211,14 @@ func (r *fleetYardPriceReader) PriceForSystem(ctx context.Context, playerID int,
 }
 
 // scannedYardFallback opens the HEAVY price signal from the persisted shipyard scans when the live
-// in-system walk found no priced listing WE ALREADY STAND ON. Heavy ONLY: heavy hulls are the class
-// whose yards are routinely out-of-system; lights keep buying in-system, so widening them to remote
-// yards would be a buy-policy change this seam deliberately does not make. price = the ask at the
-// nearest OCCUPIED candidate, cheapest = the true minimum across every candidate, folded with the
-// live walk's own. Nothing readable, or nothing we stand on ⇒ readable=false, as it always was. The
-// rank is still asked from the fleet's OCCUPIED SYSTEMS — narrowing it would shrink cheapest and so
-// quietly raise the premium ceiling; presence is applied after, to which candidate is TARGETED.
-
-func (r *fleetYardPriceReader) scannedYardFallback(ctx context.Context, playerID int, class hullbuy.HullClass, shipType string, ships []*navigation.Ship, buyers []purchaseBuyer, liveCheapest int64) (int64, int64, string, bool, error) {
-	if class != hullbuy.HullClassHeavy || r.scannedYards == nil {
-		return 0, 0, "", false, nil
-	}
-	candidates, err := r.scannedYards.NearestYardsSelling(ctx, playerID, []string{shipType}, distinctShipSystems(ships))
-	if err != nil || len(candidates) == 0 {
+// in-system walk found no priced listing WE ALREADY STAND ON. price = the ask at the nearest OCCUPIED
+// candidate, cheapest = the reference PriceFor already folded. Nothing readable, or nothing we stand
+// on ⇒ readable=false, as it always was; presence decides which candidate is TARGETED.
+// IT DOES NOT FETCH: candidates and cheapest arrive from PriceFor's single store read, the same one
+// that decides whether the walk may narrow, so an empty list means one thing — nothing to say.
+func (r *fleetYardPriceReader) scannedYardFallback(candidates []shipyardQueries.YardCandidate, buyers []purchaseBuyer, cheapest int64) (int64, int64, string, bool, error) {
+	if len(candidates) == 0 {
 		return 0, 0, "", false, nil // unreadable or empty scan surface → the price guard stays closed
-	}
-	cheapest := liveCheapest
-	for _, c := range candidates {
-		if cheapest == 0 || int64(c.PurchasePrice) < cheapest {
-			cheapest = int64(c.PurchasePrice)
-		}
 	}
 	for _, c := range candidates {
 		if _, standing := standingBuyerAt(buyers, c.WaypointSymbol); !standing {

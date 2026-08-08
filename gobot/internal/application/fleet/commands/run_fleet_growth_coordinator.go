@@ -15,11 +15,32 @@ import (
 )
 
 const (
-	defaultGrowthTickSeconds = 900
-	// defaultGrowthUnservedLanesMin is the ANTI-THRASH streak on the heavy BUY: the shortfall must
-	// persist this many ticks before a large hull is bought. On the purchase and NOT on the wave —
-	// a spurious wave costs one paused probe tick, a spurious purchase costs a hull.
-	defaultGrowthUnservedLanesMin = 3
+	// growthTickYardReads BOUNDS a tick's shipyard reads: the errand's at-most-one deniable read, plus
+	// the live Earning read at each counter a claimable hull stands on.
+	growthTickYardReads = 4
+	// growthYardAllowanceShareMilli is growth's share of the fleet's ONE shipyard-read allowance, in
+	// milli. A quarter: scout tours, the probe queue, bootstrap and the expansion relay share the rest,
+	// and the buyer alone can fall back on the persisted surface.
+	growthYardAllowanceShareMilli = 250
+	// growthYardAllowanceMilliReqPerSec MIRRORS ship.YardBudgetMilliReqPerSec, because a float has no
+	// place in a const expression a tick is derived from. A lockstep test fails LOUD on drift.
+	growthYardAllowanceMilliReqPerSec = 120
+
+	// defaultGrowthTickSeconds is DERIVED: the interval at which a tick's shipyard reads fit inside
+	// growth's share of the shipyard allowance.
+	//
+	//	tick = reads_per_tick / (share x allowance) = 4 / (0.25 x 0.12 req/s) = 133s
+	//
+	// A FLOOR: the reconcile is serial, so a tick costs at least what its reads cost.
+	defaultGrowthTickSeconds = growthTickYardReads * 1000 * 1000 / (growthYardAllowanceShareMilli * growthYardAllowanceMilliReqPerSec)
+
+	// defaultGrowthShortfallDwell is the ANTI-THRASH WINDOW on the heavy BUY: how long a MARGINAL
+	// unserved-lane shortfall must stand before a large hull is bought. On the purchase and NOT on the
+	// wave — a spurious wave costs one paused probe tick, a spurious purchase costs a hull. A DECISIVE
+	// shortfall does not consult it (guardDemand). IT IS THE LANE SURFACE'S OWN WINDOW: both debounce
+	// the same ranking, and a separate longer one would multiply with UnservedLaneReader's and claim to
+	// know something extra about how long that surface takes to settle.
+	defaultGrowthShortfallDwell = fleetgrowth.DefaultSaturationDwell
 	// defaultGrowthRunwayMilliHours is how many MILLI-hours of the trading fleet's cargo runway a
 	// heavy purchase holds back above the immutable reserve. Milli, not float: sub-hour runway is the
 	// operating range and a float would put NaN inside a money guard.
@@ -49,8 +70,9 @@ type RunFleetGrowthCoordinatorCommand struct {
 
 	TickIntervalSecs int
 	// HeavyCap is the heavy-HULL cap. *int so an explicit 0 (operator hold) is told from unset.
-	HeavyCap                  *int
-	UnservedLanesMin          int
+	HeavyCap *int
+	// ShortfallDwellSecs is how long a MARGINAL unserved-lane shortfall must stand, in seconds.
+	ShortfallDwellSecs        int
 	RunwayMilliHours          int
 	PurchaseMarginOverFloor   int64
 	TreasuryPctPerPurchase    int
@@ -164,13 +186,27 @@ type RunFleetGrowthCoordinatorHandler struct {
 
 // growthState is the per-coordinator in-memory edge-trigger bookkeeping.
 type growthState struct {
-	// heavyShortfallStreak counts consecutive ticks the unserved-lane shortfall has persisted.
-	// In-memory and per-container: it is edge-trigger bookkeeping, not operational state, and it
-	// is deliberately NOT on the wave predicate, which two containers must agree on and
-	// therefore cannot hold a streak for.
-	heavyShortfallStreak int
-	noEffectStreak       int
-	noEffectPaged        bool
+	// heavyShortfallSince ANCHORS the anti-thrash window: the instant the current run of unserved-lane
+	// shortfall began, zero when none stands. An anchor rather than a counter, because a count measures
+	// how often the coordinator looked, not how long the fleet has been short. In-memory and
+	// per-container, the standing UnservedLaneReader's saturation window has, and NOT on the wave
+	// predicate, which two containers must agree on and cannot hold a window for.
+	heavyShortfallSince time.Time
+	noEffectStreak      int
+	noEffectPaged       bool
+}
+
+// heldFor is how long the standing shortfall has persisted at now; never negative, since a backwards
+// clock is not evidence of persistence.
+func (s *growthState) heldFor(now time.Time) time.Duration {
+	if s == nil || s.heavyShortfallSince.IsZero() {
+		return 0
+	}
+	held := now.Sub(s.heavyShortfallSince)
+	if held < 0 {
+		return 0
+	}
+	return held
 }
 
 // NewRunFleetGrowthCoordinatorHandler wires the coordinator. clock defaults to the real clock when

@@ -127,6 +127,10 @@ type ContainerRunner struct {
 	// nobody to close it. Atomic rather than mu-guarded: stopHeartbeat is reached from
 	// paths that must not contend for the runner lock.
 	heartbeatStarted atomic.Bool
+	// beat and heartbeatEvery are TEST SEAMS on the heartbeat write and its period; both zero in
+	// production, where the write goes to the container repository every 30 seconds.
+	beat           func() error
+	heartbeatEvery time.Duration
 
 	// Event publisher for completion notifications
 	// Publishes WorkerCompletedEvent when container completes or fails
@@ -322,33 +326,75 @@ func (r *ContainerRunner) Stop() error {
 	return nil
 }
 
-// runHeartbeat periodically updates the container's heartbeat timestamp
-// This allows detection of crashed containers that stop updating their heartbeat
+// runHeartbeat keeps the container's heartbeat timestamp advancing so a crashed container is
+// distinguishable from a working one.
+//
+// IT SUPERVISES THE BEAT RATHER THAN MERELY RUNNING IT. supervise.Guard suppresses a panic without
+// restarting, so one panicked write used to silence the heartbeat for the container's whole
+// remaining life while the container itself kept running and logging — RUNNING with an hours-old
+// heartbeat, the one reading the stall escalator cannot interpret. Resuming costs an interval.
 func (r *ContainerRunner) runHeartbeat() {
 	defer close(r.heartbeatDone)
 
-	// Update heartbeat every 30 seconds
-	// Stale timeout is 2 minutes, so 30s gives us 4 heartbeats before considered stale
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
-
-	for {
+	for !r.beatUntilStopped() {
 		select {
 		case <-r.heartbeatStop:
 			return
 		case <-r.ctx.Done():
 			return
+		default:
+		}
+	}
+}
+
+// beatUntilStopped ticks the heartbeat until told to stop. It returns false when it fell out to a
+// panic instead, which is the caller's signal to resume the beat.
+func (r *ContainerRunner) beatUntilStopped() (stopped bool) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			r.log("ERROR", fmt.Sprintf("Heartbeat write panicked (%v) — resuming the beat; the container is still running", rec), nil)
+			stopped = false
+		}
+	}()
+
+	ticker := time.NewTicker(r.heartbeatInterval())
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-r.heartbeatStop:
+			return true
+		case <-r.ctx.Done():
+			return true
 		case <-ticker.C:
-			if r.containerRepo != nil {
-				ctx, cancel := context.WithTimeout(context.Background(), dbOperationTimeout)
-				if err := r.containerRepo.UpdateContainerHeartbeat(ctx, r.containerEntity.ID()); err != nil {
-					// Log but don't fail - heartbeat is best-effort
-					r.log("WARN", fmt.Sprintf("Failed to update heartbeat: %v", err), nil)
-				}
-				cancel()
+			if err := r.beatOnce(); err != nil {
+				// Best-effort: a failed write is logged, never fatal.
+				r.log("WARN", fmt.Sprintf("Failed to update heartbeat: %v", err), nil)
 			}
 		}
 	}
+}
+
+// heartbeatInterval is 30s against a 2-minute stale timeout, so four beats are missed before a
+// container reads as lost. Overridable in tests only.
+func (r *ContainerRunner) heartbeatInterval() time.Duration {
+	if r.heartbeatEvery > 0 {
+		return r.heartbeatEvery
+	}
+	return 30 * time.Second
+}
+
+// beatOnce is the single write the heartbeat makes, behind a seam so a test can make it fail.
+func (r *ContainerRunner) beatOnce() error {
+	if r.beat != nil {
+		return r.beat()
+	}
+	if r.containerRepo == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), dbOperationTimeout)
+	defer cancel()
+	return r.containerRepo.UpdateContainerHeartbeat(ctx, r.containerEntity.ID())
 }
 
 // stopHeartbeat stops the heartbeat goroutine (safe to call multiple times)

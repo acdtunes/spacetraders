@@ -36,8 +36,8 @@ func armedForHeavy(t *testing.T, f growthFixture) (*RunFleetGrowthCoordinatorHan
 	if f.yardAsk == 0 {
 		f.yardAsk = 1_400_000
 	}
-	if f.streak == 0 {
-		f.streak = defaultGrowthUnservedLanesMin
+	if f.shortfallHeld == 0 {
+		f.shortfallHeld = growthSettledWindow
 	}
 	h := newGrowthHandlerWith(t, f)
 	buyer := &growthPurchaseRecorder{}

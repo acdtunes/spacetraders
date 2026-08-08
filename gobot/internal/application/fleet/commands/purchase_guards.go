@@ -3,6 +3,7 @@ package commands
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/fleetgrowth"
@@ -19,7 +20,7 @@ import (
 //
 // SIX GUARDS, ONE QUESTION EACH:
 //
-//	demand         — is there a real, SETTLED need? (shortfall + the anti-thrash streak)
+//	demand         — is there a real, SETTLED need? (shortfall + the anti-thrash dwell)
 //	per_tick_cap   — have we already spent this tick?
 //	price          — is the ask readable, and are we overpaying? (abs cap + premium cap)
 //	heavy_cap      — is capital exposure in large hulls within the operator's cap?
@@ -40,7 +41,7 @@ import (
 type GuardName string
 
 const (
-	GuardDemand        GuardName = "demand"        // unmet demand for the class AND it survived the anti-thrash streak
+	GuardDemand        GuardName = "demand"        // unmet demand for the class AND it settled (decisive, or it held the anti-thrash dwell)
 	GuardPerTickCap    GuardName = "per_tick_cap"  // hulls already bought this tick
 	GuardPrice         GuardName = "price"         // yard ask readable (fail-closed) AND within both ceilings
 	GuardHeavyCap      GuardName = "heavy_cap"     // owned HEAVY HULLS below the operator's heavy cap
@@ -65,22 +66,19 @@ type PurchaseRequest struct {
 
 	// Demand. Shortfall is the unmet demand for the class (Demand − Current) and must be > 0.
 	//
-	// ShortfallStreak / ShortfallStreakMin are the ANTI-THRASH streak, folded in so the whole go/no-go
-	// is one line: the heavy class must show its unserved-lane shortfall for StreakMin CONSECUTIVE
-	// ticks before a large hull is bought, so a transient spike in the lane ranking cannot buy one.
-	// StreakMin is 0 for classes that do not use it, making the term a no-op.
-	//
-	// RULINGS #2 is satisfied: the counter is the coordinator's per-container edge-trigger
-	// bookkeeping — a count of CONSECUTIVE ticks, which by definition cannot be re-derived from one
-	// tick's store read — reset the moment the shortfall clears. The guard stays PURE: it is HANDED
-	// the count, it never keeps one.
-	Shortfall          int
-	ShortfallStreak    int
-	ShortfallStreakMin int
+	// ShortfallHeld / ShortfallDwell are the ANTI-THRASH WINDOW, folded in so the whole go/no-go is
+	// one line: the heavy class must show its unserved-lane shortfall for a continuous WALL-CLOCK
+	// dwell before a large hull is bought, so a transient spike in the lane ranking cannot buy one. A
+	// zero dwell is an UNCONFIGURED knob, not a disabled window (see guardDemand). WALL CLOCK rather
+	// than a tick count, because a count measures the coordinator instead of the fleet: it multiplies
+	// by whatever the tick costs. The guard stays PURE — it is HANDED the elapsed time.
+	Shortfall      int
+	ShortfallHeld  time.Duration
+	ShortfallDwell time.Duration
 
-	// There is no per-class pool count or ceiling on this request. The pool counts reach the
-	// decision log through each class's ClassDemand (Demand/Current), which is where an operator
-	// reads pool size.
+	// PoolCurrent is the pool serving the demand: the decisiveness test's denominator and NOTHING else.
+	// Not a ceiling — no guard may bound anything by it.
+	PoolCurrent int
 
 	// The HEAVY-HULL cap — the ONLY remaining count-based bound on any class, and the reason
 	// removing the pool ceiling did not leave heavies unbounded.
@@ -198,30 +196,64 @@ func EvaluateGuards(req PurchaseRequest) PurchaseDecision {
 }
 
 // guardDemand answers the whole "is there a real, settled need?" question in ONE verdict: an unmet
-// shortfall AND — where the class uses one — that shortfall having PERSISTED the anti-thrash streak.
+// shortfall AND that shortfall being SETTLED — either because it held the anti-thrash dwell or
+// because it is too large for the dwell to be protecting anything. The window belongs to this verdict
+// because held outside the chain its reason lands on a line the decision log does not print.
 //
-// The streak is a demand condition, so it belongs to the demand guard's verdict. Holding the buy
-// OUTSIDE the guard chain puts its reason on a separate log line ("shortfall 17 persisting 2/3
-// ticks — holding for the anti-thrash streak") while the decision log prints nothing at all for
-// that tick, forcing an operator to correlate two lines to learn why a heavy did not buy.
-//
-// NON-LOOSENING: the streak term is unchanged (streak >= min, same counter, same reset rule) and is
-// now ANDed with the shortfall test rather than short-circuiting ahead of it. A tick held for the
-// streak still does not buy — it says so in the decision line and meters a `demand` block, so the
-// hold is visible on the autosizer_blocked series.
+// THE DWELL IS WAIVED ONLY WHERE IT PROTECTS NOTHING, and the criterion is DERIVED. The window
+// exists because the lane ranking can spike, so what it asks is "would this hull still be wanted if
+// the surface were overstated?". Halving the surface leaves a shortfall iff profitable > 2 x pool,
+// i.e. iff shortfall > pool — so a shortfall larger than the pool serving it is DECISIVE, and waiting
+// adds no information. A cold pool is decisive too, which is what unblocks the FIRST hull.
+// Shortfall > 0 is the conjunct nothing waives, so the window can only SUBTRACT from what the
+// shortfall authorises, and a held tick meters a `demand` block.
 func guardDemand(req PurchaseRequest) GuardVerdict {
-	if req.ShortfallStreakMin > 0 {
+	shortfall := req.Shortfall
+	if shortfall <= 0 {
 		return GuardVerdict{
 			Guard:  GuardDemand,
-			Passed: req.Shortfall > 0 && req.ShortfallStreak >= req.ShortfallStreakMin,
-			Detail: fmt.Sprintf("shortfall=%d persisting %d/%d ticks (anti-thrash)", req.Shortfall, req.ShortfallStreak, req.ShortfallStreakMin),
+			Passed: false,
+			Detail: fmt.Sprintf("shortfall=%d (no unmet demand)", shortfall),
 		}
 	}
+	// HEAVY-SCOPED, as the streak it replaces was — stated by class, which a zero duration (now "unset,
+	// use the default") cannot express.
+	if req.Class != HullClassHeavy {
+		return GuardVerdict{
+			Guard:  GuardDemand,
+			Passed: true,
+			Detail: fmt.Sprintf("shortfall=%d", shortfall),
+		}
+	}
+	if decisiveShortfall(shortfall, req.PoolCurrent) {
+		return GuardVerdict{
+			Guard:  GuardDemand,
+			Passed: true,
+			Detail: fmt.Sprintf("shortfall=%d > pool %d — decisive (survives a 2x overstatement of the lane surface), anti-thrash dwell waived",
+				shortfall, req.PoolCurrent),
+		}
+	}
+	dwell := resolveShortfallDwell(req.ShortfallDwell)
 	return GuardVerdict{
 		Guard:  GuardDemand,
-		Passed: req.Shortfall > 0,
-		Detail: fmt.Sprintf("shortfall=%d", req.Shortfall),
+		Passed: req.ShortfallHeld >= dwell,
+		Detail: fmt.Sprintf("shortfall=%d <= pool %d — marginal; held %s of %s (anti-thrash dwell)",
+			shortfall, req.PoolCurrent, req.ShortfallHeld.Round(time.Second), dwell),
 	}
+}
+
+// decisiveShortfall: does the demand survive halving the surface? Strictly greater, so a shortfall
+// equal to the pool is the close call it is.
+func decisiveShortfall(shortfall, pool int) bool {
+	return shortfall > pool
+}
+
+// resolveShortfallDwell applies the tune-0 trap: `tune <key> 0` DELETES a key, so a zero is UNSET.
+func resolveShortfallDwell(configured time.Duration) time.Duration {
+	if configured <= 0 {
+		return defaultGrowthShortfallDwell
+	}
+	return configured
 }
 
 // guardHeavyCap bounds CAPITAL EXPOSURE in large hulls. It is the ONLY count-based bound left on

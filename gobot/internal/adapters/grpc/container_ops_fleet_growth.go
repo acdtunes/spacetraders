@@ -84,7 +84,7 @@ var fleetGrowthConfigKeys = []string{
 	// The suffix matters: the heavy-buyer cap read resolves a launch cap by its "_heavy_cap"
 	// suffix, so this key must keep that ending.
 	"growth_heavy_cap",
-	"growth_unserved_lanes_min",
+	"growth_shortfall_dwell_secs",
 	"growth_runway_milli_hours",
 	"growth_purchase_margin_over_floor",
 	"growth_treasury_pct_per_purchase",
@@ -125,8 +125,8 @@ func buildFleetGrowthCommand(cfg *configReader, playerID int, containerID string
 		// so the distinction guards the reader rather than a live path.
 		HeavyCap: presentIntPtr(cfg, "growth_heavy_cap"),
 
-		UnservedLanesMin: cfg.OptionalInt("growth_unserved_lanes_min", 0),
-		RunwayMilliHours: cfg.OptionalInt("growth_runway_milli_hours", 0),
+		ShortfallDwellSecs: cfg.OptionalInt("growth_shortfall_dwell_secs", 0),
+		RunwayMilliHours:   cfg.OptionalInt("growth_runway_milli_hours", 0),
 
 		PurchaseMarginOverFloor: int64(cfg.OptionalInt("growth_purchase_margin_over_floor", 0)),
 		TreasuryPctPerPurchase:  cfg.OptionalInt("growth_treasury_pct_per_purchase", 0),
