@@ -18,6 +18,8 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	navCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
 	shipyardQueries "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/queries"
+	"github.com/andrescamacho/spacetraders-go/internal/application/system/gategraph"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/marketscan"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	domainScouting "github.com/andrescamacho/spacetraders-go/internal/domain/scouting"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
@@ -327,4 +329,121 @@ func TestAutosizerHeavyCensus_AnUnreadableCensusRefusesInsteadOfCountingZero(t *
 	invalidPlayer := &autosizerHeavyCensus{counter: &fakeHeavyHullCounter{count: 3}}
 	_, err = invalidPlayer.HeaviesOwned(context.Background(), 0)
 	require.Error(t, err, "an unresolvable player is not a player owning zero heavies")
+}
+
+// --- the navigator-truth reach, and the free read (sp-37alr) -------------------------------------
+
+// recordingHopSource captures the reach question so a test can assert the errand asks it FROM THE
+// CARRIER'S SYSTEM and AT THE EXECUTOR'S BOUND — the two things the yard catalogue gets wrong.
+type recordingHopSource struct {
+	distances map[string]int
+	err       error
+	gotFrom   string
+	gotTo     []string
+	gotBound  int
+	calls     int
+}
+
+func (f *recordingHopSource) StoredHopDistances(_ context.Context, fromSystem string, targets []string, maxJumps int) (map[string]int, error) {
+	f.calls++
+	f.gotFrom, f.gotTo, f.gotBound = fromSystem, targets, maxJumps
+	return f.distances, f.err
+}
+
+// Routable is the depotHomeRouter half the server's gateGraph field is typed on. The errand reaches
+// its own capability by asserting past that narrower type, exactly as the live wiring does, so this
+// fake must carry both faces or the wiring test would exercise a path production never takes.
+func (f *recordingHopSource) Routable(_ context.Context, _, _ string, _ int) (bool, error) {
+	return true, nil
+}
+
+// THE FIX'S LOAD-BEARING ADAPTER FACT: the reach question is asked from ONE named origin and capped
+// at the SAME bound the navigator enforces.
+//
+// The catalogue's Reachable is a multi-source distance from every system the FLEET stands in, which
+// is a lower bound on the distance from the hull that will actually fly. Asking from the carrier's
+// own system is the entire correction: live, the catalogue called X1-FH57 two hops away while the
+// navigator refused "no jump-gate route from X1-AM71 to X1-FH57 within 5 jumps" 61 times.
+func TestHopsFrom_AsksFromTheCarriersOwnSystemAtTheNavigatorsBound(t *testing.T) {
+	hops := &recordingHopSource{distances: map[string]int{"X1-KP46": 3}}
+	e := &autosizerPricingErrand{hops: hops}
+
+	got, err := e.HopsFrom(context.Background(), "X1-AM71", []string{"X1-FH57", "X1-KP46"})
+	require.NoError(t, err)
+	require.Equal(t, map[string]int{"X1-KP46": 3}, got)
+	require.Equal(t, "X1-AM71", hops.gotFrom, "the reach must be measured from the carrier's system, not from the fleet's nearest")
+	require.Equal(t, []string{"X1-FH57", "X1-KP46"}, hops.gotTo)
+	require.Equal(t, gategraph.MaxJumpPath, hops.gotBound,
+		"the errand must be held to the bound the EXECUTOR enforces — a looser copy is how a hull gets dispatched to a yard the flight can never route to")
+	require.Equal(t, heavyYardReachBoundHops, hops.gotBound, "and that bound is the one the catalogue is capped at, not a second opinion")
+}
+
+// An unwired or unreadable gate graph REFUSES. An empty map would reach the policy as a genuine
+// "no route exists to any yard" — which retires the dispatching errand silently and permanently,
+// the exact failure class this whole mechanism keeps being bitten by.
+func TestHopsFrom_UnwiredOrUnreadableRefusesInsteadOfReportingNothingReachable(t *testing.T) {
+	unwired := &autosizerPricingErrand{}
+	_, err := unwired.HopsFrom(context.Background(), "X1-AM71", []string{"X1-FH57"})
+	require.Error(t, err, "an unwired gate graph is not a fleet that can reach nowhere")
+
+	broken := &autosizerPricingErrand{hops: &recordingHopSource{err: errors.New("adjacency store down")}}
+	_, err = broken.HopsFrom(context.Background(), "X1-AM71", []string{"X1-FH57"})
+	require.Error(t, err)
+}
+
+// THE FREE ERRAND'S ONE OUTBOUND ACT: read the yard, at the DENIABLE class, and issue nothing else.
+//
+// The class is the safety argument and therefore the assertion. This read fills a row that says 0;
+// no money guard consumes it, and every spend guard downstream still takes its own live Earning read
+// before a credit moves. Discretionary keeps the trait filter, the rescan-window floor and the
+// budget in force, so a yard that keeps reporting no ask is retried at the window's pace rather than
+// re-read into a request storm. Stamping this Earning would exempt it from all three.
+func TestPriceYardInPlace_ReadsTheYardDeniablyAndIssuesNoOtherCommand(t *testing.T) {
+	med := &recordingErrandMediator{}
+	e := &autosizerPricingErrand{med: med}
+
+	require.NoError(t, e.PriceYardInPlace(context.Background(), 7, "X1-AS98-X23E"))
+
+	require.Len(t, med.sent, 1, "the free errand reads the yard and does nothing else — it never docks, quotes or spends")
+	q, ok := med.sent[0].(*shipyardQueries.GetShipyardListingsQuery)
+	require.True(t, ok, "the read must go through the fleet's ONE metered shipyard query, got %T", med.sent[0])
+	require.Equal(t, "X1-AS98-X23E", q.WaypointSymbol)
+	require.Equal(t, "X1-AS98", q.SystemSymbol)
+	require.Equal(t, shared.MustNewPlayerID(7), q.PlayerID, "the mediator resolves the token from PlayerID — an unset one reads no yard")
+	require.NotEqual(t, marketscan.Earning, q.Class,
+		"this is DISCOVERY, not a pre-commit price: Earning would exempt it from the trait filter, the rescan window and the budget all at once")
+	require.Equal(t, marketscan.Discretionary, q.Class, "and the deniable class is the zero value, so forgetting to stamp it stays the safe direction")
+}
+
+// A refused read SURFACES. The errand logs it as a wait and retries; swallowing it would report a
+// price landed when the budget served nothing, and the yard would stay at 0 with nobody looking.
+func TestPriceYardInPlace_ADeclinedReadSurfacesInsteadOfReportingSuccess(t *testing.T) {
+	med := &recordingErrandMediator{err: errors.New("shipyard listings for X1-AS98-X23E were not read live")}
+	e := &autosizerPricingErrand{med: med}
+
+	require.Error(t, e.PriceYardInPlace(context.Background(), 7, "X1-AS98-X23E"))
+
+	invalidPlayer := &autosizerPricingErrand{med: &recordingErrandMediator{}}
+	require.Error(t, invalidPlayer.PriceYardInPlace(context.Background(), 0, "X1-AS98-X23E"))
+}
+
+// THE WIRING IS THE FEATURE. newAutosizerPricingErrand takes the reach off the server's already-
+// injected gate graph, so an errand built from a server that HAS one must be able to answer — and
+// one built from a server that does not must refuse rather than silently report nothing reachable.
+//
+// This is the "closed is not armed" shape: both failure modes are quiet. A nil graph makes the
+// dispatching errand decline forever with a correct-looking reason, which is indistinguishable from
+// a fleet whose map has not grown — the state this bead spent 25 hours in.
+func TestNewAutosizerPricingErrand_TakesTheReachOffTheServersGateGraph(t *testing.T) {
+	wired := newAutosizerPricingErrand(&DaemonServer{gateGraph: &recordingHopSource{distances: map[string]int{"X1-KP46": 2}}}, nil, nil)
+	got, err := wired.HopsFrom(context.Background(), "X1-AM71", []string{"X1-KP46"})
+	require.NoError(t, err, "a server holding a gate graph must yield an errand that can prove reach")
+	require.Equal(t, map[string]int{"X1-KP46": 2}, got)
+
+	for name, server := range map[string]*DaemonServer{"no server": nil, "no gate graph": {}} {
+		t.Run(name, func(t *testing.T) {
+			_, err := newAutosizerPricingErrand(server, nil, nil).HopsFrom(context.Background(), "X1-AM71", []string{"X1-KP46"})
+			require.Error(t, err, "an unwired reach must refuse, not report a fleet that can reach nowhere")
+		})
+	}
 }

@@ -7,6 +7,7 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/application/parkedsensing"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
 // THE HEAVY-YARD PRICING ERRAND.
@@ -23,17 +24,15 @@ import (
 // nothing, so no money guard is weakened (RULINGS #4) — it makes the price readable, it does not
 // bypass the price.
 //
-// Nothing is stored (RULINGS #2). Both halves of "is an errand already under way?" are DERIVED
-// from durable ship rows each tick: a hull's location IS its destination while it is in transit
-// (Ship.StartTransit), so a hull standing at — or flying to — an unpriced heavy yard is the errand,
-// and there is no cursor to go stale, re-fire on restart, or leak across eras.
+// Nothing is stored (RULINGS #2). Every question it asks is DERIVED from durable ship rows each
+// tick — a hull's location IS its destination while in transit (Ship.StartTransit) — so there is no
+// cursor to go stale, re-fire on restart, or leak across eras.
 
 // heavyPricingErrandsInFlight bounds the errand to ONE hull at a time, fleet-wide.
 //
-// A const, not a knob (RULINGS #5). The bound is not an economic dial: one hull is all it takes to
-// price a yard, the catalogue is walked nearest-first so the most useful yard is priced first, and
-// every additional simultaneous errand would take another spare probe off station to buy
-// information we are about to get anyway. Raising it could only ever trade coverage for latency.
+// A const, not a knob (RULINGS #5). One hull is all it takes to price a yard, the catalogue is
+// walked nearest-first so the most useful one goes first, and every extra simultaneous errand takes
+// another spare probe off station to buy information we are about to get anyway.
 const heavyPricingErrandsInFlight = 1
 
 // heavyPricingErrandFleet is the dedication a hull MUST carry to be eligible to fly a pricing
@@ -62,9 +61,9 @@ const heavyPricingErrandFleet = parkedsensing.SensingParkedFleetTag
 //
 // PurchasePrice 0 is the whole point of this type: it is the availability-only catalogue row that
 // every priced read filters away, and it is exactly the row that needs a hull sent to it.
-// Hops is the gate-jump distance from the nearest system we hold a hull in (0 = a system we are
-// already in); Reachable=false means no gate path within the heavy reach bound was found, and such
-// a yard is never targeted — a hull cannot be sent where it cannot fly.
+// Hops/Reachable measure from the nearest system we hold ANY hull in, so they are a LOWER BOUND on
+// the distance from the hull that will fly and a prefilter only: Reachable=false excludes the yard
+// outright, Reachable=true still has to be proved from the chosen carrier (nearestRoutablePair).
 type KnownHeavyYard struct {
 	SystemSymbol   string
 	WaypointSymbol string
@@ -114,10 +113,9 @@ type HeavyYardCatalogReader interface {
 	KnownHeavyYards(ctx context.Context, playerID int) ([]KnownHeavyYard, error)
 }
 
-// HeavyPricingErrandPort is the errand's two halves: who could go, and sending them.
-//
-// SendToYard NAVIGATES only. Presence in orbit is enough for a shipyard listing to price, and the
-// purchase path docks on its own account, so the errand never docks, never quotes and never spends.
+// HeavyPricingErrandPort is who could go, sending them, reading a yard we already occupy, and the
+// reach that decides where. SendToYard NAVIGATES only: presence in orbit is enough for a listing to
+// price and the purchase path docks on its own account, so the errand never docks, quotes or spends.
 type HeavyPricingErrandPort interface {
 	// ErrandHulls reports every hull that could conceivably carry an errand, with the raw facts
 	// the policy judges. Implementations must NOT pre-filter on fleet tag — the allowlist is the
@@ -130,13 +128,35 @@ type HeavyPricingErrandPort interface {
 	ErrandHulls(ctx context.Context, playerID int) ([]PricingErrandHull, error)
 	// SendToYard flies one hull to a yard waypoint so its listing prices on the next scan.
 	SendToYard(ctx context.Context, playerID int, shipSymbol, waypointSymbol string) error
+	// PriceYardInPlace reads the shipyard at waypointSymbol WHERE A HULL OF OURS ALREADY STANDS. It
+	// is the errand's COMPLETION step: a yard is otherwise read only on ARRIVAL, and a hull that
+	// arrived long ago produces no further arrivals, so presence bought with a trip goes unspent.
+	// Implementations must make a METERED, DENIABLE read — discovery, not a money guard, so a
+	// decline is a WAIT the next tick retries and never a stale price handed to a spender.
+	PriceYardInPlace(ctx context.Context, playerID int, waypointSymbol string) error
+	// HopsFrom reports the gate-jump distance from ONE origin system to each of toSystems, under
+	// the bound the NAVIGATOR itself enforces; a target ABSENT from the map is not a candidate.
+	//
+	// THE ORIGIN IS THE POINT. The yard catalogue measures reach from the nearest system the FLEET
+	// stands in — a lower bound on every particular hull's — but the flight starts from the
+	// CARRIER's system and is refused there.
+	HopsFrom(ctx context.Context, fromSystem string, toSystems []string) (map[string]int, error)
 }
 
-// heavyPricingErrand is one dispatch decision: this hull, to that yard.
+// heavyPricingErrand is one errand decision: this hull, that yard, and whether anything flies.
 type heavyPricingErrand struct {
 	Ship string
 	Yard string
+	// InPlace is set when Ship ALREADY STANDS at Yard, so the yard is READ where it sits: no flight,
+	// no hull off station, nothing taken. The dispatching errand exists only to MANUFACTURE the
+	// presence this case already has.
+	InPlace bool
 }
+
+// carrierReach answers the navigator's own question for ONE origin system: how many gate jumps to
+// each target, within the bound the executor enforces; an absent target has no nameable route. A
+// FUNCTION rather than a port, so the decision stays deterministic in its inputs.
+type carrierReach func(fromSystem string, toSystems []string) (map[string]int, error)
 
 // pricingErrandDecline NAMES why a tick sent no hull.
 //
@@ -162,8 +182,16 @@ const (
 	// outside the gate reach bound (a genuine wait for the map to grow). The counts on the line
 	// separate the two.
 	pricingErrandNothingInReach pricingErrandDecline = "no_unpriced_yard_in_reach"
-	// pricingErrandAlreadyInFlight — a hull is standing at, or flying to, an unpriced heavy yard.
+	// pricingErrandAlreadyInFlight — a hull is FLYING to an unpriced heavy yard. A hull that has
+	// already ARRIVED is not this: it is the free errand, and it leaves through the dispatch path.
 	pricingErrandAlreadyInFlight pricingErrandDecline = "errand_already_in_flight"
+	// pricingErrandNoRoutableYard — carriers are free and yards need pricing, but none can be routed
+	// to within the bound the NAVIGATOR enforces. pricingErrandNothingInReach is the same verdict
+	// measured fleet-wide; this one says the yards are in the FLEET's reach and out of THIS hull's.
+	pricingErrandNoRoutableYard pricingErrandDecline = "no_yard_routable_from_a_carrier"
+	// pricingErrandReachUnreadable — the stored gate adjacency could not be read, so no reach can be
+	// proved. Fails toward moving nothing, and is named apart from a genuine absence of routes.
+	pricingErrandReachUnreadable pricingErrandDecline = "carrier_reach_unreadable"
 	// pricingErrandNoCarrier — nothing free to send. THE LIVE FAILURE MODE: this is the state the
 	// old trade-pool allowlist sat in permanently.
 	pricingErrandNoCarrier pricingErrandDecline = "no_eligible_carrier"
@@ -176,7 +204,7 @@ const (
 // priced or out of reach, an errand is already under way, or no eligible carrier is free. A wait
 // costs nothing and is retried next tick; taking a hull we should not have taken is not
 // recoverable. The order of the checks is the order of the questions an operator would ask.
-func planHeavyPricingErrand(yards []KnownHeavyYard, hulls []PricingErrandHull) (heavyPricingErrand, pricingErrandDecline) {
+func planHeavyPricingErrand(yards []KnownHeavyYard, hulls []PricingErrandHull, reach carrierReach) (heavyPricingErrand, pricingErrandDecline) {
 	if len(yards) == 0 {
 		return heavyPricingErrand{}, pricingErrandNoYardKnown
 	}
@@ -184,14 +212,149 @@ func planHeavyPricingErrand(yards []KnownHeavyYard, hulls []PricingErrandHull) (
 	if len(unpriced) == 0 {
 		return heavyPricingErrand{}, pricingErrandNothingInReach
 	}
+	// THE FREE ERRAND FIRST, before any question about carriers or routes. A hull already standing
+	// on an unpriced yard IS the presence a dispatch spends a trip to manufacture, and reading the
+	// yard where it sits costs no flight, no hull off station and no reach proof.
+	if standing, ok := standingPricingErrand(unpriced, hulls); ok {
+		return standing, pricingErrandDispatch
+	}
 	if errandsInFlight(unpriced, hulls) >= heavyPricingErrandsInFlight {
 		return heavyPricingErrand{}, pricingErrandAlreadyInFlight
 	}
-	carrier, ok := pricingErrandCarrier(hulls)
-	if !ok {
+	carriers := pricingErrandCarriers(hulls)
+	if len(carriers) == 0 {
 		return heavyPricingErrand{}, pricingErrandNoCarrier
 	}
-	return heavyPricingErrand{Ship: carrier, Yard: unpriced[0].WaypointSymbol}, pricingErrandDispatch
+	errand, err := nearestRoutablePair(unpriced, carriers, reach)
+	if err != nil {
+		return heavyPricingErrand{}, pricingErrandReachUnreadable
+	}
+	if errand.Ship == "" {
+		return heavyPricingErrand{}, pricingErrandNoRoutableYard
+	}
+	return errand, pricingErrandDispatch
+}
+
+// standingPricingErrand finds a hull ALREADY STANDING on an unpriced heavy yard — the errand that
+// has nothing left to do but read.
+//
+// IT JUDGES NO CARRIER ELIGIBILITY, deliberately. Every predicate in pricingErrandCarriers protects
+// a hull from being TAKEN — off its station, off a scout post, off a lane. This takes nothing: the
+// only fact that matters is that something of ours stands at the waypoint, which is the whole
+// precondition a shipyard puts on quoting. Demanding a spare probe here would refuse a free price
+// because the hull standing there was earning.
+//
+// IN TRANSIT IS NOT STANDING. A hull's location is its DESTINATION while it flies
+// (Ship.StartTransit), so location alone cannot tell them apart — and reading a yard nothing has
+// reached yet persists another price-0 row and spends the read that would have worked on arrival.
+//
+// The unpriced list arrives nearest-first, so the choice is stable across ticks.
+func standingPricingErrand(unpriced []KnownHeavyYard, hulls []PricingErrandHull) (heavyPricingErrand, bool) {
+	standing := make(map[string]string, len(hulls))
+	for _, h := range hulls {
+		if h.Symbol == "" || h.Location == "" || h.InTransit {
+			continue
+		}
+		// Ties break on ship symbol so the line names the same hull every tick.
+		if cur, seen := standing[h.Location]; !seen || h.Symbol < cur {
+			standing[h.Location] = h.Symbol
+		}
+	}
+	for _, y := range unpriced {
+		if ship, ok := standing[y.WaypointSymbol]; ok {
+			return heavyPricingErrand{Ship: ship, Yard: y.WaypointSymbol, InPlace: true}, true
+		}
+	}
+	return heavyPricingErrand{}, false
+}
+
+// nearestRoutablePair chooses the CARRIER AND THE YARD TOGETHER, ranked by the distance between
+// them, and reports an empty errand when no pair can be routed at all.
+//
+// CHOOSING THEM SEPARATELY IS THE DEFECT. The lowest-symbol spare probe and, independently, the
+// catalogue's nearest unpriced yard answer two different questions and are paired by nothing: the
+// catalogue's distance is a multi-source walk from every system the FLEET stands in, a lower bound
+// on any PARTICULAR hull's and silent about the one that will fly.
+//
+// A yard whose distance from a carrier is ABSENT is not a candidate for it — absence means either
+// beyond the bound or an adjacency never cached, and a hull about to be committed cannot tell them
+// apart. That never strands a cold map: a yard in the carrier's OWN system still measures zero.
+//
+// Ties break on hops, then yard symbol, then ship symbol — a total order, so two consecutive ticks
+// cannot each start a different errand and call the other one "already in flight".
+func nearestRoutablePair(unpriced []KnownHeavyYard, carriers []PricingErrandHull, reach carrierReach) (heavyPricingErrand, error) {
+	if reach == nil {
+		return heavyPricingErrand{}, fmt.Errorf("no reach oracle: a carrier's route to a heavy yard cannot be proved")
+	}
+	targets := distinctYardSystems(unpriced)
+	// One walk per distinct ORIGIN, not per carrier: probes sharing a system share an answer, and
+	// asking twice would only cost a second store read to learn the same thing.
+	byOrigin := make(map[string]map[string]int, len(carriers))
+	best := heavyPricingErrand{}
+	bestHops := -1
+	for _, c := range carriers {
+		from := systemOf(c.Location)
+		if from == "" {
+			continue
+		}
+		hops, seen := byOrigin[from]
+		if !seen {
+			answer, err := reach(from, targets)
+			if err != nil {
+				return heavyPricingErrand{}, err
+			}
+			hops = answer
+			byOrigin[from] = answer
+		}
+		for _, y := range unpriced {
+			d, routable := hops[y.SystemSymbol]
+			if !routable {
+				continue
+			}
+			if bestHops >= 0 && !closerPair(d, y.WaypointSymbol, c.Symbol, bestHops, best) {
+				continue
+			}
+			best, bestHops = heavyPricingErrand{Ship: c.Symbol, Yard: y.WaypointSymbol}, d
+		}
+	}
+	return best, nil
+}
+
+// closerPair is the total order over candidate pairs: fewer hops, then yard symbol, then ship.
+func closerPair(hops int, yard, ship string, bestHops int, best heavyPricingErrand) bool {
+	if hops != bestHops {
+		return hops < bestHops
+	}
+	if yard != best.Yard {
+		return yard < best.Yard
+	}
+	return ship < best.Ship
+}
+
+// distinctYardSystems is the target set one reach walk is asked about: deduplicated, first-seen order.
+func distinctYardSystems(yards []KnownHeavyYard) []string {
+	seen := make(map[string]struct{}, len(yards))
+	out := make([]string, 0, len(yards))
+	for _, y := range yards {
+		if y.SystemSymbol == "" {
+			continue
+		}
+		if _, ok := seen[y.SystemSymbol]; ok {
+			continue
+		}
+		seen[y.SystemSymbol] = struct{}{}
+		out = append(out, y.SystemSymbol)
+	}
+	return out
+}
+
+// systemOf takes the shared waypoint→system projection rather than re-deriving one: a second
+// parsing rule is a second opinion about whether a hull can fly.
+func systemOf(waypointSymbol string) string {
+	if waypointSymbol == "" {
+		return ""
+	}
+	return shared.ExtractSystemSymbol(waypointSymbol)
 }
 
 // unpricedHeavyYards is the errand's candidate list: known, reachable, and carrying no usable ask,
@@ -222,12 +385,15 @@ func unpricedHeavyYards(yards []KnownHeavyYard) []KnownHeavyYard {
 	return out
 }
 
-// errandsInFlight counts the hulls already committed to pricing an unpriced heavy yard — standing
-// at one, or flying to one.
+// errandsInFlight counts the hulls FLYING to an unpriced heavy yard — the errands whose outcome is
+// still in the air.
 //
-// STANDING COUNTS, not just flying. A hull that has arrived but whose scan has not yet written the
-// price is the same errand, one step further along; excluding it would dispatch a second hull on
-// every tick of the arrival window and turn a one-at-a-time bound into a convoy.
+// STANDING DELIBERATELY DOES NOT COUNT. Reading it as "the same errand, one step further along" is
+// the wedge: nothing COMPLETES that errand, because a yard is read on ARRIVAL and a hull that
+// arrived long ago produces no further arrivals — so the wait has no end and one parked probe holds
+// the mechanism shut while every known heavy yard sits at 0. The convoy this guards against stays
+// impossible for a better reason: a standing hull is answered BEFORE the count is taken
+// (standingPricingErrand), so the arrival window reads rather than dispatching.
 func errandsInFlight(unpriced []KnownHeavyYard, hulls []PricingErrandHull) int {
 	targets := make(map[string]struct{}, len(unpriced))
 	for _, y := range unpriced {
@@ -235,7 +401,7 @@ func errandsInFlight(unpriced []KnownHeavyYard, hulls []PricingErrandHull) int {
 	}
 	n := 0
 	for _, h := range hulls {
-		if h.Location == "" {
+		if h.Location == "" || !h.InTransit {
 			continue
 		}
 		if _, ok := targets[h.Location]; ok {
@@ -266,10 +432,12 @@ func errandsInFlight(unpriced []KnownHeavyYard, hulls []PricingErrandHull) int {
 // that made the corrected pool unusable: every probe has a zero hold, so a hold predicate refuses
 // every carrier the errand now wants. Pricing needs presence, not a hold (sp-gmfvw).
 //
-// Ties break on ship symbol so the same fleet picks the same hull every tick — an arbitrary winner
-// would let two ticks disagree about which hull is "the" errand and dispatch both.
-func pricingErrandCarrier(hulls []PricingErrandHull) (string, bool) {
-	chosen := ""
+// IT RETURNS EVERY ELIGIBLE CARRIER, not the best one, because there is no best one to name here:
+// which spare probe should fly is a property of the PAIR it forms with a yard, and no yard is in
+// view at this point. nearestRoutablePair settles both together. Sorted, so that pairing has a
+// stable last tiebreak.
+func pricingErrandCarriers(hulls []PricingErrandHull) []PricingErrandHull {
+	out := make([]PricingErrandHull, 0, len(hulls))
 	for _, h := range hulls {
 		if h.Symbol == "" || h.Fleet != heavyPricingErrandFleet || h.MannedScoutPost {
 			continue
@@ -277,11 +445,20 @@ func pricingErrandCarrier(hulls []PricingErrandHull) (string, bool) {
 		if !h.Idle || h.InTransit {
 			continue
 		}
-		if chosen == "" || h.Symbol < chosen {
-			chosen = h.Symbol
-		}
+		out = append(out, h)
 	}
-	return chosen, chosen != ""
+	sort.Slice(out, func(i, j int) bool { return out[i].Symbol < out[j].Symbol })
+	return out
+}
+
+// pricingErrandCarrier reports whether ANY hull may be taken, for the decline line's evidence.
+// It is the same predicate, asked as a yes/no — never a second copy of it.
+func pricingErrandCarrier(hulls []PricingErrandHull) (string, bool) {
+	carriers := pricingErrandCarriers(hulls)
+	if len(carriers) == 0 {
+		return "", false
+	}
+	return carriers[0].Symbol, true
 }
 
 // runHeavyPricingErrand is the tick step: read the catalogue, read the fleet, and send at most one
@@ -362,9 +539,29 @@ func heavyPricingErrandTick(
 		return
 	}
 
-	errand, decline := planHeavyPricingErrand(yards, hulls)
+	reach := func(fromSystem string, toSystems []string) (map[string]int, error) {
+		return port.HopsFrom(ctx, fromSystem, toSystems)
+	}
+	errand, decline := planHeavyPricingErrand(yards, hulls, reach)
 	if decline != pricingErrandDispatch {
 		logPricingErrandDecline(ctx, containerID, decline, yards, hulls)
+		return
+	}
+
+	// THE FREE ERRAND: the presence a dispatch spends a trip to buy already exists, so the yard is
+	// read where the hull stands. Nothing flies, so there is nothing to fail halfway.
+	if errand.InPlace {
+		if err := port.PriceYardInPlace(ctx, playerID, errand.Yard); err != nil {
+			logger.Log("WARN", fmt.Sprintf("Heavy pricing errand: reading %s where %s already stands failed (%v) — retrying on a later tick", errand.Yard, errand.Ship, err), map[string]interface{}{
+				"action": "autosizer_heavy_pricing_in_place_read_failed", "container_id": containerID,
+				"ship": errand.Ship, "yard": errand.Yard,
+			})
+			return
+		}
+		logger.Log("INFO", fmt.Sprintf("Heavy pricing errand: read %s where %s already stands — a presence we already had, so no hull moved and the ask is now readable", errand.Yard, errand.Ship), map[string]interface{}{
+			"action": "autosizer_heavy_pricing_read_in_place", "container_id": containerID,
+			"ship": errand.Ship, "yard": errand.Yard,
+		})
 		return
 	}
 

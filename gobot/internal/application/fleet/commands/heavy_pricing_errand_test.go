@@ -24,6 +24,7 @@ import (
 //	B6 the errand stands down when no heavy is wanted / everything is priced
 //	B7 every decline STATES ITS REASON — the errand is never silent
 //	B8 exactly ONE coordinator drives it, and it drives it on the PROBE wave
+//	B9 the yard it picks is one the CARRIER can fly to, and presence it already has is USED
 //
 // Every test enters through reconcileOnce (the coordinator's driving port) or through the pure
 // policy, and asserts at the dispatch port — never on internal call counts.
@@ -47,6 +48,24 @@ type recordingErrandPort struct {
 	hullsErr error
 	sendErr  error
 	sent     []heavyPricingErrand
+
+	// reach is THE NAVIGATOR'S OWN ANSWER, as this fixture models it: origin system → target
+	// system → hops, and a target absent from an origin's row is one that origin cannot route to
+	// within the executor's bound. It is the fact the yard catalogue does not carry, because the
+	// catalogue measures from the nearest system the WHOLE FLEET stands in.
+	//
+	// A NIL MAP MEANS "THE GRAPH AGREES WITH THE CATALOGUE" — every candidate one jump from every
+	// origin. That is the assumption the errand used to make silently, so leaving it nil is how the
+	// suite's older fixtures keep asserting the rules they were written for (carrier eligibility,
+	// the in-flight bound, the decline taxonomy) without also having to state a gate topology.
+	reach    map[string]map[string]int
+	reachErr error
+
+	// pricedInPlace records every yard read WHERE A HULL ALREADY STOOD — the zero-movement errand.
+	// It is a separate list from sent on purpose: "a price was obtained" and "a hull was flown"
+	// are the two outcomes this bead exists to stop conflating.
+	pricedInPlace []string
+	priceErr      error
 }
 
 func (f *recordingErrandPort) ErrandHulls(_ context.Context, _ int) ([]PricingErrandHull, error) {
@@ -59,6 +78,34 @@ func (f *recordingErrandPort) SendToYard(_ context.Context, _ int, shipSymbol, w
 	}
 	f.sent = append(f.sent, heavyPricingErrand{Ship: shipSymbol, Yard: waypointSymbol})
 	return nil
+}
+
+func (f *recordingErrandPort) PriceYardInPlace(_ context.Context, _ int, waypointSymbol string) error {
+	if f.priceErr != nil {
+		return f.priceErr
+	}
+	f.pricedInPlace = append(f.pricedInPlace, waypointSymbol)
+	return nil
+}
+
+func (f *recordingErrandPort) HopsFrom(_ context.Context, fromSystem string, toSystems []string) (map[string]int, error) {
+	if f.reachErr != nil {
+		return nil, f.reachErr
+	}
+	if f.reach == nil {
+		out := make(map[string]int, len(toSystems))
+		for _, s := range toSystems {
+			out[s] = 1
+		}
+		return out, nil
+	}
+	out := make(map[string]int, len(toSystems))
+	for _, s := range toSystems {
+		if d, ok := f.reach[fromSystem][s]; ok {
+			out[s] = d
+		}
+	}
+	return out, nil
 }
 
 // spareParkedProbe is THE eligible carrier: a zero-hold satellite in the parked-sensing pool,
@@ -252,16 +299,24 @@ func TestReconcile_ErrandAlreadyInFlight_SendsNothingElse(t *testing.T) {
 	}
 }
 
-// B2 (third half) — a hull that has ARRIVED but whose scan has not yet written the price is the
-// same errand one step further along. Counting only hulls in transit would dispatch a second hull
-// on every tick of the arrival window.
-func TestReconcile_HullStandingAtUnpricedYard_CountsAsInFlight(t *testing.T) {
+// B2 (third half) — A HULL THAT HAS ARRIVED IS NOT A WAIT, IT IS THE ANSWER (sp-37alr).
+//
+// This test used to assert the opposite, and the assertion it made is the wedge: a hull standing on
+// an unpriced yard "counted as an errand in flight", so the tick declined — and NOTHING ever
+// completed that errand, because the only thing that reads a yard is an ARRIVAL and the hull had
+// already arrived. Live, a probe stood docked on an unpriced heavy yard for 25 hours while every
+// heavy yard the fleet knew carried purchase_price 0.
+//
+// Presence is the entire thing a dispatch spends a trip to buy. When it already exists the yard
+// must be READ where the hull stands: no flight, and no second hull sent to a waypoint one of ours
+// is already standing on.
+func TestReconcile_HullStandingAtUnpricedYard_PricesItInPlaceAndFliesNothing(t *testing.T) {
 	catalog := &fakeHeavyYardCatalog{yards: []KnownHeavyYard{
 		unpricedYard("X1-QR78-AE4F", 3),
 		unpricedYard("X1-QR78-FE8C", 3),
 	}}
 	errand := &recordingErrandPort{hulls: []PricingErrandHull{
-		spareParkedProbe("PROBE-A", "X1-QR78-AE4F"), // arrived, parked, scan pending
+		spareParkedProbe("PROBE-A", "X1-QR78-AE4F"), // arrived, parked, and standing on the answer
 		spareParkedProbe("PROBE-B", "X1-HOME-A1"),
 	}}
 	h, _ := errandHandler(catalog, errand)
@@ -271,7 +326,64 @@ func TestReconcile_HullStandingAtUnpricedYard_CountsAsInFlight(t *testing.T) {
 		t.Fatalf("reconcileOnce error: %v", err)
 	}
 	if len(errand.sent) != 0 {
-		t.Fatalf("a hull standing at an unpriced heavy yard IS the errand — nothing else may go, got %+v", errand.sent)
+		t.Fatalf("a hull already standing at an unpriced heavy yard must fly NOTHING, got %+v", errand.sent)
+	}
+	if len(errand.pricedInPlace) != 1 || errand.pricedInPlace[0] != "X1-QR78-AE4F" {
+		t.Fatalf("the yard the hull STANDS on must be read where it sits — that presence is what an errand exists to create. "+
+			"Priced in place: %v. A tick that neither flies nor reads is the 25-hour stall this bead was filed for", errand.pricedInPlace)
+	}
+}
+
+// The standing hull's yard is read even when it is NOT the catalogue's nearest — a hull already
+// there beats any amount of flying, because the trip is what an errand costs.
+//
+// The near yard carries no hull and the far one does, so a policy that walked the catalogue order
+// and only then asked "is someone there?" would fly to the near yard and leave the free price
+// unread.
+func TestReconcile_AStandingHullBeatsAFlightToANearerYard(t *testing.T) {
+	catalog := &fakeHeavyYardCatalog{yards: []KnownHeavyYard{
+		unpricedYard("X1-NEAR-AA1A", 0), // nearest by the catalogue, nobody there
+		unpricedYard("X1-FARR-BB2B", 4), // furthest, and a hull is standing on it
+	}}
+	errand := &recordingErrandPort{hulls: []PricingErrandHull{
+		spareParkedProbe("PROBE-A", "X1-FARR-BB2B"),
+	}}
+	h, _ := errandHandler(catalog, errand)
+	h.SetHeavyYardReader(&fakeHeavyYard{found: false})
+
+	if _, err := h.reconcileOnce(context.Background(), errandCmd()); err != nil {
+		t.Fatalf("reconcileOnce error: %v", err)
+	}
+	if len(errand.sent) != 0 {
+		t.Fatalf("a free price at the far yard must be taken before any flight to the near one, got %+v", errand.sent)
+	}
+	if len(errand.pricedInPlace) != 1 || errand.pricedInPlace[0] != "X1-FARR-BB2B" {
+		t.Fatalf("the zero-movement errand must win: priced in place %v, want [X1-FARR-BB2B]", errand.pricedInPlace)
+	}
+}
+
+// A hull FLYING to an unpriced yard has not arrived: its location is its destination while in
+// transit, so reading the yard "where it stands" would read a yard nothing is standing at and
+// persist another price-0 row. It is still the errand, and it still holds every other dispatch.
+func TestReconcile_HullInTransitToAnUnpricedYard_IsNotStanding(t *testing.T) {
+	catalog := &fakeHeavyYardCatalog{yards: []KnownHeavyYard{unpricedYard("X1-QR78-AE4F", 3)}}
+	errand := &recordingErrandPort{hulls: []PricingErrandHull{
+		{Symbol: "PROBE-A", Fleet: parkedsensing.SensingParkedFleetTag, Location: "X1-QR78-AE4F", Idle: true, InTransit: true},
+		spareParkedProbe("PROBE-B", "X1-HOME-A1"),
+	}}
+	h, _ := errandHandler(catalog, errand)
+	h.SetHeavyYardReader(&fakeHeavyYard{found: false})
+
+	logger := runErrandTick(t, h, errandCmd())
+
+	if len(errand.pricedInPlace) != 0 {
+		t.Fatalf("a hull still in flight is not presence — reading the yard now persists another zero, got %v", errand.pricedInPlace)
+	}
+	if len(errand.sent) != 0 {
+		t.Fatalf("an errand already in flight must hold every other dispatch, got %+v", errand.sent)
+	}
+	if !strings.Contains(logger.joined(), string(pricingErrandAlreadyInFlight)) {
+		t.Fatalf("the tick must name the in-flight wait. Lines seen:\n%s", logger.joined())
 	}
 }
 
@@ -427,6 +539,207 @@ func TestUnpricedHeavyYards_OrderIsNearestThenSymbolAndStable(t *testing.T) {
 	}
 }
 
+// B2 (fourth half) — a TORN ROW parked on an unpriced yard is not an errand in flight.
+//
+// It is the one case where "standing" and "in flight" can still disagree: a row naming no ship
+// cannot be the hull that gets its yard read (standingPricingErrand needs a symbol to name), so if
+// the in-flight count also admitted standing hulls it would block the errand on a hull nobody can
+// act on — a wait with no possible end, which is the shape this whole bead is about.
+//
+// MUTATION: drop the !InTransit guard in errandsInFlight and this fixture declines instead of
+// dispatching.
+func TestReconcile_ATornRowStandingAtAnUnpricedYard_DoesNotHoldTheErrand(t *testing.T) {
+	catalog := &fakeHeavyYardCatalog{yards: []KnownHeavyYard{unpricedYard("X1-QR78-AE4F", 3)}}
+	errand := &recordingErrandPort{hulls: []PricingErrandHull{
+		{Symbol: "", Fleet: parkedsensing.SensingParkedFleetTag, Location: "X1-QR78-AE4F", Idle: true},
+		spareParkedProbe("PROBE-B", "X1-HOME-A1"),
+	}}
+	h, _ := errandHandler(catalog, errand)
+	h.SetHeavyYardReader(&fakeHeavyYard{found: false})
+
+	if _, err := h.reconcileOnce(context.Background(), errandCmd()); err != nil {
+		t.Fatalf("reconcileOnce error: %v", err)
+	}
+	if len(errand.pricedInPlace) != 0 {
+		t.Fatalf("a row naming no ship cannot be the presence a yard is read on, got %v", errand.pricedInPlace)
+	}
+	if len(errand.sent) != 1 || errand.sent[0].Ship != "PROBE-B" {
+		t.Fatalf("the torn row must neither price the yard nor block the hull that can — got %+v", errand.sent)
+	}
+}
+
+// B9 — THE CATALOGUE MUST TELL THE NAVIGATOR'S TRUTH (sp-37alr).
+//
+// The live stall, reproduced exactly. Two unpriced heavy yards, BOTH flagged Reachable by the
+// catalogue and correctly so — the catalogue measures gate distance from the nearest system the
+// WHOLE FLEET stands in, and some other hull of ours is near X1-FH57. The carrier is not. The
+// navigator plans from the CARRIER's system and refused that yard 61 times over 25 hours:
+//
+//	no jump-gate route from X1-AM71 to X1-FH57 within 5 jumps
+//
+// Nothing in the fixture separates the two yards except the answer to that question, so the errand
+// can only get this right by asking it.
+//
+// MUTATION: drop the per-carrier reach lookup (take unpriced[0] as before) and the errand flies at
+// X1-FH57-B10A again — which is the bug, unchanged, for another 25 hours.
+func TestReconcile_YardUnroutableFromTheCarrier_IsNotChosenEvenWhenTheCatalogueSaysReachable(t *testing.T) {
+	catalogYards := []KnownHeavyYard{
+		// Nearest by the FLEET-WIDE measure, and the one the errand kept choosing.
+		unpricedYard("X1-FH57-B10A", 2),
+		// Further by that measure, and the only one this carrier can actually fly to.
+		unpricedYard("X1-KP46-D33F", 4),
+	}
+	carrier := []PricingErrandHull{spareParkedProbe("TORWINDSTG-10", "X1-AM71-A1")}
+
+	// SATURATION FIRST. With the graph agreeing with the catalogue, the same fixture picks the
+	// nearer yard — so the assertion below is moved by the reach answer and by nothing else.
+	control := &recordingErrandPort{hulls: carrier}
+	hc, _ := errandHandler(&fakeHeavyYardCatalog{yards: catalogYards}, control)
+	hc.SetHeavyYardReader(&fakeHeavyYard{found: false})
+	if _, err := hc.reconcileOnce(context.Background(), errandCmd()); err != nil {
+		t.Fatalf("reconcileOnce error: %v", err)
+	}
+	if len(control.sent) != 1 || control.sent[0].Yard != "X1-FH57-B10A" {
+		t.Fatalf("FIXTURE IS NOT SATURATED: with an agreeing gate graph the nearer yard must win, got %+v", control.sent)
+	}
+
+	// The real topology: from X1-AM71 the graph names a route to X1-KP46 and none to X1-FH57.
+	errand := &recordingErrandPort{
+		hulls: carrier,
+		reach: map[string]map[string]int{"X1-AM71": {"X1-KP46": 3}},
+	}
+	h, _ := errandHandler(&fakeHeavyYardCatalog{yards: catalogYards}, errand)
+	h.SetHeavyYardReader(&fakeHeavyYard{found: false})
+
+	if _, err := h.reconcileOnce(context.Background(), errandCmd()); err != nil {
+		t.Fatalf("reconcileOnce error: %v", err)
+	}
+	if len(errand.sent) != 1 {
+		t.Fatalf("one yard IS routable from this carrier, so exactly one errand must go, got %+v", errand.sent)
+	}
+	if errand.sent[0].Yard == "X1-FH57-B10A" {
+		t.Fatalf("the errand chose the yard the navigator refuses. This is the 61-failure loop: the catalogue's " +
+			"Reachable is measured from the nearest system the FLEET holds, and the flight starts from the CARRIER's")
+	}
+	if errand.sent[0].Yard != "X1-KP46-D33F" || errand.sent[0].Ship != "TORWINDSTG-10" {
+		t.Fatalf("the errand must fly the carrier to the yard IT can reach, got %+v", errand.sent[0])
+	}
+}
+
+// B9 (second half) — the carrier is chosen WITH the yard, not before it.
+//
+// Two spare probes in different systems, and one unpriced yard only the SECOND-sorting probe can
+// route to. Picking the carrier first (lowest symbol, as the errand used to) and the yard after
+// produces a pair that cannot fly, every tick, forever.
+func TestReconcile_TheCarrierIsPairedWithAYardItCanReach_NotChosenAheadOfIt(t *testing.T) {
+	errand := &recordingErrandPort{
+		hulls: []PricingErrandHull{
+			spareParkedProbe("PROBE-AAA", "X1-ISOL-A1"), // sorts first, routes nowhere
+			spareParkedProbe("PROBE-ZZZ", "X1-NEAR-A1"), // sorts last, and can actually get there
+		},
+		reach: map[string]map[string]int{
+			"X1-ISOL": {},
+			"X1-NEAR": {"X1-QR78": 2},
+		},
+	}
+	h, _ := errandHandler(&fakeHeavyYardCatalog{yards: []KnownHeavyYard{unpricedYard("X1-QR78-AE4F", 1)}}, errand)
+	h.SetHeavyYardReader(&fakeHeavyYard{found: false})
+
+	if _, err := h.reconcileOnce(context.Background(), errandCmd()); err != nil {
+		t.Fatalf("reconcileOnce error: %v", err)
+	}
+	if len(errand.sent) != 1 || errand.sent[0].Ship != "PROBE-ZZZ" {
+		t.Fatalf("the carrier that can reach the yard must win over the one that merely sorts first, got %+v", errand.sent)
+	}
+}
+
+// B9 (third half) — no carrier can name a route to any unpriced yard ⇒ NOTHING is dispatched, and
+// the tick says which of the two states it is in.
+//
+// Dispatching anyway is not a harmless optimism: it is exactly what produced 61 identical failures
+// while a real, priceable yard went untouched. An absent distance has two meanings — genuinely
+// beyond the bound, or an adjacency we have not cached — and BOTH mean the same thing to a hull
+// about to be committed: no route can be named, so none is flown.
+func TestReconcile_NoYardRoutableFromAnyCarrier_DispatchesNothingAndNamesIt(t *testing.T) {
+	errand := &recordingErrandPort{
+		hulls: []PricingErrandHull{spareParkedProbe("PROBE-A", "X1-AM71-A1")},
+		reach: map[string]map[string]int{"X1-AM71": {}},
+	}
+	h, _ := errandHandler(&fakeHeavyYardCatalog{yards: []KnownHeavyYard{unpricedYard("X1-FH57-B10A", 2)}}, errand)
+	h.SetHeavyYardReader(&fakeHeavyYard{found: false})
+
+	logger := runErrandTick(t, h, errandCmd())
+
+	if len(errand.sent) != 0 {
+		t.Fatalf("a hull must never be sent where no route can be named, got %+v", errand.sent)
+	}
+	if !strings.Contains(logger.joined(), string(pricingErrandNoRoutableYard)) {
+		t.Fatalf("the tick must NAME this wait — %q is what tells an operator the map has not grown far enough, "+
+			"as against a carrier pool that is empty. Lines seen:\n%s", pricingErrandNoRoutableYard, logger.joined())
+	}
+}
+
+// B9 (fourth half) — an unreadable gate graph moves no hull and is named separately from "no route
+// exists". One is a wait for the map; the other is a degraded read an operator must act on.
+func TestReconcile_CarrierReachUnreadable_MovesNothingAndSaysSo(t *testing.T) {
+	errand := &recordingErrandPort{
+		hulls:    []PricingErrandHull{spareParkedProbe("PROBE-A", "X1-AM71-A1")},
+		reachErr: errors.New("gate adjacency store down"),
+	}
+	h, _ := errandHandler(&fakeHeavyYardCatalog{yards: []KnownHeavyYard{unpricedYard("X1-FH57-B10A", 2)}}, errand)
+	h.SetHeavyYardReader(&fakeHeavyYard{found: false})
+
+	logger := runErrandTick(t, h, errandCmd())
+
+	if len(errand.sent) != 0 {
+		t.Fatalf("an unreadable reach must move nothing, got %+v", errand.sent)
+	}
+	if !strings.Contains(logger.joined(), string(pricingErrandReachUnreadable)) {
+		t.Fatalf("an unreadable gate graph must be named apart from a genuine absence of routes. Lines seen:\n%s", logger.joined())
+	}
+}
+
+// B9 (fifth half) — the in-place read costs no reach question at all. A hull standing on the yard
+// needs no route to it, so an unreadable gate graph must not suppress the one errand that is free.
+func TestReconcile_AStandingHullIsPricedEvenWhenTheGateGraphIsUnreadable(t *testing.T) {
+	errand := &recordingErrandPort{
+		hulls:    []PricingErrandHull{spareParkedProbe("PROBE-A", "X1-QR78-AE4F")},
+		reachErr: errors.New("gate adjacency store down"),
+	}
+	h, _ := errandHandler(&fakeHeavyYardCatalog{yards: []KnownHeavyYard{unpricedYard("X1-QR78-AE4F", 0)}}, errand)
+	h.SetHeavyYardReader(&fakeHeavyYard{found: false})
+
+	if _, err := h.reconcileOnce(context.Background(), errandCmd()); err != nil {
+		t.Fatalf("reconcileOnce error: %v", err)
+	}
+	if len(errand.pricedInPlace) != 1 || errand.pricedInPlace[0] != "X1-QR78-AE4F" {
+		t.Fatalf("a hull standing on the yard needs no route to it — the free read must survive a blind gate graph, got %v", errand.pricedInPlace)
+	}
+}
+
+// B9 (sixth half) — a failed in-place read is a WAIT, never a fatal, and never a fallback into
+// flying a second hull to a waypoint one of ours is already standing on.
+func TestReconcile_InPlaceReadFailure_IsARetryAndFliesNothing(t *testing.T) {
+	errand := &recordingErrandPort{
+		hulls:    []PricingErrandHull{spareParkedProbe("PROBE-A", "X1-QR78-AE4F"), spareParkedProbe("PROBE-B", "X1-HOME-A1")},
+		priceErr: errors.New("shipyard listings were not read live"),
+	}
+	h, _ := errandHandler(&fakeHeavyYardCatalog{yards: []KnownHeavyYard{unpricedYard("X1-QR78-AE4F", 0)}}, errand)
+	h.SetHeavyYardReader(&fakeHeavyYard{found: false})
+
+	logger := runErrandTick(t, h, errandCmd())
+
+	// The tick must have REACHED the read and been refused by it. Without this the assertion below
+	// would also hold for a tick that declined before ever looking — which is what the old
+	// standing-counts-as-in-flight rule did, and it is the state this bead exists to end.
+	if !logger.sawAction("autosizer_heavy_pricing_in_place_read_failed") {
+		t.Fatalf("the tick must have attempted the free read and reported the refusal. Lines seen:\n%s", logger.joined())
+	}
+	if len(errand.sent) != 0 {
+		t.Fatalf("a declined read is retried next tick, never escalated into a flight to a yard we already occupy, got %+v", errand.sent)
+	}
+}
+
 // B6 — the errand stands down whenever no heavy is wanted, so it never spends a working hull's
 // time buying information about a purchase that cannot happen. All three shapes are the SAME rule
 // the reservation applies, which is why both stand down together.
@@ -554,13 +867,33 @@ func TestReconcile_EveryPricingErrandDecline_NamesItsReason(t *testing.T) {
 			errand:  &recordingErrandPort{hulls: []PricingErrandHull{idleTradeHull("TORWIND-A", "X1-HOME-A1")}},
 		},
 		{
+			// IN TRANSIT, not standing: a hull that has ARRIVED is no longer a wait, it is the
+			// free errand, and it leaves through the dispatch path rather than this one.
 			name:    "an errand is already under way",
 			reason:  pricingErrandAlreadyInFlight,
 			catalog: &fakeHeavyYardCatalog{yards: unpriced},
 			errand: &recordingErrandPort{hulls: []PricingErrandHull{
-				spareParkedProbe("PROBE-A", "X1-QR78-AE4F"),
+				{Symbol: "PROBE-A", Fleet: parkedsensing.SensingParkedFleetTag, Location: "X1-QR78-AE4F", Idle: true, InTransit: true},
 				spareParkedProbe("PROBE-B", "X1-HOME-A1"),
 			}},
+		},
+		{
+			name:    "no carrier can name a route to any unpriced yard",
+			reason:  pricingErrandNoRoutableYard,
+			catalog: &fakeHeavyYardCatalog{yards: unpriced},
+			errand: &recordingErrandPort{
+				hulls: []PricingErrandHull{spareParkedProbe("PROBE-A", "X1-HOME-A1")},
+				reach: map[string]map[string]int{"X1-HOME": {}},
+			},
+		},
+		{
+			name:    "the stored gate adjacency cannot be read",
+			reason:  pricingErrandReachUnreadable,
+			catalog: &fakeHeavyYardCatalog{yards: unpriced},
+			errand: &recordingErrandPort{
+				hulls:    []PricingErrandHull{spareParkedProbe("PROBE-A", "X1-HOME-A1")},
+				reachErr: errors.New("gate adjacency store down"),
+			},
 		},
 		{
 			name:    "no heavy yard is in the catalogue yet — the sweep keeps looking",
@@ -623,8 +956,8 @@ func TestReconcile_EveryPricingErrandDecline_NamesItsReason(t *testing.T) {
 
 	// The reasons must be DISTINCT: one string reused for two states restores the ambiguity.
 	if len(seen) != len(cases) {
-		t.Fatalf("the six decline cases produced only %d distinct reasons — collapsing two states into one reason "+
-			"re-creates the ambiguity this test exists to prevent", len(seen))
+		t.Fatalf("the %d decline cases produced only %d distinct reasons — collapsing two states into one reason "+
+			"re-creates the ambiguity this test exists to prevent", len(cases), len(seen))
 	}
 }
 

@@ -3,6 +3,7 @@ package grpc
 import (
 	"context"
 	"fmt"
+	"log"
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
@@ -150,7 +151,7 @@ type scoutPostRoster interface {
 	ListActive(ctx context.Context, playerID int) ([]*domainScouting.ScoutPost, error)
 }
 
-// autosizerPricingErrand reads the fleet for the errand policy and flies the chosen hull.
+// autosizerPricingErrand reads the fleet, proves reach, and either flies a hull or reads a yard.
 //
 // ErrandHulls deliberately reports EVERY hull with its raw facts and filters nothing: the
 // eligibility rule — a spare parked probe, unclaimed by any scout post, idle, not already flying —
@@ -164,7 +165,17 @@ type autosizerPricingErrand struct {
 	med      common.Mediator
 	shipRepo navigation.ShipRepository
 	posts    scoutPostRoster
+	hops     storedHopDistancer
 }
+
+// storedHopDistancer is the narrow gate-graph slice the errand needs: a bounded, PURE STORE walk
+// from one origin, costing no API budget. Asserted off the daemon's already-injected gate graph
+// (the heavyHullCounter idiom) and pinned below, since a failing assertion looks like a dead feature.
+type storedHopDistancer interface {
+	StoredHopDistances(ctx context.Context, fromSystem string, targets []string, maxJumps int) (map[string]int, error)
+}
+
+var _ storedHopDistancer = (*gategraph.Service)(nil)
 
 // newAutosizerPricingErrand builds the errand with its scout-post roster taken off the daemon's own
 // connection, the way bootstrap_ports builds its era repository.
@@ -177,10 +188,20 @@ type autosizerPricingErrand struct {
 // A nil server or a nil connection leaves the roster nil ON PURPOSE: the errand then refuses at
 // READ time (see mannedScoutPostHulls) rather than selecting hulls it cannot prove are free, and
 // the port itself stays wired so the boot-time wiring probe still reports the errand as present.
+// The gate graph comes from the SAME field the depot launch guard reads, so every cross-system
+// reachability verdict has one source; a nil one leaves hops nil and the errand refuses at reach.
 func newAutosizerPricingErrand(server *DaemonServer, med common.Mediator, shipRepo navigation.ShipRepository) *autosizerPricingErrand {
 	e := &autosizerPricingErrand{med: med, shipRepo: shipRepo}
-	if server != nil && server.db != nil {
+	if server == nil {
+		return e
+	}
+	if server.db != nil {
 		e.posts = persistence.NewGormScoutPostRepository(server.db)
+	}
+	if hops, ok := server.gateGraph.(storedHopDistancer); ok {
+		e.hops = hops
+	} else {
+		log.Printf("WARNING: fleet growth heavy-pricing errand reach UNWIRED — the gate graph cannot answer stored hop distances, so no carrier's route to a heavy yard can be proved and NO pricing errand will ever fly")
 	}
 	return e
 }
@@ -268,6 +289,38 @@ func (e *autosizerPricingErrand) SendToYard(ctx context.Context, playerID int, s
 	}
 	if _, err := e.med.Send(ctx, &navCmd.NavigateRouteCommand{ShipSymbol: shipSymbol, Destination: waypointSymbol, PlayerID: pid}); err != nil {
 		return fmt.Errorf("navigate %s to heavy yard %s: %w", shipSymbol, waypointSymbol, err)
+	}
+	return nil
+}
+
+// HopsFrom asks the gate graph the question the NAVIGATOR will ask, from the system the flight
+// actually starts in, at the same heavyYardReachBoundHops the catalogue is capped at. The STORED
+// adjacency is a SUBSET of the fetch-through resolver's, so its errors run toward refusing a
+// flight; an unwired graph REFUSES, since an empty map reads as an absence of routes.
+func (e *autosizerPricingErrand) HopsFrom(ctx context.Context, fromSystem string, toSystems []string) (map[string]int, error) {
+	if e.hops == nil {
+		return nil, fmt.Errorf("the stored gate graph is unwired, so no carrier's reach to a heavy yard can be proved")
+	}
+	return e.hops.StoredHopDistances(ctx, fromSystem, toSystems, heavyYardReachBoundHops)
+}
+
+// PriceYardInPlace reads the shipyard a hull of ours is ALREADY STANDING at, so the presence-gated
+// ask lands without anything flying. It goes through the shipyard-listings query — the fleet's one
+// metered read, which persists what it finds — so it stays counted, paced and rescan-windowed, with
+// the token supplied by the mediator from PlayerID. THE CLASS IS LEFT AT ITS DISCRETIONARY ZERO
+// VALUE: no money guard consumes the result (every spend guard downstream still takes its own live
+// Earning read before a credit moves, RULINGS #4 untouched), and it keeps all three limiters on.
+func (e *autosizerPricingErrand) PriceYardInPlace(ctx context.Context, playerID int, waypointSymbol string) error {
+	pid, err := shared.NewPlayerID(playerID)
+	if err != nil {
+		return err
+	}
+	if _, err := e.med.Send(ctx, &shipyardQueries.GetShipyardListingsQuery{
+		SystemSymbol:   shared.ExtractSystemSymbol(waypointSymbol),
+		WaypointSymbol: waypointSymbol,
+		PlayerID:       pid,
+	}); err != nil {
+		return fmt.Errorf("read the heavy yard %s where our hull already stands: %w", waypointSymbol, err)
 	}
 	return nil
 }
