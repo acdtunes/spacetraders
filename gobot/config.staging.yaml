@@ -103,3 +103,11 @@ bootstrap:
 
 fleet_autosizer:
   contract_delivery_hulls_enabled: true
+
+# Anti-herd cap on reposition targets. The default 5 lets 56% of a nine-hull
+# fleet converge on one system, and the measured maximum herd was exactly 5 —
+# the cap was the binding term, not the market. 73% of 177 repositions had
+# another hull inbound to the same destination within 10 minutes, each one
+# quoted the full value of an opportunity none of them had reserved.
+trade_fleet:
+  reposition_reach_max_hulls_per_system: 2
