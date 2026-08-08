@@ -6,10 +6,11 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
 )
 
-// TradingConfig holds the trade-ranker knobs read at daemon start. Its only member
-// today is the activity-conditioned freshness table; it exists as its own
-// [trading] section so the ranker's tune knobs live under one intuitive key rather
-// than being folded into the era-refit [trade_impact] coefficients.
+// TradingConfig holds the trade-ranker knobs read at daemon start — the
+// activity-conditioned freshness table and the growth wave's switch-back boundary.
+// It exists as its own [trading] section so the ranker's tune knobs live under one
+// intuitive key rather than being folded into the era-refit [trade_impact]
+// coefficients.
 type TradingConfig struct {
 	// RankerAgeCapMinutes is the per-activity freshness cap (in MINUTES) the UNDIRECTED
 	// lane ranker and the tour snapshot drop stale listings against. Minutes (not a raw
@@ -18,6 +19,11 @@ type TradingConfig struct {
 	// that activity (trading.DefaultRankerAgeCap*), so the ranker runs the analyst's
 	// era3/4 fit unchanged out of the box.
 	RankerAgeCapMinutes RankerAgeCapConfig `mapstructure:"ranker_age_cap_minutes"`
+
+	// TradeSaturation is the growth wave's SWITCH-BACK boundary: the point at which the
+	// reachable surface absorbs no more, in one trip, than the trade pool's own hold
+	// already lifts. An absent section runs the fitted defaults from domain/fleetgrowth.
+	TradeSaturation TradeSaturationConfig `mapstructure:"trade_saturation"`
 }
 
 // RankerAgeCapConfig is the [trading] ranker_age_cap_minutes tune table: one freshness

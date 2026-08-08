@@ -19,12 +19,14 @@ const (
 type WaveProbeReason string
 
 const (
-	WaveProbeReasonNone               WaveProbeReason = ""
-	WaveProbeReasonGrowthDisabled     WaveProbeReason = "growth_disabled"
-	WaveProbeReasonLanesUnreadable    WaveProbeReason = "lanes_unreadable"
-	WaveProbeReasonLanesServed        WaveProbeReason = "lanes_served"
-	WaveProbeReasonCapacityUnreadable WaveProbeReason = "capacity_unreadable"
-	WaveProbeReasonUnreachable        WaveProbeReason = "unreachable"
+	WaveProbeReasonNone                 WaveProbeReason = ""
+	WaveProbeReasonGrowthDisabled       WaveProbeReason = "growth_disabled"
+	WaveProbeReasonLanesUnreadable      WaveProbeReason = "lanes_unreadable"
+	WaveProbeReasonLanesServed          WaveProbeReason = "lanes_served"
+	WaveProbeReasonSaturationUnreadable WaveProbeReason = "saturation_unreadable"
+	WaveProbeReasonTradeSaturated       WaveProbeReason = "trade_saturated"
+	WaveProbeReasonCapacityUnreadable   WaveProbeReason = "capacity_unreadable"
+	WaveProbeReasonUnreachable          WaveProbeReason = "unreachable"
 )
 
 // Reachable answers whether a fleet can PLAUSIBLY reach an ask, judged on the highest balance it
@@ -68,6 +70,21 @@ type WaveInputs struct {
 	UnservedLanes         int
 	UnservedLanesReadable bool
 
+	// TradeSaturated is the SWITCH-BACK cue: the reachable profitable surface absorbs no more, in
+	// one trip, than the trade pool's own hold can already lift. It is the DEPTH answer to the lane
+	// COUNT above — a fleet can saturate every unit of reachable depth while lanes remain
+	// technically unserved, at which point one more hull carries nothing and growth belongs in
+	// coverage. The arithmetic is fleetgrowth.TradeSaturated, computed ONCE in the shared lane
+	// reader with its own anti-thrash dwell: a predicate two independently-ticking consumers must
+	// agree on cannot hold the persistence window itself, the way the heavy BUY's streak does.
+	//
+	// IT ONLY EVER SUBTRACTS HEAVY TICKS. No value of it turns a PROBE tick HEAVY, so it cannot
+	// authorise a purchase the predicate would otherwise refuse (RULINGS #6/#4 by direction).
+	// TradeSaturationReadable=false is a blind read of the depth or of the fleet's own hold, and
+	// releases toward PROBE like every other blind input.
+	TradeSaturated          bool
+	TradeSaturationReadable bool
+
 	// Target is what the fleet would be saving toward, from HeavyReserve — the ONE definition.
 	// The cap clause, the priced-target clause and the capability clause are all expressed
 	// through it rather than beside it, so they cannot drift from the reservation's own rungs.
@@ -108,6 +125,16 @@ func DeriveWave(in WaveInputs) (Wave, WaveProbeReason) {
 	}
 	if in.UnservedLanes <= 0 {
 		return WaveProbe, WaveProbeReasonLanesServed
+	}
+	// THE DEMAND CLAUSES ANSWER TOGETHER, ahead of the affordability ones: a lane COUNT and a lane
+	// DEPTH are two readings of one question, and a fleet that has outgrown its surface must not be
+	// called capacity-short merely because lanes remain uncovered. The blind read outranks its own
+	// verdict, the shape the lane surface already has above.
+	if !in.TradeSaturationReadable {
+		return WaveProbe, WaveProbeReasonSaturationUnreadable
+	}
+	if in.TradeSaturated {
+		return WaveProbe, WaveProbeReasonTradeSaturated
 	}
 	if !in.HighWaterReadable {
 		return WaveProbe, WaveProbeReasonCapacityUnreadable

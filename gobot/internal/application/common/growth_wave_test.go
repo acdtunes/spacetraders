@@ -15,16 +15,18 @@ func heavyTarget(ask int64) HeavyReserveTarget {
 	})
 }
 
-// heavyInputs is the canonical HEAVY state: lanes unserved, under cap, a priced target, and a
-// high-water mark comfortably past the entry threshold.
+// heavyInputs is the canonical HEAVY state: lanes unserved, a surface deeper than the fleet's hold,
+// under cap, a priced target, and a high-water mark comfortably past the entry threshold.
 func heavyInputs() WaveInputs {
 	return WaveInputs{
-		GrowthEnabled:         true,
-		UnservedLanes:         3,
-		UnservedLanesReadable: true,
-		Target:                heavyTarget(1_000_000),
-		HighWaterTreasury:     2_000_000,
-		HighWaterReadable:     true,
+		GrowthEnabled:           true,
+		UnservedLanes:           3,
+		UnservedLanesReadable:   true,
+		TradeSaturated:          false,
+		TradeSaturationReadable: true,
+		Target:                  heavyTarget(1_000_000),
+		HighWaterTreasury:       2_000_000,
+		HighWaterReadable:       true,
 	}
 }
 
@@ -45,6 +47,8 @@ func TestWaveWireValuesArePinned(t *testing.T) {
 		{"WaveProbeReasonGrowthDisabled", string(WaveProbeReasonGrowthDisabled), "growth_disabled"},
 		{"WaveProbeReasonLanesUnreadable", string(WaveProbeReasonLanesUnreadable), "lanes_unreadable"},
 		{"WaveProbeReasonLanesServed", string(WaveProbeReasonLanesServed), "lanes_served"},
+		{"WaveProbeReasonSaturationUnreadable", string(WaveProbeReasonSaturationUnreadable), "saturation_unreadable"},
+		{"WaveProbeReasonTradeSaturated", string(WaveProbeReasonTradeSaturated), "trade_saturated"},
 		{"WaveProbeReasonCapacityUnreadable", string(WaveProbeReasonCapacityUnreadable), "capacity_unreadable"},
 		{"WaveProbeReasonUnreachable", string(WaveProbeReasonUnreachable), "unreachable"},
 	} {
@@ -96,6 +100,78 @@ func TestDeriveWave_LaneClauseIsAThresholdNotAMagnitude(t *testing.T) {
 	}
 }
 
+// THE PIVOTAL FIXTURE — the live frame of 2026-08-08 01:51, and the defect in one assertion. The
+// census reported fifteen unserved lanes, so the lane clause held the regime HEAVY and the demand
+// asked for sixteen more hulls; the fleet's nine trade hulls meanwhile held ~820 units against a
+// reachable surface absorbing 741, and every one of them sat empty. UNSERVED LANES REMAIN POSITIVE
+// HERE, which is the whole point: the saturation term must override the lane count, not agree with
+// it, or it changes nothing in the state it was built for.
+func TestDeriveWave_SaturatedSurfaceIsProbeEvenWithUnservedLanes(t *testing.T) {
+	in := heavyInputs()
+	in.UnservedLanes = 15
+	in.TradeSaturated = true
+	if w, reason := DeriveWave(in); w != WaveProbe || reason != WaveProbeReasonTradeSaturated {
+		t.Fatalf("15 unserved lanes on a SATURATED surface gave %q/%q, want PROBE/trade_saturated — the lane count must not outrank saturation", w, reason)
+	}
+}
+
+// THE ANTI-VACUITY CONTROL, and the statement that this change is demand-REDUCING only: wherever the
+// surface is not saturated the regime is exactly what it was before the term existed. A term that
+// answered PROBE here would be pausing a fleet that genuinely has work its hold cannot cover.
+func TestDeriveWave_AnUnsaturatedSurfaceIsHeavyUnchanged(t *testing.T) {
+	for _, lanes := range []int{1, 15, 500} {
+		in := heavyInputs()
+		in.UnservedLanes = lanes
+		in.TradeSaturated = false
+		if w, reason := DeriveWave(in); w != WaveHeavy || reason != WaveProbeReasonNone {
+			t.Fatalf("%d unserved lanes on an UNSATURATED surface gave %q/%q, want HEAVY — the term must be inert here", lanes, w, reason)
+		}
+	}
+}
+
+// SATURATION CAN ONLY EVER SUBTRACT HEAVY TICKS. Swept across the whole input space, setting the
+// flag must never turn a PROBE tick HEAVY — that is RULINGS #6/#4 by direction, and it is the
+// property that makes this change unable to authorise a purchase today's code would refuse. It is
+// swept rather than spot-checked because a clause inserted at the wrong precedence could satisfy
+// every named case above and still release one combination.
+func TestDeriveWave_SaturationNeverReleasesAHeavy(t *testing.T) {
+	sawFlip := false
+	for _, enabled := range []bool{true, false} {
+		for _, lanes := range []int{0, 1, 15} {
+			for _, lanesReadable := range []bool{true, false} {
+				for _, satReadable := range []bool{true, false} {
+					for _, ask := range []int64{0, 1_000_000} {
+						for _, peakReadable := range []bool{true, false} {
+							for _, hw := range []int64{0, 400_000, 2_000_000} {
+								base := WaveInputs{
+									GrowthEnabled: enabled, UnservedLanes: lanes, UnservedLanesReadable: lanesReadable,
+									TradeSaturationReadable: satReadable,
+									Target:                  heavyTarget(ask), HighWaterTreasury: hw, HighWaterReadable: peakReadable,
+								}
+								unsaturated, saturated := base, base
+								saturated.TradeSaturated = true
+								was, _ := DeriveWave(unsaturated)
+								now, _ := DeriveWave(saturated)
+								if was == WaveProbe && now == WaveHeavy {
+									t.Fatalf("saturation RELEASED a heavy at %+v: probe → heavy", base)
+								}
+								if was == WaveHeavy && now == WaveProbe {
+									sawFlip = true
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	// CALIBRATION: a sweep in which the flag never changed an answer would prove nothing about its
+	// direction, because "never releases" is trivially true of an unread field.
+	if !sawFlip {
+		t.Fatalf("the sweep never saw saturation change a regime — it cannot witness its direction")
+	}
+}
+
 // AND THE PAUSE IT OPENS IS BOUNDED BY THE HEAVY CAP. A large unserved count holds the lane clause
 // open for good, so the only remaining road back to PROBE is the reservation standing down — and it
 // does, at the cap, whatever the census reports and however rich the fleet is. Probe buying resumes
@@ -127,6 +203,10 @@ func TestDeriveWave_UnreadableInputs_AreProbe(t *testing.T) {
 	}{
 		"lane surface down":   {func(in *WaveInputs) { in.UnservedLanesReadable = false }, WaveProbeReasonLanesUnreadable},
 		"empty ledger window": {func(in *WaveInputs) { in.HighWaterReadable = false }, WaveProbeReasonCapacityUnreadable},
+		// An unreadable saturation term is a blind read of the fleet's own hold or of the surface's
+		// depth, and it releases toward PROBE like every other blind input — never toward HEAVY,
+		// which would buy a hull against a saturation nobody could measure.
+		"saturation unmeasurable": {func(in *WaveInputs) { in.TradeSaturationReadable = false }, WaveProbeReasonSaturationUnreadable},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -162,12 +242,14 @@ func TestDeriveWave_ZeroHighWaterIsNotTheSameAsUnreadable(t *testing.T) {
 // clause it names outranks every clause after it.
 func TestDeriveWave_ClausePrecedenceIsPinned(t *testing.T) {
 	in := WaveInputs{
-		GrowthEnabled:         false,
-		UnservedLanes:         0,
-		UnservedLanesReadable: false,
-		Target:                heavyTarget(1_000_000),
-		HighWaterTreasury:     0,
-		HighWaterReadable:     false,
+		GrowthEnabled:           false,
+		UnservedLanes:           0,
+		UnservedLanesReadable:   false,
+		TradeSaturated:          true,
+		TradeSaturationReadable: false,
+		Target:                  heavyTarget(1_000_000),
+		HighWaterTreasury:       0,
+		HighWaterReadable:       false,
 	}
 	for _, step := range []struct {
 		outranks string
@@ -176,8 +258,12 @@ func TestDeriveWave_ClausePrecedenceIsPinned(t *testing.T) {
 	}{
 		{"the master switch outranks every other clause", func(*WaveInputs) {}, WaveProbeReasonGrowthDisabled},
 		{"a blind lane surface outranks the lane count", func(in *WaveInputs) { in.GrowthEnabled = true }, WaveProbeReasonLanesUnreadable},
-		{"served lanes outrank the capacity read", func(in *WaveInputs) { in.UnservedLanesReadable = true }, WaveProbeReasonLanesServed},
-		{"a blind capacity read outranks reachability", func(in *WaveInputs) { in.UnservedLanes = 3 }, WaveProbeReasonCapacityUnreadable},
+		{"served lanes outrank the saturation term", func(in *WaveInputs) { in.UnservedLanesReadable = true }, WaveProbeReasonLanesServed},
+		// THE DEMAND CLAUSES ANSWER BEFORE THE AFFORDABILITY ONES, and the blind read outranks the
+		// verdict derived from it — the same shape the lane surface already has one rung above.
+		{"a blind saturation read outranks its own verdict", func(in *WaveInputs) { in.UnservedLanes = 3 }, WaveProbeReasonSaturationUnreadable},
+		{"saturation outranks the capacity read", func(in *WaveInputs) { in.TradeSaturationReadable = true }, WaveProbeReasonTradeSaturated},
+		{"a blind capacity read outranks reachability", func(in *WaveInputs) { in.TradeSaturated = false }, WaveProbeReasonCapacityUnreadable},
 		{"reachability answers last", func(in *WaveInputs) { in.HighWaterReadable = true }, WaveProbeReasonUnreachable},
 	} {
 		step.mend(&in)
@@ -260,7 +346,8 @@ func TestDeriveWave_ReachabilityIsHoldAtOnTheHighWater(t *testing.T) {
 	for hw := int64(0); hw <= 2_000_000; hw += 9_973 {
 		in := WaveInputs{
 			GrowthEnabled: true, UnservedLanes: 1, UnservedLanesReadable: true,
-			Target: tgt, HighWaterTreasury: hw, HighWaterReadable: true,
+			TradeSaturationReadable: true,
+			Target:                  tgt, HighWaterTreasury: hw, HighWaterReadable: true,
 		}
 		w, _ := DeriveWave(in)
 		wantHeavy := tgt.HoldAt(hw) > 0

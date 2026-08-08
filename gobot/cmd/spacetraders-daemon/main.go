@@ -1253,6 +1253,7 @@ func run(cfg *config.Config) error {
 	profitableLaneCensus := tradingQueries.NewProfitableLaneReader(marketRepo, gateGraphService)
 	profitableLaneCensus.SetRankerAgeCaps(cfg.Trading.RankerAgeCapMinutes.Resolved())
 	unservedLaneReader := tradingQueries.NewUnservedLaneReader(shipRepo, profitableLaneCensus)
+	unservedLaneReader.SetSaturation(cfg.Trading.TradeSaturation.Resolved())
 
 	// The fleet-growth coordinator: the fleet's ONLY heavy buyer. It reuses the autosizer's whole
 	// port set — treasury, API utilization, the shipyard price walk, the heavy census and target,

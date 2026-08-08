@@ -32,10 +32,10 @@ type growthTickInputs struct {
 	// heavyReserve is the credits actually withheld toward heavyTarget at this tick's treasury.
 	// The heavy buy waives its own reserve inside guardAffordability; it is carried for the gauge.
 	heavyReserve int64
-	// unservedLanes is the capacity-short signal — the wave's demand clause and the class's
-	// shortfall alike, read ONCE so the two can never disagree.
-	unservedLanes   int
-	unservedLanesOK bool
+	// laneDemand is the trade surface in BOTH dimensions the regime judges: the unserved lane COUNT
+	// (demand clause and class shortfall) and the DEPTH verdict. ONE read, so ONE readability flag.
+	laneDemand   fleetgrowth.LaneDemand
+	laneDemandOK bool
 	// highWater is the peak balance across one trade cycle — the fleet's demonstrated capacity,
 	// and the ONLY balance the reachability clause judges.
 	highWater   int64
@@ -86,8 +86,8 @@ func (h *RunFleetGrowthCoordinatorHandler) readTickInputs(ctx context.Context, p
 		}
 	}
 	if h.lanes != nil {
-		if n, ok, err := h.lanes.UnservedLaneCount(ctx, playerID); err == nil {
-			in.unservedLanes, in.unservedLanesOK = n, ok
+		if demand, ok, err := h.lanes.LaneDemand(ctx, playerID); err == nil {
+			in.laneDemand, in.laneDemandOK = demand, ok
 		}
 	}
 	// The demonstrated-capacity read. Its window is the SHARED one — the drain measures the same
@@ -146,12 +146,12 @@ func (h *RunFleetGrowthCoordinatorHandler) readHeavyDemand(in growthTickInputs) 
 	if !in.tradeHullsOK {
 		return unreadableHeavy("trade-pool count unreadable — heavies fail closed")
 	}
-	if !in.unservedLanesOK {
+	if !in.laneDemandOK {
 		return unreadableHeavy("unserved-lane signal unreadable — heavies fail closed")
 	}
 	return computeHeavyDemand(heavyDemandInputs{
 		CurrentHeavies: in.tradeHulls,
-		UnservedLanes:  in.unservedLanes,
+		UnservedLanes:  in.laneDemand.UnservedLanes,
 	})
 }
 

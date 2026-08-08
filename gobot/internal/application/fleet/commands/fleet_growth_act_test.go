@@ -18,11 +18,15 @@ import (
 type fakeLanes struct {
 	count    int
 	readable bool
-	err      error
+	// saturated is the DEPTH verdict, debounced and published by the shared reader beside the
+	// count. Its zero value is "not saturated" — the state every fixture written before the
+	// switch-back term existed was implicitly asserting, so those cases stay HEAVY unchanged.
+	saturated bool
+	err       error
 }
 
-func (f *fakeLanes) UnservedLaneCount(ctx context.Context, playerID int) (int, bool, error) {
-	return f.count, f.readable, f.err
+func (f *fakeLanes) LaneDemand(ctx context.Context, playerID int) (fleetgrowth.LaneDemand, bool, error) {
+	return fleetgrowth.LaneDemand{UnservedLanes: f.count, Saturated: f.saturated}, f.readable, f.err
 }
 
 type fakeOutflow struct {

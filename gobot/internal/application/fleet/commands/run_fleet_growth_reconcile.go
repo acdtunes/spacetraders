@@ -151,10 +151,12 @@ func (h *RunFleetGrowthCoordinatorHandler) reconcileOnce(ctx context.Context, cm
 	in := h.readTickInputs(ctx, cmd.PlayerID, cfg)
 
 	wave, reason := common.DeriveWave(common.WaveInputs{
-		GrowthEnabled:         true,
-		UnservedLanes:         in.unservedLanes,
-		UnservedLanesReadable: in.unservedLanesOK,
-		Target:                in.heavyTarget,
+		GrowthEnabled:           true,
+		UnservedLanes:           in.laneDemand.UnservedLanes,
+		UnservedLanesReadable:   in.laneDemandOK,
+		TradeSaturated:          in.laneDemand.Saturated,
+		TradeSaturationReadable: in.laneDemandOK,
+		Target:                  in.heavyTarget,
 		// The regime is judged on the fleet's DEMONSTRATED CAPACITY, never on the balance it
 		// happens to hold this tick. The live balance is carried for the log and the gauges only.
 		HighWaterTreasury:        in.highWater,

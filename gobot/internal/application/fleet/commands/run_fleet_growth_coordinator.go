@@ -9,6 +9,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/application/health"
 	"github.com/andrescamacho/spacetraders-go/internal/application/liveconfig"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/fleetgrowth"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/hullbuy"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
@@ -73,11 +74,12 @@ type RunFleetGrowthCoordinatorResponse struct {
 	Errors []string
 }
 
-// UnservedLaneReader is the capacity-short signal: profitable lanes beyond the trade pool.
-// readable=false ⇒ the wave is PROBE and no heavy is bought (fail-closed on the buy, release
-// on the wave — both are the direction that spends nothing).
+// UnservedLaneReader is the trade surface in the two dimensions the regime judges: the lane COUNT
+// beyond the trade pool, and the DEPTH verdict answering it. readable=false ⇒ PROBE and no heavy
+// bought (fail-closed on the buy, release on the wave — both spend nothing). It is the DEMAND read:
+// a consumer free to take the count alone could judge a regime the drain, sharing it, never saw.
 type UnservedLaneReader interface {
-	UnservedLaneCount(ctx context.Context, playerID int) (count int, readable bool, err error)
+	LaneDemand(ctx context.Context, playerID int) (demand fleetgrowth.LaneDemand, readable bool, err error)
 }
 
 // CargoOutflowReader reports the trading fleet's observed cargo outflow over a trailing window

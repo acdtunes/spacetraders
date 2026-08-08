@@ -54,16 +54,20 @@ func (f *fakeReserveTarget) Reserve(_ context.Context, _ int) (common.HeavyReser
 type fakeLanes struct {
 	count    int
 	readable bool
-	err      error
-	calls    int
+	// saturated is the DEPTH verdict the shared reader debounces and publishes beside the count.
+	// The zero value is "not saturated", which is the state every case written before the
+	// switch-back term existed was asserting against.
+	saturated bool
+	err       error
+	calls     int
 }
 
-func (f *fakeLanes) UnservedLaneCount(_ context.Context, _ int) (int, bool, error) {
+func (f *fakeLanes) LaneDemand(_ context.Context, _ int) (fleetgrowth.LaneDemand, bool, error) {
 	f.calls++
 	if f.err != nil {
-		return 7, true, f.err
+		return fleetgrowth.LaneDemand{UnservedLanes: 7}, true, f.err
 	}
-	return f.count, f.readable, nil
+	return fleetgrowth.LaneDemand{UnservedLanes: f.count, Saturated: f.saturated}, f.readable, nil
 }
 
 // fakePeak records the WINDOW it was asked for, because the window is half the contract: a peak

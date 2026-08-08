@@ -38,7 +38,7 @@ func waveThroughTheDrainPort(t *testing.T, in common.WaveInputs) (common.Wave, c
 	port := NewWavePort(
 		&fakeSwitch{enabled: in.GrowthEnabled, exists: true},
 		&fakeReserveTarget{target: in.Target},
-		&fakeLanes{count: in.UnservedLanes, readable: in.UnservedLanesReadable},
+		&fakeLanes{count: in.UnservedLanes, readable: in.UnservedLanesReadable, saturated: in.TradeSaturated},
 		&fakePeak{peak: in.HighWaterTreasury, readable: in.HighWaterReadable},
 		stoppedClock{time.Unix(1_700_000_000, 0)},
 	)
@@ -55,41 +55,60 @@ func waveThroughTheDrainPort(t *testing.T, in common.WaveInputs) (common.Wave, c
 // other withholds and nothing in any gauge saying why. The coordinator's assembly is out of reach
 // from this package — see the file header for what carries that half.
 func TestWaveLockstep_BothConsumersAgree(t *testing.T) {
-	sawHeavy, sawProbe := false, false
+	sawHeavy, sawProbe, sawSaturated := false, false, false
 	for _, enabled := range []bool{true, false} {
 		for _, lanes := range []int{0, 1, 7} {
 			for _, readable := range []bool{true, false} {
-				for _, ask := range []int64{0, 1_000_000, 1_916_613} {
-					for _, peakReadable := range []bool{true, false} {
-						for highWater := int64(0); highWater <= 4_000_000; highWater += 137_119 {
-							in := common.WaveInputs{
-								GrowthEnabled:         enabled,
-								UnservedLanes:         lanes,
-								UnservedLanesReadable: readable,
-								Target: common.HeavyReserve(common.HeavyReserveInputs{
-									CapabilityOpen: ask > 0, HeaviesOwned: 0, HeavyCap: 5, TargetYardPrice: ask,
-								}),
-								HighWaterTreasury: highWater,
-								HighWaterReadable: peakReadable,
-							}
-							want, wantReason := common.DeriveWave(in)
-							// The drain reaches the predicate through its port; the coordinator reaches
-							// it directly. Both must land on the same answer for the same facts.
-							got, gotReason := waveThroughTheDrainPort(t, in)
-							if got != want || gotReason != wantReason {
-								t.Fatalf("split-brain at %+v: predicate=%q/%q drain=%q/%q", in, want, wantReason, got, gotReason)
-							}
-							switch want {
-							case common.WaveHeavy:
-								sawHeavy = true
-							case common.WaveProbe:
-								sawProbe = true
+				for _, saturated := range []bool{true, false} {
+					for _, ask := range []int64{0, 1_000_000, 1_916_613} {
+						for _, peakReadable := range []bool{true, false} {
+							for highWater := int64(0); highWater <= 4_000_000; highWater += 137_119 {
+								in := common.WaveInputs{
+									GrowthEnabled:         enabled,
+									UnservedLanes:         lanes,
+									UnservedLanesReadable: readable,
+									TradeSaturated:        saturated,
+									// THE TWO DEMAND READS SHARE ONE READABILITY FLAG, and the sweep says so
+									// deliberately rather than enumerating them apart. The count and the depth
+									// come off ONE call to ONE reader over one census and one fleet, so a world
+									// where the lane count is legible and its own depth is not cannot arise —
+									// modelling it here would have the sweep fail the port for refusing to
+									// reproduce a state the system has no way to be in.
+									TradeSaturationReadable: readable,
+									Target: common.HeavyReserve(common.HeavyReserveInputs{
+										CapabilityOpen: ask > 0, HeaviesOwned: 0, HeavyCap: 5, TargetYardPrice: ask,
+									}),
+									HighWaterTreasury: highWater,
+									HighWaterReadable: peakReadable,
+								}
+								want, wantReason := common.DeriveWave(in)
+								// The drain reaches the predicate through its port; the coordinator reaches
+								// it directly. Both must land on the same answer for the same facts.
+								got, gotReason := waveThroughTheDrainPort(t, in)
+								if got != want || gotReason != wantReason {
+									t.Fatalf("split-brain at %+v: predicate=%q/%q drain=%q/%q", in, want, wantReason, got, gotReason)
+								}
+								switch want {
+								case common.WaveHeavy:
+									sawHeavy = true
+								case common.WaveProbe:
+									sawProbe = true
+								}
+								if wantReason == common.WaveProbeReasonTradeSaturated {
+									sawSaturated = true
+								}
 							}
 						}
 					}
 				}
 			}
 		}
+	}
+	// AND THE SWITCH-BACK CLAUSE WAS ACTUALLY EXERCISED. A sweep that carried the saturation field
+	// without ever reaching the clause that reads it would agree perfectly while proving nothing
+	// about whether the port assembles it at all.
+	if !sawSaturated {
+		t.Fatalf("the sweep never reached the trade_saturated clause — it cannot witness the port carrying that field")
 	}
 	// CALIBRATION. A sweep that only ever produced one regime would agree perfectly while testing
 	// nothing about the clauses that flip it.

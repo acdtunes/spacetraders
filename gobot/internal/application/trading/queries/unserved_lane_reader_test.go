@@ -33,10 +33,13 @@ func (f *fakeLaneCounter) CountProfitableLanes(ctx context.Context, playerID int
 // --- fake ship repository (narrow: the one fleet read the unserved count consumes) -------------
 
 // hullSpec describes one hull the fake fleet serves: the fleet it is dedicated to (empty = the
-// general pool) and the system it stands in. The reader reads exactly those two facts.
+// general pool), the system it stands in, and the cargo capacity it carries. The reader reads
+// exactly those three facts. A zero hold takes the stock 40 units, so every fixture written before
+// the saturation term existed keeps the hull it always had.
 type hullSpec struct {
 	fleet  string
 	system string
+	hold   int
 }
 
 func tradeHulls(n int) []hullSpec { return hullsTagged(n, tradeFleetTag) }
@@ -88,17 +91,22 @@ func erroringShipRepo(err error) *fakeShipRepo {
 }
 
 // hullAt builds one hull parked at a waypoint inside spec.system — its location is the system
-// discovery signal, its dedication tag is the trade-pool signal.
+// discovery signal, its dedication tag is the trade-pool signal, and its cargo capacity is the
+// fleet side of the saturation comparison.
 func hullAt(t *testing.T, symbol string, spec hullSpec) *navigation.Ship {
 	t.Helper()
-	cargo, err := shared.NewCargo(40, 0, nil)
+	hold := spec.hold
+	if hold <= 0 {
+		hold = 40
+	}
+	cargo, err := shared.NewCargo(hold, 0, nil)
 	require.NoError(t, err)
 	fuel, err := shared.NewFuel(100, 100)
 	require.NoError(t, err)
 	wp, err := shared.NewWaypoint(spec.system+"-1", 0, 0)
 	require.NoError(t, err)
 	ship, err := navigation.NewShip(
-		symbol, shared.MustNewPlayerID(1), wp, fuel, 100, 40, cargo, 30,
+		symbol, shared.MustNewPlayerID(1), wp, fuel, 100, hold, cargo, 30,
 		"FRAME_HEAVY_FREIGHTER", "HAULER", nil, navigation.NavStatusDocked,
 	)
 	require.NoError(t, err)

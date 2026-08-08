@@ -44,16 +44,16 @@ type heavyReserveSource interface {
 	Reserve(ctx context.Context, playerID int) (common.HeavyReserveTarget, error)
 }
 
-// UnservedLaneCounter reports the capacity-short signal. Satisfied by the ONE
-// queries.UnservedLaneReader instance the growth coordinator also holds: two readers of one
-// quantity is how the spender and the withholder end up disagreeing about whether the fleet is
-// capacity-short.
+// UnservedLaneCounter reports the capacity-short signal AND the depth verdict that switches it back.
+// Satisfied by the ONE queries.UnservedLaneReader the growth coordinator also holds: two readers of
+// one quantity is how the spender and the withholder disagree. ONE call serves both dimensions, as
+// the anti-thrash window lives inside that reader and is advanced by the read itself.
 //
 // EXPORTED so the composition root can hold one as a genuinely nil interface. A typed-nil pointer
 // assigned straight into this field is NOT nil to the port's own fail-closed guard, and would panic
 // mid-tick instead of refusing the tick.
 type UnservedLaneCounter interface {
-	UnservedLaneCount(ctx context.Context, playerID int) (int, bool, error)
+	LaneDemand(ctx context.Context, playerID int) (fleetgrowth.LaneDemand, bool, error)
 }
 
 // treasuryPeakSource is the DEMONSTRATED-CAPACITY read: the PEAK balance held across a trailing
@@ -114,7 +114,7 @@ func (p *WavePort) Wave(ctx context.Context, playerID int) (common.Wave, common.
 		return "", "", 0, fmt.Errorf("heavy reserve target unreadable: %w", err)
 	}
 
-	lanes, lanesOK, err := p.lanes.UnservedLaneCount(ctx, playerID)
+	lanes, lanesOK, err := p.lanes.LaneDemand(ctx, playerID)
 	if err != nil {
 		return "", "", 0, fmt.Errorf("unserved lane count unreadable: %w", err)
 	}
@@ -132,11 +132,14 @@ func (p *WavePort) Wave(ctx context.Context, playerID int) (common.Wave, common.
 
 	wave, reason := common.DeriveWave(common.WaveInputs{
 		GrowthEnabled:         enabled,
-		UnservedLanes:         lanes,
+		UnservedLanes:         lanes.UnservedLanes,
 		UnservedLanesReadable: lanesOK,
-		Target:                target,
-		HighWaterTreasury:     highWater,
-		HighWaterReadable:     highWaterOK,
+		// Off the SAME read the coordinator judges; on the WITHHOLDER it can only RESUME probing.
+		TradeSaturated:          lanes.Saturated,
+		TradeSaturationReadable: lanesOK,
+		Target:                  target,
+		HighWaterTreasury:       highWater,
+		HighWaterReadable:       highWaterOK,
 	})
 	return wave, reason, target, nil
 }
