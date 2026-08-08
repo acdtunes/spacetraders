@@ -112,6 +112,14 @@ This file exists so that class of miss cannot recur.)
     exception: Tier-3 rails (templates, watchkeeper, gate) require sign-off before code
     moves. Approved work is executed, not re-litigated.
 
+21. **A replacement is not delivered until its predecessor is deleted.** (Admiral 2026-08-08,
+    origin: sp-bu6jd.) Two live engines never own one duty. An epic that builds a successor
+    carries the predecessor's retirement, and it lands no later than the successor — a merged
+    successor beside a live predecessor is an unfinished change. Retirement deletes the whole
+    surface with the engine: registry entry, config and tune keys, launch verbs. An unavoidable
+    overlap is declared in code, dated, naming the bead that ends it; an undeclared duplicate
+    fails the build.
+
 ## Amendments (Admiral consolidation, 2026-07-18)
 
 - **#1 scope clarified:** the ruling binds the ENGINE — code may never refuse, skip, or

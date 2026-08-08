@@ -19,6 +19,7 @@ type ContainerSpec struct {
 	// restart rebuild can never hand a coordinator-owned budget to the runner
 	// loop. See containerSpecList for the full per-type semantics table.
 	CoordinatorOwnsIterations bool
+	Duty                      Duty
 	build                     func(cfg *configReader, playerID int, containerID string) interface{}
 }
 
@@ -37,7 +38,8 @@ func (spec ContainerSpec) BuildCommand(config map[string]interface{}, playerID i
 // containerSpecList is the registry AND the container lifecycle contract's per-type semantics table.
 // Every container type the daemon creates MUST appear here — a type absent from it is marked FAILED
 // at restart recovery and its in-flight work abandoned. A type deliberately removed goes in
-// retiredCommandTypes instead, which skips its persisted rows cleanly rather than alarming.
+// retiredCommandTypes instead, which skips its persisted rows cleanly rather than alarming. Every
+// entry also declares the Duty it owns; two may not name one (container_duty_registry.go).
 //
 // ITERATION SEMANTICS (invariant 3) — one operator-facing meaning everywhere:
 //
@@ -55,91 +57,91 @@ func (spec ContainerSpec) BuildCommand(config map[string]interface{}, playerID i
 // reference).
 func containerSpecList() []ContainerSpec {
 	return []ContainerSpec{
-		{CommandType: "scout_tour", build: buildScoutTourCommand, CoordinatorOwnsIterations: true},
+		{CommandType: "scout_tour", build: buildScoutTourCommand, CoordinatorOwnsIterations: true, Duty: DutyNone},
 		// probe_sensing_coordinator is the standing sensing engine. The retired freshness sizer,
 		// frontier expansion, scout-post, shipyard-backfill and scout-reposition types are
 		// deliberately ABSENT — see retiredCommandTypes.
-		{CommandType: "probe_sensing_coordinator", build: buildProbeSensingCoordinatorCommand},
-		{CommandType: "contract_workflow", build: buildContractWorkflowCommand},
-		{CommandType: "contract_fleet_coordinator", build: buildContractFleetCoordinatorCommand},
+		{CommandType: "probe_sensing_coordinator", build: buildProbeSensingCoordinatorCommand, Duty: DutyMarketFreshness},
+		{CommandType: "contract_workflow", build: buildContractWorkflowCommand, Duty: DutyNone},
+		{CommandType: "contract_fleet_coordinator", build: buildContractFleetCoordinatorCommand, Duty: DutyContractExecution},
 		// trade_fleet_coordinator (sp-1278): a standing coordinator that loops forever
 		// inside one Handle() call, so — like scout_post/contract_fleet — it is NOT a
 		// CoordinatorOwnsIterations type; the container-level iteration budget (-1) is
 		// irrelevant because Handle() never returns.
-		{CommandType: "trade_fleet_coordinator", build: buildTradeFleetCoordinatorCommand},
+		{CommandType: "trade_fleet_coordinator", build: buildTradeFleetCoordinatorCommand, Duty: DutyTradeDispatch},
 		// worker_ferry: a one-shot cross-system relay worker (twin of scout_reposition)
 		// that moves a hull to a destination waypoint. Its former managing coordinator (the
 		// worker_rebalancer_coordinator) was retired with the factory ops; the ferry
 		// primitive is retained for the daemon's persist/start dispatch + container recovery. It
 		// wraps exactly ONE iteration (CoordinatorOwnsIterations).
-		{CommandType: "worker_ferry", build: buildWorkerFerryCommand, CoordinatorOwnsIterations: true},
+		{CommandType: "worker_ferry", build: buildWorkerFerryCommand, CoordinatorOwnsIterations: true, Duty: DutyNone},
 		// cargo_liquidation: the contract fleet coordinator's one-shot
 		// self-clearing worker for a parked-with-cargo hull (twin of worker_ferry). The
 		// coordinator owns re-dispatch, so the container wraps exactly ONE iteration
 		// (CoordinatorOwnsIterations).
-		{CommandType: "cargo_liquidation", build: buildCargoLiquidationCommand, CoordinatorOwnsIterations: true},
-		{CommandType: "purchase_ship", build: buildPurchaseShipCommand},
-		{CommandType: "batch_purchase_ships", build: buildBatchPurchaseShipsCommand},
+		{CommandType: "cargo_liquidation", build: buildCargoLiquidationCommand, CoordinatorOwnsIterations: true, Duty: DutyNone},
+		{CommandType: "purchase_ship", build: buildPurchaseShipCommand, Duty: DutyNone},
+		{CommandType: "batch_purchase_ships", build: buildBatchPurchaseShipsCommand, Duty: DutyNone},
 		// construction_coordinator: the standing construction-supply drain. Like
 		// trade_fleet/siting it loops forever inside one Handle(), so it is NOT a
 		// CoordinatorOwnsIterations type; the container-level budget (-1) is irrelevant.
 		// Registering it here is what makes a launched or restart-recovered drain runnable.
-		{CommandType: "construction_coordinator", build: buildConstructionCoordinatorCommand},
+		{CommandType: "construction_coordinator", build: buildConstructionCoordinatorCommand, Duty: DutyConstructionSupply},
 		// fleet_growth: the standing fleet-growth coordinator — the fleet's ONLY heavy buyer, and
 		// one of the two readers of the heavy/probe wave. Like trade_fleet/siting it loops
 		// forever inside one Handle(), so it is NOT a CoordinatorOwnsIterations type.
-		{CommandType: "fleet_growth", build: buildFleetGrowthCommand},
+		{CommandType: "fleet_growth", build: buildFleetGrowthCommand, Duty: DutyTradeFleetSizing},
 		// contract_scaler: the standing dedicated contract auto-scaler. Like fleet_growth/siting it
 		// loops forever inside one Handle(), so it is NOT a CoordinatorOwnsIterations type; the
 		// container-level budget (-1) is irrelevant. Registering it here is what makes an ARMED-launch or
 		// restart-recovered scaler runnable — launch itself stays gated behind the bootstrap early-scaling
 		// arm (default-off), never boot-standing.
-		{CommandType: "contract_scaler", build: buildContractScalerCommand},
+		{CommandType: "contract_scaler", build: buildContractScalerCommand, Duty: DutyContractFleetSizing},
 		// opportunity_relocator's restart matters more than most: its persisted relocation intents are
 		// re-derived on the first tick, so a rebuild that never runs leaves one unfinished.
-		{CommandType: "opportunity_relocator", build: buildOpportunityRelocatorCommand},
+		{CommandType: "opportunity_relocator", build: buildOpportunityRelocatorCommand, Duty: DutyHullRepositioning},
 		// bootstrap is the one standing coordinator whose Handle() RETURNS — at the terminal EXPANSION
 		// exit — so its container completes on the response's RunTerminal report, and a non-terminal
 		// return is paced at the bootstrap tick rather than re-entered at loop speed.
-		{CommandType: "bootstrap", build: buildBootstrapCommand},
+		{CommandType: "bootstrap", build: buildBootstrapCommand, Duty: DutyColdStartSequencing},
 		// auto_outfit_coordinator (sp-buyd): the standing guarded auto-outfit coordinator.
 		// Like fleet_growth/siting it loops forever inside one Handle(), so it is NOT a
 		// CoordinatorOwnsIterations type; the container-level budget (-1) is irrelevant.
 		// Registering it here is what makes a launched or restart-recovered coordinator
 		// runnable — launch itself stays EXPLICIT (never boot-standing, deploy-inert).
-		{CommandType: "auto_outfit_coordinator", build: buildAutoOutfitCoordinatorCommand},
-		{CommandType: "gas_coordinator", build: buildGasCoordinatorCommand},
-		{CommandType: "warehouse", build: buildWarehouseCommand},
-		{CommandType: "trade_route", build: buildTradeRouteCoordinatorCommand, CoordinatorOwnsIterations: true},
-		{CommandType: "arb_run", build: buildArbCoordinatorCommand, CoordinatorOwnsIterations: true},
+		{CommandType: "auto_outfit_coordinator", build: buildAutoOutfitCoordinatorCommand, Duty: DutyHullOutfitting},
+		{CommandType: "gas_coordinator", build: buildGasCoordinatorCommand, Duty: DutyGasSupply},
+		{CommandType: "warehouse", build: buildWarehouseCommand, Duty: DutyNone},
+		{CommandType: "trade_route", build: buildTradeRouteCoordinatorCommand, CoordinatorOwnsIterations: true, Duty: DutyNone},
+		{CommandType: "arb_run", build: buildArbCoordinatorCommand, CoordinatorOwnsIterations: true, Duty: DutyNone},
 		// longhaul_arb_coordinator (sp-mepj): the standing long-haul arb fleet coordinator.
 		// Like trade_fleet_coordinator it loops forever inside one Handle(), so it is NOT a
 		// CoordinatorOwnsIterations type; the container-level budget (-1) is irrelevant.
 		// Registering it here is what makes an armed-launch or restart-recovered coordinator
 		// runnable — the launch itself is the operator's `workflow long-haul-coordinator` arm.
-		{CommandType: "longhaul_arb_coordinator", build: buildLongHaulArbFleetCoordinatorCommand},
+		{CommandType: "longhaul_arb_coordinator", build: buildLongHaulArbFleetCoordinatorCommand, Duty: DutyLongHaulDispatch},
 		// longhaul_arb (sp-mepj): the per-hull long-haul WORKER the coordinator spawns. Like
 		// arb_run/trade_route its handler owns the whole run internally (its continuous
 		// discover->buy->sell->backhaul episode loop), so the container wraps exactly ONE
 		// iteration (CoordinatorOwnsIterations) — the runner must not re-enter and double-loop.
-		{CommandType: "longhaul_arb", build: buildLongHaulArbWorkerCommand, CoordinatorOwnsIterations: true},
-		{CommandType: "tour_run", build: buildTourCoordinatorCommand, CoordinatorOwnsIterations: true},
-		{CommandType: "stocker", build: buildStockerCoordinatorCommand, CoordinatorOwnsIterations: true},
+		{CommandType: "longhaul_arb", build: buildLongHaulArbWorkerCommand, CoordinatorOwnsIterations: true, Duty: DutyNone},
+		{CommandType: "tour_run", build: buildTourCoordinatorCommand, CoordinatorOwnsIterations: true, Duty: DutyNone},
+		{CommandType: "stocker", build: buildStockerCoordinatorCommand, CoordinatorOwnsIterations: true, Duty: DutyNone},
 		// One-shot ship operations (sp-7yej invariant 4). Each rebuilds trivially
 		// from its persisted config and is safe to re-run: navigate resumes/waits
 		// out the live transit via RouteExecutor, dock/orbit/refuel no-op when
 		// already done, and a re-run jettison of already-jettisoned cargo fails
 		// honestly rather than silently.
-		{CommandType: "navigate_ship", build: buildNavigateShipCommand, CoordinatorOwnsIterations: true},
-		{CommandType: "route_ship", build: buildRouteShipCommand, CoordinatorOwnsIterations: true},
-		{CommandType: "warp_ship", build: buildWarpShipCommand, CoordinatorOwnsIterations: true},
-		{CommandType: "dock_ship", build: buildDockShipCommand, CoordinatorOwnsIterations: true},
-		{CommandType: "orbit_ship", build: buildOrbitShipCommand, CoordinatorOwnsIterations: true},
-		{CommandType: "refuel_ship", build: buildRefuelShipCommand, CoordinatorOwnsIterations: true},
-		{CommandType: "jettison_cargo", build: buildJettisonCargoCommand, CoordinatorOwnsIterations: true},
-		{CommandType: "scout_fleet_assignment", build: buildScoutFleetAssignmentCommand, CoordinatorOwnsIterations: true},
-		{CommandType: "gas_siphon_worker", IsWorker: true},
-		{CommandType: "storage_ship", IsWorker: true},
+		{CommandType: "navigate_ship", build: buildNavigateShipCommand, CoordinatorOwnsIterations: true, Duty: DutyNone},
+		{CommandType: "route_ship", build: buildRouteShipCommand, CoordinatorOwnsIterations: true, Duty: DutyNone},
+		{CommandType: "warp_ship", build: buildWarpShipCommand, CoordinatorOwnsIterations: true, Duty: DutyNone},
+		{CommandType: "dock_ship", build: buildDockShipCommand, CoordinatorOwnsIterations: true, Duty: DutyNone},
+		{CommandType: "orbit_ship", build: buildOrbitShipCommand, CoordinatorOwnsIterations: true, Duty: DutyNone},
+		{CommandType: "refuel_ship", build: buildRefuelShipCommand, CoordinatorOwnsIterations: true, Duty: DutyNone},
+		{CommandType: "jettison_cargo", build: buildJettisonCargoCommand, CoordinatorOwnsIterations: true, Duty: DutyNone},
+		{CommandType: "scout_fleet_assignment", build: buildScoutFleetAssignmentCommand, CoordinatorOwnsIterations: true, Duty: DutyNone},
+		{CommandType: "gas_siphon_worker", IsWorker: true, Duty: DutyNone},
+		{CommandType: "storage_ship", IsWorker: true, Duty: DutyNone},
 	}
 }
 
