@@ -82,23 +82,6 @@ func (c *DaemonClient) TradeFleetCoordinator(ctx context.Context, playerID int, 
 	return resp.ContainerId, nil
 }
 
-// FleetAutosizerCoordinator starts the standing fleet capacity autosizer (sp-1txd): sizes the hull
-// pool to demand and auto-buys hulls behind the fail-closed money-guard stack. Identity-only launch
-// — all [fleet_autosizer] tuning resolves live from config.yaml.
-func (c *DaemonClient) FleetAutosizerCoordinator(ctx context.Context, playerID int, agentSymbol string) (string, error) {
-	req := &pb.FleetAutosizerCoordinatorRequest{
-		PlayerId: int32(playerID),
-	}
-	if agentSymbol != "" {
-		req.AgentSymbol = &agentSymbol
-	}
-	resp, err := c.client.FleetAutosizerCoordinator(ctx, req)
-	if err != nil {
-		return "", fmt.Errorf(grpcCallFailed, err)
-	}
-	return resp.ContainerId, nil
-}
-
 // FleetGrowthCoordinator starts the standing fleet-growth coordinator: the fleet's only heavy buyer.
 // Identity-only launch — the three operator levers are live-tunable, so nothing else is named here.
 func (c *DaemonClient) FleetGrowthCoordinator(ctx context.Context, playerID int, agentSymbol string) (string, error) {

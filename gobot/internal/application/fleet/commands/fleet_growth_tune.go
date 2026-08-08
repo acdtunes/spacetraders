@@ -7,12 +7,16 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/hullbuy"
 )
 
-// The growth coordinator's live-tunable keys. heavy_cap and growth_enabled are BARE (unprefixed)
-// for the same reason the autosizer's are: they are the two knobs an operator reaches for
-// mid-incident, and the cap read that sensing's reservation consumes resolves the BARE key first
-// and the coordinator-prefixed launch key second, matched on its "_heavy_cap" suffix. Every OTHER
-// growth knob remains a launch key, so adding to this list is a deliberate act.
+// The growth coordinator's live-tunable keys. heavy_cap and growth_enabled are BARE (unprefixed):
+// they are the two knobs an operator reaches for mid-incident, and the cap read that sensing's
+// reservation consumes resolves the BARE key first and the coordinator-prefixed launch key second,
+// matched on its "_heavy_cap" suffix. Every OTHER growth knob remains a launch key, so adding to
+// this list is a deliberate act.
 const (
+	// heavyCapKey caps owned HEAVY HULLS (capital exposure). The KEY STRING must not drift: it is the
+	// bare key operators already tune, and the one sensing's reservation resolves to find the cap.
+	heavyCapKey = "heavy_cap"
+
 	// growthEnabledKey is the growth coordinator's MASTER SWITCH. Off, the coordinator skips the
 	// whole reconcile tick — see liveKnobs for why this gates the READS and not just the buy. The
 	// name is the DOMAIN's because the drain resolves the same key off the same row.

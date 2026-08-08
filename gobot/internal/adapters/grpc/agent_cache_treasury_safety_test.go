@@ -18,7 +18,7 @@ import (
 
 // TestAutosizerTreasuryReaderSeesPostSpendCreditsAfterBuy is the headline
 // money-safety proof for the shared agent cache, driven end-to-end
-// through the REAL money guard — autosizerTreasuryReader.Treasury, the credit
+// through the REAL money guard — fleetTreasuryReader.Treasury, the credit
 // source for the 25%-treasury + reserve-floor BUY guards — not the client in
 // isolation. The cache lives in the one shared *api.SpaceTradersClient that both
 // the guard and every spender hold, so this proves the guard can NEVER be fed a
@@ -53,7 +53,7 @@ func TestAutosizerTreasuryReaderSeesPostSpendCreditsAfterBuy(t *testing.T) {
 	defer server.Close()
 
 	client := api.NewSpaceTradersClientWithConfig(server.URL, 0, time.Millisecond, nil)
-	reader := &autosizerTreasuryReader{api: client}
+	reader := &fleetTreasuryReader{api: client}
 	ctx := common.WithPlayerToken(context.Background(), "player-token")
 
 	// The guard reads treasury: 1000 is cached.

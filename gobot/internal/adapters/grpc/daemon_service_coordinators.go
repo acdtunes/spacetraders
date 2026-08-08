@@ -124,24 +124,11 @@ func (s *daemonServiceImpl) TradeFleetCoordinator(ctx context.Context, req *pb.T
 	return &pb.TradeFleetCoordinatorResponse{ContainerId: containerID, Status: "RUNNING"}, nil
 }
 
-// FleetAutosizerCoordinator starts the standing fleet capacity autosizer (sp-1txd).
+// FleetAutosizerCoordinator refuses the call: the fleet-growth coordinator owns heavy/trade
+// capacity and the dedicated contract scaler owns contract capacity. Retained only to satisfy the
+// generated DaemonServiceServer interface (sp-5pclx), exactly as the capacity reconciler's RPC is.
 func (s *daemonServiceImpl) FleetAutosizerCoordinator(ctx context.Context, req *pb.FleetAutosizerCoordinatorRequest) (*pb.FleetAutosizerCoordinatorResponse, error) {
-	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, req.AgentSymbol)
-	if err != nil {
-		return nil, fmt.Errorf("failed to resolve player: %w", err)
-	}
-
-	agentSymbol := ""
-	if req.AgentSymbol != nil {
-		agentSymbol = *req.AgentSymbol
-	}
-
-	containerID, err := s.daemon.FleetAutosizerCoordinator(ctx, playerID, agentSymbol)
-	if err != nil {
-		return nil, fmt.Errorf("failed to start fleet autosizer coordinator: %w", err)
-	}
-
-	return &pb.FleetAutosizerCoordinatorResponse{ContainerId: containerID, Status: "RUNNING"}, nil
+	return nil, fmt.Errorf("fleet autosizer removed (sp-5pclx): the fleet-growth coordinator owns trade capacity and the dedicated contract scaler owns contract capacity")
 }
 
 // FleetGrowthCoordinator starts the standing fleet-growth coordinator: the fleet's only heavy buyer.

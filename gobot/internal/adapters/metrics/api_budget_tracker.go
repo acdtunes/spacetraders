@@ -28,7 +28,7 @@ type APIBudgetTracker struct {
 	clock            shared.Clock
 	ceilingReqPerSec float64
 	// startedAt is when this tracker began observing, and it is what keeps the reported rate honest
-	// while the tracker is younger than its widest window (sp-fr19d).
+	// while the tracker is younger than its widest window.
 	//
 	// The events slice cannot supply it. An empty-then-busy tracker and a five-minute-idle-then-busy
 	// tracker hold identical events, yet the first has observed almost nothing and the second has

@@ -115,7 +115,7 @@ type Observation struct {
 	// does not move with whatever contract happens to be live. Empty ⇒ the era's parks are unresolved (an
 	// uncharted/unscanned home), which the ramp reads fail-closed: no placement target, no hauler buy.
 	ContractPlacementSlots []string
-	// ContractGraduated reports the durable per-player era-scoped contract-graduation flag (sp-difa.1):
+	// ContractGraduated reports the durable per-player era-scoped contract-graduation flag:
 	// the operator has retired contracts as the funding floor. When true, the contract workstream (actIncome
 	// — batch-contract, the frigate sole-earner loop, staged hauler buys) does NOT run, DURABLY across
 	// restarts, so a boot-standing bootstrap never re-establishes the contract earner on a graduated fleet.
@@ -165,9 +165,11 @@ type Observation struct {
 	// path reads it, so it is inert unless the executor is over-provisioned; mirrors how obs.Haulers carries
 	// the per-hull delivery detail alongside its count-based guards.
 	GateWorkerHulls []GateWorkerSnapshot
-	// AutosizerRunning reports whether the standing fleet-autosizer is already running — the EXPANSION
-	// launch-once hand-off guard (a restart post-gate re-observes it running ⇒ no re-launch, no exit loop).
-	AutosizerRunning bool
+	// GrowthRunning reports whether the standing fleet-GROWTH coordinator is already running — the
+	// EXPANSION launch-once hand-off guard (a restart post-gate re-observes it running ⇒ no re-launch,
+	// no exit loop). It names GROWTH because growth is what the hand-off starts; a latch naming
+	// anything else lets a restart re-run a hand-off that already happened.
+	GrowthRunning bool
 
 	// TradeHullCount is the number of 'trade'-fleet-dedicated hulls NOW — the observable trade-seeded
 	// signal. The trade hull EXISTING is the durable "seeded" marker: idempotent by

@@ -53,12 +53,12 @@ func NewContractScalerCoordinatorHandler(
 	h.SetRoleResolver(resolver)
 
 	// Treasury: the SAME reader the autosizer's cushion guard uses (fail-closed on an unreadable balance).
-	h.SetTreasuryReader(&autosizerTreasuryReader{api: apiClient, ledger: ledgerTreasury})
+	h.SetTreasuryReader(&fleetTreasuryReader{api: apiClient, ledger: ledgerTreasury})
 
 	// Yard price: the autosizer's cheapest-known-yard walk, adapted to the scaler's narrower
 	// NextHullPrice port. The concrete waypoint repo is assigned only when non-nil (the same typed-nil
 	// guard the autosizer applies).
-	yardPriceReader := &autosizerYardPriceReader{med: med, shipRepo: shipRepo, scannedYards: scannedYards}
+	yardPriceReader := &fleetYardPriceReader{med: med, shipRepo: shipRepo, scannedYards: scannedYards}
 	if waypointRepo != nil {
 		yardPriceReader.waypointRepo = waypointRepo
 	}
@@ -70,7 +70,7 @@ func NewContractScalerCoordinatorHandler(
 	// Purchaser: the kept autosizer buy+dedicate primitive (dedicates to "contract" via the
 	// contract-delivery HullClass mapping) composed with the demand-ranked homing dispatch.
 	h.SetPurchaser(&contractScalerPurchaser{
-		buyer:    &autosizerPurchaser{med: med, shipRepo: shipRepo},
+		buyer:    &fleetHullPurchaser{med: med, shipRepo: shipRepo},
 		med:      med,
 		shipRepo: shipRepo,
 	})
@@ -141,7 +141,7 @@ func (c *contractScalerFleetCounter) ContractHullCount(ctx context.Context, play
 }
 
 // contractScalerBuyer is the narrow buy+dedicate primitive the purchaser composes — the kept
-// autosizerPurchaser.BuyAndDedicate (the money-integrity batch path + dedicate-at-purchase).
+// fleetHullPurchaser.BuyAndDedicate (the money-integrity batch path + dedicate-at-purchase).
 type contractScalerBuyer interface {
 	BuyAndDedicate(ctx context.Context, order hullbuy.BuyOrder) (hullbuy.BuyResult, error)
 }

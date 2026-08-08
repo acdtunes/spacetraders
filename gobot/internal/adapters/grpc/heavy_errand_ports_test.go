@@ -111,7 +111,7 @@ func TestErrandHulls_ReportsRawFactsForEveryHullAndPreFiltersNothing(t *testing.
 	require.NoError(t, err)
 	require.NoError(t, inTransit.StartTransit(destination))
 
-	e := &autosizerPricingErrand{
+	e := &heavyYardPricingErrand{
 		shipRepo: &fakeHeavyShipRepo{all: []*navigation.Ship{
 			errandHull(t, "TR-1", 1, "X1-HOME-A1", "trade", 40),
 			inTransit,
@@ -149,7 +149,7 @@ func TestErrandHulls_ReportsRawFactsForEveryHullAndPreFiltersNothing(t *testing.
 // post — must arrive at the policy marked, or the errand will take a working scout off station in
 // the idle gap between two of its tours.
 func TestErrandHulls_MarksEveryHullALiveScoutPostNames(t *testing.T) {
-	e := &autosizerPricingErrand{
+	e := &heavyYardPricingErrand{
 		shipRepo: &fakeHeavyShipRepo{all: []*navigation.Ship{
 			errandHull(t, "PROBE-PRIMARY", 1, "X1-AA11-A1", "sensing_parked", 0),
 			errandHull(t, "PROBE-EXTRA", 1, "X1-AA11-B2", "sensing_parked", 0),
@@ -181,12 +181,12 @@ func TestErrandHulls_MarksEveryHullALiveScoutPostNames(t *testing.T) {
 // free", which the coordinator logs as a benign wait and retries forever without ever saying the
 // fleet could not be read.
 func TestErrandHulls_AnUnreadableFleetRefusesInsteadOfReportingNoCarriers(t *testing.T) {
-	broken := &autosizerPricingErrand{shipRepo: &fakeHeavyShipRepo{err: errors.New("db down")}, posts: emptyRoster()}
+	broken := &heavyYardPricingErrand{shipRepo: &fakeHeavyShipRepo{err: errors.New("db down")}, posts: emptyRoster()}
 	hulls, err := broken.ErrandHulls(context.Background(), 1)
 	require.Error(t, err)
 	require.Nil(t, hulls)
 
-	valid := &autosizerPricingErrand{
+	valid := &heavyYardPricingErrand{
 		shipRepo: &fakeHeavyShipRepo{all: []*navigation.Ship{errandHull(t, "TR-1", 1, "X1-HOME-A1", "trade", 40)}},
 		posts:    emptyRoster(),
 	}
@@ -204,12 +204,12 @@ func TestErrandHulls_AnUnreadableScoutPostRosterRefusesInsteadOfReportingEveryHu
 		errandHull(t, "PROBE-1", 1, "X1-AA11-A1", "sensing_parked", 0),
 	}}
 
-	unreadable := &autosizerPricingErrand{shipRepo: fleet, posts: &fakeScoutPostRoster{err: errors.New("db down")}}
+	unreadable := &heavyYardPricingErrand{shipRepo: fleet, posts: &fakeScoutPostRoster{err: errors.New("db down")}}
 	hulls, err := unreadable.ErrandHulls(context.Background(), 1)
 	require.Error(t, err, "a roster that cannot be read must refuse, never report every probe unclaimed")
 	require.Nil(t, hulls)
 
-	unwired := &autosizerPricingErrand{shipRepo: fleet}
+	unwired := &heavyYardPricingErrand{shipRepo: fleet}
 	hulls, err = unwired.ErrandHulls(context.Background(), 1)
 	require.Error(t, err, "an unwired roster is not evidence that no post mans anything")
 	require.Nil(t, hulls)
@@ -222,7 +222,7 @@ func TestErrandHulls_AnUnreadableScoutPostRosterRefusesInsteadOfReportingEveryHu
 // route — no dock, no quote, no purchase (RULINGS #4: this tick spends nothing).
 func TestSendToYard_NavigatesTheHullAndIssuesNoOtherCommand(t *testing.T) {
 	med := &recordingErrandMediator{}
-	e := &autosizerPricingErrand{med: med}
+	e := &heavyYardPricingErrand{med: med}
 
 	require.NoError(t, e.SendToYard(context.Background(), 7, "TR-1", "X1-YARD-Y1"))
 
@@ -239,7 +239,7 @@ func TestSendToYard_NavigatesTheHullAndIssuesNoOtherCommand(t *testing.T) {
 // the next tick count one "in flight" and dispatch nobody, forever.
 func TestSendToYard_ADispatchFailureSurfacesInsteadOfReportingAFlight(t *testing.T) {
 	med := &recordingErrandMediator{err: errors.New("no route")}
-	e := &autosizerPricingErrand{med: med}
+	e := &heavyYardPricingErrand{med: med}
 
 	err := e.SendToYard(context.Background(), 7, "TR-1", "X1-YARD-Y1")
 	require.Error(t, err)
@@ -248,7 +248,7 @@ func TestSendToYard_ADispatchFailureSurfacesInsteadOfReportingAFlight(t *testing
 
 	// An invalid player never reaches the mediator: nothing is flown on a request we cannot resolve.
 	clean := &recordingErrandMediator{}
-	e = &autosizerPricingErrand{med: clean}
+	e = &heavyYardPricingErrand{med: clean}
 	require.Error(t, e.SendToYard(context.Background(), 0, "TR-1", "X1-YARD-Y1"))
 	require.Empty(t, clean.sent, "an unresolvable player must dispatch nothing")
 }
@@ -275,7 +275,7 @@ func TestAutosizerHeavyYardReader_TransportsTheSharedTargetVerbatim(t *testing.T
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			r := &autosizerHeavyYardReader{yards: &fakeHeavyTargetSource{target: tc.target}}
+			r := &fleetHeavyYardReader{yards: &fakeHeavyTargetSource{target: tc.target}}
 
 			got, err := r.HeavyTarget(context.Background(), 1)
 			require.NoError(t, err)
@@ -291,7 +291,7 @@ func TestAutosizerHeavyYardReader_TransportsTheSharedTargetVerbatim(t *testing.T
 // at the reservation as "there is a priced yard": a phantom CapabilityOpen or a phantom price would
 // hold treasury back against a yard nobody found.
 func TestAutosizerHeavyYardReader_AReadFailureRefusesWithNoPhantomTarget(t *testing.T) {
-	r := &autosizerHeavyYardReader{yards: &fakeHeavyTargetSource{
+	r := &fleetHeavyYardReader{yards: &fakeHeavyTargetSource{
 		target: shipyardQueries.HeavyTarget{CapabilityOpen: true, Priced: true, WaypointSymbol: "X1-PR33-CC3C", PurchasePrice: 2_931_905},
 		err:    errors.New("db down"),
 	}}
@@ -311,7 +311,7 @@ func TestAutosizerHeavyYardReader_AReadFailureRefusesWithNoPhantomTarget(t *test
 // the reservation open and authorising a re-buy of a hull we already own.
 func TestAutosizerHeavyCensus_CountsOwnedHeaviesForThePlayer(t *testing.T) {
 	counter := &fakeHeavyHullCounter{count: 2}
-	c := &autosizerHeavyCensus{counter: counter}
+	c := &fleetHeavyCensus{counter: counter}
 
 	owned, err := c.HeaviesOwned(context.Background(), 7)
 	require.NoError(t, err)
@@ -322,11 +322,11 @@ func TestAutosizerHeavyCensus_CountsOwnedHeaviesForThePlayer(t *testing.T) {
 // A census that cannot be read REFUSES. A silent 0 reads as "we own no heavies", which opens the
 // heavy_cap guard and authorises buying a hull we may already have (RULINGS #4).
 func TestAutosizerHeavyCensus_AnUnreadableCensusRefusesInsteadOfCountingZero(t *testing.T) {
-	broken := &autosizerHeavyCensus{counter: &fakeHeavyHullCounter{err: errors.New("db down")}}
+	broken := &fleetHeavyCensus{counter: &fakeHeavyHullCounter{err: errors.New("db down")}}
 	_, err := broken.HeaviesOwned(context.Background(), 7)
 	require.Error(t, err)
 
-	invalidPlayer := &autosizerHeavyCensus{counter: &fakeHeavyHullCounter{count: 3}}
+	invalidPlayer := &fleetHeavyCensus{counter: &fakeHeavyHullCounter{count: 3}}
 	_, err = invalidPlayer.HeaviesOwned(context.Background(), 0)
 	require.Error(t, err, "an unresolvable player is not a player owning zero heavies")
 }
@@ -366,7 +366,7 @@ func (f *recordingHopSource) Routable(_ context.Context, _, _ string, _ int) (bo
 // navigator refused "no jump-gate route from X1-AM71 to X1-FH57 within 5 jumps" 61 times.
 func TestHopsFrom_AsksFromTheCarriersOwnSystemAtTheNavigatorsBound(t *testing.T) {
 	hops := &recordingHopSource{distances: map[string]int{"X1-KP46": 3}}
-	e := &autosizerPricingErrand{hops: hops}
+	e := &heavyYardPricingErrand{hops: hops}
 
 	got, err := e.HopsFrom(context.Background(), "X1-AM71", []string{"X1-FH57", "X1-KP46"})
 	require.NoError(t, err)
@@ -382,11 +382,11 @@ func TestHopsFrom_AsksFromTheCarriersOwnSystemAtTheNavigatorsBound(t *testing.T)
 // "no route exists to any yard" — which retires the dispatching errand silently and permanently,
 // the exact failure class this whole mechanism keeps being bitten by.
 func TestHopsFrom_UnwiredOrUnreadableRefusesInsteadOfReportingNothingReachable(t *testing.T) {
-	unwired := &autosizerPricingErrand{}
+	unwired := &heavyYardPricingErrand{}
 	_, err := unwired.HopsFrom(context.Background(), "X1-AM71", []string{"X1-FH57"})
 	require.Error(t, err, "an unwired gate graph is not a fleet that can reach nowhere")
 
-	broken := &autosizerPricingErrand{hops: &recordingHopSource{err: errors.New("adjacency store down")}}
+	broken := &heavyYardPricingErrand{hops: &recordingHopSource{err: errors.New("adjacency store down")}}
 	_, err = broken.HopsFrom(context.Background(), "X1-AM71", []string{"X1-FH57"})
 	require.Error(t, err)
 }
@@ -400,7 +400,7 @@ func TestHopsFrom_UnwiredOrUnreadableRefusesInsteadOfReportingNothingReachable(t
 // re-read into a request storm. Stamping this Earning would exempt it from all three.
 func TestPriceYardInPlace_ReadsTheYardDeniablyAndIssuesNoOtherCommand(t *testing.T) {
 	med := &recordingErrandMediator{}
-	e := &autosizerPricingErrand{med: med}
+	e := &heavyYardPricingErrand{med: med}
 
 	require.NoError(t, e.PriceYardInPlace(context.Background(), 7, "X1-AS98-X23E"))
 
@@ -419,15 +419,15 @@ func TestPriceYardInPlace_ReadsTheYardDeniablyAndIssuesNoOtherCommand(t *testing
 // price landed when the budget served nothing, and the yard would stay at 0 with nobody looking.
 func TestPriceYardInPlace_ADeclinedReadSurfacesInsteadOfReportingSuccess(t *testing.T) {
 	med := &recordingErrandMediator{err: errors.New("shipyard listings for X1-AS98-X23E were not read live")}
-	e := &autosizerPricingErrand{med: med}
+	e := &heavyYardPricingErrand{med: med}
 
 	require.Error(t, e.PriceYardInPlace(context.Background(), 7, "X1-AS98-X23E"))
 
-	invalidPlayer := &autosizerPricingErrand{med: &recordingErrandMediator{}}
+	invalidPlayer := &heavyYardPricingErrand{med: &recordingErrandMediator{}}
 	require.Error(t, invalidPlayer.PriceYardInPlace(context.Background(), 0, "X1-AS98-X23E"))
 }
 
-// THE WIRING IS THE FEATURE. newAutosizerPricingErrand takes the reach off the server's already-
+// THE WIRING IS THE FEATURE. newHeavyYardPricingErrand takes the reach off the server's already-
 // injected gate graph, so an errand built from a server that HAS one must be able to answer — and
 // one built from a server that does not must refuse rather than silently report nothing reachable.
 //
@@ -435,14 +435,14 @@ func TestPriceYardInPlace_ADeclinedReadSurfacesInsteadOfReportingSuccess(t *test
 // dispatching errand decline forever with a correct-looking reason, which is indistinguishable from
 // a fleet whose map has not grown — the state this bead spent 25 hours in.
 func TestNewAutosizerPricingErrand_TakesTheReachOffTheServersGateGraph(t *testing.T) {
-	wired := newAutosizerPricingErrand(&DaemonServer{gateGraph: &recordingHopSource{distances: map[string]int{"X1-KP46": 2}}}, nil, nil)
+	wired := newHeavyYardPricingErrand(&DaemonServer{gateGraph: &recordingHopSource{distances: map[string]int{"X1-KP46": 2}}}, nil, nil)
 	got, err := wired.HopsFrom(context.Background(), "X1-AM71", []string{"X1-KP46"})
 	require.NoError(t, err, "a server holding a gate graph must yield an errand that can prove reach")
 	require.Equal(t, map[string]int{"X1-KP46": 2}, got)
 
 	for name, server := range map[string]*DaemonServer{"no server": nil, "no gate graph": {}} {
 		t.Run(name, func(t *testing.T) {
-			_, err := newAutosizerPricingErrand(server, nil, nil).HopsFrom(context.Background(), "X1-AM71", []string{"X1-KP46"})
+			_, err := newHeavyYardPricingErrand(server, nil, nil).HopsFrom(context.Background(), "X1-AM71", []string{"X1-KP46"})
 			require.Error(t, err, "an unwired reach must refuse, not report a fleet that can reach nowhere")
 		})
 	}

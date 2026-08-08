@@ -240,19 +240,12 @@ func (f *fakeGateAcquirer) BuyForConstruction(ctx context.Context, playerID int,
 }
 
 type fakeHandoff struct {
-	autosizer      int
 	standing       int
 	contractScaler int
 	tradeCoord     int // LaunchTradeFleetCoordinator calls
-	autoErr        error
 	standErr       error
 	scalerErr      error
 	tradeErr       error
-}
-
-func (f *fakeHandoff) LaunchAutosizer(ctx context.Context, playerID int, agentSymbol string) error {
-	f.autosizer++
-	return f.autoErr
 }
 
 func (f *fakeHandoff) LaunchStandingCoordinators(ctx context.Context, playerID int, agentSymbol string) error {
@@ -592,35 +585,37 @@ func TestBootstrap_Gate_SettledTickIsQuiet(t *testing.T) {
 func TestBootstrap_Expansion_LaunchesHandoffAndExits(t *testing.T) {
 	obs := gateObs()
 	obs.ConstructionComplete = true // derives EXPANSION
-	obs.AutosizerRunning = false
+	obs.GrowthRunning = false
 	ho := &fakeHandoff{}
 	h := gateHandler(obs, &fakeConstruction{}, &fakeManufacturing{}, &fakeRepurposer{}, &fakeGateAcquirer{}, ho)
 	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
 	if res.Phase != PhaseExpansion {
 		t.Fatalf("expected EXPANSION phase, got %s", res.Phase)
 	}
-	if ho.autosizer != 1 || ho.standing != 1 {
-		t.Fatalf("expected one autosizer + one standing launch, got autosizer=%d standing=%d", ho.autosizer, ho.standing)
+	if ho.standing != 1 {
+		t.Fatalf("expected exactly one standing fleet-growth launch, got standing=%d", ho.standing)
 	}
 	if !res.HandoffLaunched || !res.Done {
 		t.Fatalf("expected HandoffLaunched=true and Done=true, got %+v", res)
 	}
 }
 
-// A hand-off whose autosizer launch FAILS does not exit — it holds and retries next tick (never leaves
-// the fleet un-handed-off).
+// A hand-off whose growth launch FAILS does not exit — it holds and retries next tick (never leaves the
+// fleet un-handed-off).
 func TestBootstrap_Expansion_HoldsWhenHandoffFails(t *testing.T) {
 	obs := gateObs()
 	obs.ConstructionComplete = true
-	obs.AutosizerRunning = false
-	ho := &fakeHandoff{autoErr: errors.New("boom")}
+	obs.GrowthRunning = false
+	ho := &fakeHandoff{standErr: errors.New("boom")}
 	h := gateHandler(obs, &fakeConstruction{}, &fakeManufacturing{}, &fakeRepurposer{}, &fakeGateAcquirer{}, ho)
 	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
 	if res.Done {
 		t.Fatalf("a failed hand-off must NOT exit (Done must stay false), got Done=true")
 	}
-	if ho.standing != 0 {
-		t.Fatalf("standing coordinators must not launch after the autosizer launch failed, got %d", ho.standing)
+	// The launch was ATTEMPTED and failed; what must not happen is exiting on it. Asserting the attempt
+	// keeps this test honest — a hand-off that silently skipped the launch would also leave Done false.
+	if ho.standing != 1 {
+		t.Fatalf("the hand-off must attempt the standing fleet-growth launch exactly once, got %d", ho.standing)
 	}
 	if res.Blocker == "" {
 		t.Fatalf("expected a blocker on the failed hand-off")
@@ -636,8 +631,8 @@ func TestBootstrap_Expansion_HoldsWhenHandoffFails(t *testing.T) {
 func TestBootstrap_Expansion_StickyAcrossTicks_GaugeHeartbeatAndNoPreGateActions(t *testing.T) {
 	obs := gateObs()
 	obs.ConstructionComplete = true
-	obs.AutosizerRunning = false
-	ho := &fakeHandoff{autoErr: errors.New("launcher down")} // hold: Done stays false, ticks continue
+	obs.GrowthRunning = false
+	ho := &fakeHandoff{standErr: errors.New("launcher down")} // hold: Done stays false, ticks continue
 	acq := &fakeAcquirer{price: 1, yard: "Y", readable: true}
 	metrics := &fakeMetrics{}
 	log := &capturingLogger{}

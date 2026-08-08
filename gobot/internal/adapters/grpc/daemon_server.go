@@ -184,13 +184,6 @@ type DaemonServer struct {
 	// the whitelist's single source of truth.
 	sensingConfig config.SensingConfig
 
-	// fleetAutosizerConfig carries the fleet capacity autosizer's knobs (sp-1txd) from
-	// config.yaml. The fleet_autosizer coordinator resolves it into its container's launch
-	// config on every build (creation + restart recovery via resolveFleetAutosizerConfig), so
-	// a captain retunes the sizing/buying behaviour by editing config and restarting, no code
-	// redeploy.
-	fleetAutosizerConfig config.FleetAutosizerConfig
-
 	// bootstrapConfig carries the captain bootstrap coordinator's knobs (sp-3nbe) from
 	// config.yaml. The bootstrap coordinator resolves it into its container's launch config on
 	// every build (creation + restart recovery via resolveBootstrapConfig), so a captain retunes
@@ -236,7 +229,6 @@ func NewDaemonServer(
 	workerRebalancerConfig config.WorkerRebalancerConfig,
 	scoutingConfig config.ScoutingConfig,
 	sensingConfig config.SensingConfig,
-	fleetAutosizerConfig config.FleetAutosizerConfig,
 	bootstrapConfig config.BootstrapConfig,
 	resyncConfig config.ResyncConfig,
 	shipEventPublisher navigation.ShipEventPublisher,
@@ -277,7 +269,6 @@ func NewDaemonServer(
 		workerRebalancerConfig: workerRebalancerConfig,
 		scoutingConfig:         scoutingConfig,
 		sensingConfig:          sensingConfig,
-		fleetAutosizerConfig:   fleetAutosizerConfig,
 		bootstrapConfig:        bootstrapConfig,
 		shutdownChan:           make(chan os.Signal, 1),
 		done:                   make(chan struct{}),
@@ -558,12 +549,6 @@ func (s *DaemonServer) registerMetricsCollectors(getContainers func() map[string
 		return err
 	}
 	metrics.SetGlobalChainExportRestCollector(chainExportRestCollector)
-
-	fleetAutosizerCollector, err := registerCollector(metrics.NewFleetAutosizerMetricsCollector(), "fleet-autosizer metrics collector")
-	if err != nil {
-		return err
-	}
-	metrics.SetGlobalFleetAutosizerCollector(fleetAutosizerCollector)
 
 	fleetGrowthCollector, err := registerCollector(metrics.NewFleetGrowthMetricsCollector(), "fleet-growth metrics collector")
 	if err != nil {

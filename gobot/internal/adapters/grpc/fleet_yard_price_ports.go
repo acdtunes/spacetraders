@@ -26,7 +26,7 @@ type scannedYardRanker interface {
 	NearestYardsSelling(ctx context.Context, playerID int, shipTypes []string, fromSystems []string) ([]shipyardQueries.YardCandidate, error)
 }
 
-type autosizerYardPriceReader struct {
+type fleetYardPriceReader struct {
 	med          common.Mediator
 	shipRepo     navigation.ShipRepository
 	waypointRepo shipyardWaypointLister
@@ -43,7 +43,7 @@ type autosizerYardPriceReader struct {
 // yard, ranked hops-then-price — the availability signal the fail-closed heavy branch was designed
 // to consume. Returns readable=false (price guard fails closed) when neither surface knows a priced
 // yard. The demand-proximal preference is a later refinement (banked) — cheapest is returned now.
-func (r *autosizerYardPriceReader) PriceFor(ctx context.Context, playerID int, class hullbuy.HullClass, shipType string, preferProximal bool) (int64, int64, string, bool, error) {
+func (r *fleetYardPriceReader) PriceFor(ctx context.Context, playerID int, class hullbuy.HullClass, shipType string, preferProximal bool) (int64, int64, string, bool, error) {
 	if r.waypointRepo == nil {
 		return 0, 0, "", false, nil
 	}
@@ -87,7 +87,7 @@ func (r *autosizerYardPriceReader) PriceFor(ctx context.Context, playerID int, c
 // price a hull outside the warehouse's home system — RULINGS #14 (the stocker is intra-system) — so this
 // reader takes the home system as an explicit argument instead of discovering it from ship locations.
 // No remote-yard/scanned fallback: a depot stocker hull is either bought at home or not bought at all.
-func (r *autosizerYardPriceReader) PriceForSystem(ctx context.Context, playerID int, shipType, system string) (int64, string, bool, error) {
+func (r *fleetYardPriceReader) PriceForSystem(ctx context.Context, playerID int, shipType, system string) (int64, string, bool, error) {
 	if r.waypointRepo == nil {
 		return 0, "", false, nil
 	}
@@ -129,7 +129,7 @@ func (r *autosizerYardPriceReader) PriceForSystem(ctx context.Context, playerID 
 // across reachable candidates so the premium guard judges the proximity premium
 // honestly. No candidates / no ranker wired / rank read failure ⇒ readable=false:
 // exactly the historical fail-closed behavior.
-func (r *autosizerYardPriceReader) scannedYardFallback(ctx context.Context, playerID int, class hullbuy.HullClass, shipType string, ships []*navigation.Ship) (int64, int64, string, bool, error) {
+func (r *fleetYardPriceReader) scannedYardFallback(ctx context.Context, playerID int, class hullbuy.HullClass, shipType string, ships []*navigation.Ship) (int64, int64, string, bool, error) {
 	if class != hullbuy.HullClassHeavy || r.scannedYards == nil {
 		return 0, 0, "", false, nil
 	}
@@ -147,7 +147,7 @@ func (r *autosizerYardPriceReader) scannedYardFallback(ctx context.Context, play
 	return int64(nearest.PurchasePrice), cheapest, nearest.WaypointSymbol, true, nil
 }
 
-func (r *autosizerYardPriceReader) priceAtShipyard(ctx context.Context, system, waypoint, shipType string, pid shared.PlayerID) (int64, bool) {
+func (r *fleetYardPriceReader) priceAtShipyard(ctx context.Context, system, waypoint, shipType string, pid shared.PlayerID) (int64, bool) {
 	// The autosizer's fail-closed price guard reads this before it authorises a
 	// hull buy, so it is Earning: metered, never denied (RULINGS #4).
 	q := &shipyardQueries.GetShipyardListingsQuery{SystemSymbol: system, WaypointSymbol: waypoint, PlayerID: pid, Class: marketscan.Earning}

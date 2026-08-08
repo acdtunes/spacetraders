@@ -43,7 +43,6 @@ func (o *bootstrapTermObserver) Observe(_ context.Context, _ int) (bootstrapCmd.
 // already live on a mature fleet; each launch is idempotent at the adapter).
 type bootstrapTermHandoff struct{}
 
-func (h *bootstrapTermHandoff) LaunchAutosizer(_ context.Context, _ int, _ string) error { return nil }
 func (h *bootstrapTermHandoff) LaunchStandingCoordinators(_ context.Context, _ int, _ string) error {
 	return nil
 }
@@ -75,7 +74,7 @@ func matureFleetObservation() bootstrapCmd.Observation {
 		ConstructionPercent:  100,
 		ManufacturingRunning: true,
 		ManufacturingAdopted: true,
-		AutosizerRunning:     true,
+		GrowthRunning:        true,
 		Readable:             true,
 	}
 }

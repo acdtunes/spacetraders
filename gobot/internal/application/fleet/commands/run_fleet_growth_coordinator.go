@@ -16,15 +16,13 @@ import (
 
 const (
 	defaultGrowthTickSeconds = 900
-	// defaultGrowthUnservedLanesMin is the ANTI-THRASH streak on the heavy BUY: the unserved-lane
-	// shortfall must persist this many consecutive ticks before a large hull is bought. It is on
-	// the purchase and deliberately NOT on the wave: a spurious wave costs one paused probe tick,
-	// a spurious purchase costs a hull.
+	// defaultGrowthUnservedLanesMin is the ANTI-THRASH streak on the heavy BUY: the shortfall must
+	// persist this many ticks before a large hull is bought. On the purchase and NOT on the wave —
+	// a spurious wave costs one paused probe tick, a spurious purchase costs a hull.
 	defaultGrowthUnservedLanesMin = 3
-	// defaultGrowthRunwayMilliHours is how many MILLI-hours of the trading fleet's measured cargo
-	// runway a heavy purchase holds back on top of the immutable reserve. Milli rather than a
-	// float because sub-hour runway is the operating range and a float would put NaN inside a
-	// money guard.
+	// defaultGrowthRunwayMilliHours is how many MILLI-hours of the trading fleet's cargo runway a
+	// heavy purchase holds back above the immutable reserve. Milli, not float: sub-hour runway is the
+	// operating range and a float would put NaN inside a money guard.
 	defaultGrowthRunwayMilliHours = 2000
 
 	defaultGrowthPurchaseMarginOverFloor   = 200000
@@ -32,14 +30,11 @@ const (
 	defaultGrowthMaxPremiumOverCheapestPct = 50
 	defaultGrowthZeroEffectAlarmTicks      = 4
 	defaultGrowthShipTypeHeavies           = "SHIP_HEAVY_FREIGHTER"
-	// defaultGrowthHeavyCap is the SHARED constant, not a copy: the sensing heavy reservation
-	// falls back to the same value, and two hand-copied literals is how the withholder and the
-	// spender end up saving toward different caps.
+	// defaultGrowthHeavyCap is the SHARED constant, not a copy: two hand-copied literals is how the
+	// withholder and the spender end up saving toward different caps.
 	defaultGrowthHeavyCap = hullbuy.DefaultHeavyCap
-	// growthPurchaseCapPerTick bounds the coordinator to one hull per tick. There is one class
-	// here, so this is not a cross-class pacing dial the way the autosizer's is — it is the
-	// statement that a tick may commit at most one large purchase before the next tick re-reads
-	// the treasury it just spent from.
+	// growthPurchaseCapPerTick bounds the coordinator to one hull per tick: a tick may commit at most
+	// one large purchase before the next re-reads the treasury it just spent from.
 	growthPurchaseCapPerTick = 1
 )
 
@@ -76,8 +71,8 @@ type RunFleetGrowthCoordinatorResponse struct {
 
 // UnservedLaneReader is the trade surface in the two dimensions the regime judges: the lane COUNT
 // beyond the trade pool, and the DEPTH verdict answering it. readable=false ⇒ PROBE and no heavy
-// bought (fail-closed on the buy, release on the wave — both spend nothing). It is the DEMAND read:
-// a consumer free to take the count alone could judge a regime the drain, sharing it, never saw.
+// bought (fail-closed on the buy, release on the wave — both spend nothing). Returning both together
+// is what stops a consumer judging a regime the drain, sharing the read, never saw.
 type UnservedLaneReader interface {
 	LaneDemand(ctx context.Context, playerID int) (demand fleetgrowth.LaneDemand, readable bool, err error)
 }
@@ -88,31 +83,28 @@ type CargoOutflowReader interface {
 	CargoOutflowSince(ctx context.Context, playerID int, since time.Time) (total int64, largestSingle int64, err error)
 }
 
-// TreasuryHighWaterReader reports the fleet's demonstrated capacity: the highest balance held
-// across a full trade cycle. readable=false (an unobservable window) yields PROBE, never a
-// zero — see common.WaveInputs.
+// TreasuryHighWaterReader reports the fleet's demonstrated capacity: the highest balance held across
+// a full trade cycle. readable=false yields PROBE, never a zero.
 //
-// IT MUST BE A PEAK OVER THE WINDOW, NEVER A POINT READ. The whole ruled property — that the
-// regime is a function of the fleet and not of where in a trade cycle the tick landed — is
-// carried by nothing but which port lands here. A live balance wired in through this field
-// flaps exactly as the live-treasury form did, and every test of the predicate still passes.
+// IT MUST BE A PEAK OVER THE WINDOW, NEVER A POINT READ. The ruled property — that the regime is a
+// function of the fleet, not of where in a trade cycle the tick landed — is carried by nothing but
+// which port lands here, and a live balance wired in here passes every test of the predicate.
 type TreasuryHighWaterReader interface {
 	TreasuryHighWaterSince(ctx context.Context, playerID shared.PlayerID, since time.Time) (int64, bool, error)
 }
 
-// TradeHullCounter is the trade-DEDICATED pool count — the multiplier on the hold-fill term and
-// the current side of heavy demand. It is deliberately the tag-scoped count, not the broad heavy
-// census: the term asks what the TRADING fleet is about to spend, and a heavy tagged elsewhere is
-// not flying a lane.
+// TradeHullCounter is the trade-DEDICATED pool count — the multiplier on the hold-fill term and the
+// current side of heavy demand. Deliberately tag-scoped, not the broad heavy census: the term asks
+// what the TRADING fleet is about to spend, and a heavy tagged elsewhere is not flying a lane.
 type TradeHullCounter interface {
 	TradeHulls(ctx context.Context, playerID int) (int, error)
 }
 
 // GrowthMetricsSink records the coordinator's observation series (pure observation; nil-safe).
 type GrowthMetricsSink interface {
-	// RecordWave publishes the regime and, on PROBE, which clause forced it. Emitted EVERY tick
-	// on EVERY path including the paused one: a HEAVY wave and a stalled coordinator both look
-	// like "no probes bought", and only an always-present series tells them apart.
+	// RecordWave publishes the regime and, on PROBE, which clause forced it. Emitted EVERY tick on
+	// EVERY path including the paused one: a HEAVY wave and a stalled coordinator both look like
+	// "no probes bought", and only an always-present series tells them apart.
 	RecordWave(playerID string, wave common.Wave, reason common.WaveProbeReason)
 	RecordGrowthEnabled(playerID string, enabled bool)
 	RecordHeavyReserve(playerID string, reserve, target int64, owned, capacity int)

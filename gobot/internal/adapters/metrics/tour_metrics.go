@@ -110,36 +110,19 @@ type TourMetricsCollector struct {
 	// DECOMPOSED into two one-way totals plus a leg count, all keyed by side (buy|sell)
 	// and basis (solver|lookback).
 	//
-	// WHY THREE COUNTERS AND NOT ONE SUMMARY (sp-fpgl2). This was a SummaryVec with no
-	// objectives, exporting _sum/_count so the Plan-vs-Realized panel could read
-	// rate(_sum[w])/rate(_count[w]) as the windowed average — "exactly the SQL AVG it
-	// replaces". It was not. Drift is SIGNED, so _sum FELL on every under-plan leg
-	// (29.9% of buy legs and 24.6% of sell legs in production), and Prometheus reads any
-	// decrease in a counter-typed series as a process restart: rate() adds the full
-	// pre-reset value back. The panel therefore reported the true average PLUS roughly
-	// the accumulated _sum at each false reset, and since that accumulation grows with
-	// time since process start, it RAMPED. Replaying the real 06:30-12:20Z buy sequence
-	// through rate()'s reset correction reproduced 3.4% climbing to 132.5% against a true
-	// mean of 0.16-0.93%. The telemetry table read 0.60% unweighted / 0.48%
-	// value-weighted over the identical legs and was right all along.
+	// WHY THREE COUNTERS AND NOT ONE SUMMARY. Drift is SIGNED, so a single accumulating _sum FALLS
+	// on every under-plan leg, and Prometheus reads any decrease in a counter-typed series as a
+	// process restart — rate() adds the full pre-reset value back. A signed sum therefore RAMPS
+	// without bound instead of reporting an average, and the error grows with uptime.
 	//
-	// Splitting the signed sum by direction makes every series a genuine monotone
-	// counter, which is the only shape rate() is defined on. The windowed average is
-	// recovered exactly:
+	// Splitting the signed sum by direction makes every series a genuine monotone counter, the only
+	// shape rate() is defined on. The windowed average is recovered exactly:
 	//
 	//	(sum by (side) (rate(over_plan[w])) - sum by (side) (rate(under_plan[w])))
 	//	  / sum by (side) (rate(legs[w]))
 	//
-	// so the panel keeps the same meaning it always claimed, now truthfully. under_plan
-	// accumulates the ABSOLUTE value of negative drift — a CounterVec.Add panics on a
-	// negative delta, and that panic is precisely the constraint the Summary was chosen
-	// to dodge; carrying the magnitude in its own counter respects it instead.
-	//
-	// NOTE FOR ANYONE READING OLDER FIGURES: the former
-	// tour_leg_price_drift_percent{_sum,_count} series are GONE, and every drift number
-	// quoted from that panel before sp-fpgl2 (including the "~97-125% buy drift" in the
-	// bead) is an artifact of the defect above, not a measurement. The table figures from
-	// the same windows are the honest ones.
+	// under_plan accumulates the ABSOLUTE value of negative drift: CounterVec.Add panics on a
+	// negative delta, and that panic is the constraint a Summary would dodge rather than respect.
 	//
 	// Deliberately UNLABELED by player_id: the panel is a global cross-player average, so
 	// a player_id split would fan the two intended buy/sell lines into
@@ -168,7 +151,7 @@ type TourMetricsCollector struct {
 //
 // PlanBasisLiquidation: there was no plan at all — a distress dump or exit sweep records a
 // zero basis rather than inventing one. It is passed for completeness and honesty (the label
-// matches the row's engine column, sp-fzt09) but NEVER materialises a series: a non-positive
+// matches the row's engine column) but NEVER materialises a series: a non-positive
 // basis returns before any counter is touched, so no liquidation observation survives to be
 // labelled. It exists so the emitter cannot quietly file a non-solver leg under solver.
 //
@@ -396,7 +379,7 @@ func (c *TourMetricsCollector) ObservePlanRate(playerID int, phase string, credi
 // one of two one-way counters: over plan (realized above planned) or under plan (below).
 // The leg counter always advances, so the two totals and the count together give the
 // exact signed average — see the field docs for the panel expression and for why a single
-// signed Summary could not be read with rate() (sp-fpgl2).
+// signed Summary could not be read with rate().
 //
 // A non-positive planned basis is SKIPPED on all three series — there is no basis to
 // divide by (mirrors the SQL NULLIF(planned,0)), and a leg counted without a contribution

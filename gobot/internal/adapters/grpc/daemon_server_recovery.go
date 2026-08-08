@@ -38,6 +38,11 @@ var retiredCommandTypes = map[string]bool{
 	// fleet the sensing drain already supplies. It spent 245,316 credits on 9 hulls in five minutes
 	// on the live fleet before it was stopped by hand. Deleted outright, not disabled.
 	"probe_buyer_coordinator": true,
+	// The fleet-autosizer retirement: growth owns trade capacity and the scaler owns contract capacity,
+	// so the second buyer sizing into the same pools against one treasury is gone. A persisted row is
+	// marked terminated on the first post-retirement boot rather than alarming as an unexplained loss,
+	// and with no builder left it can never be rebuilt into a ghost buyer.
+	"fleet_autosizer": true,
 }
 
 // RecoverRunningContainers recovers containers that were RUNNING or INTERRUPTED when daemon stopped

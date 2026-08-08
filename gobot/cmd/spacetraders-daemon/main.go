@@ -800,7 +800,7 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("failed to create socket directory: %w", err)
 	}
 
-	daemonServer, err := grpc.NewDaemonServer(med, db, containerLogRepo, containerRepo, waypointRepo, shipRepo, playerRepo, routingClient, apiClient, socketPath, &cfg.Metrics, cfg.Contract, cfg.TradeFleet, cfg.WorkerRebalancer, cfg.Scouting, cfg.Sensing, cfg.FleetAutosizer, cfg.Bootstrap, cfg.ShipResync, shipEventBus)
+	daemonServer, err := grpc.NewDaemonServer(med, db, containerLogRepo, containerRepo, waypointRepo, shipRepo, playerRepo, routingClient, apiClient, socketPath, &cfg.Metrics, cfg.Contract, cfg.TradeFleet, cfg.WorkerRebalancer, cfg.Scouting, cfg.Sensing, cfg.Bootstrap, cfg.ShipResync, shipEventBus)
 	if err != nil {
 		return fmt.Errorf("failed to create daemon server: %w", err)
 	}
@@ -997,10 +997,10 @@ func run(cfg *config.Config) error {
 	// cache) rather than concurrent duplicates. This reader answers from the transaction
 	// ledger, which already carries the same balance to the credit, and falls back to the
 	// coalesced live read when the newest row is older than the 30s freshness bound. Shared
-	// by the tour coordinator, the trade-route circuit, the fleet autosizer, the contract
+	// by the tour coordinator, the trade-route circuit, the fleet-growth coordinator, the contract
 	// scaler and — since sp-45s6f — the stocker, the one-shot arb and BOTH factory spend
 	// guards, so every money guard reads treasury one way. Built HERE, above its first
-	// consumer, rather than beside the autosizer further down: the construction executor is
+	// consumer, rather than beside the growth wiring further down: the construction executor is
 	// the earliest guard that needs it. DELIBERATELY NOT wired into bootstrap (cold start has
 	// a legitimately empty ledger and stays live-first) nor into the captain's own credits
 	// reader (separate process, wake gate not a money guard).
@@ -1126,8 +1126,8 @@ func run(cfg *config.Config) error {
 	// The persisted, fetch-through gate-graph resolver. travel() BFS-walks it to
 	// cross a multi-hop gap, and the arb pre-buy guard route-checks a cross-system
 	// sell leg through it BEFORE spending. Shared by the trade-route circuit, the
-	// one-shot arb, and the autosizer's reachable-yard ranking so they all see one
-	// cache/graph. Constructed here, ahead of the autosizer wiring that consumes it.
+	// one-shot arb, and the reachable-yard ranking so they all see one
+	// cache/graph. Constructed here, ahead of the growth wiring that consumes it.
 	// Captured so the gate-reconcile widening can read backoff markers straight from
 	// the SAME store the gate graph routes over (one cache/graph, era-scoped) — see
 	// scoutPostCoordinatorHandler.SetUnreadableGateProvider below.
@@ -1205,24 +1205,13 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("failed to register WarpShip handler: %w", err)
 	}
 
-	// Fleet capacity autosizer (sp-1txd): the buy-side twin of the siting coordinator. It sizes the
-	// hull pool to demand and auto-buys hulls behind the fail-closed money-guard stack. LIVE BY
-	// DEFAULT once first-launched (CLI/gRPC), recovery-adopted on restart. All concrete ports —
-	// treasury/era-clock via the API client, worker/heavy/fleet counts via the ship repo, the
-	// running-chain count via the daemon, the chain-P&L realized worker rate, the shipyard price
-	// read, the buy+dedicate path, and the captain purchase notice — are assembled inside
-	// grpc.NewFleetAutosizerCoordinatorHandler. Heavies are now LIVE: the unserved-lane
-	// signal reads the profitable-lane surface off the persisted market cache (marketRepo, via the
-	// read-only ProfitableLaneReader) and the realized tour-rate reads persisted tour telemetry
-	// (NewTourTelemetryRepository) — both fail closed on a read failure, so the guard stack still
-	// gates every heavy buy.
 	// The ReachableYardFinder is the heavy branch's yard-price FALLBACK — scout-scanned
 	// yards ranked by stored-gate-graph hops then price. Signal-only: with no scan data the price
 	// guard fails closed exactly as before, and every other guard still gates the buy.
 	reachableYardFinder := shipyardQuery.NewReachableYardFinder(shipyardInventoryRepo, gateGraphService)
 
-	// THE SHARED HEAVY TARGET (sp-fwk8z). ONE instance, two consumers: the fleet autosizer (which
-	// SPENDS the accumulation) and the sensing buy-floor (which WITHHOLDS it) both read the heavy
+	// THE SHARED HEAVY TARGET (sp-fwk8z). ONE instance, two consumers: the fleet-growth coordinator
+	// (which SPENDS the accumulation) and the sensing buy-floor (which WITHHOLDS it) both read the heavy
 	// target through this, so they can never end up saving toward different yards. The reservation's
 	// arithmetic already has a single definition in common.HeavyReserve; this gives its price term
 	// one too. Constructed here, at the composition root, precisely so a second one is conspicuous.
@@ -1232,18 +1221,6 @@ func run(cfg *config.Config) error {
 		shipRepo,              // reach is measured from the systems the fleet actually holds
 		nil,                   // nil ⇒ the documented heavy classes
 	)
-
-	fleetAutosizerHandler := grpc.NewFleetAutosizerCoordinatorHandler(
-		daemonServer, apiClient, ledgerTreasury, shipRepo, med, waypointRepo, captainEventRepo,
-		marketRepo,
-		gateGraphService,
-		reachableYardFinder,
-		heavyTargetFinder, // sp-fwk8z: the SHARED heavy target — the reservation price term, one definition
-		cfg.Trading.RankerAgeCapMinutes.Resolved(),
-	)
-	if err := mediator.RegisterHandler[*fleetCmd.RunFleetAutosizerCoordinatorCommand](med, fleetAutosizerHandler); err != nil {
-		return fmt.Errorf("failed to register FleetAutosizerCoordinator handler: %w", err)
-	}
 
 	// THE SHARED CAPACITY-SHORT SIGNAL. ONE instance, two consumers: the fleet-growth coordinator
 	// (which SPENDS on it) and the sensing wave gate (which PAUSES on it). Two readers of one
@@ -1256,8 +1233,8 @@ func run(cfg *config.Config) error {
 	unservedLaneReader := tradingQueries.NewUnservedLaneReader(shipRepo, profitableLaneCensus)
 	unservedLaneReader.SetSaturation(cfg.Trading.TradeSaturation.Resolved())
 
-	// The fleet-growth coordinator: the fleet's ONLY heavy buyer. It reuses the autosizer's whole
-	// port set — treasury, API utilization, the shipyard price walk, the heavy census and target,
+	// The fleet-growth coordinator: the fleet's ONLY heavy buyer. It drives the shared buy-path port
+	// set — treasury, API utilization, the shipyard price walk, the heavy census and target,
 	// the pricing errand, the buy+dedicate purchaser — and adds the three reads the wave and the
 	// working-capital term are derived from. The transaction repository serves BOTH ledger reads
 	// over the one shared trailing window: the demonstrated-capacity peak and the cargo outflow.
@@ -1271,8 +1248,8 @@ func run(cfg *config.Config) error {
 
 	// Dedicated contract auto-scaler: the standing coordinator that ramps a FIXED, EXCLUSIVE contract
 	// fleet to a live-tunable ceiling behind the 200000-credit cushion. Its concrete ports — the NOVEL
-	// RoleResolver (home-system geometry + market roles), the treasury/yard-price REUSE of the autosizer
-	// idioms, the "contract"-fleet counter, and the buy+dedicate+home Purchaser (the kept autosizer buy
+	// RoleResolver (home-system geometry + market roles), the treasury/yard-price REUSE of the shared
+	// buy-path idioms, the "contract"-fleet counter, and the buy+dedicate+home Purchaser (the shared buy
 	// primitive + the demand-ranked homing consumer) — are assembled inside
 	// grpc.NewContractScalerCoordinatorHandler. Registering the handler changes NO live behaviour by itself
 	// — it merely makes the coordinator available; the bootstrap coordinator launches this scaler during its
@@ -1545,7 +1522,7 @@ func run(cfg *config.Config) error {
 	tourTelemetryRepo := persistence.NewTourTelemetryRepository(db)
 
 	// Auto-outfit coordinator (sp-buyd): the standing guarded auto-outfit coordinator — the
-	// module analogue of the autosizer's hull-buying. Each tick it measures per-hull cargo
+	// module analogue of the growth coordinator's hull-buying. Each tick it measures per-hull cargo
 	// saturation from tour_leg_telemetry, catalogs available modules off the market cache,
 	// and installs the highest-marginal-value (hull, module) upgrade behind a fail-closed
 	// money/ceiling/cap guard stack. REGISTRATION ONLY — the coordinator is deliberately NOT

@@ -12,15 +12,13 @@ import (
 
 // THE HEAVY-YARD PRICING ERRAND.
 //
-// A SpaceTraders shipyard prices its hulls only while a ship stands at the waypoint. A
-// presence-less read still returns the yard's ship-type CATALOGUE, which is persisted at
-// purchase_price 0 — "this yard sells a heavy, at an ask nobody has read". Every money-facing
-// consumer then correctly ignores that row (a zero can never feed a price guard), so a fleet can
-// KNOW where to buy a heavy and still never form a reservation, never accumulate treasury, and
-// never buy one. That is the state this errand exists to leave.
+// A SpaceTraders shipyard prices its hulls only while a ship stands at the waypoint. A presence-less
+// read still returns the ship-type CATALOGUE, persisted at purchase_price 0 — "this yard sells a
+// heavy, at an ask nobody has read". Every money-facing consumer correctly ignores that row, so a
+// fleet can KNOW where to buy a heavy and still never reserve, accumulate, or buy one. That is the
+// state this errand exists to leave.
 //
-// The errand uses the idiom the bootstrap coordinator applies to the cold home yard:
-// when the price cannot be read, SEND A HULL so the next scan reads it. This tick still buys
+// When the price cannot be read it SENDS A HULL so the next scan reads it. This tick still buys
 // nothing, so no money guard is weakened (RULINGS #4) — it makes the price readable, it does not
 // bypass the price.
 //
@@ -35,26 +33,19 @@ import (
 // another spare probe off station to buy information we are about to get anyway.
 const heavyPricingErrandsInFlight = 1
 
-// heavyPricingErrandFleet is the dedication a hull MUST carry to be eligible to fly a pricing
-// errand: the PARKED SENSING pool — the fleet's spare hulls.
+// heavyPricingErrandFleet is the dedication a hull MUST carry to fly a pricing errand: the PARKED
+// SENSING pool — the fleet's spare hulls.
 //
-// IT USED TO NAME THE TRADE POOL, AND THAT IS THE DEFECT THIS CONST CARRIES THE SCAR OF (sp-gmfvw).
-// The errand was built to draw from the one pool that is never spare: a trade hull is either flying
-// a lane or docked mid-tour, so the eligible set was empty essentially always and the errand
-// declined every tick of an entire era while thirteen known heavy yards sat at purchase_price 0.
+// IT MUST NOT NAME THE TRADE POOL. A trade hull is either flying a lane or docked mid-tour, so a
+// trade-scoped allowlist is empty essentially always and the errand declines forever.
 //
-// A probe is the right carrier because PRICING A YARD NEEDS PRESENCE, NOT CARGO. A shipyard lists
-// its asks to whoever stands at the waypoint; the hull reads, it does not carry. Probes are the
-// cheap, expendable, genuinely-idle hulls — and one taken off station for a single hop costs one
-// market's freshness, where a trade hull taken off a lane costs income.
+// A probe is the right carrier because PRICING A YARD NEEDS PRESENCE, NOT CARGO: the hull reads, it
+// does not carry. One taken off station for a hop costs a market's freshness, where a trade hull
+// taken off a lane costs income.
 //
-// It stays an ALLOWLIST of exactly one tag: an undedicated hull carries "" (another controller is
-// about to claim it), a contract hauler carries "contract", a trade hull carries "trade". None of
-// them equals this, so a tag invented tomorrow is refused by default rather than silently admitted.
-//
-// The tag is now taken as a CROSS-PACKAGE CONST rather than re-spelled here. The allowlist and the
-// tag-writer must agree exactly or the eligible set silently empties again — which is precisely the
-// failure this bead fixed — so they are made to be the same symbol rather than trusted to match.
+// It stays an ALLOWLIST of exactly one tag, so a tag invented tomorrow is refused by default rather
+// than silently admitted — and it is the CROSS-PACKAGE CONST, not a re-spelling: allowlist and
+// tag-writer must agree exactly or the eligible set silently empties.
 const heavyPricingErrandFleet = parkedsensing.SensingParkedFleetTag
 
 // KnownHeavyYard is one KNOWN heavy-selling yard as the errand policy sees it — PRICED OR NOT.
@@ -91,7 +82,7 @@ type PricingErrandHull struct {
 	InTransit bool
 	// CargoCapacity is REPORTED AND DELIBERATELY NOT JUDGED. Pricing a yard needs presence at the
 	// waypoint, not a hold, and every carrier the errand now draws on is a zero-cargo probe — so a
-	// hold predicate here would exclude exactly the pool the errand exists to use (sp-gmfvw). It is
+	// hold predicate here would exclude exactly the pool the errand exists to use. It is
 	// still carried because it is a raw durable fact of the hull and the adapter's contract is to
 	// report facts rather than verdicts; a future policy may want it, and a policy that wants it
 	// should not have to re-open the port to get it.
@@ -160,11 +151,9 @@ type carrierReach func(fromSystem string, toSystems []string) (map[string]int, e
 
 // pricingErrandDecline NAMES why a tick sent no hull.
 //
-// It exists because the errand's silence was the defect behind the defect (sp-gmfvw): it declined
-// on every tick of an entire era with no log line at all, so "the mechanism is running and waiting"
-// and "the mechanism was never wired" were indistinguishable, and only production-log archaeology
-// separated them. Every value below is a WAIT, not a failure — but a wait an operator can act on
-// differently depending on which one it is, which is the whole point of naming it.
+// Without a named reason "running and waiting" and "never wired" are indistinguishable from
+// outside. Every value below is a WAIT, not a failure — but a wait an operator acts on differently
+// depending on which one it is, which is the whole point of naming it.
 type pricingErrandDecline string
 
 const (
@@ -271,7 +260,7 @@ func standingPricingErrand(unpriced []KnownHeavyYard, hulls []PricingErrandHull)
 // nearestRoutablePair chooses the CARRIER AND THE YARD TOGETHER, ranked by the distance between
 // them, and reports an empty errand when no pair can be routed at all.
 //
-// CHOOSING THEM SEPARATELY IS THE DEFECT. The lowest-symbol spare probe and, independently, the
+// CHOOSING THEM SEPARATELY IS WRONG. The lowest-symbol spare probe and, independently, the
 // catalogue's nearest unpriced yard answer two different questions and are paired by nothing: the
 // catalogue's distance is a multi-source walk from every system the FLEET stands in, a lower bound
 // on any PARTICULAR hull's and silent about the one that will fly.
@@ -413,29 +402,22 @@ func errandsInFlight(unpriced []KnownHeavyYard, hulls []PricingErrandHull) int {
 
 // pricingErrandCarrier picks the SPARE PROBE to send, or reports that nothing may move this tick.
 //
-// FOUR CONJUNCTIVE PREDICATES, and each one is load-bearing:
+// FOUR CONJUNCTIVE PREDICATES, each load-bearing:
 //
-//   - Fleet == heavyPricingErrandFleet — the allowlist, now the parked-sensing pool. A trade hull
-//     is earning, an undedicated hull is about to be claimed by whoever is looking for one, and a
-//     contract hauler is mid-workstream; none of them is spare. Selecting by "not busy" instead
-//     would admit every tag nobody has thought of yet.
-//   - !MannedScoutPost — the standing owner rule. The probe pool is SHARED with the scout
-//     coordinator, so the fleet tag alone no longer separates a spare hull from a working one:
-//     a hull a live scout post NAMES is that post's, not this engine's, even in the idle gap
-//     between two tours. This is the predicate that replaced the old zero-hold lock, and it
-//     guards the same door the old trade-only allowlist did — from the correct side.
+//   - Fleet == heavyPricingErrandFleet — the allowlist. Selecting by "not busy" instead would admit
+//     every tag nobody has thought of yet.
+//   - !MannedScoutPost — the standing-owner rule. The probe pool is SHARED with the scout
+//     coordinator, so the tag alone cannot separate a spare hull from a working one: a hull a live
+//     post NAMES is that post's, even in the idle gap between two tours.
 //   - Idle — a hull mid-tour is working; the errand is worth a spare hull, never a working one.
-//   - !InTransit — an idle hull still flying has a destination it was sent to; re-routing it
-//     would strand whatever sent it.
+//   - !InTransit — an idle hull still flying was sent somewhere; re-routing strands whatever sent it.
 //
-// CARGO CAPACITY IS DELIBERATELY NOT CONSULTED. It used to be the second lock, and it was the lock
-// that made the corrected pool unusable: every probe has a zero hold, so a hold predicate refuses
-// every carrier the errand now wants. Pricing needs presence, not a hold (sp-gmfvw).
+// CARGO CAPACITY IS DELIBERATELY NOT CONSULTED: every probe has a zero hold, so a hold predicate
+// refuses every carrier this errand wants.
 //
-// IT RETURNS EVERY ELIGIBLE CARRIER, not the best one, because there is no best one to name here:
-// which spare probe should fly is a property of the PAIR it forms with a yard, and no yard is in
-// view at this point. nearestRoutablePair settles both together. Sorted, so that pairing has a
-// stable last tiebreak.
+// IT RETURNS EVERY ELIGIBLE CARRIER, not the best one — which probe should fly is a property of the
+// PAIR it forms with a yard, and no yard is in view here. Sorted, so that pairing has a stable
+// tiebreak.
 func pricingErrandCarriers(hulls []PricingErrandHull) []PricingErrandHull {
 	out := make([]PricingErrandHull, 0, len(hulls))
 	for _, h := range hulls {
@@ -464,20 +446,17 @@ func pricingErrandCarrier(hulls []PricingErrandHull) (string, bool) {
 // runHeavyPricingErrand is the tick step: read the catalogue, read the fleet, and send at most one
 // hull to at most one unpriced heavy yard.
 //
-// IT HANGS OFF THE FLEET'S HEAVY BUYER, and off exactly one of them. The errand exists to make a
-// heavy's ask readable, so it belongs wherever the heavy purchase does; a second driver would be a
-// second opinion about the one-hull-at-a-time bound, and two coordinators each believing no errand
-// was in flight is how a bound of one becomes a convoy.
+// IT HANGS OFF THE FLEET'S HEAVY BUYER, and off exactly one of them: a second driver is a second
+// opinion about the one-hull-at-a-time bound, and two coordinators each believing no errand is in
+// flight is how a bound of one becomes a convoy.
 //
-// GATED ON WANTING A HEAVY AT ALL. An unreadable census, or a fleet already at its heavy cap,
-// sends nothing: the errand costs a market's freshness while its probe is away and an API read, and
-// buying information about a purchase that cannot happen is pure loss. This mirrors the
-// reservation's own gate, which is why both stand down together at the cap.
+// GATED ON WANTING A HEAVY AT ALL. An unreadable census, or a fleet already at its cap, sends
+// nothing — the errand costs a market's freshness while its probe is away, and buying information
+// about a purchase that cannot happen is pure loss. It mirrors the reservation's own gate, which is
+// why both stand down together at the cap.
 //
-// Every read failure is a logged WAIT, never a fatal error. A tick that cannot see the catalogue
-// simply does not dispatch, and the next tick tries again — the same shape the bootstrap errand
-// takes, and for the same reason: nothing here spends money, so nothing here needs to fail closed
-// against a spend.
+// Every read failure is a logged WAIT, never fatal: nothing here spends money, so nothing here needs
+// to fail closed against a spend.
 func (h *RunFleetGrowthCoordinatorHandler) runHeavyPricingErrand(
 	ctx context.Context,
 	cmd *RunFleetGrowthCoordinatorCommand,
@@ -621,10 +600,8 @@ func pricingErrandDeclineNarrative(reason pricingErrandDecline) string {
 
 // logPricingErrandDecline states WHY no hull went, every single tick that none does.
 //
-// THE SILENCE WAS THE DEFECT BEHIND THE DEFECT (sp-gmfvw). The errand declined with no line at all
-// for an entire era while thirteen known heavy yards sat unpriced, so "running and waiting" read
-// exactly like "never wired" and only production-log archaeology could tell them apart. The line is
-// part of the mechanism, not decoration.
+// A silent decline makes "running and waiting" read exactly like "never wired", so the line is part
+// of the mechanism, not decoration.
 //
 // Every count is recomputed from the tick's own inputs rather than threaded out of the planner:
 // they are pure functions of data already in hand, and a decline path that carries state is a

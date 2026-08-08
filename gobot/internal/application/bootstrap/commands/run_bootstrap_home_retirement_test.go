@@ -69,11 +69,13 @@ func TestBootstrap_HomeRetirement_ConfirmedHandoff_LowersOnce_SecondInvocationZe
 	}
 }
 
-// The other confirmed branch: the autosizer was launched EARLY (cold-start scaling), so EXPANSION
-// confirms through ensureStandingHandoff — the floor comes down there too.
-func TestBootstrap_HomeRetirement_EarlyLaunchedAutosizer_StillLowers(t *testing.T) {
+// The other confirmed branch: growth is ALREADY running (a restart post-gate), so EXPANSION is confirmed
+// by the latch without launching anything — and the floor still comes down. The release is keyed on the
+// WORLD signal (the gate reads BUILT), never on a launch having fired this tick, which is exactly what
+// this fixture proves: zero launches, floor still lowered.
+func TestBootstrap_HomeRetirement_GrowthAlreadyRunning_StillLowers(t *testing.T) {
 	obs := matureObs()
-	obs.AutosizerRunning = true
+	obs.GrowthRunning = true
 	ho := &fakeHandoff{}
 	h, spies := spiedHandler(obs, ho)
 
@@ -81,11 +83,11 @@ func TestBootstrap_HomeRetirement_EarlyLaunchedAutosizer_StillLowers(t *testing.
 	if err != nil {
 		t.Fatalf("reconcileOnce: %v", err)
 	}
-	if !res.Done || ho.standing != 1 || ho.autosizer != 0 {
-		t.Fatalf("expected the ensureStandingHandoff confirmed exit, got Done=%v standing=%d autosizer=%d", res.Done, ho.standing, ho.autosizer)
+	if !res.Done || ho.standing != 0 {
+		t.Fatalf("expected the latched confirmed exit with no relaunch, got Done=%v standing=%d", res.Done, ho.standing)
 	}
 	if lowerCalls(spies.posts) != 1 {
-		t.Fatalf("the early-launched confirmed hand-off must lower the home floor once, got minHulls=%v", spies.posts.minHulls)
+		t.Fatalf("the latched confirmed hand-off must lower the home floor once, got minHulls=%v", spies.posts.minHulls)
 	}
 }
 
@@ -93,7 +95,7 @@ func TestBootstrap_HomeRetirement_EarlyLaunchedAutosizer_StillLowers(t *testing.
 // the phase, not the hand-off — a launcher that is down cannot keep the home reinforcement pinned.
 // And across the hold ticks the lowering still fires exactly ONCE (the in-run idempotency).
 func TestBootstrap_HomeRetirement_UnconfirmedHandoff_WarnExit_StillLowersExactlyOnce(t *testing.T) {
-	h, spies := spiedHandler(matureObs(), &fakeHandoff{autoErr: errors.New("autosizer launcher down")})
+	h, spies := spiedHandler(matureObs(), &fakeHandoff{standErr: errors.New("growth launcher down")})
 
 	ticks, res := runToExit(t, h, baseCmd(), 25)
 	if !res.Done || res.HandoffLaunched {

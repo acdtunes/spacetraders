@@ -1007,19 +1007,19 @@ func TestReconcile_ADispatchAnnouncesTheHullAndTheYard(t *testing.T) {
 	}
 }
 
-// B8 — EXACTLY ONE COORDINATOR DRIVES THE ERRAND.
+// B8 — EXACTLY ONE COORDINATOR DRIVES THE ERRAND, and it is the fleet's heavy BUYER.
 //
 // The errand's whole policy — one hull in flight fleet-wide, one spare probe, never a manned one —
 // is stated once and derived from ship rows every tick. Two coordinators holding the ports would
 // each read the same durable facts, each conclude nothing was in flight, and each dispatch: the
 // bound of one becomes a bound of one PER DRIVER. So ownership is asserted structurally rather than
 // left to the reader of two tick loops.
+//
+// The second driver this once guarded against was the fleet autosizer, deleted in sp-5pclx — which
+// is why this now asserts only the positive half. The negative half is enforced by the compiler: a
+// type that does not exist cannot hold a port.
 func TestPricingErrand_HasExactlyOneDriver(t *testing.T) {
 	for _, port := range []string{"heavyYardCatalog", "heavyErrand"} {
-		if reflect.ValueOf(&RunFleetAutosizerCoordinatorHandler{}).Elem().FieldByName(port).IsValid() {
-			t.Fatalf("the autosizer still holds the %q port — two heavy-pricing drivers is two opinions "+
-				"about the one-hull-at-a-time bound", port)
-		}
 		if !reflect.ValueOf(&RunFleetGrowthCoordinatorHandler{}).Elem().FieldByName(port).IsValid() {
 			t.Fatalf("the fleet's heavy buyer must hold the %q port — unheld, no yard is ever priced "+
 				"and no heavy can ever be bought", port)

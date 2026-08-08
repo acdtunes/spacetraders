@@ -258,6 +258,9 @@ func (c *FleetGrowthMetricsCollector) RecordGrowthEnabled(playerID string, enabl
 // RecordHeavyReserve sets the per-tick heavy gauges: what is withheld, what it is withheld toward,
 // what is owned and the cap in force.
 func (c *FleetGrowthMetricsCollector) RecordHeavyReserve(playerID string, reserve, target int64, owned, capacity int) {
+	if c == nil {
+		return
+	}
 	c.heavyReserveCredits.WithLabelValues(playerID).Set(float64(reserve))
 	c.heavyReserveTarget.WithLabelValues(playerID).Set(float64(target))
 	c.heaviesOwned.WithLabelValues(playerID).Set(float64(owned))
@@ -291,8 +294,12 @@ func (c *FleetGrowthMetricsCollector) RecordZeroEffectAlarm() {
 }
 
 // ObserveHeavyPricePremium records one heavy purchase's premium over the cheapest known yard ask.
+//
+// NIL-RECEIVER SAFE, like every sibling recorder: metrics are pure observation, so a recording miss
+// must never reach a buy decision (RULINGS #4). The package accessors nil-check the global; this
+// guards the direct-call path.
 func (c *FleetGrowthMetricsCollector) ObserveHeavyPricePremium(playerID string, paid, cheapestKnown int64) {
-	if cheapestKnown <= 0 {
+	if c == nil || cheapestKnown <= 0 {
 		return
 	}
 	premium := float64(paid-cheapestKnown) / float64(cheapestKnown) * 100

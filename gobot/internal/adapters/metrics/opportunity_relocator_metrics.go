@@ -1,7 +1,7 @@
 package metrics
 
 // opportunity_relocator_metrics.go — the Prometheus half of the opportunity relocator's telemetry
-// (sp-j1i49). A NEW FILE and a NEW series set: nothing here edits or reuses the tour collector.
+//. A NEW FILE and a NEW series set: nothing here edits or reuses the tour collector.
 //
 // WHY A SEPARATE SERIES rather than the existing tour_repositions_total. This package already decided
 // that question in writing, for the same shape of problem: tour_metrics.go records that "the legacy

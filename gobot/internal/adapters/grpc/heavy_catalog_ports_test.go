@@ -1,6 +1,6 @@
 package grpc
 
-// Tests for autosizerHeavyYardCatalog — the ONE read that can see a heavy yard's availability-only
+// Tests for fleetHeavyYardCatalog — the ONE read that can see a heavy yard's availability-only
 // (unpriced) catalogue row, and therefore the only thing that can ever tell the pricing errand
 // where to fly. Nothing here spends, but everything here decides whether a 1.5–2.9M heavy is ever
 // priced at all: an empty-looking catalogue reads to the errand as "every known yard is already
@@ -49,7 +49,7 @@ func TestKnownHeavyYards_CarriesTheUnpricedRowsEveryMoneyReadDiscards(t *testing
 		{SystemSymbol: "X1-NEAR", WaypointSymbol: "X1-NEAR-Y1", ShipType: "SHIP_HEAVY_FREIGHTER", PurchasePrice: 0, Hops: 1},
 		{SystemSymbol: "X1-FAR", WaypointSymbol: "X1-FAR-Y1", ShipType: "SHIP_BULK_FREIGHTER", PurchasePrice: 2_931_905, Hops: 3},
 	}}
-	c := &autosizerHeavyYardCatalog{
+	c := &fleetHeavyYardCatalog{
 		ranker:   ranker,
 		shipRepo: &fakeHeavyShipRepo{all: []*navigation.Ship{tradeShipAt(t, "TR-1", 1, "X1-HOME-A1")}},
 	}
@@ -87,7 +87,7 @@ func TestKnownHeavyYards_AYardBeyondTheHeavyReachBoundIsNotReachable(t *testing.
 		{SystemSymbol: "X1-BEYOND", WaypointSymbol: "X1-BEYOND-Y1", ShipType: "SHIP_HEAVY_FREIGHTER", Hops: gategraph.MaxJumpPath + 1},
 		{SystemSymbol: "X1-NONSENSE", WaypointSymbol: "X1-NONSENSE-Y1", ShipType: "SHIP_HEAVY_FREIGHTER", Hops: -1},
 	}}
-	c := &autosizerHeavyYardCatalog{
+	c := &fleetHeavyYardCatalog{
 		ranker:   ranker,
 		shipRepo: &fakeHeavyShipRepo{all: []*navigation.Ship{tradeShipAt(t, "TR-1", 1, "X1-HOME-A1")}},
 	}
@@ -112,14 +112,14 @@ func TestKnownHeavyYards_UnwiredReportsNoYardsAndReadsNothing(t *testing.T) {
 		{SystemSymbol: "X1-NEAR", WaypointSymbol: "X1-NEAR-Y1", ShipType: "SHIP_HEAVY_FREIGHTER", Hops: 1},
 	}}
 
-	noRanker := &autosizerHeavyYardCatalog{
+	noRanker := &fleetHeavyYardCatalog{
 		shipRepo: &fakeHeavyShipRepo{all: []*navigation.Ship{tradeShipAt(t, "TR-1", 1, "X1-HOME-A1")}},
 	}
 	yards, err := noRanker.KnownHeavyYards(context.Background(), 1)
 	require.NoError(t, err)
 	require.Empty(t, yards)
 
-	noFleet := &autosizerHeavyYardCatalog{ranker: ranker}
+	noFleet := &fleetHeavyYardCatalog{ranker: ranker}
 	yards, err = noFleet.KnownHeavyYards(context.Background(), 1)
 	require.NoError(t, err)
 	require.Empty(t, yards)
@@ -139,17 +139,17 @@ func TestKnownHeavyYards_AReadFailureRefusesInsteadOfReportingAnEmptyCatalogue(t
 
 	cases := []struct {
 		name    string
-		catalog *autosizerHeavyYardCatalog
+		catalog *fleetHeavyYardCatalog
 	}{
-		{"the fleet read fails, so reach cannot be measured", &autosizerHeavyYardCatalog{
+		{"the fleet read fails, so reach cannot be measured", &fleetHeavyYardCatalog{
 			ranker:   &fakeHeavyYardRanker{candidates: priced},
 			shipRepo: &fakeHeavyShipRepo{err: errors.New("db down")},
 		}},
-		{"the scan surface read fails", &autosizerHeavyYardCatalog{
+		{"the scan surface read fails", &fleetHeavyYardCatalog{
 			ranker:   &fakeHeavyYardRanker{err: errors.New("inventory unreadable")},
 			shipRepo: &fakeHeavyShipRepo{all: hulls},
 		}},
-		{"the player id is invalid", &autosizerHeavyYardCatalog{
+		{"the player id is invalid", &fleetHeavyYardCatalog{
 			ranker:   &fakeHeavyYardRanker{candidates: priced},
 			shipRepo: &fakeHeavyShipRepo{all: hulls},
 		}},

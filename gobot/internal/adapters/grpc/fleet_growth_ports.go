@@ -61,13 +61,13 @@ func NewFleetGrowthCoordinatorHandler(
 ) *fleetCmd.RunFleetGrowthCoordinatorHandler {
 	h := fleetCmd.NewRunFleetGrowthCoordinatorHandler(nil)
 
-	h.SetTreasuryReader(&autosizerTreasuryReader{api: apiClient, ledger: ledgerTreasury})
+	h.SetTreasuryReader(&fleetTreasuryReader{api: apiClient, ledger: ledgerTreasury})
 	// The tracker is RESOLVED PER READ, not captured here: passing the resolver itself — the
 	// function, uncalled — is what makes the wiring order stop mattering.
-	h.SetAPIUtilizationReader(&autosizerAPIUtilReader{resolve: globalAPIBudgetReporter})
+	h.SetAPIUtilizationReader(&fleetAPIUtilReader{resolve: globalAPIBudgetReporter})
 	// The concrete waypoint repo is assigned only when non-nil: a typed-nil pointer inside the
 	// interface field would defeat the reader's nil guard with a runtime panic instead.
-	yardPriceReader := &autosizerYardPriceReader{med: med, shipRepo: shipRepo, scannedYards: scannedYards}
+	yardPriceReader := &fleetYardPriceReader{med: med, shipRepo: shipRepo, scannedYards: scannedYards}
 	if waypointRepo != nil {
 		yardPriceReader.waypointRepo = waypointRepo
 	}
@@ -77,12 +77,12 @@ func NewFleetGrowthCoordinatorHandler(
 	// each tick and feed the heavy_cap guard. BOTH fail closed when unwired, so an unwired census
 	// STOPS heavy buying — hence the loud WARN rather than a silent skip.
 	if counter, ok := shipRepo.(heavyHullCounter); ok {
-		h.SetHeavyCensusReader(&autosizerHeavyCensus{counter: counter})
+		h.SetHeavyCensusReader(&fleetHeavyCensus{counter: counter})
 	} else {
 		log.Printf("WARNING: fleet growth heavy census UNWIRED — the ship repository does not implement CountHeavyHulls, so the heavy_cap guard fails closed and NO heavy will be bought")
 	}
 	if heavyYards != nil {
-		h.SetHeavyYardReader(&autosizerHeavyYardReader{yards: heavyYards})
+		h.SetHeavyYardReader(&fleetHeavyYardReader{yards: heavyYards})
 	} else {
 		log.Printf("WARNING: fleet growth heavy-yard reader UNWIRED — no heavy target can be priced, so the wave can never turn HEAVY and no heavy is ever bought")
 	}
@@ -91,12 +91,12 @@ func NewFleetGrowthCoordinatorHandler(
 	// the reservation. Unwired ⇒ no errand, and such a yard stays unpriced forever.
 	if scannedYards != nil {
 		if ranker, ok := scannedYards.(heavyYardRanker); ok {
-			h.SetHeavyYardCatalogReader(&autosizerHeavyYardCatalog{ranker: ranker, shipRepo: shipRepo})
+			h.SetHeavyYardCatalogReader(&fleetHeavyYardCatalog{ranker: ranker, shipRepo: shipRepo})
 			// The errand draws its carrier from the PARKED SENSING pool, which it SHARES with the
 			// scout coordinator — so it must also see which probes a live scout post already owns.
 			// The constructor takes the server and reads the roster off its connection, which is
 			// what keeps that read from being something this line can omit.
-			h.SetHeavyPricingErrandPort(newAutosizerPricingErrand(server, med, shipRepo))
+			h.SetHeavyPricingErrandPort(newHeavyYardPricingErrand(server, med, shipRepo))
 		} else {
 			log.Printf("WARNING: fleet growth heavy-yard pricing errand UNWIRED — the yard ranker cannot list availability-only rows, so a known-but-unpriced heavy yard is never priced and no heavy reservation can form")
 		}
@@ -121,8 +121,8 @@ func NewFleetGrowthCoordinatorHandler(
 
 	// growth_enabled and heavy_cap are the live-tunable knobs (Pattern-C hot reload).
 	h.SetGrowthConfigReader(NewContainerConfigReader(server.containerRepo))
-	h.SetPurchaser(&autosizerPurchaser{med: med, shipRepo: shipRepo})
-	h.SetPurchaseNotifier(&autosizerNotifier{store: eventStore})
+	h.SetPurchaser(&fleetHullPurchaser{med: med, shipRepo: shipRepo})
+	h.SetPurchaseNotifier(&fleetPurchaseNotifier{store: eventStore})
 	h.SetMetricsSink(&growthMetricsSink{})
 	// Stall escalation: a coordinator that refuses every tick must not look identical to one with
 	// nothing to do. Write-only by type — the streak it accumulates is unreadable by any growth

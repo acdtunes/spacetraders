@@ -146,3 +146,14 @@ func buildFleetGrowthCommand(cfg *configReader, playerID int, containerID string
 	}
 	return cmd
 }
+
+// presentIntPtr reads an optional int knob as a POINTER so an explicit 0 survives the round trip
+// through container config. OptionalInt would flatten absent and 0 to the same value, which for
+// heavy_cap would turn an operator's deliberate "own no heavies" hold into "unset, use the
+// default" — silently buying hulls the operator asked us not to buy.
+func presentIntPtr(cfg *configReader, key string) *int {
+	if v, ok := cfg.PresentInt(key); ok {
+		return &v
+	}
+	return nil
+}

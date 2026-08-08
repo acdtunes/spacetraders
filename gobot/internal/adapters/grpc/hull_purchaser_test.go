@@ -13,17 +13,17 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
-// autosizerPurchaser is the SHARED buy primitive: the fleet autosizer and the dedicated contract
+// fleetHullPurchaser is the SHARED buy primitive: the fleet autosizer and the dedicated contract
 // scaler both execute their purchases through it. These tests pin the two behaviours a caller
 // cannot see and cannot recover from — which hull is sent to do the buying, and which fleet tag the
 // bought hull lands with — at the adapter seam, where the policy is actually applied.
 
 // dedicateAtPurchaseBuyer wires the primitive against a fleet and a mediator that answers a batch
 // purchase with one hull.
-func dedicateAtPurchaseBuyer(fleet []*navigation.Ship) (*autosizerPurchaser, *fakeReclaimShipRepo, *recordingBuyMediator) {
+func dedicateAtPurchaseBuyer(fleet []*navigation.Ship) (*fleetHullPurchaser, *fakeReclaimShipRepo, *recordingBuyMediator) {
 	repo := &fakeReclaimShipRepo{all: fleet}
 	med := &recordingBuyMediator{}
-	return &autosizerPurchaser{med: med, shipRepo: repo}, repo, med
+	return &fleetHullPurchaser{med: med, shipRepo: repo}, repo, med
 }
 
 // purchasingHullUsed reports the hull the batch purchase was told to send, and whether a purchase
@@ -86,7 +86,7 @@ func TestAutosizerPurchaser_DedicationFailureSurfaces(t *testing.T) {
 		all:       []*navigation.Ship{reclaimHull(t, "BUYER", 40, navigation.PurchasingFleet, navigation.NavStatusInOrbit)},
 		assignErr: errors.New("db down"),
 	}
-	p := &autosizerPurchaser{med: &recordingBuyMediator{}, shipRepo: repo}
+	p := &fleetHullPurchaser{med: &recordingBuyMediator{}, shipRepo: repo}
 
 	_, err := p.BuyAndDedicate(context.Background(), hullbuy.BuyOrder{PlayerID: 1, Class: hullbuy.HullClassHeavy})
 	require.ErrorContains(t, err, "failed to dedicate")

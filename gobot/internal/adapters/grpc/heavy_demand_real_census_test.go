@@ -3,9 +3,11 @@ package grpc
 // The heavy-demand chain end-to-end over the REAL lane census. Every other test of this seam feeds
 // UnservedLaneCount a canned int through a fake counter, so the MAGNITUDE the census produces —
 // which is what sizes the trade pool, one hull per unserved lane — is invisible to them. This test
-// drives the production wiring: cached markets -> ProfitableLaneReader -> UnservedLaneReader ->
-// HeavyDemandProvider, so a future change to what the census counts has to restate its magnitude
-// here rather than land silently.
+// drives the production wiring: cached markets -> ProfitableLaneReader -> UnservedLaneReader, so a
+// future change to what the census counts has to restate its magnitude here rather than land
+// silently. (sp-5pclx deleted the autosizer's HeavyDemandProvider that once sat on the end of this
+// chain; the growth coordinator reads the same UnservedLaneReader, so the chain under test is the
+// live one and the arithmetic below is unchanged.)
 
 import (
 	"context"
@@ -89,24 +91,22 @@ func twoSystemTradingGrounds(t *testing.T) *censusMarkets {
 }
 
 // THE MAGNITUDE ASSERTION. Heavy demand is current heavies plus unserved lanes, so the census
-// number IS the size of the trade pool the autosizer will drive toward.
+// number IS the size of the trade pool the fleet's heavy buyer will drive toward.
 func TestHeavyDemand_OverTheRealLaneCensus(t *testing.T) {
 	shipRepo := &fakeHeavyShipRepo{all: []*navigation.Ship{
 		tradeShipAt(t, "TR-1", 1, "X1-AA-1"),
 		tradeShipAt(t, "TR-2", 1, "X1-BB-1"),
 	}}
 	census := tradingQueries.NewProfitableLaneReader(twoSystemTradingGrounds(t), censusGates{})
-	provider := fleetCmd.NewHeavyDemandProvider(&autosizerHeavySources{
-		shipRepo: shipRepo,
-		unserved: tradingQueries.NewUnservedLaneReader(shipRepo, census),
-	})
+	unserved, readable, err := tradingQueries.NewUnservedLaneReader(shipRepo, census).
+		UnservedLaneCount(context.Background(), 1)
 
-	demand, err := provider.Demand(context.Background(), 1, fleetCmd.DemandParams{})
 	require.NoError(t, err)
-	require.True(t, demand.Readable)
-	require.Equal(t, 2, demand.Current, "two trade-dedicated hulls today")
-	require.Equal(t, 16, demand.Demand,
-		"2 heavies + (16 census lanes − 2 in the pool) = 16 — one hull wanted per lane the fleet can reach")
+	require.True(t, readable)
+	require.Equal(t, 14, unserved, "16 census lanes − 2 trade hulls in the pool = 14 unserved")
+	// …and the pure sizing math on top of it: one hull wanted per unserved lane the fleet can reach.
+	require.Equal(t, 16, fleetCmd.HeavyDemandFor(2, unserved),
+		"2 heavies + 14 unserved = 16 — the size of the trade pool this census asks for")
 }
 
 // The same wiring with no walkable gate graph counts only the lanes inside each system: the
@@ -118,15 +118,12 @@ func TestHeavyDemand_UnprovenCrossingsDoNotSizeThePool(t *testing.T) {
 		tradeShipAt(t, "TR-2", 1, "X1-BB-1"),
 	}}
 	census := tradingQueries.NewProfitableLaneReader(twoSystemTradingGrounds(t), sameSystemOnlyGates{})
-	provider := fleetCmd.NewHeavyDemandProvider(&autosizerHeavySources{
-		shipRepo: shipRepo,
-		unserved: tradingQueries.NewUnservedLaneReader(shipRepo, census),
-	})
+	unserved, readable, err := tradingQueries.NewUnservedLaneReader(shipRepo, census).
+		UnservedLaneCount(context.Background(), 1)
 
-	demand, err := provider.Demand(context.Background(), 1, fleetCmd.DemandParams{})
 	require.NoError(t, err)
-	require.True(t, demand.Readable)
-	require.Equal(t, 8, demand.Demand,
+	require.True(t, readable)
+	require.Equal(t, 8, fleetCmd.HeavyDemandFor(2, unserved),
 		"2 heavies + (8 within-system lanes − 2 in the pool) = 8; the 8 cross-system lanes are unproven")
 }
 

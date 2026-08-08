@@ -346,12 +346,10 @@ type GateWorkerAcquirer interface {
 	BuyForConstruction(ctx context.Context, playerID int, shipType, yard string) (BuyResult, error)
 }
 
-// HandoffLauncher performs the EXPANSION hand-off: it launches the standing fleet-autosizer (OFF the whole
-// bootstrap run so the two never issue conflicting purchases against one treasury) and the other standing
-// coordinators, turning the fleet over to the mature demand-driven economy. Guarded on obs.AutosizerRunning
-// so a restart post-gate re-observes the autosizer running and never re-launches.
+// HandoffLauncher performs the EXPANSION hand-off: it launches the standing fleet-growth coordinator,
+// turning the fleet over to the mature demand-driven economy. Guarded on obs.GrowthRunning so a restart
+// post-gate re-observes growth running and never re-launches.
 type HandoffLauncher interface {
-	LaunchAutosizer(ctx context.Context, playerID int, agentSymbol string) error
 	LaunchStandingCoordinators(ctx context.Context, playerID int, agentSymbol string) error
 	// LaunchContractScaler launches the standing dedicated contract auto-scaler during the cold-start
 	// scaling window (unconditional in the cold-start window). Idempotent (skips when one is
@@ -365,7 +363,7 @@ type HandoffLauncher interface {
 }
 
 // RunBootstrapCoordinatorCommand launches the standing bootstrap coordinator for a player.
-// Like the fleet-autosizer / siting coordinators it runs an infinite reconcile loop inside a single
+// Like the fleet-growth / siting coordinators it runs an infinite reconcile loop inside a single
 // Handle() call; the container wraps it. The cold-start shape is fixed in code, so the launch config
 // carries only the boot-gate and the cadence; a zero cadence falls back to the documented default.
 type RunBootstrapCoordinatorCommand struct {

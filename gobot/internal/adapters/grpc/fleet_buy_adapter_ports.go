@@ -4,24 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 
-	"github.com/andrescamacho/spacetraders-go/internal/adapters/api"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	fleetCmd "github.com/andrescamacho/spacetraders-go/internal/application/fleet/commands"
-	"github.com/andrescamacho/spacetraders-go/internal/application/health"
 	shipyardCmd "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/commands"
-	tradingQueries "github.com/andrescamacho/spacetraders-go/internal/application/trading/queries"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/apibudget"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/hullbuy"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
 )
 
 // agentReader is the narrow slice of *api.SpaceTradersClient the money guards need (treasury).
@@ -30,99 +24,7 @@ type agentReader interface {
 	GetAgent(ctx context.Context, token string) (*player.AgentData, error)
 }
 
-// laneReachability is the profitable-lane census's slice of *gategraph.Service: stored-adjacency
-// gate-hop distances, no fetch-through.
-type laneReachability interface {
-	StoredHopDistances(ctx context.Context, fromSystem string, targets []string, maxJumps int) (map[string]int, error)
-}
-
-// NewFleetAutosizerCoordinatorHandler assembles the autosizer handler (sp-1txd M6), wiring every
-// concrete port to the daemon's live collaborators and registering the light + heavy demand providers.
-func NewFleetAutosizerCoordinatorHandler(
-	server *DaemonServer,
-	apiClient *api.SpaceTradersClient,
-	ledgerTreasury *persistence.LedgerTreasury,
-	shipRepo navigation.ShipRepository,
-	med common.Mediator,
-	waypointRepo *persistence.GormWaypointRepository,
-	eventStore captain.EventStore,
-	marketRepo market.MarketRepository,
-	gateGraph laneReachability,
-	scannedYards scannedYardRanker,
-	heavyYards heavyYardInventory,
-	rankerAgeCaps trading.RankerAgeCaps,
-) *fleetCmd.RunFleetAutosizerCoordinatorHandler {
-	h := fleetCmd.NewRunFleetAutosizerCoordinatorHandler(nil)
-
-	// Demand providers.
-	h.AddDemandProvider(fleetCmd.NewLightDemandProvider(&autosizerLightSources{
-		shipRepo: shipRepo, server: server,
-	}))
-	// HEAVIES ARE NOW LIVE: the unserved-lane signal reads the profitable-lane surface off the
-	// persisted market cache (read-only, same pure domain lane primitives the trade circuit uses),
-	// bounded by the gate graph to lanes a hull can actually reach. Every read fails closed, so the
-	// guard stack still gates each heavy buy; the seam only makes the demand READABLE.
-	// The census runs the caller's resolved freshness table, not the fitted defaults: a census that
-	// keeps rows the trade ranker drops counts lanes nothing will fly and demands a heavy for each.
-	profitableLaneCensus := tradingQueries.NewProfitableLaneReader(marketRepo, gateGraph)
-	profitableLaneCensus.SetRankerAgeCaps(rankerAgeCaps)
-	h.AddDemandProvider(fleetCmd.NewHeavyDemandProvider(&autosizerHeavySources{
-		shipRepo: shipRepo,
-		unserved: tradingQueries.NewUnservedLaneReader(shipRepo, profitableLaneCensus),
-	}))
-
-	// Buy-path readers + writers.
-	h.SetTreasuryReader(&autosizerTreasuryReader{api: apiClient, ledger: ledgerTreasury})
-	// The tracker is RESOLVED PER READ, not captured here (sp-a75fz). Passing
-	// metrics.GetGlobalAPIBudgetTracker itself — the function, uncalled — is what makes the
-	// wiring order stop mattering; see autosizerAPIUtilReader.
-	h.SetAPIUtilizationReader(&autosizerAPIUtilReader{resolve: globalAPIBudgetReporter})
-	// The concrete waypoint repo is assigned only when non-nil: a typed-nil
-	// pointer inside the interface field would defeat the reader's nil guard
-	// (fail-closed on an unwired waypoint surface) with a runtime panic instead.
-	yardPriceReader := &autosizerYardPriceReader{med: med, shipRepo: shipRepo, scannedYards: scannedYards}
-	if waypointRepo != nil {
-		yardPriceReader.waypointRepo = waypointRepo
-	}
-	h.SetYardPriceReader(yardPriceReader)
-
-	// The heavy-hull census and the cheapest-heavy-price read: together they derive the heavy
-	// reservation each tick and feed the heavy_cap guard. BOTH fail closed when unwired, so an
-	// unwired census STOPS heavy buying — hence the loud WARN below rather than a silent skip.
-	if counter, ok := shipRepo.(heavyHullCounter); ok {
-		h.SetHeavyCensusReader(&autosizerHeavyCensus{counter: counter})
-	} else {
-		log.Printf("WARNING: fleet autosizer heavy census UNWIRED — the ship repository does not implement CountHeavyHulls, so the heavy_cap guard fails closed and NO heavy will be bought")
-	}
-	if heavyYards != nil {
-		h.SetHeavyYardReader(&autosizerHeavyYardReader{yards: heavyYards})
-	} else {
-		log.Printf("WARNING: fleet autosizer heavy-yard reader UNWIRED — the heavy reservation will always be 0, so expansion spending is never held back for a heavy")
-	}
-	// No heavy-yard pricing errand here: the errand hangs off the fleet's heavy BUYER, and the
-	// growth coordinator is it. Two drivers would each read the same in-flight bound and each
-	// conclude no errand was under way, which is how a bound of one becomes a convoy.
-
-	// heavy_cap is the autosizer's ONE live-tunable knob (Pattern-C hot reload).
-	h.SetHeavyCapReader(NewContainerConfigReader(server.containerRepo))
-	h.SetPurchaser(&autosizerPurchaser{med: med, shipRepo: shipRepo})
-	h.SetPurchaseNotifier(&autosizerNotifier{store: eventStore})
-	// The metrics sink is wrapped in the blocked-guard tap: it forwards every recording
-	// unchanged AND lets the reconcile loop name the FIRST FAILING GUARD in the tick's stall
-	// verdict. The guard is read off the seam sizeClass already publishes it on, so nothing is
-	// re-evaluated and no port is read twice.
-	h.SetMetricsSink(fleetCmd.NewBlockedGuardTap(&autosizerMetricsSink{}))
-	// Stall escalation: a class BLOCKED on the SAME guard for health.StallEscalationTicks
-	// consecutive ticks raises a coordinator.stalled captain event and a Prometheus escalation
-	// counter rather than an INFO log line, which nothing watches. Write-only by type — the
-	// streak it accumulates is unreadable by any sizing decision (RULINGS #2).
-	h.SetStallObserver(health.NewStallEscalator(metrics.NewStallMetricsPort(), eventStore))
-	// sp-y2ptq: the contract_delivery graduation gate was removed with the autosizer's contract class
-	// (the dedicated scaler owns contract capacity + its own graduation handling).
-	return h
-}
-
-// autosizerTreasuryReader answers the autosizer's (and the contract scaler's) treasury
+// fleetTreasuryReader answers the autosizer's (and the contract scaler's) treasury
 // cushion guard. It prefers the LEDGER (sp-muq66) — the same balance, with no API call —
 // and only falls back to a live read when the ledger is too old to trust; the fallback
 // lives inside the ledger reader, so this type states the guard's contract and nothing
@@ -131,12 +33,12 @@ func NewFleetAutosizerCoordinatorHandler(
 //
 // Unreadable is reported as readable=false, never as a zero balance: a guard that cannot
 // read treasury must refuse to buy, not size a purchase against 0 (RULINGS #4).
-type autosizerTreasuryReader struct {
+type fleetTreasuryReader struct {
 	api    agentReader
 	ledger *persistence.LedgerTreasury
 }
 
-func (r *autosizerTreasuryReader) Treasury(ctx context.Context, playerID int) (int64, bool, error) {
+func (r *fleetTreasuryReader) Treasury(ctx context.Context, playerID int) (int64, bool, error) {
 	if r.ledger != nil {
 		credits, err := r.ledger.Credits(ctx, playerID)
 		if err != nil {
@@ -162,7 +64,7 @@ type apiBudgetReporter interface {
 	Report() apibudget.DualReport
 }
 
-// autosizerAPIUtilReader surfaces the fleet-wide API request-utilization percent to the autosizer's
+// fleetAPIUtilReader surfaces the fleet-wide API request-utilization percent to the autosizer's
 // api_util guard. It reads the rolling-5m window of the shared budget tracker — the SAME
 // throughput/ceiling basis as the Prometheus ApproachCeiling alert (sum(rate(api_requests_total[5m]))
 // / RateLimitPerSecond) — so the guard gates concurrency GROWTH against genuine API saturation.
@@ -195,7 +97,7 @@ type apiBudgetReporter interface {
 // nothing, or an unconfigured/zero ceiling. A guard that cannot read its bound never permits growth
 // (RULINGS #4). In the daemon the tracker is wired unconditionally at startup, so the normal case is
 // readable and blocking only occurs on real saturation or a genuinely-absent metrics subsystem.
-type autosizerAPIUtilReader struct{ resolve func() apiBudgetReporter }
+type fleetAPIUtilReader struct{ resolve func() apiBudgetReporter }
 
 // globalAPIBudgetReporter adapts the package-level accessor to the reader's narrow interface.
 //
@@ -212,7 +114,7 @@ func globalAPIBudgetReporter() apiBudgetReporter {
 	return tracker
 }
 
-func (r *autosizerAPIUtilReader) UtilizationPct(ctx context.Context) (float64, bool, error) {
+func (r *fleetAPIUtilReader) UtilizationPct(ctx context.Context) (float64, bool, error) {
 	if r == nil || r.resolve == nil {
 		return 0, false, nil // no utilization surface wired → unreadable → guard fails CLOSED
 	}
@@ -230,15 +132,15 @@ func (r *autosizerAPIUtilReader) UtilizationPct(ctx context.Context) (float64, b
 	return rolling.UtilizationPct, true, nil
 }
 
-// autosizerPurchaser buys one hull through the money-integrity batch path, then dedicates it.
+// fleetHullPurchaser buys one hull through the money-integrity batch path, then dedicates it.
 // It is driven by BOTH the autosizer and the dedicated contract scaler, so it speaks the neutral
 // hullbuy vocabulary rather than either coordinator's.
-type autosizerPurchaser struct {
+type fleetHullPurchaser struct {
 	med      common.Mediator
 	shipRepo navigation.ShipRepository
 }
 
-func (p *autosizerPurchaser) BuyAndDedicate(ctx context.Context, order hullbuy.BuyOrder) (hullbuy.BuyResult, error) {
+func (p *fleetHullPurchaser) BuyAndDedicate(ctx context.Context, order hullbuy.BuyOrder) (hullbuy.BuyResult, error) {
 	pid, err := shared.NewPlayerID(order.PlayerID)
 	if err != nil {
 		return hullbuy.BuyResult{}, err
@@ -300,10 +202,10 @@ func (p *autosizerPurchaser) BuyAndDedicate(ctx context.Context, order hullbuy.B
 	return hullbuy.BuyResult{ShipSymbol: bought.ShipSymbol(), Price: int64(batch.TotalCost), Dedicated: dedicated}, nil
 }
 
-// autosizerNotifier records a purchase as a captain event — a buy is real news.
-type autosizerNotifier struct{ store captain.EventStore }
+// fleetPurchaseNotifier records a purchase as a captain event — a buy is real news.
+type fleetPurchaseNotifier struct{ store captain.EventStore }
 
-func (n *autosizerNotifier) NotifyPurchase(ctx context.Context, playerID int, class fleetCmd.HullClass, shipType string, price int64, note string) error {
+func (n *fleetPurchaseNotifier) NotifyPurchase(ctx context.Context, playerID int, class fleetCmd.HullClass, shipType string, price int64, note string) error {
 	if n.store == nil {
 		return nil
 	}
@@ -316,35 +218,4 @@ func (n *autosizerNotifier) NotifyPurchase(ctx context.Context, playerID int, cl
 		PlayerID: playerID,
 		Payload:  string(payload),
 	})
-}
-
-// autosizerMetricsSink adapts the fleet MetricsSink to the global collector's Record funcs.
-type autosizerMetricsSink struct{}
-
-func (m *autosizerMetricsSink) RecordDemand(class fleetCmd.HullClass, demand, current int) {
-	metrics.RecordAutosizerDemand(string(class), demand, current)
-}
-
-func (m *autosizerMetricsSink) RecordPurchase(class fleetCmd.HullClass) {
-	metrics.RecordAutosizerPurchase(string(class))
-}
-
-func (m *autosizerMetricsSink) RecordBlocked(class fleetCmd.HullClass, guard fleetCmd.GuardName) {
-	metrics.RecordAutosizerBlocked(string(class), string(guard))
-}
-
-func (m *autosizerMetricsSink) RecordZeroEffectAlarm() {
-	metrics.RecordAutosizerZeroEffectAlarm()
-}
-
-func (m *autosizerMetricsSink) RecordHeavyReserve(playerID string, reserve, target int64, owned, capacity int) {
-	metrics.RecordAutosizerHeavyReserve(playerID, reserve, target, owned, capacity)
-}
-
-func (m *autosizerMetricsSink) ObserveHeavyPricePremium(playerID string, paid, cheapestKnown int64) {
-	metrics.ObserveAutosizerHeavyPricePremium(playerID, paid, cheapestKnown)
-}
-
-func (m *autosizerMetricsSink) RecordSizingEnabled(playerID string, enabled bool) {
-	metrics.RecordAutosizerSizingEnabled(playerID, enabled)
 }

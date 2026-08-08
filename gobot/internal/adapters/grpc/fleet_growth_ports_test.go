@@ -69,7 +69,7 @@ func TestGrowthHighWaterPort_IsTheLedgersPeakOverWindowReader(t *testing.T) {
 // different — "how much may I withhold right now" versus "is this ask reachable by this fleet" —
 // and the type system is what keeps the answer to one from being handed to the other.
 func TestGrowthHighWaterPort_TheLiveTreasuryReaderDoesNotSatisfyIt(t *testing.T) {
-	var live interface{} = &autosizerTreasuryReader{}
+	var live interface{} = &fleetTreasuryReader{}
 	if _, ok := live.(fleetCmd.TreasuryHighWaterReader); ok {
 		t.Fatal("the LIVE treasury reader satisfies the demonstrated-capacity port — a live balance could be wired into the wave")
 	}
@@ -127,20 +127,20 @@ func TestGrowthWiring_PricingErrandFollowsTheAvailabilityOnlyRankCapability(t *t
 // exactly the class of permanently-silent stall this pins against.
 //
 // The composition cannot omit the roster because it never passes one: it passes the server, and
-// newAutosizerPricingErrand takes the roster off it. This pins that constructor's contract in both
+// newHeavyYardPricingErrand takes the roster off it. This pins that constructor's contract in both
 // polarities, which is what makes the omission unexpressible rather than merely unlikely.
 func TestGrowthWiring_PricingErrandReadsTheScoutPostRoster(t *testing.T) {
 	db, err := database.NewTestConnection()
 	require.NoError(t, err)
 
-	live := newAutosizerPricingErrand(&DaemonServer{db: db}, nil, &fakeCensusShipRepo{})
+	live := newHeavyYardPricingErrand(&DaemonServer{db: db}, nil, &fakeCensusShipRepo{})
 	require.NotNil(t, live.posts,
 		"a daemon with a connection must yield an errand that can read the scout posts — without it every tick refuses, silently and forever")
 
 	// PROOF THE ASSERTION HAS TEETH: no connection leaves the roster nil, and the resulting errand
 	// is still a usable port — the refusal happens at read time, not at boot.
 	for _, server := range []*DaemonServer{{}, nil} {
-		dry := newAutosizerPricingErrand(server, nil, &fakeCensusShipRepo{})
+		dry := newHeavyYardPricingErrand(server, nil, &fakeCensusShipRepo{})
 		require.NotNil(t, dry, "a connectionless daemon must still yield a port, not a nil one")
 		require.Nil(t, dry.posts)
 		_, rerr := dry.ErrandHulls(context.Background(), 1)
@@ -150,15 +150,4 @@ func TestGrowthWiring_PricingErrandReadsTheScoutPostRoster(t *testing.T) {
 	// And the real composition still installs the port, so the two halves meet.
 	installed := buildGrowthHandlerOn(&DaemonServer{db: db}, &fakeCensusShipRepo{}, &fakeFullYardFinder{}, nil)
 	require.False(t, growthPort(t, installed, "heavyErrand").IsNil())
-}
-
-// THE ERRAND HAS EXACTLY ONE DRIVER, and the composition root is where a second one would appear.
-// The port fields are unexported, so a handler that was never given them cannot dispatch at all —
-// which is what makes the bound of one a property of the wiring rather than of the tick loops.
-func TestGrowthWiring_TheAutosizerIsNoLongerAnErrandDriver(t *testing.T) {
-	autosizer := buildAutosizerHandler(&fakeCensusShipRepo{}, &fakeFullYardFinder{}, nil)
-	for _, port := range []string{"heavyYardCatalog", "heavyErrand"} {
-		require.False(t, reflect.ValueOf(autosizer).Elem().FieldByName(port).IsValid(),
-			"the autosizer must hold no %q port: two drivers each read the same in-flight bound and each conclude nothing is under way", port)
-	}
 }

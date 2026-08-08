@@ -3,7 +3,6 @@ package commands
 import (
 	"context"
 	"fmt"
-	"sync"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/health"
 )
@@ -22,8 +21,7 @@ import (
 // identifiers, never formatted strings: a renamed one silently starts a fresh streak and closes
 // out whatever the old name was escalating.
 const (
-	autosizerStallCoordinator = "fleet_autosizer"
-	growthStallCoordinator    = "fleet_growth"
+	growthStallCoordinator = "fleet_growth"
 )
 
 const (
@@ -83,133 +81,6 @@ func observeClassStallOn(ctx context.Context, stall health.StallObserver, coordi
 	}, outcome)
 }
 
-func (h *RunFleetAutosizerCoordinatorHandler) observeClassStall(ctx context.Context, cmd *RunFleetAutosizerCoordinatorCommand, class HullClass, outcome health.TickOutcome) {
-	observeClassStallOn(ctx, h.stall, autosizerStallCoordinator, cmd.ContainerID, cmd.PlayerID, class, outcome)
-}
-
 func (h *RunFleetGrowthCoordinatorHandler) observeClassStall(ctx context.Context, containerID string, playerID int, class HullClass, outcome health.TickOutcome) {
 	observeClassStallOn(ctx, h.stall, growthStallCoordinator, containerID, playerID, class, outcome)
-}
-
-// --- the first-failing-guard tap ---
-
-// blockedGuardTap is a pass-through MetricsSink decorator that also captures the FIRST FAILING
-// GUARD of each class's decision, so the reconcile loop can name it in the tick's stall verdict.
-//
-// WHY A TAP AND NOT A RETURN VALUE. The guard verdict is produced inside the coordinator's ACT
-// step (fleet_autosizer_act.go), which is owned by a concurrent lane and must not be edited here.
-// sizeClass already PUBLISHES the blocking guard on exactly one seam — MetricsSink.RecordBlocked
-// — so this taps that existing channel rather than opening a new one. Nothing is re-evaluated and
-// no port is read twice: the guard reported is the very one the decision log printed.
-//
-// IT CHANGES NO VERDICT AND NO SPEND. Every method forwards to the inner sink unchanged, and the
-// captured guard is only ever read by the observability path (RULINGS #4 untouched).
-//
-// ATTRIBUTION IS FAIL-SAFE. The autosizer handler is a registered singleton serving every
-// player's ticks, so two containers can be in the act path at once. Each class slot records the
-// container that most recently claimed it; take() returns a guard ONLY to that claimant, so an
-// interleaved sibling degrades the reason to the coarse fallback rather than pinning one
-// container's refusal on another's streak.
-type blockedGuardTap struct {
-	inner MetricsSink
-
-	mu    sync.Mutex
-	slots map[HullClass]tapSlot
-}
-
-type tapSlot struct {
-	owner  string
-	guard  GuardName
-	sealed bool // a verdict has been recorded for this claim
-}
-
-// NewBlockedGuardTap wraps a MetricsSink so the coordinator can attribute blocked decisions. The
-// inner sink may be nil (metrics disabled): every forward is nil-safe.
-func NewBlockedGuardTap(inner MetricsSink) MetricsSink {
-	return &blockedGuardTap{inner: inner, slots: make(map[HullClass]tapSlot)}
-}
-
-// expect claims a class's slot for one container's tick, discarding anything left in it.
-func (t *blockedGuardTap) expect(owner string, class HullClass) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.slots[class] = tapSlot{owner: owner}
-}
-
-// take consumes the guard recorded since the claimant's expect, if the claim still stands.
-func (t *blockedGuardTap) take(owner string, class HullClass) (GuardName, bool) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	slot, ok := t.slots[class]
-	if !ok || slot.owner != owner || !slot.sealed {
-		return "", false
-	}
-	delete(t.slots, class)
-	return slot.guard, true
-}
-
-func (t *blockedGuardTap) RecordDemand(class HullClass, demand, current int) {
-	if t.inner != nil {
-		t.inner.RecordDemand(class, demand, current)
-	}
-}
-
-func (t *blockedGuardTap) RecordPurchase(class HullClass) {
-	if t.inner != nil {
-		t.inner.RecordPurchase(class)
-	}
-}
-
-func (t *blockedGuardTap) RecordBlocked(class HullClass, guard GuardName) {
-	t.mu.Lock()
-	if slot, ok := t.slots[class]; ok && !slot.sealed {
-		slot.guard, slot.sealed = guard, true
-		t.slots[class] = slot
-	}
-	t.mu.Unlock()
-
-	if t.inner != nil {
-		t.inner.RecordBlocked(class, guard)
-	}
-}
-
-func (t *blockedGuardTap) RecordZeroEffectAlarm() {
-	if t.inner != nil {
-		t.inner.RecordZeroEffectAlarm()
-	}
-}
-
-func (t *blockedGuardTap) RecordHeavyReserve(playerID string, reserve, target int64, owned, capacity int) {
-	if t.inner != nil {
-		t.inner.RecordHeavyReserve(playerID, reserve, target, owned, capacity)
-	}
-}
-
-func (t *blockedGuardTap) RecordSizingEnabled(playerID string, enabled bool) {
-	if t.inner != nil {
-		t.inner.RecordSizingEnabled(playerID, enabled)
-	}
-}
-
-func (t *blockedGuardTap) ObserveHeavyPricePremium(playerID string, paid, cheapestKnown int64) {
-	if t.inner != nil {
-		t.inner.ObserveHeavyPricePremium(playerID, paid, cheapestKnown)
-	}
-}
-
-// blockedGuardFor claims and then reads this class's slot around one sizeClass call. Returns
-// ok=false whenever no tap is installed or the claim did not survive, which the verdict maps to
-// the coarse fallback reason.
-func (h *RunFleetAutosizerCoordinatorHandler) expectBlockedGuard(cmd *RunFleetAutosizerCoordinatorCommand, class HullClass) {
-	if tap, ok := h.metrics.(*blockedGuardTap); ok {
-		tap.expect(cmd.ContainerID, class)
-	}
-}
-
-func (h *RunFleetAutosizerCoordinatorHandler) takeBlockedGuard(cmd *RunFleetAutosizerCoordinatorCommand, class HullClass) (GuardName, bool) {
-	tap, ok := h.metrics.(*blockedGuardTap)
-	if !ok {
-		return "", false
-	}
-	return tap.take(cmd.ContainerID, class)
 }

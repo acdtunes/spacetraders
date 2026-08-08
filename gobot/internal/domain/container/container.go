@@ -13,7 +13,7 @@ import (
 // and callers must be able to tell them apart, because the two demand opposite responses: a stop
 // that failed against a LIVE container leaves it running and still holding its resources, so the
 // caller must back off; a stop refused because the container is already terminal means the work is
-// done and the resources are owed back — backing off there strands them (sp-vz8hj).
+// done and the resources are owed back — backing off there strands them.
 //
 // Wrapped rather than returned bare so the message keeps its "cannot stop container in %s state"
 // prefix: an existing caller matches on that substring, and a typed error that silently changed
@@ -96,9 +96,9 @@ const (
 	// it is NOT a CoordinatorOwnsIterations type.
 	ContainerTypeShipyardBackfillCoordinator ContainerType = "SHIPYARD_BACKFILL_COORDINATOR"
 	ContainerTypePurchase                    ContainerType = "PURCHASE"
-	// ContainerTypeFleetAutosizer is the standing fleet capacity autosizer: a per-player coordinator
-	// that loops forever inside one Handle() sizing the LIGHT hull pool to demand behind the full
-	// money-guard stack. Like the trade-fleet/siting coordinators it is NOT a CoordinatorOwnsIterations type.
+	// ContainerTypeFleetAutosizer is RETIRED: growth owns trade capacity, the scaler owns contract. The
+	// constant is KEPT because rows outlive the code — retiredCommandTypes names it so a persisted row
+	// is skipped rather than rebuilt. Nothing can launch it: no builder exists and the RPC refuses.
 	ContainerTypeFleetAutosizer ContainerType = "FLEET_AUTOSIZER_COORDINATOR"
 	// ContainerTypeFleetGrowth is the standing fleet-growth coordinator and the fleet's ONLY heavy
 	// buyer: an infinite reconcile loop in one Handle(), NOT a CoordinatorOwnsIterations type.
@@ -161,12 +161,9 @@ const (
 	// not connect. Like the other one-shot ship ops it is a single-iteration,
 	// CoordinatorOwnsIterations type.
 	ContainerTypeWarp ContainerType = "WARP"
-	// ContainerTypeLongHaulArbCoordinator is the standing long-haul arb fleet coordinator
-	// (sp-mepj): a per-player coordinator that loops forever inside one Handle() launching a
-	// per-hull long-haul worker on every idle long-haul-tagged hull and running the SHARED
-	// sp-m3122 watchdog. Like the trade-fleet/autosizer coordinators it is NOT a
-	// CoordinatorOwnsIterations type; it survives restarts via the persisted-container recovery
-	// idiom.
+	// ContainerTypeLongHaulArbCoordinator is the standing long-haul arb fleet coordinator: it loops
+	// forever inside one Handle(), launching a per-hull worker on every idle long-haul-tagged hull and
+	// running the shared watchdog. NOT a CoordinatorOwnsIterations type.
 	ContainerTypeLongHaulArbCoordinator ContainerType = "LONGHAUL_ARB_COORDINATOR"
 	// ContainerTypeLongHaulArb is the per-hull long-haul WORKER the coordinator spawns: it runs
 	// continuous discover->buy->multi-jump->sell->backhaul episodes on ONE long-haul hull,

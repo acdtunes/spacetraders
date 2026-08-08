@@ -54,7 +54,7 @@ func ledgerWithRow(t *testing.T, balanceAfter int, age time.Duration, api *count
 func TestAutosizerTreasuryReader_PrefersTheLedger(t *testing.T) {
 	api := &countingAgentReader{credits: 999_999_999}
 	ledger, pid := ledgerWithRow(t, 12_345_678, 5*time.Second, api)
-	r := &autosizerTreasuryReader{api: api, ledger: ledger}
+	r := &fleetTreasuryReader{api: api, ledger: ledger}
 
 	credits, readable, err := r.Treasury(auth.WithPlayerToken(context.Background(), "TOK"), pid)
 
@@ -69,7 +69,7 @@ func TestAutosizerTreasuryReader_PrefersTheLedger(t *testing.T) {
 func TestAutosizerTreasuryReader_StaleLedgerFallsBackToLive(t *testing.T) {
 	api := &countingAgentReader{credits: 3_000_000}
 	ledger, pid := ledgerWithRow(t, 1, time.Hour, api)
-	r := &autosizerTreasuryReader{api: api, ledger: ledger}
+	r := &fleetTreasuryReader{api: api, ledger: ledger}
 
 	credits, readable, err := r.Treasury(auth.WithPlayerToken(context.Background(), "TOK"), pid)
 
@@ -85,7 +85,7 @@ func TestAutosizerTreasuryReader_StaleLedgerFallsBackToLive(t *testing.T) {
 func TestAutosizerTreasuryReader_TotalFailureIsUnreadableNotZero(t *testing.T) {
 	api := &countingAgentReader{err: errors.New("429")}
 	ledger, pid := ledgerWithRow(t, 9_000_000, time.Hour, api)
-	r := &autosizerTreasuryReader{api: api, ledger: ledger}
+	r := &fleetTreasuryReader{api: api, ledger: ledger}
 
 	credits, readable, err := r.Treasury(auth.WithPlayerToken(context.Background(), "TOK"), pid)
 
@@ -98,7 +98,7 @@ func TestAutosizerTreasuryReader_TotalFailureIsUnreadableNotZero(t *testing.T) {
 // every test that constructs this type bare still exercises.
 func TestAutosizerTreasuryReader_NoLedgerKeepsTheDirectLiveRead(t *testing.T) {
 	api := &countingAgentReader{credits: 777}
-	r := &autosizerTreasuryReader{api: api}
+	r := &fleetTreasuryReader{api: api}
 
 	credits, readable, err := r.Treasury(auth.WithPlayerToken(context.Background(), "TOK"), 1)
 

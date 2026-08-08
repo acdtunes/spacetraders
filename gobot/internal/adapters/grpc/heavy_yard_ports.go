@@ -25,15 +25,15 @@ type heavyHullCounter interface {
 	CountHeavyHulls(ctx context.Context, playerID shared.PlayerID) (int, error)
 }
 
-// autosizerHeavyCensus adapts the ship repository's tag-INDEPENDENT owned-heavy count. This is
+// fleetHeavyCensus adapts the ship repository's tag-INDEPENDENT owned-heavy count. This is
 // deliberately NOT autosizerHeavySources.HeavyCount, which counts DedicatedFleet=="trade" and
 // therefore measures the trade POOL: a heavy tagged elsewhere would be invisible to it, leaving
 // the reservation open and authorising a re-buy of a hull we already own.
-type autosizerHeavyCensus struct {
+type fleetHeavyCensus struct {
 	counter heavyHullCounter
 }
 
-func (c *autosizerHeavyCensus) HeaviesOwned(ctx context.Context, playerID int) (int, error) {
+func (c *fleetHeavyCensus) HeaviesOwned(ctx context.Context, playerID int) (int, error) {
 	pid, err := shared.NewPlayerID(playerID)
 	if err != nil {
 		return 0, err
@@ -48,14 +48,14 @@ type heavyYardInventory interface {
 	HeavyTarget(ctx context.Context, playerID int) (shipyardQueries.HeavyTarget, error)
 }
 
-// autosizerHeavyYardReader adapts the shared heavy-target query to the coordinator's port. It
+// fleetHeavyYardReader adapts the shared heavy-target query to the coordinator's port. It
 // TRANSPORTS the answer and re-derives nothing: a second opinion on which yard we are saving
 // toward is precisely how a reservation drifts.
-type autosizerHeavyYardReader struct {
+type fleetHeavyYardReader struct {
 	yards heavyYardInventory
 }
 
-func (r *autosizerHeavyYardReader) HeavyTarget(ctx context.Context, playerID int) (fleetCmd.HeavyTargetYard, error) {
+func (r *fleetHeavyYardReader) HeavyTarget(ctx context.Context, playerID int) (fleetCmd.HeavyTargetYard, error) {
 	target, err := r.yards.HeavyTarget(ctx, playerID)
 	if err != nil {
 		return fleetCmd.HeavyTargetYard{}, err
@@ -103,17 +103,17 @@ func heavyYardReachable(hops int) bool {
 	return hops >= 0 && hops <= heavyYardReachBoundHops
 }
 
-// autosizerHeavyYardCatalog reports every KNOWN heavy yard — priced or not — with its gate reach
+// fleetHeavyYardCatalog reports every KNOWN heavy yard — priced or not — with its gate reach
 // from the systems the fleet currently stands in.
 //
 // Reachability is measured from WHERE OUR HULLS ARE, never from where a hull is parked on station:
 // the errand has to fly, so a yard outside the jump bound is not a candidate at any price.
-type autosizerHeavyYardCatalog struct {
+type fleetHeavyYardCatalog struct {
 	ranker   heavyYardRanker
 	shipRepo navigation.ShipRepository
 }
 
-func (c *autosizerHeavyYardCatalog) KnownHeavyYards(ctx context.Context, playerID int) ([]fleetCmd.KnownHeavyYard, error) {
+func (c *fleetHeavyYardCatalog) KnownHeavyYards(ctx context.Context, playerID int) ([]fleetCmd.KnownHeavyYard, error) {
 	if c.ranker == nil || c.shipRepo == nil {
 		return nil, nil
 	}
@@ -151,7 +151,7 @@ type scoutPostRoster interface {
 	ListActive(ctx context.Context, playerID int) ([]*domainScouting.ScoutPost, error)
 }
 
-// autosizerPricingErrand reads the fleet, proves reach, and either flies a hull or reads a yard.
+// heavyYardPricingErrand reads the fleet, proves reach, and either flies a hull or reads a yard.
 //
 // ErrandHulls deliberately reports EVERY hull with its raw facts and filters nothing: the
 // eligibility rule — a spare parked probe, unclaimed by any scout post, idle, not already flying —
@@ -161,7 +161,7 @@ type scoutPostRoster interface {
 // The scout-post roster is read HERE rather than judged here for the same reason: "a live post
 // names this hull" is a durable fact of the scout_posts table, and the refusal it earns is the
 // policy's to make.
-type autosizerPricingErrand struct {
+type heavyYardPricingErrand struct {
 	med      common.Mediator
 	shipRepo navigation.ShipRepository
 	posts    scoutPostRoster
@@ -177,7 +177,7 @@ type storedHopDistancer interface {
 
 var _ storedHopDistancer = (*gategraph.Service)(nil)
 
-// newAutosizerPricingErrand builds the errand with its scout-post roster taken off the daemon's own
+// newHeavyYardPricingErrand builds the errand with its scout-post roster taken off the daemon's own
 // connection, the way bootstrap_ports builds its era repository.
 //
 // IT TAKES THE SERVER RATHER THAN THE ROSTER SO THE WIRING CANNOT FORGET THE ROSTER. Without it the
@@ -190,8 +190,8 @@ var _ storedHopDistancer = (*gategraph.Service)(nil)
 // the port itself stays wired so the boot-time wiring probe still reports the errand as present.
 // The gate graph comes from the SAME field the depot launch guard reads, so every cross-system
 // reachability verdict has one source; a nil one leaves hops nil and the errand refuses at reach.
-func newAutosizerPricingErrand(server *DaemonServer, med common.Mediator, shipRepo navigation.ShipRepository) *autosizerPricingErrand {
-	e := &autosizerPricingErrand{med: med, shipRepo: shipRepo}
+func newHeavyYardPricingErrand(server *DaemonServer, med common.Mediator, shipRepo navigation.ShipRepository) *heavyYardPricingErrand {
+	e := &heavyYardPricingErrand{med: med, shipRepo: shipRepo}
 	if server == nil {
 		return e
 	}
@@ -206,7 +206,7 @@ func newAutosizerPricingErrand(server *DaemonServer, med common.Mediator, shipRe
 	return e
 }
 
-func (e *autosizerPricingErrand) ErrandHulls(ctx context.Context, playerID int) ([]fleetCmd.PricingErrandHull, error) {
+func (e *heavyYardPricingErrand) ErrandHulls(ctx context.Context, playerID int) ([]fleetCmd.PricingErrandHull, error) {
 	pid, err := shared.NewPlayerID(playerID)
 	if err != nil {
 		return nil, err
@@ -252,7 +252,7 @@ func (e *autosizerPricingErrand) ErrandHulls(ctx context.Context, playerID int) 
 //
 // Primary AND extra slots, via MannedHulls: a multi-hull post's second probe is no more available
 // than its first, and reading only the scalar column would leave every extra slot exposed.
-func (e *autosizerPricingErrand) mannedScoutPostHulls(ctx context.Context, playerID int) (map[string]bool, error) {
+func (e *heavyYardPricingErrand) mannedScoutPostHulls(ctx context.Context, playerID int) (map[string]bool, error) {
 	if e.posts == nil {
 		return nil, fmt.Errorf("the scout-post roster is unwired, so no hull can be shown free of a post")
 	}
@@ -282,7 +282,7 @@ func (e *autosizerPricingErrand) mannedScoutPostHulls(ctx context.Context, playe
 // a return leg written here would be a second placement authority for the same pool. What this
 // engine owes the sensing engine is restraint in the SELECTION (one hull at a time, never a hull a
 // live post names) — see pricingErrandCarrier — not a competing itinerary.
-func (e *autosizerPricingErrand) SendToYard(ctx context.Context, playerID int, shipSymbol, waypointSymbol string) error {
+func (e *heavyYardPricingErrand) SendToYard(ctx context.Context, playerID int, shipSymbol, waypointSymbol string) error {
 	pid, err := shared.NewPlayerID(playerID)
 	if err != nil {
 		return err
@@ -297,7 +297,7 @@ func (e *autosizerPricingErrand) SendToYard(ctx context.Context, playerID int, s
 // actually starts in, at the same heavyYardReachBoundHops the catalogue is capped at. The STORED
 // adjacency is a SUBSET of the fetch-through resolver's, so its errors run toward refusing a
 // flight; an unwired graph REFUSES, since an empty map reads as an absence of routes.
-func (e *autosizerPricingErrand) HopsFrom(ctx context.Context, fromSystem string, toSystems []string) (map[string]int, error) {
+func (e *heavyYardPricingErrand) HopsFrom(ctx context.Context, fromSystem string, toSystems []string) (map[string]int, error) {
 	if e.hops == nil {
 		return nil, fmt.Errorf("the stored gate graph is unwired, so no carrier's reach to a heavy yard can be proved")
 	}
@@ -310,7 +310,7 @@ func (e *autosizerPricingErrand) HopsFrom(ctx context.Context, fromSystem string
 // the token supplied by the mediator from PlayerID. THE CLASS IS LEFT AT ITS DISCRETIONARY ZERO
 // VALUE: no money guard consumes the result (every spend guard downstream still takes its own live
 // Earning read before a credit moves, RULINGS #4 untouched), and it keeps all three limiters on.
-func (e *autosizerPricingErrand) PriceYardInPlace(ctx context.Context, playerID int, waypointSymbol string) error {
+func (e *heavyYardPricingErrand) PriceYardInPlace(ctx context.Context, playerID int, waypointSymbol string) error {
 	pid, err := shared.NewPlayerID(playerID)
 	if err != nil {
 		return err

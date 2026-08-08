@@ -329,7 +329,7 @@ func RecordTransaction(playerID int, agentSymbol string, transactionType string,
 }
 
 // RecordTradeMetrics publishes a REALIZED trade's per-unit economics through the global financial
-// collector (sp-4i59r).
+// collector.
 //
 // The wrapper existed for every other collector in this package and not for this one, which is a
 // large part of why RecordTrade was never called: a caller in the application layer has no handle on

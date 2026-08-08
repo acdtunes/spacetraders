@@ -7,15 +7,14 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 )
 
-// The MONEY-GUARD HEART. A purchase fires ONLY when every guard passes; this is the
-// fail-CLOSED inversion of vdld's fail-open kill-switch — spending is irreversible, not-buying is
-// safe, so any UNREADABLE input (price, treasury, heavy census, API utilization) BLOCKS.
+// The MONEY-GUARD HEART. A purchase fires ONLY when every guard passes — spending is irreversible,
+// not-buying is safe, so any UNREADABLE input (price, treasury, heavy census, API utilization)
+// BLOCKS.
 //
 // EvaluateGuards is PURE: it judges a fully-populated PurchaseRequest and reports every guard's
-// verdict plus the full arithmetic (the park-line idiom — the captain reads one line and
-// knows exactly which knob to retune and to what value). The I/O that populates the request
-// (reading treasury / price / census) lives in the coordinator's ACT step; keeping the
-// judgement pure makes every guard's refusal unit-testable in isolation.
+// verdict plus the full arithmetic (the park-line idiom — the captain reads one line and knows which
+// knob to retune and to what value). The I/O that populates the request lives in the coordinator's
+// ACT step; keeping the judgement pure makes every refusal unit-testable in isolation.
 //
 // SIX GUARDS, ONE QUESTION EACH:
 //
@@ -27,23 +26,14 @@ import (
 //	api_util       — is there request budget to fly another hull?
 //
 // NO PAYBACK OPINION. The stack judges whether the fleet can AFFORD a hull and has room for it,
-// never whether it will EARN: demand shortfall — for heavies, the unserved profitable-lane count —
-// is the whole economic input, and it must be > 0.
+// never whether it will EARN: the demand shortfall — for heavies, the unserved profitable-lane count
+// — is the whole economic input, and it must be > 0.
 //
 // THERE IS NO PER-CLASS POOL CEILING. A bound that must be re-raised by hand every time the fleet
-// legitimately grows is not a bound, it is a recurring outage.
-//
-// WHAT BOUNDS EACH CLASS — a pool cap was never the thing keeping spending honest:
-//
-//	every class — demand (no shortfall, no buy), affordability, per_tick_cap (1/tick), price, api_util
-//	heavy       — heavy_cap, the fleet-wide heavy-HULL census (capital exposure), plus the
-//	              3-tick anti-thrash streak on its unserved-lane shortfall
-//	light       — the factory-chain rotation math ALONE (ceil(chains × rotation_slots) + vacancies).
-//	              There is no light pool cap left. This is a DELIBERATE consequence of the removal,
-//	              not an oversight: the operator was told, and the money guards below are what hold.
-//
-// A count-based ceiling only ever REFUSES what the money guards below already permitted, so
-// removing one can never authorise a spend they refuse (RULINGS #4).
+// legitimately grows is not a bound, it is a recurring outage. heavy_cap and the fleet-wide heavy
+// census are the only count-based bound left, and a count-based ceiling only ever REFUSES what the
+// money guards already permitted — so removing one can never authorise a spend they refuse
+// (RULINGS #4).
 
 // GuardName identifies a purchase guard for the decision log and the autosizer_blocked metric.
 type GuardName string
@@ -74,20 +64,15 @@ type PurchaseRequest struct {
 
 	// Demand. Shortfall is the unmet demand for the class (Demand − Current) and must be > 0.
 	//
-	// ShortfallStreak / ShortfallStreakMin are the ANTI-THRASH streak, folded into this guard so
-	// the whole go/no-go is one line. The heavy class must show its unserved-lane shortfall for
-	// StreakMin CONSECUTIVE ticks before a ~1.4M hull is bought, so a transient spike in the lane
-	// ranking cannot trigger a purchase. StreakMin is 0 for classes that do not use it, which makes
-	// the term a no-op.
+	// ShortfallStreak / ShortfallStreakMin are the ANTI-THRASH streak, folded in so the whole go/no-go
+	// is one line: the heavy class must show its unserved-lane shortfall for StreakMin CONSECUTIVE
+	// ticks before a large hull is bought, so a transient spike in the lane ranking cannot buy one.
+	// StreakMin is 0 for classes that do not use it, making the term a no-op.
 	//
-	// RULINGS #2 (re-derive each tick, hold no cross-tick state) is satisfied exactly as it was
-	// before this fold — the MECHANISM is unchanged, only where its verdict is reported. The
-	// counter is the coordinator's existing per-container edge-trigger bookkeeping
-	// (autosizerState.heavyShortfallStreak): not config, not a cached decision, but a count of
-	// CONSECUTIVE ticks, which by definition cannot be re-derived from one tick's store read. It is
-	// reset the moment the shortfall clears, and every other input on this request is still read
-	// fresh from the ports each pass. The guard stays PURE: it is HANDED the count, it never keeps
-	// one.
+	// RULINGS #2 is satisfied: the counter is the coordinator's per-container edge-trigger
+	// bookkeeping — a count of CONSECUTIVE ticks, which by definition cannot be re-derived from one
+	// tick's store read — reset the moment the shortfall clears. The guard stays PURE: it is HANDED
+	// the count, it never keeps one.
 	Shortfall          int
 	ShortfallStreak    int
 	ShortfallStreakMin int
@@ -277,16 +262,9 @@ func guardPerTickCap(req PurchaseRequest) GuardVerdict {
 // guardPrice answers the whole "are we overpaying?" question in ONE verdict: it merges the former
 // price_read and price_ceiling guards, which asked it twice.
 //
-// STRUCTURAL MERGE, NOT A LOOSENING. It is exactly the conjunction of the two originals:
-//   - price_read passed iff PriceReadable;
-//   - price_ceiling ALREADY returned false when !PriceReadable (so it never "passed" on a zero
-//     price), and otherwise required the absolute cap AND the premium-over-cheapest cap.
-//
-// So old = PriceReadable && absOK && premiumOK, which is precisely what this returns. Every price
-// the pair refused, this refuses.
-//
-// STILL FAILS CLOSED on an unreadable ask (RULINGS #4): an unpriceable hull is never bought, and
-// the verdict says so rather than reporting a vacuous 0 <= cap.
+// It is the conjunction PriceReadable && absOK && premiumOK, so it refuses every price the two
+// separate guards refused. FAILS CLOSED on an unreadable ask (RULINGS #4): an unpriceable hull is
+// never bought, and the verdict says so rather than reporting a vacuous 0 <= cap.
 //
 // The detail carries BOTH ceiling terms plus the readability, so the one bracketed term still holds
 // every number an operator would retune from (max_price_<class>, max_premium_over_cheapest_pct).
@@ -337,13 +315,11 @@ func guardAPIUtil(req PurchaseRequest) GuardVerdict {
 //	merged : TreasuryReadable && pctTerm && floorTerm
 //
 // FAIL-CLOSED on an unknown balance (RULINGS #4): an unreadable treasury refuses whatever the
-// percentage term is set to, INCLUDING when it is not applied — the floor term can no more judge an
-// unreadable balance than the percentage one can. Two separate tests pin the terms independently,
-// because one test cannot prove a conjunction kept both.
+// percentage term is set to, INCLUDING when it is not applied. Two separate tests pin the terms
+// independently, because one test cannot prove a conjunction kept both.
 //
-// The detail carries BOTH terms' arithmetic so the one bracketed term holds every number an operator
-// retunes from, and still distinguishes "own reserve waived because this IS the heavy buy" from
-// "reserve silently dropped".
+// The detail carries BOTH terms' arithmetic, and distinguishes "own reserve waived because this IS
+// the heavy buy" from "reserve silently dropped".
 func guardAffordability(req PurchaseRequest) GuardVerdict {
 	// Fail-closed on an unreadable treasury: a buy must never proceed on an unknown balance
 	// (RULINGS #4). Checked FIRST, exactly as the pair did — treasury_floor refused this case
@@ -364,7 +340,7 @@ func guardAffordability(req PurchaseRequest) GuardVerdict {
 	}
 
 	// TERM 2 — treasury net of the immutable reserve floor must still cover price + margin.
-	// The floor is the flat, immutable common.ImmutableReserveFloor (sp-05glh scrapped the prior
+	// The floor is the flat, immutable common.ImmutableReserveFloor (which replaced the prior
 	// proportional-of-treasury computation) — no config/tune seam.
 	const floor = common.ImmutableReserveFloor
 	// The heavy reservation raises this buy's effective floor — EXCEPT for the heavy purchase it

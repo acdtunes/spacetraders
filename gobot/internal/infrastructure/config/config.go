@@ -59,10 +59,9 @@ type Config struct {
 	// (the goods whitelist — a string the int-only tune registry cannot carry),
 	// injected live into the probe_sensing_coordinator container on every build.
 	Sensing SensingConfig `mapstructure:"sensing"`
-	// FleetAutosizer holds the fleet capacity autosizer's knobs (sp-1txd), injected live
-	// into the fleet_autosizer coordinator container on every build (creation + recovery),
-	// so a captain retunes the sizing/buying behaviour by editing config.yaml and restarting.
-	FleetAutosizer FleetAutosizerConfig `mapstructure:"fleet_autosizer"`
+	// A [fleet_autosizer] section left in an existing config.yaml is IGNORED on read — viper's
+	// non-strict unmarshal drops keys with no matching field — so a stale config.yaml still boots.
+	//
 	// Bootstrap holds the captain bootstrap coordinator's knobs (sp-3nbe), injected live into
 	// the bootstrap coordinator container on every build (creation + recovery), so a captain
 	// retunes the cold-start behaviour by editing config.yaml and restarting.

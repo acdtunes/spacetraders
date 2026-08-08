@@ -218,8 +218,10 @@ func (o *bootstrapObserver) readGatePhase(ctx context.Context, playerID int, obs
 	if running, rerr := containerTypeRunning(ctx, o.containerRepo, playerID, executorContainerTypes...); rerr == nil {
 		obs.ManufacturingRunning = running
 	}
-	if running, rerr := containerTypeRunning(ctx, o.containerRepo, playerID, container.ContainerTypeFleetAutosizer); rerr == nil {
-		obs.AutosizerRunning = running
+	// The hand-off latch watches the standing fleet-GROWTH coordinator — what the hand-off actually
+	// launches, and the fleet's only heavy buyer (sp-5pclx retired the autosizer this used to watch).
+	if running, rerr := containerTypeRunning(ctx, o.containerRepo, playerID, container.ContainerTypeFleetGrowth); rerr == nil {
+		obs.GrowthRunning = running
 	}
 	// min(scaler plan slots, the live contract_fleet_max_hulls ceiling). 0 when no scaler runs
 	// or the target is unread — fail-closed, so gateFunded never enters GATE on an unknown target.

@@ -164,7 +164,7 @@ func TestBootstrap_Expansion_Redirect_IsIdempotentAcrossReobservation(t *testing
 // the payoff of deriving from the observation instead of latching a done-flag on the first tick.
 func TestBootstrap_Expansion_MidDeliveryHullIsRedirectedOnceItGoesIdle(t *testing.T) {
 	busy := tradeReleaseObs(GateWorkerSnapshot{Symbol: "MFG-1", Idle: false})
-	h, rel := releasedToTrade(busy, &fakeHandoff{autoErr: errors.New("launcher down")}) // hold, so a second tick runs
+	h, rel := releasedToTrade(busy, &fakeHandoff{standErr: errors.New("launcher down")}) // hold, so a second tick runs
 
 	if _, err := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd()); err != nil {
 		t.Fatalf("tick 1: reconcileOnce: %v", err)
@@ -395,7 +395,7 @@ func (f *idempotentTradeHandoff) LaunchTradeFleetCoordinator(ctx context.Context
 // standing-coordinator launch beside it relies on.
 func TestBootstrap_Expansion_TradeCoordinatorEnsure_NeverDoubleLaunches(t *testing.T) {
 	obs := tradeReleaseObs(GateWorkerSnapshot{Symbol: "MFG-1", Idle: true})
-	ho := &idempotentTradeHandoff{fakeHandoff: fakeHandoff{autoErr: errors.New("autosizer down")}} // hold → many ticks
+	ho := &idempotentTradeHandoff{fakeHandoff: fakeHandoff{standErr: errors.New("growth launcher down")}} // hold → many ticks
 	h, _ := releasedToTrade(obs, ho)
 
 	ticks, res := runToExit(t, h, baseCmd(), 25)

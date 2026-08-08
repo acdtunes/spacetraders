@@ -2,7 +2,7 @@ package main
 
 // THE SHARED HEAVY TARGET: one instance, two consumers — pinned, not merely commented.
 //
-// The fleet autosizer SPENDS the heavy accumulation and the sensing buy-floor WITHHOLDS it. Both
+// The fleet-growth coordinator SPENDS the heavy accumulation and the sensing buy-floor WITHHOLDS it. Both
 // read "which yard are we saving toward, and what does it ask" through *one*
 // shipyardQueries.HeavyTargetFinder. Two instances would not fail loudly: each would resolve a
 // perfectly valid target from the same tables, and they would simply disagree — the reservation
@@ -33,7 +33,7 @@ import (
 const (
 	heavyTargetConstructor = "NewHeavyTargetFinder"
 	// The two consumers, by constructor name (package alias stripped): the SPENDER and the WITHHOLDER.
-	heavyTargetSpender    = "NewFleetAutosizerCoordinatorHandler"
+	heavyTargetSpender    = "NewFleetGrowthCoordinatorHandler"
 	heavyTargetWithholder = "NewHeavyReservePort"
 )
 
@@ -48,7 +48,7 @@ type heavyTargetWiring struct {
 	// A consumer handed an inline construction contributes no identifier here, which is what makes
 	// the second-instance edit visible.
 	identArgsByConsumer map[string][]string
-	// callsByConsumer counts each consumer's call sites: a SECOND autosizer or reserve port, built
+	// callsByConsumer counts each consumer's call sites: a SECOND heavy buyer or reserve port, built
 	// with its own finder, is the same divergence wearing a different hat.
 	callsByConsumer map[string]int
 }
@@ -133,12 +133,12 @@ func TestSharedHeavyTargetIsOneInstanceServingBothConsumers(t *testing.T) {
 		heavyTargetConstructor)
 
 	require.Equal(t, 1, w.callsByConsumer[heavyTargetSpender],
-		"exactly one %s: a second autosizer would need its own target and reintroduce the divergence", heavyTargetSpender)
+		"exactly one %s: a second heavy buyer would need its own target and reintroduce the divergence", heavyTargetSpender)
 	require.Equal(t, 1, w.callsByConsumer[heavyTargetWithholder],
 		"exactly one %s: a second reserve port would need its own target and reintroduce the divergence", heavyTargetWithholder)
 
 	require.True(t, slices.Contains(w.identArgsByConsumer[heavyTargetSpender], w.instanceName),
-		"the SPENDER (%s) must be handed the shared %q; it is not, so the autosizer is buying against a target the reservation does not know about",
+		"the SPENDER (%s) must be handed the shared %q; it is not, so the heavy buyer is aiming at a target the reservation does not know about",
 		heavyTargetSpender, w.instanceName)
 	require.True(t, slices.Contains(w.identArgsByConsumer[heavyTargetWithholder], w.instanceName),
 		"the WITHHOLDER (%s) must be handed the shared %q; it is not, so sensing is saving toward a yard the buy is not targeting",
@@ -153,7 +153,7 @@ func TestSharedHeavyTargetDetectionCatchesASecondInstance(t *testing.T) {
 
 func wire() {
 	heavyTargetFinder := shipyardQuery.NewHeavyTargetFinder(inv, ranker, ships, nil)
-	_ = grpc.NewFleetAutosizerCoordinatorHandler(srv, api, ships, med, wps, evts, mkts, yards, bridge, heavyTargetFinder)
+	_ = grpc.NewFleetGrowthCoordinatorHandler(srv, api, ledger, ships, med, wps, evts, yards, heavyTargetFinder, lanes, txns)
 	_ = parkedSensingAdapters.NewHeavyReservePort(census, shipyardQuery.NewHeavyTargetFinder(inv, ranker, ships, nil), caps)
 }
 `)
@@ -176,7 +176,7 @@ func TestSharedHeavyTargetDetectionCatchesAConsumerLeftUnwired(t *testing.T) {
 
 func wire() {
 	heavyTargetFinder := shipyardQuery.NewHeavyTargetFinder(inv, ranker, ships, nil)
-	_ = grpc.NewFleetAutosizerCoordinatorHandler(srv, api, ships, med, wps, evts, mkts, yards, bridge, heavyTargetFinder)
+	_ = grpc.NewFleetGrowthCoordinatorHandler(srv, api, ledger, ships, med, wps, evts, yards, heavyTargetFinder, lanes, txns)
 	_ = parkedSensingAdapters.NewHeavyReservePort(census, nil, caps)
 }
 `)

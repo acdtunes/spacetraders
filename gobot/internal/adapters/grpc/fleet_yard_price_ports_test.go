@@ -51,7 +51,7 @@ func TestYardPriceReader_HeavyFallsBackToScannedYards_WhenLiveWalkEmpty(t *testi
 		{SystemSymbol: "X1-NEAR", WaypointSymbol: "X1-NEAR-Y1", ShipType: "SHIP_HEAVY_FREIGHTER", PurchasePrice: 1_300_000, Hops: 1},
 		{SystemSymbol: "X1-FAR", WaypointSymbol: "X1-FAR-Y1", ShipType: "SHIP_HEAVY_FREIGHTER", PurchasePrice: 1_100_000, Hops: 3},
 	}}
-	r := &autosizerYardPriceReader{
+	r := &fleetYardPriceReader{
 		shipRepo:     &fakeHeavyShipRepo{all: []*navigation.Ship{tradeShipAt(t, "TR-1", 1, "X1-HOME-A1")}},
 		waypointRepo: &fakeYardWaypointLister{}, // no in-system shipyards → live walk finds nothing
 		scannedYards: scanned,
@@ -70,7 +70,7 @@ func TestYardPriceReader_HeavyFallsBackToScannedYards_WhenLiveWalkEmpty(t *testi
 // With NO scan data (empty store) the heavy branch keeps its historical
 // fail-closed behavior: readable=false, no price invented.
 func TestYardPriceReader_Heavy_EmptyScanStore_StaysFailClosed(t *testing.T) {
-	r := &autosizerYardPriceReader{
+	r := &fleetYardPriceReader{
 		shipRepo:     &fakeHeavyShipRepo{all: []*navigation.Ship{tradeShipAt(t, "TR-1", 1, "X1-HOME-A1")}},
 		waypointRepo: &fakeYardWaypointLister{},
 		scannedYards: &fakeScannedYards{}, // wired but empty — the pre-scan universe
@@ -94,7 +94,7 @@ func TestYardPriceReader_LightClass_NeverConsultsScannedYards(t *testing.T) {
 	scanned := &fakeScannedYards{candidates: []shipyardQueries.YardCandidate{
 		{SystemSymbol: "X1-NEAR", WaypointSymbol: "X1-NEAR-Y1", ShipType: "SHIP_LIGHT_HAULER", PurchasePrice: 400_000, Hops: 1},
 	}}
-	r := &autosizerYardPriceReader{
+	r := &fleetYardPriceReader{
 		shipRepo:     &fakeHeavyShipRepo{all: []*navigation.Ship{tradeShipAt(t, "TR-1", 1, "X1-HOME-A1")}},
 		waypointRepo: &fakeYardWaypointLister{},
 		scannedYards: scanned,

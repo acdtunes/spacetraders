@@ -27,7 +27,7 @@ func staticReporter(r apiBudgetReporter) func() apiBudgetReporter {
 // throughput/ceiling basis the ApproachCeiling alert uses — so the api_util guard can actually
 // gate concurrency growth. This is the fix for the "no per-coordinator read path → fail-open" stub.
 func TestAutosizerAPIUtilReader_RollingUtilizationIsReadable(t *testing.T) {
-	reader := &autosizerAPIUtilReader{resolve: staticReporter(&fakeBudgetReporter{report: apibudget.DualReport{
+	reader := &fleetAPIUtilReader{resolve: staticReporter(&fakeBudgetReporter{report: apibudget.DualReport{
 		Rolling5m: apibudget.Report{CeilingReqPerSec: 2.0, GlobalReqPerSec: 1.8, UtilizationPct: 90},
 	}})}
 
@@ -43,20 +43,20 @@ func TestAutosizerAPIUtilReader_RollingUtilizationIsReadable(t *testing.T) {
 // otherwise masquerade as a readable 0%).
 func TestAutosizerAPIUtilReader_AbsentSurface_FailsClosed(t *testing.T) {
 	// (a) resolver never wired.
-	reader := &autosizerAPIUtilReader{resolve: nil}
+	reader := &fleetAPIUtilReader{resolve: nil}
 	_, readable, err := reader.UtilizationPct(context.Background())
 	require.NoError(t, err)
 	require.False(t, readable, "an unwired reporter must fail closed")
 
 	// (b) typed-nil *APIBudgetTracker (global never set): Report() is nil-safe and returns a
 	// zero-value DualReport (ceiling 0), which must be treated as unreadable, not a readable 0%.
-	reader = &autosizerAPIUtilReader{resolve: staticReporter(metrics.GetGlobalAPIBudgetTracker())}
+	reader = &fleetAPIUtilReader{resolve: staticReporter(metrics.GetGlobalAPIBudgetTracker())}
 	_, readable, err = reader.UtilizationPct(context.Background())
 	require.NoError(t, err)
 	require.False(t, readable, "a typed-nil tracker (zero ceiling) must fail closed, not read as 0%")
 
 	// (c) a report with an unconfigured ceiling cannot yield a meaningful utilization → fail closed.
-	reader = &autosizerAPIUtilReader{resolve: staticReporter(&fakeBudgetReporter{report: apibudget.DualReport{
+	reader = &fleetAPIUtilReader{resolve: staticReporter(&fakeBudgetReporter{report: apibudget.DualReport{
 		Rolling5m: apibudget.Report{CeilingReqPerSec: 0, GlobalReqPerSec: 5},
 	}})}
 	_, readable, err = reader.UtilizationPct(context.Background())
@@ -73,7 +73,7 @@ func TestAutosizerAPIUtilReader_RealTracker_IsReadable(t *testing.T) {
 	tracker.Record("SHIP-1", apibudget.PurposePoll, apibudget.SourceUnspecified, false)
 	tracker.Record("SHIP-1", apibudget.PurposeTransact, apibudget.SourceUnspecified, false)
 
-	reader := &autosizerAPIUtilReader{resolve: staticReporter(tracker)}
+	reader := &fleetAPIUtilReader{resolve: staticReporter(tracker)}
 	pct, readable, err := reader.UtilizationPct(context.Background())
 	require.NoError(t, err)
 	require.True(t, readable, "a live tracker must read as readable (not the old fail-open stub)")
@@ -101,7 +101,7 @@ func TestAutosizerAPIUtilReader_ResolvesTheTrackerWiredAfterThePortWasBuilt(t *t
 	metrics.SetGlobalAPIBudgetTracker(nil) // the tracker does not exist yet
 
 	// Built exactly as the composition root builds it, but in the reversed order.
-	reader := &autosizerAPIUtilReader{resolve: globalAPIBudgetReporter}
+	reader := &fleetAPIUtilReader{resolve: globalAPIBudgetReporter}
 
 	_, readable, err := reader.UtilizationPct(context.Background())
 	require.NoError(t, err)
@@ -129,7 +129,7 @@ func TestAutosizerAPIUtilReader_ResolvesOnEveryReadRatherThanCaching(t *testing.
 	live := &fakeBudgetReporter{report: apibudget.DualReport{
 		Rolling5m: apibudget.Report{CeilingReqPerSec: 2.0, UtilizationPct: 10},
 	}}
-	reader := &autosizerAPIUtilReader{resolve: func() apiBudgetReporter {
+	reader := &fleetAPIUtilReader{resolve: func() apiBudgetReporter {
 		calls++
 		return live
 	}}
@@ -152,7 +152,7 @@ func TestAutosizerAPIUtilReader_FollowsTheGlobalWhenItIsReplaced(t *testing.T) {
 
 	quiet := metrics.NewAPIBudgetTracker(2.0, clock)
 	metrics.SetGlobalAPIBudgetTracker(quiet)
-	reader := &autosizerAPIUtilReader{resolve: globalAPIBudgetReporter}
+	reader := &fleetAPIUtilReader{resolve: globalAPIBudgetReporter}
 	quietPct, readable, err := reader.UtilizationPct(context.Background())
 	require.NoError(t, err)
 	require.True(t, readable)

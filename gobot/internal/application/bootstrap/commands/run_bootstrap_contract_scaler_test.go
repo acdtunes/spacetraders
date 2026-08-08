@@ -33,8 +33,8 @@ func TestBootstrap_ContractScaler_InColdStart_Ensured(t *testing.T) {
 		t.Fatalf("cold start: must ensure the contract scaler (launches=%d early=%v)", ho.contractScaler, res.ContractScalerLaunchedEarly)
 	}
 	// The contract-scaler launch must NOT drag in the standing coordinators; the autosizer is already running.
-	if ho.autosizer != 0 || ho.standing != 0 {
-		t.Fatalf("the contract-scaler launch must launch ONLY the scaler (autosizer=%d standing=%d)", ho.autosizer, ho.standing)
+	if ho.standing != 0 {
+		t.Fatalf("the contract-scaler launch must launch ONLY the scaler (standing=%d)", ho.standing)
 	}
 }
 

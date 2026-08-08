@@ -30,7 +30,7 @@ func BootstrapTunableDefaults() map[string]int {
 }
 
 // bootstrapRunConfig is the launch command with its cadence default resolved, so the reconcile logic
-// never repeats the "<= 0 → default" fallback (the autosizer resolveConfig idiom).
+// never repeats the "<= 0 → default" fallback (the siting resolveConfig idiom).
 type bootstrapRunConfig struct {
 	Disabled bool
 	DryRun   bool
@@ -86,17 +86,13 @@ type reconcileResult struct {
 	DesiredWorkers       int  // the tick's gate-worker sizing target (for the heartbeat)
 
 	// COMPLETE tallies.
-	HandoffLaunched          bool // the autosizer + standing coordinators were launched this tick (the hand-off)
+	HandoffLaunched          bool // the standing fleet-growth coordinator was launched this tick (the hand-off)
 	ConstructionHullsToTrade int  // gate construction hulls re-dedicated to the TRADE fleet this tick: the gate is built, so its workers stop earning until they are put back to work
 	Done                     bool // terminal: COMPLETE reached and handed off — the reconcile loop may exit
 
-	// The fleet autosizer was launched EARLY this tick (armed cold-start scaling). Test-only
-	// observability — deliberately NOT in the heartbeat delta (keeping the flag-off log byte-identical);
-	// the early launch surfaces its own INFO line, mirroring how the deferral does.
-	AutosizerLaunchedEarly bool
-
 	// The dedicated contract auto-scaler was ensured this tick (unconditional in the cold-start window).
-	// Same test-only observability as AutosizerLaunchedEarly.
+	// Test-only observability — deliberately NOT in the heartbeat delta; the ensure surfaces its own
+	// INFO line.
 	ContractScalerLaunchedEarly bool
 }
 
@@ -278,14 +274,12 @@ func (h *RunBootstrapCoordinatorHandler) reconcileOnce(ctx context.Context, cmd 
 		h.actExpansion(ctx, cmd, cfg, obs, &res)
 	}
 
-	// During the cold-start SCALING window, launch the fleet autosizer EARLY so the
-	// capacity reconciler's emitted contract-delivery demand finally has a buyer (steps 2-3 of the Admiral
-	// cold-start sequence), and ensure the standing dedicated contract auto-scaler so it ramps the exclusive
-	// contract fleet behind the 200000 cushion. Both are deliberately NOT launched in GATE/EXPANSION: GATE
-	// repurposes haulers to construction (a running autosizer scaling the contract op would contend), and
-	// EXPANSION performs the normal hand-off.
+	// During the cold-start SCALING window, ensure the standing dedicated contract auto-scaler so it ramps
+	// the exclusive contract fleet behind the 200000 cushion. THIS IS WHAT KEEPS CONTRACT HULL BUYING ALIVE
+	// DURING BOOTSTRAP: the scaler owns contract-fleet capacity everywhere else and it owns it here too,
+	// so cold start scales the contract op through one buyer rather than two. Deliberately NOT run in
+	// GATE/EXPANSION: GATE repurposes haulers to construction, and EXPANSION performs the hand-off.
 	if phase == PhaseColdStart {
-		h.maybeLaunchAutosizerEarly(ctx, cmd, obs, &res)
 		h.ensureContractScalerEarly(ctx, cmd, &res)
 	}
 
@@ -308,20 +302,12 @@ func (h *RunBootstrapCoordinatorHandler) reconcileOnce(ctx context.Context, cmd 
 // consulted — scanning is continuous background the freshness sizer keeps fresh, and contracts are the
 // RULINGS #1 funding floor that runs from hour 0.
 //
-// The arc must be MONOTONE, so GATE is STICKY on obs.ConstructionStarted — once a construction pipeline
-// exists the arc stays in GATE, never regressing (which would re-buy the just-repurposed haulers and
-// thrash). The GATE-ENTRY decision itself is factored into gateFunded, which demands a genuinely SCALED
-// AND FUNDED op (the full contract fleet has reached the auto-scaler's target AND the treasury holds a
-// surplus), which is what makes the sticky latch above safe — construction can only start after a
-// legitimate scaled+funded entry, so a lightly-scaled op can never latch GATE permanently (the
-// death spiral).
-// EXPANSION is terminal and monotone (a built gate stays built): the jump-gate construction is
-// COMPLETE, so the world has entered the Admiral's steady-state-growth era — the ONE phase probe-buying
-// belongs to. It is checked FIRST, before every other signal, and rides the same world-signal stickiness
-// GATE does: the observer reports a BUILT home gate as ConstructionComplete every tick (including after a
-// restart, when the pipeline is long gone), so no income dip, fleet churn, or restart-dropped in-memory
-// window can ever pull the arc back into a buying phase. A restart at any point re-derives the
-// true phase from these live signals — no persisted cursor, no double-advance.
+// The arc must be MONOTONE. GATE is STICKY on obs.ConstructionStarted — once a pipeline exists the arc
+// stays in GATE rather than regressing and re-buying the just-repurposed haulers. EXPANSION is terminal
+// and checked FIRST: the observer reports a BUILT home gate as ConstructionComplete every tick, including
+// after a restart when the pipeline is long gone, so no income dip, fleet churn or restart-dropped
+// in-memory window can pull the arc back into a buying phase. Every phase is re-derived from live
+// signals — no persisted cursor, no double-advance.
 func derivePhase(obs Observation) Phase {
 	if obs.ConstructionComplete {
 		return PhaseExpansion // sticky/terminal: the gate is built — steady-state growth, never regress
@@ -337,12 +323,11 @@ func derivePhase(obs Observation) Phase {
 
 // gateFunded reports whether the economic signals warrant entering GATE (jump-gate construction).
 //
-// GATE requires a genuinely SCALED AND FUNDED contract operation, not a lightly-scaled op that happened to
-// book a good hour (the sp-gm7r death spiral: GATE entered on ~2 haulers, started a pipeline, and the
-// ConstructionStarted sticky latch then held GATE forever while the op cannibalized its haulers). Both
-// must hold together — coverage is NOT a gate here (scan-completeness is continuous background, never a
-// phase gate; sourcing gate materials is construction's job), and neither is realized $/hr (a spiky
-// signal one contract payout swings from net-negative to a false all-clear in a single tick):
+// GATE requires a genuinely SCALED AND FUNDED contract operation, not a lightly-scaled op that happened
+// to book a good hour — that op starts a pipeline, the sticky latch then holds GATE forever, and the op
+// cannibalizes its own haulers. Both conditions must hold together. Coverage is NOT a gate (scan
+// completeness is continuous background; sourcing gate materials is construction's job), and neither is
+// realized $/hr (one contract payout swings it from net-negative to a false all-clear in a single tick):
 //   - the FULL contract fleet (delivery obs.Haulers + depot obs.ContractDepotHullCount) has reached the
 //     auto-scaler's live achievable target (obs.ContractScalerTarget) — the op is the size the scaler is
 //     genuinely driving it toward, not a 2-hull blip. This is a HARD bar: an op that cannot
@@ -353,10 +338,8 @@ func derivePhase(obs Observation) Phase {
 //     own material spend then crashes. Fail-closed: an unread/thin treasury yields a small or negative
 //     surplus that does not gate.
 //
-// This is also WHY the ConstructionStarted sticky latch in derivePhase is safe: construction is started
-// (by actGate) only AFTER derivePhase has returned GATE, which demands a legitimate scaled+funded entry —
-// so a lightly-scaled op can never reach ConstructionStarted and latch GATE permanently. Gate entry only
-// ever tightens, never loosens (RULINGS #4).
+// This is what makes derivePhase's sticky latch safe: construction starts only AFTER GATE, so a
+// lightly-scaled op can never latch it. Gate entry only ever tightens, never loosens (RULINGS #4).
 func gateFunded(obs Observation) bool {
 	fullFleet := len(obs.Haulers) + obs.ContractDepotHullCount
 	return obs.ContractScalerTarget > 0 &&
@@ -457,50 +440,9 @@ func (h *RunBootstrapCoordinatorHandler) actData(ctx context.Context, cmd *RunBo
 	}
 }
 
-// maybeLaunchAutosizerEarly launches the standing fleet autosizer DURING the cold-start scaling window
-// so the capacity reconciler's emitted contract-delivery demand has a buyer that scales
-// the contract operation (haulers/warehouse/stockers) — the Admiral's step 3. The caller has already
-// checked we are in the cold-start window. It:
-//   - is IDEMPOTENT: skips silently when the autosizer is already running (obs.AutosizerRunning) — the
-//     steady state once launched, so no per-tick log spam and no double-launch;
-//   - reuses the SAME hand-off launcher (LaunchAutosizer) the COMPLETE hand-off uses, so the early
-//     autosizer is byte-identical to the handed-off one — it arms contract_delivery iff the
-//     contract_delivery_hulls_enabled config knob is set (a SEPARATE arming, set at the coordinated arm);
-//   - is a BACKGROUND launch: it never claims res.Blocker (the scaling workstream's own blocker is the
-//     higher-signal heartbeat line), surfacing itself via its own INFO/ERROR log line instead;
-//   - is nil-safe (no launcher wired ⇒ logged skip).
-func (h *RunBootstrapCoordinatorHandler) maybeLaunchAutosizerEarly(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, obs Observation, res *reconcileResult) {
-	logger := common.LoggerFromContext(ctx)
-
-	if obs.AutosizerRunning {
-		return // already launched (this tick's earlier run, or an earlier tick) — idempotent no-op
-	}
-
-	if h.handoff == nil {
-		logger.Log("WARN", "Bootstrap cold-start scaling is armed but no hand-off launcher wired — cannot launch the autosizer early (the reconciler's contract-delivery demand will have no buyer)", map[string]interface{}{
-			"action":       "bootstrap_no_handoff_launcher",
-			"container_id": cmd.ContainerID,
-		})
-		return
-	}
-
-	if err := h.handoff.LaunchAutosizer(ctx, cmd.PlayerID, cmd.AgentSymbol); err != nil {
-		logger.Log("ERROR", fmt.Sprintf("Bootstrap failed to launch the fleet autosizer early (cold-start scaling): %v", err), map[string]interface{}{
-			"action":       "bootstrap_autosizer_early_launch_error",
-			"container_id": cmd.ContainerID,
-		})
-		return
-	}
-	res.AutosizerLaunchedEarly = true
-	logger.Log("INFO", "Bootstrap launched the fleet autosizer EARLY (cold-start contract scaling, sp-sjvv) — the capacity reconciler's emitted contract-delivery demand now has a guard-gated buyer", map[string]interface{}{
-		"action":       "bootstrap_autosizer_launched_early",
-		"container_id": cmd.ContainerID,
-	})
-}
-
 // ensureContractScalerEarly ensures the standing dedicated contract auto-scaler is running DURING the
 // cold-start scaling window so it ramps the exclusive contract fleet behind the 200000 cushion. The
-// caller has already checked we are in the cold-start window. It mirrors maybeLaunchAutosizerEarly:
+// caller has already checked we are in the cold-start window.
 //   - IDEMPOTENCY lives in the LAUNCHER, which skips a coordinator already RUNNING/PENDING, so calling
 //     it every cold-start tick never double-launches a second ramp loop;
 //   - is nil-safe (no launcher wired ⇒ logged skip);
@@ -836,8 +778,8 @@ func (h *RunBootstrapCoordinatorHandler) nextAction(phase Phase, obs Observation
 		}
 		return fmt.Sprintf("monitor construction to 100%% (%.0f%%)", obs.ConstructionPercent)
 	case PhaseExpansion:
-		if !obs.AutosizerRunning {
-			return "launch the fleet-autosizer + standing coordinators (hand-off)"
+		if !obs.GrowthRunning {
+			return "launch the standing fleet-growth coordinator (hand-off)"
 		}
 		return "EXPANSION — gate built, economy handed off; steady-state growth (probe-buying era), exiting"
 	default:

@@ -12,10 +12,11 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
-// heavySourcesFor wires the demand source over the shared unserved-lane reader, the way the
-// composition root does.
-func heavySourcesFor(shipRepo navigation.ShipRepository, lanes tradingQueries.ProfitableLaneCounter) *autosizerHeavySources {
-	return &autosizerHeavySources{shipRepo: shipRepo, unserved: tradingQueries.NewUnservedLaneReader(shipRepo, lanes)}
+// heavySourcesFor builds the SHARED unserved-lane reader the way the composition root does. It used
+// to wrap it in the autosizer's demand source; sp-5pclx deleted that wrapper (it was a pure delegate)
+// so these tests now drive the shared reader directly — the same subject, one indirection fewer.
+func heavySourcesFor(shipRepo navigation.ShipRepository, lanes tradingQueries.ProfitableLaneCounter) *tradingQueries.UnservedLaneReader {
+	return tradingQueries.NewUnservedLaneReader(shipRepo, lanes)
 }
 
 // --- fakes for the heavy-demand seam ports ----------------------------------------------------

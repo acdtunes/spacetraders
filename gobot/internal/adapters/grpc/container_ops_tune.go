@@ -90,7 +90,6 @@ var tuneOperationCoordinatorTypes = map[string]string{
 	"shipyardbackfill": string(container.ContainerTypeShipyardBackfillCoordinator),
 	"bootstrap":        string(container.ContainerTypeBootstrapCoordinator),
 	"contractscaler":   string(container.ContainerTypeContractScaler),
-	"autosizer":        string(container.ContainerTypeFleetAutosizer),
 	"growth":           string(container.ContainerTypeFleetGrowth),
 	// The trade fleet coordinator owns the tour path's market-freshness floors
 	// (sp-k4z5b). "tour" rather than "tradefleet" because the knobs govern what a TOUR
@@ -106,20 +105,9 @@ func tunableKnobsByContainerType() map[string]map[string]TuneBound {
 	shipyardBackfill := scoutingCmd.ShipyardBackfillTunableDefaults()
 	bootstrap := bootstrapCmd.BootstrapTunableDefaults()
 	contractScaler := contractScalerCmd.ContractScalerTunableDefaults()
-	fleetAutosizer := fleetCmd.FleetAutosizerTunableDefaults()
 	fleetGrowth := fleetCmd.FleetGrowthTunableDefaults()
 	tradeFleet := tradingCmd.TradeFleetTunableDefaults()
 	return map[string]map[string]TuneBound{
-		// The fleet capacity autosizer. heavy_cap is its ONLY live-tunable knob — every other
-		// autosizer knob stays config.yaml + restart, so this is a deliberate exception rather
-		// than a new pattern. Since sp-r7eiu removed the class_ceiling guard it is also the only
-		// count-based bound left on any class. The money guards beside it (the immutable 50k
-		// floor, the 25%-treasury rule, the per-tick cap) are compile-time consts and are
-		// deliberately NOT tunable.
-		string(container.ContainerTypeFleetAutosizer): {
-			"sizing_enabled": {Type: "int", Min: 1, Max: 2, Default: fleetAutosizer["sizing_enabled"], Unit: "flag", Applies: TuneAppliesLive, Description: "autosizer MASTER SWITCH: 1=on (default), 2=off. NOT 0/1 — `tune <key> 0` means revert-to-default fleet-wide, so 0 would make 'off' unexpressible. OFF STOPS THE READS, not just the buying — this is the opposite of expansion_enabled, which pauses spending while free work continues. Off, the coordinator skips the ENTIRE reconcile tick: no shipyard price walk, no demand reads, no heavy pricing errand, no purchase. That is the point: the autosizer costs almost nothing in credits and everything in API requests. Measured before this knob existed, it made 25 buy-decisions that bought NOTHING (14 blocked by demand, 11 by heavy_cap) and spent 14,053 Get Shipyard calls doing it — 96.7% of all Get Shipyard traffic, ~21% of the 2.00 req/s account ceiling — because the shipyard walk runs BEFORE the guards can block. Expect the `autosizer_tick` line to be replaced by `autosizer_paused` every tick, and autosizer_sizing_enabled to read 0. It is NOT a money guard: the treasury floor and the 50k reserve are consts and apply whenever sizing is on. Applies next tick, no restart"},
-			"heavy_cap":      {Type: "int", Min: 0, Max: 50, Default: fleetAutosizer["heavy_cap"], Unit: "hulls", Applies: TuneAppliesLive, Description: "ceiling on owned HEAVY HULLS (capital exposure), counted FLEET-WIDE regardless of dedicated_fleet tag. Since sp-r7eiu removed class_ceiling this is the ONLY count-based bound on any hull class — every other bound is economic (demand, affordability, the per-tick cap). Default 5. NOTE: `tune heavy_cap 0` DELETES the key and reverts to the default — to HOLD at zero (own no heavies) set heavy_cap: 0 in config.yaml and restart. Applies next tick"},
-		},
 		// The fleet-growth coordinator: the fleet's only heavy buyer. Three live levers — the
 		// master switch, the ceiling on owned heavy hulls, and the working-capital runway. The
 		// money guards beside them (the immutable 50k reserve floor and the 25%-treasury rule) are

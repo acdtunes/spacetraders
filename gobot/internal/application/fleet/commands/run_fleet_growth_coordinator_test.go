@@ -13,7 +13,7 @@ import (
 // player's config.
 func TestGrowthHandle_RejectsTheWrongRequestType(t *testing.T) {
 	h := NewRunFleetGrowthCoordinatorHandler(nil)
-	if _, err := h.Handle(context.Background(), &RunFleetAutosizerCoordinatorCommand{}); err == nil {
+	if _, err := h.Handle(context.Background(), &RunFleetGrowthCoordinatorResponse{}); err == nil {
 		t.Fatal("Handle must refuse a request that is not the growth command")
 	}
 }

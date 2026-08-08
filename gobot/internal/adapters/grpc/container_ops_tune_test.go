@@ -276,7 +276,7 @@ func TestTuneRegistry_MatchesCoordinatorDefaults_AndNeverWeakensTreasuryGuard(t 
 		{contractCoordinatorType, ContractCoordinatorTunableDefaults()},
 		{bootstrapContainerType, bootstrapCmd.BootstrapTunableDefaults()},
 		{string(container.ContainerTypeContractScaler), contractScalerCmd.ContractScalerTunableDefaults()},
-		{string(container.ContainerTypeFleetAutosizer), fleetCmd.FleetAutosizerTunableDefaults()},
+		{string(container.ContainerTypeFleetGrowth), fleetCmd.FleetGrowthTunableDefaults()},
 		{string(container.ContainerTypeTradeFleetCoordinator), tradingCmd.TradeFleetTunableDefaults()},
 	}
 	for _, engine := range engines {
@@ -300,6 +300,13 @@ func TestTuneRegistry_MatchesCoordinatorDefaults_AndNeverWeakensTreasuryGuard(t 
 	require.False(t, sizerStillTunable, "the retired market-freshness sizer must have no tune surface")
 	_, frontierStillTunable := registry[string(container.ContainerTypeFrontierExpansion)]
 	require.False(t, frontierStillTunable, "the retired frontier expansion coordinator must have no tune surface")
+	// sp-5pclx: the fleet autosizer was deleted, so BOTH its knobs (sizing_enabled, heavy_cap) leave
+	// the registry with it. heavy_cap did not vanish — it moved to the growth coordinator, whose entry
+	// is asserted above; what must not survive is a tune surface pointing at a container that can no
+	// longer be built (RULINGS #19).
+	_, autosizerStillTunable := registry[string(container.ContainerTypeFleetAutosizer)]
+	require.False(t, autosizerStillTunable, "the deleted fleet autosizer must have no tune surface")
+	require.NotContains(t, tuneOperationCoordinatorTypes, "autosizer", "the `tune --operation autosizer` alias must be retired with the coordinator")
 
 	// The treasury-fraction rule: any *_treasury_pct knob ever registered is capped at
 	// the compile-time 25 guard. (Vacuously true today — no registered engine

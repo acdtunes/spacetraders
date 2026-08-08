@@ -18,7 +18,7 @@ import (
 type GateCommitmentMetricsCollector struct {
 	skipsTotal          *prometheus.CounterVec
 	overshootUnitsTotal *prometheus.CounterVec
-	// stallSeconds is the PROGRESS watchdog (sp-63r4f): how long an unmet gate material has gone
+	// stallSeconds is the PROGRESS watchdog: how long an unmet gate material has gone
 	// without receiving a single unit. A GAUGE, not a counter, because the question is always "how
 	// bad is it RIGHT NOW" — a counter of stall events would tick once and tell you nothing about
 	// whether the gate is still stopped.

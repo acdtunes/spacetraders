@@ -125,23 +125,17 @@ func runToExit(t *testing.T, h *RunBootstrapCoordinatorHandler, cmd *RunBootstra
 }
 
 // flakyHandoff fails its autosizer launch for the first failFirst calls, then succeeds — a TRANSIENT
-// launcher fault, as opposed to fakeHandoff{autoErr} which models a persistent one.
+// launcher fault, as opposed to fakeHandoff{standErr} which models a persistent one.
 type flakyHandoff struct {
 	failFirst int
-	autosizer int
 	standing  int
-}
-
-func (f *flakyHandoff) LaunchAutosizer(ctx context.Context, playerID int, agentSymbol string) error {
-	f.autosizer++
-	if f.autosizer <= f.failFirst {
-		return errors.New("transient launcher fault")
-	}
-	return nil
 }
 
 func (f *flakyHandoff) LaunchStandingCoordinators(ctx context.Context, playerID int, agentSymbol string) error {
 	f.standing++
+	if f.standing <= f.failFirst {
+		return errors.New("transient launcher fault")
+	}
 	return nil
 }
 
@@ -159,7 +153,7 @@ func (f *flakyHandoff) LaunchTradeFleetCoordinator(ctx context.Context, playerID
 // is terminal on the WORLD signal; an unconfirmable hand-off is retried at the next daemon boot (bootstrap
 // is boot-standing and every launch is idempotent), not every tick until the era ends.
 func TestBootstrap_MatureFleet_ExitsWhenHandoffNeverConfirms(t *testing.T) {
-	ho := &fakeHandoff{autoErr: errors.New("autosizer launcher down")}
+	ho := &fakeHandoff{standErr: errors.New("growth launcher down")}
 	h, spies := spiedHandler(matureObs(), ho)
 
 	ticks, res := runToExit(t, h, baseCmd(), 25)

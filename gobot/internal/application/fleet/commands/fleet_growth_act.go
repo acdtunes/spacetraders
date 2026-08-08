@@ -314,22 +314,16 @@ func (h *RunFleetGrowthCoordinatorHandler) buildPurchaseRequest(
 // resolveHullPrice prices the configured heavy and falls back to the best priceable trade-capable
 // hull when it cannot be priced at any reachable yard.
 //
-// WHY THIS EXISTS. The trade pool buys ship_type_heavies, which defaults to SHIP_HEAVY_FREIGHTER —
-// and a yard selling one is not always discovered. The price guard would then block every tick
-// while profitable lanes sat unflown, and the pool would refuse to buy the very hull it is already
-// made of. Falling back is what lets the demand be served at all; the preferred type stays the
-// operator's choice and wins whenever it can be priced.
+// WHY THIS EXISTS. A yard selling the configured heavy is not always discovered, and without a
+// fallback the price guard blocks every tick while profitable lanes sit unflown — the pool refusing
+// to buy the very hull it is already made of. The preferred type stays the operator's choice and
+// wins whenever it can be priced.
 //
-// IT CHANGES ONLY WHICH HULL IS OFFERED TO THE GUARDS — never whether a guard runs. The substitute
+// IT CHANGES ONLY WHICH HULL IS OFFERED TO THE GUARDS, never whether a guard runs: the substitute
 // carries its OWN price and cheapest-known ask into the same PurchaseRequest, so the premium check
-// compares like with like, and every other guard judges it exactly as it judges the preferred hull.
-//
-// SELF-CORRECTING: the preferred type is asked FIRST every tick and nothing is remembered between
-// ticks, so the moment exploration finds a yard selling it, it wins back with no intervention.
-//
-// FAILS CLOSED: when no trade-capable type can be priced, readable stays false and the price guard
-// blocks. The substitution is logged once per decision, naming what it replaced, because an
-// operator must never have to discover a changed hull type from a ship list.
+// compares like with like. SELF-CORRECTING, because the preferred type is asked FIRST every tick and
+// nothing is remembered between them. FAILS CLOSED when no trade-capable type can be priced, and
+// logs the substitution per decision so an operator never discovers a changed hull from a ship list.
 func (h *RunFleetGrowthCoordinatorHandler) resolveHullPrice(
 	ctx context.Context,
 	cmd *RunFleetGrowthCoordinatorCommand,

@@ -256,31 +256,23 @@ func newMarketScope(playerID int, system string) marketScope {
 // activeScopes returns the (player, system) pairs that actually hold market data in the OPEN
 // era — one scope per pair, and no scope for a pair that has no rows.
 //
-// It replaces a version that returned two independent lists which the caller multiplied into a
-// cross product (sp-hrko6). Two things were wrong with that, and they compound:
+// IT MUST RETURN PAIRS, NOT TWO LISTS. A caller handed a set of players and a set of systems can
+// only re-derive their cross product, and most combinations have no rows: each empty scope still
+// costs four SQL round trips per poll and still registers its Prometheus label series.
 //
-// THE PAIRING WAS DISCARDED. The query already knows which (player, system) combinations exist;
-// splitting them into a set of players and a set of systems threw that away and re-derived every
-// combination, most of which have no rows. Each empty scope still costs four SQL round trips per
-// poll and still registers its Prometheus label series.
-//
-// AND market_data IS NOT PRUNED ON AN ERA ROLLOVER. `universe transition` deliberately preserves
-// the prior era's rows (only the gated `universe close` truncates), so an unscoped enumeration
-// keeps every dead era's player alive in the label set forever, and multiplies it by every system
-// any era ever visited. That is not merely cost: the market dashboards aggregate with an
-// unqualified `sum()` over these series — `sum(market_coverage_fresh) / sum(market_coverage_total)`
-// — so a dead era contributes a permanent, never-fresh denominator and drags the fresh-coverage
-// panel down forever. At the last measured ratio (27k dead rows against 3.3k live) that is most of
-// the number.
+// AND IT MUST BE ERA-SCOPED, because market_data is NOT pruned on an era rollover — `universe
+// transition` preserves the prior era's rows (only the gated `universe close` truncates). An
+// unscoped enumeration keeps every dead era's player in the label set forever, multiplied by every
+// system any era ever visited. The market dashboards aggregate these with an unqualified sum()
+// — sum(market_coverage_fresh) / sum(market_coverage_total) — so a dead era contributes a
+// permanent, never-fresh denominator that drags the coverage panel down for good.
 //
 // FAIL-OPEN on an unresolvable era: fall back to every player rather than reporting nothing. This
 // is observability, not a money guard — a metrics collector that silently emits zero series is
 // harder to diagnose than one reporting a superset, and a database predating the eras table would
 // otherwise go dark.
-// The system is derived in Go via shared.ExtractSystemSymbol rather than in SQL. The previous
-// version used split_part, which is PostgreSQL-only — it made this path untestable against the
-// SQLite the suite runs on, and market_data has no system column precisely because every other
-// reader of this table derives it the same way.
+// The system is derived in Go via shared.ExtractSystemSymbol, never in SQL: split_part is
+// PostgreSQL-only and would make this path untestable against the SQLite the suite runs on.
 func (c *MarketMetricsCollector) activeScopes() []marketScope {
 	var results []struct {
 		PlayerID       int
@@ -426,7 +418,7 @@ func (c *MarketMetricsCollector) updatePriceMetrics(scope marketScope) {
 
 	for _, record := range records {
 		// The market's rake: ASK - BID = purchase_price - sell_price. purchase_price is
-		// what WE PAY (the larger), sell_price what the market PAYS us (sp-en5h7), so a
+		// what WE PAY (the larger), sell_price what the market PAYS us, so a
 		// real market always yields spread >= 0.
 		spread := record.PurchasePrice - record.SellPrice
 

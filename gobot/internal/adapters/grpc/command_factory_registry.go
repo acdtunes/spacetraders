@@ -34,103 +34,35 @@ func (spec ContainerSpec) BuildCommand(config map[string]interface{}, playerID i
 	return cmd, nil
 }
 
-// containerSpecList is the registry AND the container lifecycle contract's
-// per-type semantics table (sp-7yej invariants 3+4). Every container type the
-// daemon creates MUST appear here — a type absent from this list is marked
-// FAILED at restart recovery ("unknown command type") and its in-flight work
-// is abandoned.
+// containerSpecList is the registry AND the container lifecycle contract's per-type semantics table
+// (invariants 3+4). Every container type the daemon creates MUST appear here — a type absent from
+// this list is marked FAILED at restart recovery ("unknown command type") and its in-flight work is
+// abandoned. A type deliberately removed goes in retiredCommandTypes instead, which skips its
+// persisted rows cleanly rather than alarming.
 //
 // ITERATION SEMANTICS (invariant 3) — one operator-facing meaning everywhere:
 //
 //	-1  = infinite: run until stopped/margin-death.
-//	N>0 = exactly N units of the type's own work unit (see table).
-//	 0  = the type's documented default — NEVER "zero work". (scout_tour: 1
-//	      tour, normalized in buildScoutTourCommand; goods_factory: 1 cycle,
-//	      cfg default; trade_route max_visits: the coordinator's default 50.)
+//	N>0 = exactly N units of the type's own work unit.
+//	 0  = the type's documented default — NEVER "zero work".
 //
-// Who loops is declared per type via CoordinatorOwnsIterations:
+// Who loops is declared per type via CoordinatorOwnsIterations. A type whose coordinator owns the
+// loop re-adopts itself across a restart; a WORKER (one carrying coordinator_id) is not recovered
+// standalone — markWorkerInterrupted preserves its claim and the parent re-dispatches it. Each
+// type's own file states what its restart resumes from.
 //
-//	type                        unit of work      loop owner    restart behavior
-//	--------------------------  ----------------  ------------  ---------------------------------
-//	scout_tour                  one full tour     coordinator   re-adopts; finite tour re-runs
-//	                                                            from scratch (progress not
-//	                                                            persisted), ∞ resumes; a
-//	                                                            coordinator-spawned tour (has
-//	                                                            coordinator_id) is skipped and
-//	                                                            respawned by scout_post_coordinator
-//	scout_post_coordinator      ∞ internal loop   coordinator   re-adopts; reloads posts +
-//	                                                            assignments, respawns tours (cxpq),
-//	                                                            re-dispatches interrupted relays (s232)
-//	scout_reposition            one cross-gate    coordinator   worker (coordinator_id): skipped +
-//	                            relay             (parent)      markWorkerInterrupted preserves the
-//	                                                            claim; scout_post_coordinator re-
-//	                                                            dispatches from current position —
-//	                                                            travel() re-plans the hops (s232)
-//	worker_rebalancer_          ∞ internal loop   coordinator   re-adopts; all state DB-derived
-//	coordinator                                                 (ship + container rows), so a fresh
-//	                                                            handler ferries identically (f5pr)
-//	worker_ferry                one cross-system  coordinator   worker (coordinator_id): skipped +
-//	                            relay             (parent)      markWorkerInterrupted preserves the
-//	                                                            claim; worker_rebalancer_coordinator
-//	                                                            reclaims it (arrival or interruption),
-//	                                                            re-plans from current position (f5pr)
-//	contract_workflow           one contract      coordinator   re-adopts standalone; worker
-//	                                                            (coordinator_id) waits for parent
-//	contract_fleet_coordinator  ∞ internal loop   coordinator   re-adopts
-//	purchase_ship               one purchase      coordinator   re-adopts (idempotence at API)
-//	batch_purchase_ships        one batch         coordinator   re-adopts
-//	goods_factory_coordinator   one cycle         RUNNER        re-adopts with persisted budget
-//	                                                            (sp-perx); -1 uses 2q2o backoff
-//	manufacturing_coordinator   ∞ internal loop   coordinator   re-adopts
-//	gas_coordinator             ∞ internal loop   coordinator   re-adopts
-//	warehouse                   passive hold      coordinator   re-adopts; op row +
-//	                            (blocks on                      hull cargo rebuilt by
-//	                            shutdown)                       StorageRecoveryService
-//	                                                            from live ship state (dchv)
-//	trade_route                 visit budget      coordinator   re-adopts; laden exit is a
-//	                            (max_visits)                    FAILURE (sp-1hj5, invariant 2)
-//	tour_run                    tour count        coordinator   re-adopts; re-plans from current
-//	                            (iterations:      (owns loop)   position/cargo. -1 = continuous
-//	                            -1/N/0→1)                       (re-plan+fly until margins die/
-//	                                                            starvation); laden exit is a
-//	                                                            FAILURE (sp-m5kv, invariant 2)
-//	arb_run                     one directed leg  coordinator   re-adopts; resumes past the buy
-//	                                                            (sp-5nqx), strand = failure
-//	stocker                     round-trip        coordinator   re-adopts; a laden hull resumes
-//	                            (iterations:      (owns loop)   deposit-first. -1 = continuous
-//	                            -1/N/0→1)                       (fill until nothing left to
-//	                                                            stock/starvation); undeposited
-//	                                                            exit is a FAILURE (sp-zdwg,
-//	                                                            invariant 2)
-//	navigate_ship               one route         coordinator   re-adopts; RouteExecutor waits
-//	                                                            out / resumes the live transit
-//	dock_ship / orbit_ship /    one ship op       coordinator   re-adopts; the op is idempotent
-//	refuel_ship                                                 (already-done → no-op)
-//	jettison_cargo              one jettison      coordinator   re-adopts; an already-jettisoned
-//	                                                            load fails HONESTLY (no re-buy)
-//	scout_fleet_assignment      one VRP pass      coordinator   re-adopts; re-runs the assignment
-//	workers (manufacturing_     one task          coordinator   NOT recovered standalone —
-//	task_worker, gas_siphon_                      (parent)      markWorkerInterrupted preserves
-//	worker, storage_ship)                                       the claim; parent re-adopts (tgp5)
-//
-// HONEST COMPLETION (invariant 2): any coordinator whose run can end holding
-// cargo bought that run, or with its task incomplete, threads that through its
-// response's common.CompletionReporter — the runner's finishCleanExit refuses
-// success=true (trade_route adopted; arb_run reports via non-nil error, valid
-// because its fixed lane resumes across retries). New cargo-leg coordinators
-// MUST adopt one of those two shapes and funnel every laden exit through a
-// single epilogue (invariant 1's finish-current-leg rule; see
-// run_trade_route_coordinator.go's runCircuit for the reference pattern).
+// HONEST COMPLETION (invariant 2): any coordinator whose run can end holding cargo bought that run,
+// or with its task incomplete, threads that through its response's common.CompletionReporter — the
+// runner's finishCleanExit refuses success=true (arb_run reports via non-nil error instead, valid
+// because its fixed lane resumes across retries). New cargo-leg coordinators MUST adopt one of those
+// two shapes and funnel every laden exit through a single epilogue (invariant 1's finish-current-leg
+// rule; run_trade_route_coordinator.go's runCircuit is the reference pattern).
 func containerSpecList() []ContainerSpec {
 	return []ContainerSpec{
 		{CommandType: "scout_tour", build: buildScoutTourCommand, CoordinatorOwnsIterations: true},
 		{CommandType: "scout_post_coordinator", build: buildScoutPostCoordinatorCommand},
-		// probe_sensing_coordinator: the standing sensing engine (successor of the retired
-		// market-freshness sizer + frontier expansion pair — their types are deliberately
-		// ABSENT from this list so a still-RUNNING legacy container fails closed at restart
-		// recovery). Like scout_post/contract_fleet it loops forever inside one Handle(), so
-		// it is NOT a CoordinatorOwnsIterations type; the container-level budget (-1) is
-		// irrelevant.
+		// probe_sensing_coordinator is the standing sensing engine. The retired market-freshness
+		// sizer and frontier expansion types are deliberately ABSENT from this list.
 		{CommandType: "probe_sensing_coordinator", build: buildProbeSensingCoordinatorCommand},
 		{CommandType: "shipyard_backfill_coordinator", build: buildShipyardBackfillCoordinatorCommand},
 		{CommandType: "scout_reposition", build: buildScoutRepositionCommand, CoordinatorOwnsIterations: true},
@@ -159,36 +91,25 @@ func containerSpecList() []ContainerSpec {
 		// CoordinatorOwnsIterations type; the container-level budget (-1) is irrelevant.
 		// Registering it here is what makes a launched or restart-recovered drain runnable.
 		{CommandType: "construction_coordinator", build: buildConstructionCoordinatorCommand},
-		// fleet_autosizer (sp-1txd): the standing fleet capacity autosizer. Like
-		// trade_fleet/siting it loops forever inside one Handle(), so it is NOT a
-		// CoordinatorOwnsIterations type; the container-level budget (-1) is irrelevant.
-		{CommandType: "fleet_autosizer", build: buildFleetAutosizerCommand},
 		// fleet_growth: the standing fleet-growth coordinator — the fleet's ONLY heavy buyer, and
-		// one of the two readers of the heavy/probe wave. Like fleet_autosizer/siting it loops
+		// one of the two readers of the heavy/probe wave. Like trade_fleet/siting it loops
 		// forever inside one Handle(), so it is NOT a CoordinatorOwnsIterations type.
 		{CommandType: "fleet_growth", build: buildFleetGrowthCommand},
-		// contract_scaler: the standing dedicated contract auto-scaler. Like fleet_autosizer/siting it
+		// contract_scaler: the standing dedicated contract auto-scaler. Like fleet_growth/siting it
 		// loops forever inside one Handle(), so it is NOT a CoordinatorOwnsIterations type; the
 		// container-level budget (-1) is irrelevant. Registering it here is what makes an ARMED-launch or
 		// restart-recovered scaler runnable — launch itself stays gated behind the bootstrap early-scaling
 		// arm (default-off), never boot-standing.
 		{CommandType: "contract_scaler", build: buildContractScalerCommand},
-		// opportunity_relocator (sp-zvywu Part 2): the standing opportunity relocator. Like
-		// fleet_autosizer/contract_scaler it loops forever inside one Handle(), so it is NOT a
-		// CoordinatorOwnsIterations type; the container-level budget (-1) is irrelevant. Registering it
-		// here is what makes a launched or restart-recovered relocator runnable — and the restart matters
-		// more than usual: its persisted relocation intents are re-derived on the first tick, so a
-		// rebuild that never runs would leave an in-flight relocation unfinished (RULINGS #2).
+		// opportunity_relocator's restart matters more than most: its persisted relocation intents are
+		// re-derived on the first tick, so a rebuild that never runs leaves one unfinished.
 		{CommandType: "opportunity_relocator", build: buildOpportunityRelocatorCommand},
-		// bootstrap (sp-3nbe): the standing captain bootstrap coordinator. Like
-		// fleet_autosizer/siting it owns its whole reconcile loop inside one Handle() (NOT a
-		// CoordinatorOwnsIterations type) — but UNLIKE them Handle() RETURNS at the terminal
-		// EXPANSION exit (gate built + handed off), so its container completes on the response's
-		// RunTerminal report, and any non-terminal return is paced at the bootstrap tick
-		// (standingIterationFloors) rather than re-entered at loop speed.
+		// bootstrap is the one standing coordinator whose Handle() RETURNS — at the terminal EXPANSION
+		// exit — so its container completes on the response's RunTerminal report, and a non-terminal
+		// return is paced at the bootstrap tick rather than re-entered at loop speed.
 		{CommandType: "bootstrap", build: buildBootstrapCommand},
 		// auto_outfit_coordinator (sp-buyd): the standing guarded auto-outfit coordinator.
-		// Like fleet_autosizer/capacity it loops forever inside one Handle(), so it is NOT a
+		// Like fleet_growth/siting it loops forever inside one Handle(), so it is NOT a
 		// CoordinatorOwnsIterations type; the container-level budget (-1) is irrelevant.
 		// Registering it here is what makes a launched or restart-recovered coordinator
 		// runnable — launch itself stays EXPLICIT (never boot-standing, deploy-inert).
@@ -239,14 +160,10 @@ func (s *DaemonServer) buildCommandForType(commandType string, config map[string
 	if !exists {
 		return nil, fmt.Errorf("unknown command type '%s'", commandType)
 	}
-	// The contract coordinator's idle-arb harvest knobs are resolved LIVE
-	// from the daemon's boot-loaded config.yaml on EVERY build. Both creation
-	// (ContractFleetCoordinator) and restart recovery (recoverContainer) funnel
-	// through here, so a config.yaml retune + daemon restart actually retunes a
-	// recovered coordinator. The persisted idle_arb_* keys are dead:
-	// resolveIdleArbConfig clears them and re-injects the live values, making
-	// config.yaml the one source of truth. No coordinator recreate is ever
-	// needed for these knobs.
+	// Creation and restart recovery both funnel through here, so clearing and re-injecting a
+	// coordinator's knobs on EVERY build is what makes config.yaml the one source of truth: a
+	// config edit + restart retunes even a recovered coordinator, and no persisted copy can
+	// shadow the live value. Every resolve below follows that discipline.
 	if commandType == "contract_fleet_coordinator" {
 		s.resolveIdleArbConfig(config)
 		// Same live-config discipline for the parked-hull auto-liquidation knobs
@@ -261,13 +178,6 @@ func (s *DaemonServer) buildCommandForType(commandType string, config map[string
 	// no persisted copy can shadow the live value.
 	if commandType == "trade_fleet_coordinator" {
 		s.resolveTradeFleetConfig(config)
-	}
-	// sp-1txd: same live-config discipline for the fleet capacity autosizer. Its
-	// [fleet_autosizer] knobs are cleared and re-injected from the boot-loaded config.yaml on
-	// every build — creation and recovery alike — so a config edit + restart retunes a recovered
-	// coordinator and no persisted copy can shadow the live value (the sp-ts82 pattern).
-	if commandType == "fleet_autosizer" {
-		s.resolveFleetAutosizerConfig(config)
 	}
 	// The growth coordinator's launch keys are CLEARED on every build — creation and recovery
 	// alike — so each build starts from the coordinator's own documented defaults and no persisted
@@ -291,16 +201,10 @@ func (s *DaemonServer) buildCommandForType(commandType string, config map[string
 	if commandType == "scout_tour" || commandType == "scout_post_coordinator" {
 		s.resolveScoutingConfig(config)
 	}
-	// probe_sensing_coordinator: two live-config resolutions on every build — creation and
-	// restart recovery alike. (1) The [sensing] config.yaml knobs (the goods whitelist — a
-	// string the int-only tune registry cannot carry) are cleared and re-injected so a stale
-	// persisted copy can never shadow the current config.yaml (the sp-ts82 discipline).
-	// (2) A persisted/tuned pressure_half_life_secs is applied to the API client's
-	// limiter-pressure EWMA, so a `tune` of it survives a bounce and takes effect at the next
-	// rebuild. The boot default comes from config.yaml [daemon]
-	// limiter_pressure_half_life_seconds (wired in main.go); a positive container value takes
-	// precedence. The half-life is process-global client state, hence the narrow assertion
-	// instead of widening the domain port.
+	// probe_sensing_coordinator resolves TWO things: the [sensing] knobs (the goods whitelist — a
+	// string the int-only tune registry cannot carry), and a tuned pressure_half_life_secs pushed
+	// into the API client's limiter-pressure EWMA so it survives a bounce. The half-life is
+	// process-global client state, hence the narrow type assertion rather than widening the port.
 	if commandType == "probe_sensing_coordinator" {
 		s.resolveSensingConfig(config)
 		if halfLife, ok := intValue(config["pressure_half_life_secs"]); ok && halfLife > 0 {

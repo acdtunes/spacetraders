@@ -14,7 +14,7 @@ import (
 // restricted to the warehouse's own home system — never a foreign-but-technically-routable yard —
 // because a bought stocker hull is crewed at its purchase yard with no repositioning step of its own.
 // readable=false ⇒ the depot stocker buy holds (fail-closed — no price, no cushion check, no buy).
-type contractScalerDepotPriceReader struct{ yards *autosizerYardPriceReader }
+type contractScalerDepotPriceReader struct{ yards *fleetYardPriceReader }
 
 func (p *contractScalerDepotPriceReader) NextHullPriceForHome(ctx context.Context, playerID int, shipType, homeSystem string) (int64, string, bool, error) {
 	if p.yards == nil {

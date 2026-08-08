@@ -445,21 +445,9 @@ func (a *bootstrapGateWorkerAcquirer) BuyForConstruction(ctx context.Context, pl
 	return bought, nil
 }
 
-// --- HandoffLauncher: launch the standing coordinators at COMPLETE (autosizer + fleet growth) ---
+// --- HandoffLauncher: launch the standing fleet-growth coordinator at EXPANSION ---
 
 type bootstrapHandoffLauncher struct{ server *DaemonServer }
-
-func (h *bootstrapHandoffLauncher) LaunchAutosizer(ctx context.Context, playerID int, agentSymbol string) error {
-	running, err := containerTypeRunning(ctx, h.server.containerRepo, playerID, container.ContainerTypeFleetAutosizer)
-	if err != nil {
-		return err
-	}
-	if running {
-		return nil // idempotent: already handed off
-	}
-	_, err = h.server.FleetAutosizerCoordinator(ctx, playerID, agentSymbol)
-	return err
-}
 
 // LaunchContractScaler launches the standing dedicated contract auto-scaler during the cold-start
 // scaling window (unconditional). Idempotent on its own container type — this running check IS

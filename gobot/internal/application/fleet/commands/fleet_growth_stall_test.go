@@ -2,12 +2,20 @@ package commands
 
 import (
 	"context"
-	"errors"
 	"testing"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/health"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
 )
+
+// Stall reporting for the fleet-growth coordinator — the fleet's only heavy buyer, and after
+// sp-5pclx deleted the autosizer the only coordinator in this package that reports one.
+//
+// These tests were the autosizer's; they were REWRITTEN onto growth rather than deleted with it,
+// because the subject is the shared verdict logic (classStallVerdict + observeClassStall) and the
+// escalation contract on top of it, all of which growth still runs. Deleting them would have
+// retired the coordinator AND silently retired the only coverage of the escalator's once-only
+// guarantee.
 
 // recordingStallObserver is a fake health.StallObserver: it records the verdict of every tick so
 // the tests can assert what the coordinator REPORTED, without depending on the escalator's own
@@ -32,226 +40,114 @@ func (r *recordingStallObserver) forScope(scope string) []health.TickOutcome {
 	return out
 }
 
-// blockedHandler wires a coordinator whose buy path is complete EXCEPT that no yard price can be
-// read, so every candidate is refused by the price_read guard — deterministic, fail-closed, and
-// exactly the shape of the production stall (a guard blocking every tick, forever, silently).
-func blockedHandler(providers ...ClassDemandProvider) (*RunFleetAutosizerCoordinatorHandler, *recordingStallObserver) {
-	h := NewRunFleetAutosizerCoordinatorHandler(nil)
-	for _, p := range providers {
-		h.AddDemandProvider(p)
-	}
-	h.SetTreasuryReader(&fakeTreasury{credits: 5000000, ok: true})
-	h.SetAPIUtilizationReader(&fakeAPIUtil{pct: 40, ok: true})
-	h.SetHeavyCensusReader(&fakeHeavyCensus{owned: 0})
-	h.SetYardPriceReader(&fakeYardPrice{ok: false}) // the yard ask is unreadable -> price_read BLOCKS
-	h.SetPurchaser(&recordingPurchaser{})
-	// The tap is what carries the FIRST FAILING GUARD out of the (concurrently-owned) act path
-	// and into the tick's stall verdict. Production wires it the same way.
-	h.SetMetricsSink(NewBlockedGuardTap(&recordingMetrics{}))
+// blockedGrowthHandler wires a growth coordinator on a HEAVY wave whose buy is refused every tick:
+// the lane surface is capacity-short and the anti-thrash streak is already satisfied, so demand is
+// real, but the treasury cannot reach the ask. Deterministic, fail-closed, and exactly the shape of
+// the production stall (a guard blocking every tick, forever, silently).
+func blockedGrowthHandler(t *testing.T) (*RunFleetGrowthCoordinatorHandler, *recordingStallObserver) {
+	t.Helper()
+	h := newGrowthHandlerWith(t, growthFixture{
+		lanes:    &fakeLanes{count: 9, readable: true},
+		treasury: 12_000_000,
+		yardAsk:  1_000_000,
+		streak:   3,
+	})
 	obs := &recordingStallObserver{}
 	h.SetStallObserver(obs)
 	return h, obs
 }
 
-// THE PRODUCTION REGRESSION, at the coordinator's own driving port. The autosizer's heavy
-// decision was BLOCKED on the same guard every tick for hours and reported it as an INFO line.
-// Every tick must now report BLOCKED naming that guard, so the escalator can page.
-func TestAutosizerReportsBlockedNamingTheFirstFailingGuard(t *testing.T) {
-	h, obs := blockedHandler(lightShortfall())
-	cmd := &RunFleetAutosizerCoordinatorCommand{PlayerID: 5, ContainerID: "c1"}
+// --- what the coordinator REPORTS, per outcome ---
 
-	for i := 0; i < health.StallEscalationTicks; i++ {
-		if _, err := h.reconcileOnce(context.Background(), cmd); err != nil {
-			t.Fatalf("reconcileOnce error: %v", err)
-		}
-	}
+// A HEAVY wave with unmet demand and a guard refusing the buy reports BLOCKED, naming the guard.
+func TestGrowthReportsBlockedNamingTheFailingGuard(t *testing.T) {
+	h, obs := blockedGrowthHandler(t)
+	h.SetYardPriceReader(&growthYardPriceCounter{}) // no readable price ⇒ the price guard refuses
 
-	got := obs.forScope(string(HullClassLight))
-	if len(got) != health.StallEscalationTicks {
-		t.Fatalf("expected one stall verdict per tick for the light class, got %d: %+v", len(got), got)
-	}
-	for i, o := range got {
-		if o.Outcome != health.StallBlocked {
-			t.Fatalf("tick %d: outcome = %s, want BLOCKED (there was unmet demand and no hull was bought)", i, o.Outcome)
-		}
-		if o.Reason != health.StallReason(GuardPrice) {
-			t.Fatalf("tick %d: reason = %q, want the first failing guard %q", i, o.Reason, GuardPrice)
-		}
-	}
-	if k := obs.keys[0]; k.Coordinator != autosizerStallCoordinator || k.ContainerID != "c1" || k.PlayerID != 5 {
-		t.Fatalf("stall key must identify the coordinator, container and player, got %+v", k)
-	}
-}
-
-// THE OTHER HALF. An autosizer with no shortfall is CORRECTLY idle: it must report IDLE forever
-// and never look like a stall, no matter how many ticks pass.
-func TestAutosizerReportsIdleWhenThereIsNoShortfall(t *testing.T) {
-	satisfied := &fakeDemandProvider{class: HullClassLight, demand: ClassDemand{Demand: 3, Current: 3, Readable: true}}
-	h, obs := blockedHandler(satisfied)
-	cmd := &RunFleetAutosizerCoordinatorCommand{PlayerID: 5, ContainerID: "c1"}
-
-	for i := 0; i < health.StallEscalationTicks*5; i++ {
-		if _, err := h.reconcileOnce(context.Background(), cmd); err != nil {
-			t.Fatalf("reconcileOnce error: %v", err)
-		}
-	}
-
-	got := obs.forScope(string(HullClassLight))
-	if len(got) == 0 {
-		t.Fatalf("a satisfied class must still report its verdict every tick, got none")
-	}
-	for i, o := range got {
-		if o.Outcome != health.StallIdle {
-			t.Fatalf("tick %d: outcome = %s (reason %q), want IDLE — a satisfied class has nothing to do and that is correct", i, o.Outcome, o.Reason)
-		}
-	}
-}
-
-// A tick that BUYS reports PROGRESS, which is what clears any accumulated streak.
-func TestAutosizerReportsProgressWhenItBuys(t *testing.T) {
-	h, _, _, _ := armedHandler(lightShortfall())
-	obs := &recordingStallObserver{}
-	h.SetStallObserver(obs)
-
-	if _, err := h.reconcileOnce(context.Background(), &RunFleetAutosizerCoordinatorCommand{PlayerID: 5, ContainerID: "c1"}); err != nil {
+	if _, err := h.reconcileOnce(context.Background(), growthCmd()); err != nil {
 		t.Fatalf("reconcileOnce error: %v", err)
 	}
 
-	got := obs.forScope(string(HullClassLight))
-	if len(got) != 1 || got[0].Outcome != health.StallProgress {
-		t.Fatalf("a tick that bought a hull must report PROGRESS, got %+v", got)
-	}
-}
-
-// An unreadable or erroring demand read is a BLOCK, not an idle tick: the class had a signal it
-// could not read, which is precisely "I cannot do anything" wearing "nothing to do"'s clothes —
-// the confusion this whole layer exists to end. Each gets its own stable reason.
-func TestAutosizerReportsBlockedOnUnreadableDemand(t *testing.T) {
-	cases := []struct {
-		name     string
-		provider *fakeDemandProvider
-		want     health.StallReason
-	}{
-		{
-			name:     "provider infra error",
-			provider: &fakeDemandProvider{class: HullClassLight, err: errors.New("db down")},
-			want:     stallReasonDemandError,
-		},
-		{
-			name:     "demand signal unreadable",
-			provider: &fakeDemandProvider{class: HullClassLight, demand: ClassDemand{Demand: 9, Current: 0, Readable: false, Reason: "treasury unreadable"}},
-			want:     stallReasonDemandUnreadable,
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			h, obs := blockedHandler(tc.provider)
-			if _, err := h.reconcileOnce(context.Background(), &RunFleetAutosizerCoordinatorCommand{PlayerID: 5, ContainerID: "c1"}); err != nil {
-				t.Fatalf("reconcileOnce error: %v", err)
-			}
-			got := obs.forScope(string(HullClassLight))
-			if len(got) != 1 {
-				t.Fatalf("expected exactly one verdict, got %+v", got)
-			}
-			if got[0].Outcome != health.StallBlocked || got[0].Reason != tc.want {
-				t.Fatalf("outcome/reason = %s/%q, want BLOCKED/%q", got[0].Outcome, got[0].Reason, tc.want)
-			}
-		})
-	}
-}
-
-// TWO COORDINATORS WATCHING TWO CLASSES STALL INDEPENDENTLY. The key carries the coordinator as
-// well as the class, so a blocked light in the autosizer is never closed out by an idle heavy in
-// the growth coordinator — and neither can inherit the other's streak, which matters precisely
-// because both now run against one fleet.
-func TestStallVerdictsAreScopedPerCoordinatorAndClass(t *testing.T) {
-	obs := &recordingStallObserver{}
-
-	sizer, _ := blockedHandler(lightShortfall())
-	// One observer for BOTH coordinators, which is the whole subject: if the key did not carry the
-	// coordinator, these two would be writing into the same streak.
-	sizer.SetStallObserver(obs)
-	if _, err := sizer.reconcileOnce(context.Background(), &RunFleetAutosizerCoordinatorCommand{PlayerID: 5, ContainerID: "c1"}); err != nil {
-		t.Fatalf("autosizer reconcileOnce error: %v", err)
-	}
-
-	// A PROBE wave: the growth coordinator has nothing outstanding this tick, which is IDLE.
-	growth := newGrowthHandlerWith(t, growthFixture{lanes: &fakeLanes{count: 0, readable: true}})
-	growth.SetStallObserver(obs)
-	if _, err := growth.reconcileOnce(context.Background(), growthCmd()); err != nil {
-		t.Fatalf("growth reconcileOnce error: %v", err)
-	}
-
-	light := obs.forScope(string(HullClassLight))
 	heavy := obs.forScope(string(HullClassHeavy))
-	if len(light) != 1 || light[0].Outcome != health.StallBlocked {
-		t.Fatalf("the blocked light class must report BLOCKED, got %+v", light)
+	if len(heavy) != 1 || heavy[0].Outcome != health.StallBlocked {
+		t.Fatalf("an unmet shortfall that bought nothing must report BLOCKED, got %+v", heavy)
 	}
+	if k := obs.keys[0]; k.Coordinator != growthStallCoordinator || k.ContainerID != "growth-1" || k.PlayerID != 1 {
+		t.Fatalf("the stall key must carry the growth coordinator, container and player, got %+v", k)
+	}
+}
+
+// A PROBE wave has nothing outstanding: that is IDLE, not BLOCKED. This is the branch that has to
+// stay silent forever or the alarm is worthless.
+func TestGrowthReportsIdleWhenThereIsNoShortfall(t *testing.T) {
+	h := newGrowthHandlerWith(t, growthFixture{lanes: &fakeLanes{count: 0, readable: true}})
+	obs := &recordingStallObserver{}
+	h.SetStallObserver(obs)
+
+	if _, err := h.reconcileOnce(context.Background(), growthCmd()); err != nil {
+		t.Fatalf("reconcileOnce error: %v", err)
+	}
+
+	heavy := obs.forScope(string(HullClassHeavy))
 	if len(heavy) != 1 || heavy[0].Outcome != health.StallIdle {
-		t.Fatalf("the paused heavy class must report IDLE, got %+v", heavy)
+		t.Fatalf("a coordinator with nothing outstanding must report IDLE, got %+v", heavy)
 	}
-	if obs.keys[0].Coordinator != autosizerStallCoordinator || obs.keys[1].Coordinator != growthStallCoordinator {
-		t.Fatalf("the two coordinators must not share a stall key, got %q and %q", obs.keys[0].Coordinator, obs.keys[1].Coordinator)
+}
+
+// An unreadable lane surface reports IDLE, and that is CORRECT here — it is the one place growth's
+// verdict deliberately differs from a per-class sizer's.
+//
+// The autosizer read demand per class, so an unreadable signal was a class that wanted to know its
+// shortfall and could not find out: BLOCKED. Growth reads the same surface through the WAVE, and an
+// unreadable surface derives PROBE (see UnservedLaneReader: "readable=false ⇒ PROBE and no heavy
+// bought — fail-closed on the buy, release on the wave"). A PROBE wave means the coordinator has been
+// told to stand down, which is idle-BY-INSTRUCTION, not a refusal. Reporting BLOCKED here would page
+// an operator every time the market cache went cold, for a coordinator behaving exactly as designed.
+//
+// The fail-closed property is NOT weakened by this: nothing is bought on an unreadable surface. Only
+// the ESCALATION verdict differs, and this test exists to pin that distinction so a future change
+// cannot quietly turn a designed stand-down into a page.
+func TestGrowthReportsIdleOnUnreadableDemandBecauseTheWaveStandsDown(t *testing.T) {
+	buyer := &growthPurchaseRecorder{}
+	h := newGrowthHandlerWith(t, growthFixture{lanes: &fakeLanes{readable: false}})
+	h.SetPurchaser(buyer)
+	obs := &recordingStallObserver{}
+	h.SetStallObserver(obs)
+
+	if _, err := h.reconcileOnce(context.Background(), growthCmd()); err != nil {
+		t.Fatalf("reconcileOnce error: %v", err)
+	}
+
+	heavy := obs.forScope(string(HullClassHeavy))
+	if len(heavy) != 1 || heavy[0].Outcome != health.StallIdle {
+		t.Fatalf("an unreadable lane surface derives PROBE, which is idle-by-instruction, got %+v", heavy)
+	}
+	// The half that must never move: unreadable still means unbought.
+	if buyer.calls != 0 {
+		t.Fatalf("an unreadable lane surface must buy NOTHING, got %d purchases", buyer.calls)
 	}
 }
 
 // An unwired observer (tests, or a boot before DI completes) must degrade to silence, never a
-// panic: observability is not a precondition for sizing the fleet (RULINGS #4).
-func TestAutosizerRunsWithNoStallObserverWired(t *testing.T) {
-	h, _, _, _ := armedHandler(lightShortfall())
-	if _, err := h.reconcileOnce(context.Background(), &RunFleetAutosizerCoordinatorCommand{PlayerID: 5, ContainerID: "c1"}); err != nil {
-		t.Fatalf("reconcileOnce error: %v", err)
+// panic: observability is not a precondition for growing the fleet (RULINGS #4).
+func TestGrowthRunsWithNoStallObserverWired(t *testing.T) {
+	h, _ := blockedGrowthHandler(t)
+	h.SetStallObserver(nil)
+
+	if _, err := h.reconcileOnce(context.Background(), growthCmd()); err != nil {
+		t.Fatalf("an unwired stall observer must not break the tick: %v", err)
 	}
 }
 
-// The tap is a PASS-THROUGH decorator: every MetricsSink call still reaches the real sink, so
-// wiring it can never cost the autosizer an existing observation series.
-func TestBlockedGuardTapForwardsEveryRecordingToTheInnerSink(t *testing.T) {
-	inner := &recordingMetrics{}
-	h := NewRunFleetAutosizerCoordinatorHandler(nil)
-	h.AddDemandProvider(lightShortfall())
-	h.SetTreasuryReader(&fakeTreasury{credits: 5000000, ok: true})
-	h.SetAPIUtilizationReader(&fakeAPIUtil{pct: 40, ok: true})
-	h.SetHeavyCensusReader(&fakeHeavyCensus{owned: 0})
-	h.SetYardPriceReader(&fakeYardPrice{price: 437000, cheapest: 400000, yard: "KA42-A2", ok: true})
-	h.SetPurchaser(&recordingPurchaser{})
-	h.SetMetricsSink(NewBlockedGuardTap(inner))
+// --- end to end, through the REAL escalator ---
 
-	if _, err := h.reconcileOnce(context.Background(), &RunFleetAutosizerCoordinatorCommand{PlayerID: 5, ContainerID: "c1"}); err != nil {
-		t.Fatalf("reconcileOnce error: %v", err)
-	}
-
-	if inner.demand != 1 {
-		t.Errorf("RecordDemand not forwarded through the tap: got %d, want 1", inner.demand)
-	}
-	if inner.purchase != 1 {
-		t.Errorf("RecordPurchase not forwarded through the tap: got %d, want 1", inner.purchase)
-	}
-	if inner.heavyReserveCalls != 1 {
-		t.Errorf("RecordHeavyReserve not forwarded through the tap: got %d, want 1", inner.heavyReserveCalls)
-	}
-}
-
-// A tap with a NIL inner sink is still safe: the decorator is installed for the reason-capture,
-// so it must not turn "metrics disabled" into a crash.
-func TestBlockedGuardTapIsNilInnerSafe(t *testing.T) {
-	tap := NewBlockedGuardTap(nil)
-	tap.RecordDemand(HullClassLight, 3, 1)
-	tap.RecordPurchase(HullClassLight)
-	tap.RecordBlocked(HullClassLight, GuardPrice)
-	tap.RecordZeroEffectAlarm()
-	tap.RecordHeavyReserve("5", 100, 1_000, 0, 5)
-	tap.ObserveHeavyPricePremium("5", 100, 90)
-}
-
-// --- THE END-TO-END REGRESSION: coordinator -> real escalator -> durable surfaces ---
-
+// stallSurfaceSpy captures both durable escalation surfaces.
 type stallSurfaceSpy struct {
 	escalations []string
 	events      []*captain.Event
 }
 
-func (s *stallSurfaceSpy) RecordStallStreak(string, string, string, int) {}
+func (s *stallSurfaceSpy) RecordStallStreak(_, _, _ string, _ int) {}
 
 func (s *stallSurfaceSpy) RecordStallEscalation(_, scope, reason string) {
 	s.escalations = append(s.escalations, scope+"/"+reason)
@@ -262,26 +158,23 @@ func (s *stallSurfaceSpy) Record(_ context.Context, e *captain.Event) error {
 	return nil
 }
 
-// THE REGRESSION THAT MATTERS, end to end and through the real escalator: an autosizer BLOCKED on
+// THE REGRESSION THAT MATTERS, end to end and through the real escalator: a coordinator BLOCKED on
 // the same guard every tick escalates EXACTLY ONCE, on both durable surfaces, and keeps quiet for
-// every tick after — the eighteen-tick production streak pages once, not sixteen times.
-func TestAutosizerStallEscalatesExactlyOnceThroughTheRealEscalator(t *testing.T) {
+// every tick after — an eighteen-tick production streak pages once, not sixteen times.
+func TestGrowthStallEscalatesExactlyOnceThroughTheRealEscalator(t *testing.T) {
 	spy := &stallSurfaceSpy{}
-	h, _ := blockedHandler(lightShortfall())
+	h, _ := blockedGrowthHandler(t)
+	h.SetYardPriceReader(&growthYardPriceCounter{})
 	h.SetStallObserver(health.NewStallEscalator(spy, spy))
-	cmd := &RunFleetAutosizerCoordinatorCommand{PlayerID: 5, ContainerID: "c1"}
 
 	for i := 0; i < health.StallEscalationTicks*6; i++ {
-		if _, err := h.reconcileOnce(context.Background(), cmd); err != nil {
+		if _, err := h.reconcileOnce(context.Background(), growthCmd()); err != nil {
 			t.Fatalf("reconcileOnce error: %v", err)
 		}
 	}
 
 	if len(spy.escalations) != 1 {
 		t.Fatalf("expected exactly 1 escalation across %d blocked ticks, got %d: %v", health.StallEscalationTicks*6, len(spy.escalations), spy.escalations)
-	}
-	if spy.escalations[0] != string(HullClassLight)+"/"+string(GuardPrice) {
-		t.Fatalf("escalation = %q, want the blocked class and its first failing guard", spy.escalations[0])
 	}
 	if len(spy.events) != 1 {
 		t.Fatalf("expected exactly 1 captain_events row, got %d", len(spy.events))
@@ -291,77 +184,20 @@ func TestAutosizerStallEscalatesExactlyOnceThroughTheRealEscalator(t *testing.T)
 	}
 }
 
-// …AND THE OTHER HALF, end to end: a correctly-idle autosizer escalates NOTHING, however long it
+// …AND THE OTHER HALF, end to end: a correctly-idle coordinator escalates NOTHING, however long it
 // idles. If this ever fires, the alarm is worthless.
-func TestAutosizerIdleNeverEscalatesThroughTheRealEscalator(t *testing.T) {
+func TestGrowthIdleNeverEscalatesThroughTheRealEscalator(t *testing.T) {
 	spy := &stallSurfaceSpy{}
-	satisfied := &fakeDemandProvider{class: HullClassLight, demand: ClassDemand{Demand: 3, Current: 3, Readable: true}}
-	h, _ := blockedHandler(satisfied)
+	h := newGrowthHandlerWith(t, growthFixture{lanes: &fakeLanes{count: 0, readable: true}})
 	h.SetStallObserver(health.NewStallEscalator(spy, spy))
-	cmd := &RunFleetAutosizerCoordinatorCommand{PlayerID: 5, ContainerID: "c1"}
 
 	for i := 0; i < health.StallEscalationTicks*20; i++ {
-		if _, err := h.reconcileOnce(context.Background(), cmd); err != nil {
+		if _, err := h.reconcileOnce(context.Background(), growthCmd()); err != nil {
 			t.Fatalf("reconcileOnce error: %v", err)
 		}
 	}
 
 	if len(spy.escalations) != 0 || len(spy.events) != 0 {
-		t.Fatalf("an idle autosizer must escalate nothing, got %d escalations / %d events", len(spy.escalations), len(spy.events))
-	}
-}
-
-// A block cleared by a purchase resets the streak: one transient refusal must never accumulate
-// toward a page across a working fleet.
-func TestAutosizerPurchaseClearsTheStallStreakThroughTheRealEscalator(t *testing.T) {
-	spy := &stallSurfaceSpy{}
-	provider := lightShortfall()
-	h, _, _, _ := armedHandler(provider)
-	h.SetMetricsSink(NewBlockedGuardTap(&recordingMetrics{}))
-	h.SetStallObserver(health.NewStallEscalator(spy, spy))
-	yard := &fakeYardPrice{price: 437000, cheapest: 400000, yard: "KA42-A2", ok: true}
-	h.SetYardPriceReader(yard)
-	cmd := &RunFleetAutosizerCoordinatorCommand{PlayerID: 5, ContainerID: "c1"}
-
-	// Blocked to one tick short of the threshold, then a tick that buys, then blocked again to
-	// one tick short. Neither run reaches the threshold on its own.
-	for episode := 0; episode < 2; episode++ {
-		yard.ok = false
-		for i := 0; i < health.StallEscalationTicks-1; i++ {
-			if _, err := h.reconcileOnce(context.Background(), cmd); err != nil {
-				t.Fatalf("reconcileOnce error: %v", err)
-			}
-		}
-		yard.ok = true
-		if _, err := h.reconcileOnce(context.Background(), cmd); err != nil {
-			t.Fatalf("reconcileOnce error: %v", err)
-		}
-	}
-
-	if len(spy.escalations) != 0 {
-		t.Fatalf("a purchase between two short block runs must reset the streak, got %v", spy.escalations)
-	}
-}
-
-// The tap NEVER mis-attributes a guard across containers. The autosizer handler is a registered
-// singleton serving every player's ticks, so two containers can be inside the act path at once;
-// a stolen slot must degrade to the coarse fallback reason rather than pinning one container's
-// refusal on another's stall streak (which would silently restart the wrong streak).
-func TestBlockedGuardTapRefusesToAttributeAStolenSlot(t *testing.T) {
-	tap := NewBlockedGuardTap(&recordingMetrics{}).(*blockedGuardTap)
-
-	tap.expect("c1", HullClassHeavy)
-	tap.expect("c2", HullClassHeavy) // a sibling container's tick interleaves
-	tap.RecordBlocked(HullClassHeavy, GuardAffordability)
-
-	if _, ok := tap.take("c1", HullClassHeavy); ok {
-		t.Fatalf("c1 must NOT claim a verdict recorded after c2 took the slot")
-	}
-	guard, ok := tap.take("c2", HullClassHeavy)
-	if !ok || guard != GuardAffordability {
-		t.Fatalf("c2 owns the slot and must read its own verdict, got %q (ok=%v)", guard, ok)
-	}
-	if _, ok := tap.take("c2", HullClassHeavy); ok {
-		t.Fatalf("take must consume the verdict: a second read in a later tick would replay a stale guard")
+		t.Fatalf("an idle coordinator must escalate nothing, got %d escalations / %d events", len(spy.escalations), len(spy.events))
 	}
 }

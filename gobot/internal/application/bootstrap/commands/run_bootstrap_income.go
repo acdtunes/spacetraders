@@ -23,24 +23,19 @@ const tradeFleetTag = "trade"
 //     immediately (the frigate via the contract coordinator's general pool, until dedicated haulers
 //     put it in exclusive mode), growing treasury so the staged hauler buys become affordable — this
 //     is what avoids the "retire everything, nothing earns" deadlock.
-//  3. Start the command frigate's OWN continuous single-hull contract loop once probe provisioning is
-//     done (reusing the batch-contract --loop primitive). The frigate is the pre-hauler
-//     sole earner but the contract fleet coordinator does not keep it earning, so without this
-//     the frigate parks idle at the shipyard after its hour-0 probe buy and income never flows.
-//     The loop and the coordinator are mutually exclusive at the daemon (per-player
-//     single CONTRACT_WORKFLOW worker), so there is no double-claim (RULINGS #7).
-//  4. Hand a STRANDED purchasing frigate back to earning. Step 5's pivot makes the frigate the exclusive
-//     buy ship on the evidence that hauler #1 is within reach; when the ask sits outside the
-//     working-capital floor instead, that same frigate is the fleet's only earner and it is not earning.
-//     Clearing its dedication returns it to step 3, and it re-pivots by itself once the treasury clears
-//     the floor. Skipped whenever the buy is genuinely within reach — the pivot owns that case.
-//  5. Staged, capital-gated hull acquisition, ROUTED BY ORDER: acquisition #1 → the contract
-//     fleet, #2 → the TRADE fleet (the trade-seed, held until the first contract hull exists), #3… →
-//     contract again. The ramp climbs to the FIXED Phase-1 hauler target, placing each hull on a distinct
-//     fixed delivery slot. The COUNT guard (haulers < haulerTarget) is the double-buy protection;
-//     placement picks the first slot no hauler yet serves. At most one buy per tick (never a blind
-//     buy-all). The trade hull is decoupled — it does not count toward the contract scaler's ceiling, and
-//     all the phase logic lives HERE (the trade/contract coordinators + scaler stay phase-blind).
+//  3. Start the command frigate's OWN continuous contract loop once probe provisioning is done. The
+//     frigate is the pre-hauler sole earner and the contract fleet coordinator does not keep it
+//     earning, so without this it parks idle after its hour-0 probe buy and income never flows. The
+//     loop and the coordinator are mutually exclusive at the daemon, so no double-claim (RULINGS #7).
+//  4. Hand a STRANDED purchasing frigate back to earning. Step 5's pivot makes the frigate the
+//     exclusive buy ship on the evidence hauler #1 is within reach; when the ask sits outside the
+//     working-capital floor that same frigate is the only earner and is not earning. Clearing its
+//     dedication returns it to step 3, and it re-pivots once the treasury clears the floor.
+//  5. Staged, capital-gated hull acquisition, ROUTED BY ORDER: #1 → the contract fleet, #2 → the TRADE
+//     fleet (held until the first contract hull exists), #3… → contract again. The ramp climbs to the
+//     fixed Phase-1 hauler target, one hull per tick, each on a distinct delivery slot; the COUNT guard
+//     (haulers < haulerTarget) is the double-buy protection. The trade hull does not count toward the
+//     scaler's ceiling, and ALL the phase logic lives HERE — the coordinators stay phase-blind.
 //
 // Each action is guarded "already done / in-flight?" against the FRESH observation, so re-evaluation —
 // including the first tick after a restart — never double-acts or double-buys.

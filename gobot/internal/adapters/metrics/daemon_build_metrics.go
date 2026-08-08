@@ -8,7 +8,7 @@ import (
 
 // DaemonBuildInfoCollector exposes the running daemon's identity so a scrape
 // reveals WHICH build/instance answered — making a stale second daemon
-// (sp-wrh84) detectable:
+// detectable:
 //
 //   - build_info{commit,started_at}: a GAUGE pinned to 1, labelled with the
 //     running commit and process start time.

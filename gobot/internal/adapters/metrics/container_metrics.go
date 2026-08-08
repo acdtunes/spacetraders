@@ -151,7 +151,7 @@ func NewContainerMetricsCollector(
 			"component",
 		),
 
-		// Contract spawn-governor hull quarantines (sp-20eyn). Labeled by CAUSE
+		// Contract spawn-governor hull quarantines. Labeled by CAUSE
 		// only — a fixed 2-value set whose two members have completely different
 		// remedies, so a dashboard can tell "hulls that cannot start work" from
 		// "hulls the API cannot read" without parsing logs. Deliberately NOT

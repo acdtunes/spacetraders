@@ -24,7 +24,7 @@ func tradeSeedHandler(obs Observation, ho *fakeHandoff, acq *fakeHaulerAcquirer)
 func TestBootstrap_TradeSeed_SecondAcquisitionRoutedToTradeFleet(t *testing.T) {
 	obs := incomeObs()              // COLDSTART (probes 3/3), 3 viable hubs, treasury 2M
 	obs.BatchContractRunning = true // isolate: don't launch batch-contract
-	obs.AutosizerRunning = true     // isolate: the early autosizer launch is an idempotent no-op
+	obs.GrowthRunning = true        // isolate: the early autosizer launch is an idempotent no-op
 	obs.CommandFrigateID = "FRIGATE-1"
 	obs.CommandFrigatePurchasing = true                                 // the exclusive purchasing ship (post first-hauler pivot)
 	obs.Haulers = []HaulerSnapshot{{Symbol: "H1", Waypoint: "X1-HUBA"}} // ONE contract hull already
@@ -62,7 +62,7 @@ func TestBootstrap_TradeSeed_SecondAcquisitionRoutedToTradeFleet(t *testing.T) {
 func TestBootstrap_TradeSeed_Idempotent_NoReseedWhenTradeHullExists(t *testing.T) {
 	obs := incomeObs()
 	obs.BatchContractRunning = true
-	obs.AutosizerRunning = true
+	obs.GrowthRunning = true
 	obs.CommandFrigateID = "FRIGATE-1"
 	obs.CommandFrigatePurchasing = true
 	obs.TradeHullCount = 1 // the trade hull already exists → the durable seeded signal → no re-seed
@@ -89,7 +89,7 @@ func TestBootstrap_TradeSeed_Idempotent_NoReseedWhenTradeHullExists(t *testing.T
 func TestBootstrap_TradeSeed_ZeroContract_BuysContractFirstNotTrade(t *testing.T) {
 	obs := incomeObs()              // 3 viable hubs, treasury 2M, idle purchaser present
 	obs.BatchContractRunning = true // isolate the buy
-	obs.AutosizerRunning = true     // isolate the early autosizer launch
+	obs.GrowthRunning = true        // isolate the early autosizer launch
 	obs.Haulers = nil               // ZERO contract haulers → acquisition #1
 	obs.TradeHullCount = 0
 	acq := &fakeHaulerAcquirer{price: 300000, yard: "X1-YARD", readable: true}
@@ -124,7 +124,7 @@ func TestBootstrap_TradeSeed_ZeroContract_BuysContractFirstNotTrade(t *testing.T
 func scalerGateObs(tradeHulls int) Observation {
 	obs := incomeObs()
 	obs.BatchContractRunning = true
-	obs.AutosizerRunning = true
+	obs.GrowthRunning = true
 	obs.Haulers = nil
 	obs.ContractPlacementSlots = nil
 	obs.TradeHullCount = tradeHulls
@@ -165,7 +165,7 @@ func TestBootstrap_ContractScaler_EnsuredOnceTradeHullSeeded(t *testing.T) {
 func TestBootstrap_TradeSeed_NilHandoff_SkipsBuyAndBlocks(t *testing.T) {
 	obs := incomeObs()
 	obs.BatchContractRunning = true
-	obs.AutosizerRunning = true
+	obs.GrowthRunning = true
 	obs.CommandFrigateID = "FRIGATE-1"
 	obs.CommandFrigatePurchasing = true
 	obs.Haulers = []HaulerSnapshot{{Symbol: "H1", Waypoint: "X1-HUBA"}}
