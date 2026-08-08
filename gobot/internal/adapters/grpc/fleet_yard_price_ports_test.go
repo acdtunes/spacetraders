@@ -42,9 +42,9 @@ func (f *fakeScannedYards) NearestYardsSelling(_ context.Context, _ int, shipTyp
 }
 
 // The heavy branch OPENS on the scanned-yard signal: live walk empty, scan
-// store holding reachable candidates → PriceFor returns the nearest candidate's
-// price + yard with readable=true, and reports the true cheapest across
-// candidates so the premium guard can do its designed job. The rank is asked
+// store holding candidates → PriceFor returns the ask at the nearest candidate
+// WE ALREADY STAND ON, with readable=true, and reports the true cheapest across
+// every candidate so the premium guard can do its designed job. The rank is asked
 // from the fleet's occupied systems.
 func TestYardPriceReader_HeavyFallsBackToScannedYards_WhenLiveWalkEmpty(t *testing.T) {
 	scanned := &fakeScannedYards{candidates: []shipyardQueries.YardCandidate{
@@ -52,19 +52,24 @@ func TestYardPriceReader_HeavyFallsBackToScannedYards_WhenLiveWalkEmpty(t *testi
 		{SystemSymbol: "X1-FAR", WaypointSymbol: "X1-FAR-Y1", ShipType: "SHIP_HEAVY_FREIGHTER", PurchasePrice: 1_100_000, Hops: 3},
 	}}
 	r := &fleetYardPriceReader{
-		shipRepo:     &fakeHeavyShipRepo{all: []*navigation.Ship{tradeShipAt(t, "TR-1", 1, "X1-HOME-A1")}},
+		shipRepo: &fakeHeavyShipRepo{all: []*navigation.Ship{
+			tradeShipAt(t, "TR-1", 1, "X1-HOME-A1"),
+			// The buy needs a hull AT the counter, not merely a fleet somewhere: the cheaper
+			// X1-FAR yard has nobody standing on it and is therefore not a target at any price.
+			pairingHull(t, "BUYER-1", "X1-NEAR-Y1", ""),
+		}},
 		waypointRepo: &fakeYardWaypointLister{}, // no in-system shipyards → live walk finds nothing
 		scannedYards: scanned,
 	}
 
 	price, cheapest, yard, readable, err := r.PriceFor(context.Background(), 1, hullbuy.HullClassHeavy, "SHIP_HEAVY_FREIGHTER", true)
 	require.NoError(t, err)
-	require.True(t, readable, "a known, reachable scanned yard must open the heavy price signal")
-	require.Equal(t, int64(1_300_000), price, "price = the NEAREST candidate's ask (hops dominate)")
+	require.True(t, readable, "a known scanned yard we stand on must open the heavy price signal")
+	require.Equal(t, int64(1_300_000), price, "price = the ask where a buyer already stands")
 	require.Equal(t, "X1-NEAR-Y1", yard)
-	require.Equal(t, int64(1_100_000), cheapest, "cheapest = true minimum across reachable candidates (premium guard input)")
+	require.Equal(t, int64(1_100_000), cheapest, "cheapest = true minimum across every candidate (premium guard input)")
 	require.Equal(t, []string{"SHIP_HEAVY_FREIGHTER"}, scanned.gotTypes)
-	require.Equal(t, []string{"X1-HOME"}, scanned.gotFrom, "the rank must start from the fleet's occupied systems")
+	require.ElementsMatch(t, []string{"X1-HOME", "X1-NEAR"}, scanned.gotFrom, "the rank must start from the fleet's occupied systems")
 }
 
 // With NO scan data (empty store) the heavy branch keeps its historical

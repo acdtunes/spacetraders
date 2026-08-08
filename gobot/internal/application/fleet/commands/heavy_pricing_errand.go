@@ -421,16 +421,22 @@ func errandsInFlight(unpriced []KnownHeavyYard, hulls []PricingErrandHull) int {
 func pricingErrandCarriers(hulls []PricingErrandHull) []PricingErrandHull {
 	out := make([]PricingErrandHull, 0, len(hulls))
 	for _, h := range hulls {
-		if h.Symbol == "" || h.Fleet != heavyPricingErrandFleet || h.MannedScoutPost {
-			continue
-		}
-		if !h.Idle || h.InTransit {
+		if !SpareSensingProbe(h) {
 			continue
 		}
 		out = append(out, h)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Symbol < out[j].Symbol })
 	return out
+}
+
+// SpareSensingProbe is the restraint rule above as ONE exported answer, because the hull buy draws
+// on this pool too: a copy drifts the moment either side learns a new way for a probe to be busy.
+func SpareSensingProbe(h PricingErrandHull) bool {
+	if h.Symbol == "" || h.Fleet != heavyPricingErrandFleet || h.MannedScoutPost {
+		return false
+	}
+	return h.Idle && !h.InTransit
 }
 
 // pricingErrandCarrier reports whether ANY hull may be taken, for the decline line's evidence.

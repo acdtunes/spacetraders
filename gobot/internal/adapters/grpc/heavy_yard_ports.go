@@ -195,15 +195,22 @@ func newHeavyYardPricingErrand(server *DaemonServer, med common.Mediator, shipRe
 	if server == nil {
 		return e
 	}
-	if server.db != nil {
-		e.posts = persistence.NewGormScoutPostRepository(server.db)
-	}
+	e.posts = serverScoutPostRoster(server)
 	if hops, ok := server.gateGraph.(storedHopDistancer); ok {
 		e.hops = hops
 	} else {
 		log.Printf("WARNING: fleet growth heavy-pricing errand reach UNWIRED — the gate graph cannot answer stored hop distances, so no carrier's route to a heavy yard can be proved and NO pricing errand will ever fly")
 	}
 	return e
+}
+
+// serverScoutPostRoster resolves the daemon's scout-post table, or nil when it has no connection.
+// Written once so the errand and the hull buy read the SAME roster.
+func serverScoutPostRoster(server *DaemonServer) scoutPostRoster {
+	if server == nil || server.db == nil {
+		return nil
+	}
+	return persistence.NewGormScoutPostRepository(server.db)
 }
 
 func (e *heavyYardPricingErrand) ErrandHulls(ctx context.Context, playerID int) ([]fleetCmd.PricingErrandHull, error) {
@@ -253,15 +260,21 @@ func (e *heavyYardPricingErrand) ErrandHulls(ctx context.Context, playerID int) 
 // Primary AND extra slots, via MannedHulls: a multi-hull post's second probe is no more available
 // than its first, and reading only the scalar column would leave every extra slot exposed.
 func (e *heavyYardPricingErrand) mannedScoutPostHulls(ctx context.Context, playerID int) (map[string]bool, error) {
-	if e.posts == nil {
+	return mannedScoutPostHulls(ctx, e.posts, playerID)
+}
+
+// mannedScoutPostHulls indexes every hull a live scout post NAMES, for every engine drawing on the
+// shared probe pool — ONE read, so they cannot disagree about which probes a post already owns.
+func mannedScoutPostHulls(ctx context.Context, posts scoutPostRoster, playerID int) (map[string]bool, error) {
+	if posts == nil {
 		return nil, fmt.Errorf("the scout-post roster is unwired, so no hull can be shown free of a post")
 	}
-	posts, err := e.posts.ListActive(ctx, playerID)
+	rows, err := posts.ListActive(ctx, playerID)
 	if err != nil {
 		return nil, fmt.Errorf("read the scout posts to leave manned hulls alone: %w", err)
 	}
-	manned := make(map[string]bool, len(posts))
-	for _, p := range posts {
+	manned := make(map[string]bool, len(rows))
+	for _, p := range rows {
 		if p == nil {
 			continue
 		}

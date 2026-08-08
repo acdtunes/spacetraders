@@ -349,6 +349,31 @@ func TestGrowthReconcile_ProbeWaveBuysNoHeavy(t *testing.T) {
 	}
 }
 
+// THE BUY CARRIES THE COORDINATOR'S OWN CONTAINER, and that is not decoration: the purchase claims a
+// borrowed signer under it, and the column carries a foreign key, so an order that arrived with an
+// empty id could hold no claim and would silently refuse every borrowed hull — fail-closed, correct,
+// and invisible. Nothing else in the coordinator would look wrong.
+func TestGrowthReconcile_HeavyBuyOrderCarriesTheCoordinatorsContainer(t *testing.T) {
+	buyer := &growthPurchaseRecorder{}
+	h := newGrowthHandlerWith(t, growthFixture{
+		lanes:    &fakeLanes{count: 9, readable: true},
+		treasury: 12_000_000,
+		yardAsk:  1_000_000,
+		streak:   3,
+	})
+	h.SetPurchaser(buyer)
+
+	if _, err := h.reconcileOnce(context.Background(), growthCmd()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if buyer.calls != 1 {
+		t.Fatalf("expected one purchase, got %d", buyer.calls)
+	}
+	if buyer.lastOrder.ContainerID != "growth-1" {
+		t.Fatalf("the buy must own its claim through the coordinator's container, got %q", buyer.lastOrder.ContainerID)
+	}
+}
+
 // A HEAVY wave with every guard satisfied buys exactly one hull, dedicated to the trade pool.
 func TestGrowthReconcile_HeavyWaveBuysOne(t *testing.T) {
 	buyer := &growthPurchaseRecorder{}

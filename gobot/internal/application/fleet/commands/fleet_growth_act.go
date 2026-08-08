@@ -228,7 +228,7 @@ func (h *RunFleetGrowthCoordinatorHandler) buyHeavy(
 		return false, true, "", false
 	}
 
-	res, err := h.purchaser.BuyAndDedicate(ctx, BuyOrder{PlayerID: cmd.PlayerID, Class: HullClassHeavy, ShipType: req.ShipType, Yard: yard, ExpectedPrice: req.Price})
+	res, err := h.purchaser.BuyAndDedicate(ctx, BuyOrder{PlayerID: cmd.PlayerID, Class: HullClassHeavy, ShipType: req.ShipType, Yard: yard, ExpectedPrice: req.Price, ContainerID: cmd.ContainerID})
 	if err != nil {
 		logger.Log("ERROR", fmt.Sprintf("Fleet growth heavy buy failed: %v", err), map[string]interface{}{
 			"action": "growth_buy_error", "container_id": cmd.ContainerID,

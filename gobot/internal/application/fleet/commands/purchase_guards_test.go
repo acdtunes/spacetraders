@@ -128,6 +128,39 @@ func TestGuard_Price_PremiumOverCheapest(t *testing.T) {
 	assertBlockedBy(t, r, GuardPrice)
 }
 
+// THE PRESENCE PREMIUM. The buy path targets the cheapest yard A CLAIMABLE HULL ALREADY STANDS ON,
+// while CheapestKnownPrice keeps naming the cheapest ask KNOWN — occupied or not. That gap is the
+// ordinary shape of this request now: Price > CheapestKnownPrice with nothing wrong.
+//
+// A third above the cheapest known ask sits inside the shipped max_premium_over_cheapest_pct, so the
+// purchase the fleet can actually execute still clears the clause — and ObserveHeavyPricePremium
+// reports that premium honestly, which is the whole reason cheapest was not narrowed to the occupied
+// set along with the target.
+func TestGuard_Price_PresencePremiumWithinTheCapStillApproves(t *testing.T) {
+	r := heavyRequest()
+	r.Price = 1_600_000              // the dearer yard we already stand on
+	r.CheapestKnownPrice = 1_200_000 // the cheaper yard nothing of ours occupies: cap = 1_800_000
+	r.LiveTreasury = 20_000_000
+
+	d := EvaluateGuards(r)
+	if !d.Approved {
+		t.Fatalf("an occupied yard a third above the cheapest KNOWN ask must clear the premium clause; blocked by %q: %s", d.BlockedBy, d.Arithmetic())
+	}
+}
+
+// The other side of the same clause, and it is NOT a regression to be fixed: an occupied yard more
+// than max_premium_over_cheapest_pct above the cheapest known ask is refused, exactly as any other
+// overpriced ask is. Restricting the target to yards we stand on may raise the price; it never buys
+// the operator's premium ceiling away (RULINGS #4 — a money guard is never weakened to make a
+// purchase go through).
+func TestGuard_Price_PresencePremiumBeyondTheCapStillBlocks(t *testing.T) {
+	r := heavyRequest()
+	r.Price = 1_900_000 // cap = 1_200_000 * 1.5 = 1_800_000
+	r.CheapestKnownPrice = 1_200_000
+	r.LiveTreasury = 20_000_000
+	assertBlockedBy(t, r, GuardPrice)
+}
+
 // heavyRequest is a HEAVY (trade) candidate where every guard passes — the all-pass light request
 // with the class flipped, so a test that flips ONE field pins exactly one heavy-path refusal.
 func heavyRequest() PurchaseRequest {

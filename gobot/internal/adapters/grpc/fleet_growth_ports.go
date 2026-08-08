@@ -68,7 +68,10 @@ func NewFleetGrowthCoordinatorHandler(
 	h.SetAPIUtilizationReader(&fleetAPIUtilReader{resolve: globalAPIBudgetReporter})
 	// The concrete waypoint repo is assigned only when non-nil: a typed-nil pointer inside the
 	// interface field would defeat the reader's nil guard with a runtime panic instead.
-	yardPriceReader := &fleetYardPriceReader{med: med, shipRepo: shipRepo, scannedYards: scannedYards}
+	// The borrowed-probe restraint roster — the SAME one the pricing errand reads. Every hull standing
+	// on a priced heavy yard is sensing's, so without it the buy has nobody to sign with.
+	buyerPosts := serverScoutPostRoster(server)
+	yardPriceReader := &fleetYardPriceReader{med: med, shipRepo: shipRepo, scannedYards: scannedYards, posts: buyerPosts}
 	if waypointRepo != nil {
 		yardPriceReader.waypointRepo = waypointRepo
 	}
@@ -122,7 +125,7 @@ func NewFleetGrowthCoordinatorHandler(
 
 	// growth_enabled and heavy_cap are the live-tunable knobs (Pattern-C hot reload).
 	h.SetGrowthConfigReader(NewContainerConfigReader(server.containerRepo))
-	h.SetPurchaser(&fleetHullPurchaser{med: med, shipRepo: shipRepo})
+	h.SetPurchaser(&fleetHullPurchaser{med: med, shipRepo: shipRepo, posts: buyerPosts})
 	h.SetPurchaseNotifier(&fleetPurchaseNotifier{store: eventStore})
 	h.SetMetricsSink(&growthMetricsSink{})
 	// Stall escalation: a coordinator that refuses every tick must not look identical to one with

@@ -17,9 +17,16 @@ import (
 // scaler both execute their purchases through it. These tests pin the two behaviours a caller
 // cannot see and cannot recover from — which hull is sent to do the buying, and which fleet tag the
 // bought hull lands with — at the adapter seam, where the policy is actually applied.
+//
+// reclaimHull parks every hull at reclaimYardWaypoint, so an order naming that waypoint is one the
+// fleet is ALREADY STANDING AT — the precondition the buy path now requires, since the hull that
+// signs must be at the counter rather than flown to it.
 
 // dedicateAtPurchaseBuyer wires the primitive against a fleet and a mediator that answers a batch
 // purchase with one hull.
+// reclaimYardWaypoint is where reclaimHull stands every hull it builds.
+const reclaimYardWaypoint = "X1-SC-A1"
+
 func dedicateAtPurchaseBuyer(fleet []*navigation.Ship) (*fleetHullPurchaser, *fakeReclaimShipRepo, *recordingBuyMediator) {
 	repo := &fakeReclaimShipRepo{all: fleet}
 	med := &recordingBuyMediator{}
@@ -63,7 +70,7 @@ func TestAutosizerPurchaser_StampsTheDedicateAtPurchaseTagPerClass(t *testing.T)
 			})
 
 			res, err := p.BuyAndDedicate(context.Background(), hullbuy.BuyOrder{
-				PlayerID: 1, Class: tc.class, ShipType: "SHIP_LIGHT_HAULER", Yard: "X1-HQ-YARD",
+				PlayerID: 1, Class: tc.class, ShipType: "SHIP_LIGHT_HAULER", Yard: reclaimYardWaypoint,
 			})
 			require.NoError(t, err)
 			require.Equal(t, "TORWIND-99", res.ShipSymbol)
@@ -88,20 +95,21 @@ func TestAutosizerPurchaser_DedicationFailureSurfaces(t *testing.T) {
 	}
 	p := &fleetHullPurchaser{med: &recordingBuyMediator{}, shipRepo: repo}
 
-	_, err := p.BuyAndDedicate(context.Background(), hullbuy.BuyOrder{PlayerID: 1, Class: hullbuy.HullClassHeavy})
+	_, err := p.BuyAndDedicate(context.Background(), hullbuy.BuyOrder{PlayerID: 1, Class: hullbuy.HullClassHeavy, Yard: reclaimYardWaypoint})
 	require.ErrorContains(t, err, "failed to dedicate")
 }
 
-// THE PURCHASER-HULL PREFERENCE. The pivoted command frigate is the deterministic, PROTECTED buy
-// ship, so it wins over any other idle hull — the plain idle hull is listed FIRST here precisely so
-// a first-match-wins implementation fails this test.
+// THE PURCHASER-HULL PREFERENCE, now a TIE-BREAK among the hulls standing at the yard rather than a
+// fleet-wide winner: the pivoted command frigate is still the deterministic, PROTECTED buy ship, so
+// where two claimable hulls are both at the counter it signs. The plain idle hull is listed FIRST
+// here precisely so a first-match-wins implementation fails this test.
 func TestAutosizerPurchaser_PrefersTheProtectedPurchasingHull(t *testing.T) {
 	p, _, med := dedicateAtPurchaseBuyer([]*navigation.Ship{
 		reclaimHull(t, "IDLE-OTHER", 40, "", navigation.NavStatusInOrbit),
 		reclaimHull(t, "BUYER", 40, navigation.PurchasingFleet, navigation.NavStatusInOrbit),
 	})
 
-	_, err := p.BuyAndDedicate(context.Background(), hullbuy.BuyOrder{PlayerID: 1, Class: hullbuy.HullClassHeavy})
+	_, err := p.BuyAndDedicate(context.Background(), hullbuy.BuyOrder{PlayerID: 1, Class: hullbuy.HullClassHeavy, Yard: reclaimYardWaypoint})
 	require.NoError(t, err)
 
 	used, dispatched := purchasingHullUsed(med)
@@ -110,7 +118,7 @@ func TestAutosizerPurchaser_PrefersTheProtectedPurchasingHull(t *testing.T) {
 }
 
 // The preference is a PREFERENCE, not a requirement: a momentarily busy or not-yet-established
-// purchasing hull must not stall scaling, so any idle hull can execute the buy.
+// purchasing hull must not stall scaling, so any claimable idle hull at the counter can sign.
 func TestAutosizerPurchaser_FallsBackToAnyIdleHull(t *testing.T) {
 	busyBuyer := reclaimHull(t, "BUYER", 40, navigation.PurchasingFleet, navigation.NavStatusInOrbit)
 	require.NoError(t, busyBuyer.AssignToContainer("worker-1", shared.NewRealClock()))
@@ -126,7 +134,7 @@ func TestAutosizerPurchaser_FallsBackToAnyIdleHull(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			p, _, med := dedicateAtPurchaseBuyer(tc.fleet)
 
-			_, err := p.BuyAndDedicate(context.Background(), hullbuy.BuyOrder{PlayerID: 1, Class: hullbuy.HullClassHeavy})
+			_, err := p.BuyAndDedicate(context.Background(), hullbuy.BuyOrder{PlayerID: 1, Class: hullbuy.HullClassHeavy, Yard: reclaimYardWaypoint})
 			require.NoError(t, err)
 
 			used, dispatched := purchasingHullUsed(med)
@@ -143,7 +151,7 @@ func TestAutosizerPurchaser_NoIdleHullBuysNothing(t *testing.T) {
 	require.NoError(t, busy.AssignToContainer("worker-1", shared.NewRealClock()))
 	p, _, med := dedicateAtPurchaseBuyer([]*navigation.Ship{busy})
 
-	_, err := p.BuyAndDedicate(context.Background(), hullbuy.BuyOrder{PlayerID: 1, Class: hullbuy.HullClassHeavy})
-	require.ErrorContains(t, err, "no idle hull")
+	_, err := p.BuyAndDedicate(context.Background(), hullbuy.BuyOrder{PlayerID: 1, Class: hullbuy.HullClassHeavy, Yard: reclaimYardWaypoint})
+	require.ErrorContains(t, err, "no idle claimable hull")
 	require.False(t, med.purchaseAttempted(), "a buy with no hull to execute it must never reach the money path")
 }

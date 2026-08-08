@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
@@ -138,6 +139,7 @@ func (r *fleetAPIUtilReader) UtilizationPct(ctx context.Context) (float64, bool,
 type fleetHullPurchaser struct {
 	med      common.Mediator
 	shipRepo navigation.ShipRepository
+	posts    scoutPostRoster // the borrowed-probe restraint roster; see fleet_buy_pairing.go
 }
 
 func (p *fleetHullPurchaser) BuyAndDedicate(ctx context.Context, order hullbuy.BuyOrder) (hullbuy.BuyResult, error) {
@@ -145,31 +147,32 @@ func (p *fleetHullPurchaser) BuyAndDedicate(ctx context.Context, order hullbuy.B
 	if err != nil {
 		return hullbuy.BuyResult{}, err
 	}
-	// The purchase needs a hull to travel to and buy at the shipyard. sp-7r7w: PREFER the exclusive
-	// purchasing ship (the pivoted command frigate) when idle — the deterministic, protected buy ship for
-	// every scaling buy — and fall back to any idle hull if it is momentarily busy or not yet established.
-	// The battle-tested batch path navigates it and enforces the money-integrity type guard.
+	// The hull that signs must ALREADY STAND at the yard: the batch path's money-integrity guard
+	// still runs, its navigation step simply never does.
 	ships, err := p.shipRepo.FindAllByPlayer(ctx, pid)
 	if err != nil {
 		return hullbuy.BuyResult{}, err
 	}
-	purchaser := ""
-	for _, s := range ships {
-		if s.IsIdle() && s.DedicatedFleet() == navigation.PurchasingFleet {
-			purchaser = s.ShipSymbol()
-			break
-		}
+	manned, rosterOK := buyerRoster(ctx, p.posts, order.PlayerID)
+	buyers := purchaseBuyers(ships, manned, rosterOK)
+	if len(buyers) == 0 {
+		return hullbuy.BuyResult{}, fmt.Errorf("no idle claimable hull available to execute the purchase")
 	}
-	if purchaser == "" {
-		for _, s := range ships {
-			if s.IsIdle() {
-				purchaser = s.ShipSymbol()
-				break
-			}
-		}
+	// FAIL CLOSED and NAMED, never a quiet flight instead.
+	buyer, standing := standingBuyerAt(buyers, order.Yard)
+	if !standing {
+		return hullbuy.BuyResult{}, fmt.Errorf("no claimable hull of ours stands at %s — refusing to fly one in to buy %s", order.Yard, order.ShipType)
 	}
-	if purchaser == "" {
-		return hullbuy.BuyResult{}, fmt.Errorf("no idle hull available to execute the purchase")
+	purchaser := buyer.ship.ShipSymbol()
+
+	// A BORROWED probe is held for the purchase and handed straight back — the claim is what stops its
+	// own engine flying it out from under a buy about to dock it. FAIL CLOSED, release deferred.
+	if buyer.Borrowed {
+		release, cerr := p.holdBorrowedBuyer(ctx, pid, purchaser, buyer.ship.DedicatedFleet(), order.ContainerID)
+		if cerr != nil {
+			return hullbuy.BuyResult{}, cerr
+		}
+		defer release()
 	}
 
 	resp, err := p.med.Send(ctx, &shipyardCmd.BatchPurchaseShipsCommand{
@@ -219,3 +222,29 @@ func (n *fleetPurchaseNotifier) NotifyPurchase(ctx context.Context, playerID int
 		Payload:  string(payload),
 	})
 }
+
+// holdBorrowedBuyer takes an exclusive claim on a hull the buy is BORROWING and returns the
+// hand-back. The operation is the hull's OWN dedication, so ClaimShip admits it with no tag changing
+// hands (RULINGS #7), and the exclusivity keeps its engine from moving it mid-purchase (RULINGS #3).
+//
+// FAIL CLOSED before any money moves: no owning container id means no claim is possible (the column
+// carries a foreign key), and an unclaimable hull is not a signer. The release is idempotent and its
+// failure a WARN — the purchase has happened, and boot's sweep is the backstop.
+func (p *fleetHullPurchaser) holdBorrowedBuyer(ctx context.Context, pid shared.PlayerID, buyer, ownFleet, containerID string) (func(), error) {
+	if strings.TrimSpace(containerID) == "" {
+		return nil, fmt.Errorf("borrowed signer %s refused (fail-closed): the buy carries no owning container id, so no claim can be held over it", buyer)
+	}
+	if err := p.shipRepo.ClaimShip(ctx, buyer, containerID, pid, ownFleet); err != nil {
+		return nil, fmt.Errorf("borrowed signer %s claim failed (fail-closed, no concurrent driver): %w", buyer, err)
+	}
+	return func() {
+		if _, err := p.shipRepo.ReleaseContainerClaim(ctx, buyer, pid, borrowedBuyerReleaseReason); err != nil {
+			common.LoggerFromContext(ctx).Log("WARN", "borrowed purchase signer release failed (the boot release sweep is the backstop)", map[string]interface{}{
+				"action": "fleet_buy_borrowed_signer_release", "ship_symbol": buyer, "error": err.Error(),
+			})
+		}
+	}, nil
+}
+
+// borrowedBuyerReleaseReason names the hand-back on the ship row.
+const borrowedBuyerReleaseReason = "hull purchase signed; borrowed hull returned to its fleet"

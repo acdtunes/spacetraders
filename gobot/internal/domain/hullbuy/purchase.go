@@ -9,6 +9,8 @@ type BuyOrder struct {
 	ShipType      string
 	Yard          string
 	ExpectedPrice int64
+	// ContainerID owns any claim the buy holds over a borrowed signer. It must be a REAL containers row (the column carries a foreign key); empty legally means "may hold no claim".
+	ContainerID string
 }
 
 // BuyResult reports the executed purchase. Dedicated says whether the hull was stamped with a
