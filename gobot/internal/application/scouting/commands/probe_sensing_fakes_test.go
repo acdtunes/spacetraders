@@ -1165,6 +1165,11 @@ type fakeRecorder struct {
 	// waves records every regime published, in call order, so a test can tell "published PROBE"
 	// from "published nothing" — the two mean different things and a map keyed by wave could not.
 	waves []recordedWave
+	// spendHolds is the LAST value written per refusal reason, and spendHoldWrites counts the
+	// writes. The count is what tells "published 0" apart from "published nothing at all", which a
+	// map of falses cannot.
+	spendHolds      map[string]bool
+	spendHoldWrites int
 }
 
 type recordedWave struct {
@@ -1235,6 +1240,28 @@ func (f *fakeRecorder) recordedWaves() []recordedWave {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]recordedWave(nil), f.waves...)
+}
+
+// RecordProbeSpendHold keeps the LAST value written per reason, so a test can see a hold fall back
+// to 0 as well as rise to 1 — the whole point of writing every reason on every tick.
+func (f *fakeRecorder) RecordProbeSpendHold(_ int, reason string, held bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.spendHolds == nil {
+		f.spendHolds = map[string]bool{}
+	}
+	f.spendHolds[reason] = held
+	f.spendHoldWrites++
+}
+
+func (f *fakeRecorder) recordedSpendHolds() (map[string]bool, int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make(map[string]bool, len(f.spendHolds))
+	for k, v := range f.spendHolds {
+		out[k] = v
+	}
+	return out, f.spendHoldWrites
 }
 
 // --- helpers ------------------------------------------------------------------

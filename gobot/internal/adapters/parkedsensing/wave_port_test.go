@@ -39,16 +39,22 @@ func (f *fakeSwitch) GrowthEnabled(_ context.Context, _ int) (bool, bool, error)
 
 type fakeReserveTarget struct {
 	target common.HeavyReserveTarget
-	err    error
-	calls  int
+	// capBinding is the second answer: the operator's cap, not the money, is what bars the heavy.
+	// The zero value is "the cap is not what stopped it", which is the state every case written
+	// before the no-consumer hold existed was asserting against.
+	capBinding bool
+	err        error
+	calls      int
 }
 
-func (f *fakeReserveTarget) Reserve(_ context.Context, _ int) (common.HeavyReserveTarget, error) {
+func (f *fakeReserveTarget) Reserve(_ context.Context, _ int) (common.HeavyReserveTarget, bool, error) {
 	f.calls++
 	if f.err != nil {
-		return 1_916_613, f.err
+		// ADVERSARIAL on BOTH answers: a leaked error would report a reachable target (pausing probe
+		// buying for a heavy) AND a binding cap (stopping the probe buying that replaces it).
+		return 1_916_613, true, f.err
 	}
-	return f.target, nil
+	return f.target, f.capBinding, nil
 }
 
 type fakeLanes struct {
@@ -58,16 +64,23 @@ type fakeLanes struct {
 	// The zero value is "not saturated", which is the state every case written before the
 	// switch-back term existed was asserting against.
 	saturated bool
-	err       error
-	calls     int
+	// hold is the trade pool's summed cargo capacity — the fleet side of the depth comparison. Zero
+	// is "no trade pool stands", which is what every case predating the no-consumer hold means.
+	hold  int
+	err   error
+	calls int
 }
 
 func (f *fakeLanes) LaneDemand(_ context.Context, _ int) (fleetgrowth.LaneDemand, bool, error) {
 	f.calls++
 	if f.err != nil {
-		return fleetgrowth.LaneDemand{UnservedLanes: 7}, true, f.err
+		return fleetgrowth.LaneDemand{UnservedLanes: 7, TradeHoldCapacity: 1_540}, true, f.err
 	}
-	return fleetgrowth.LaneDemand{UnservedLanes: f.count, Saturated: f.saturated}, f.readable, nil
+	return fleetgrowth.LaneDemand{
+		UnservedLanes:     f.count,
+		Saturated:         f.saturated,
+		TradeHoldCapacity: f.hold,
+	}, f.readable, nil
 }
 
 // fakePeak records the WINDOW it was asked for, because the window is half the contract: a peak
@@ -108,8 +121,19 @@ func reachableWorld() (*fakeSwitch, *fakeReserveTarget, *fakeLanes, *fakePeak) {
 
 func waveOf(t *testing.T, sw *fakeSwitch, res *fakeReserveTarget, lanes *fakeLanes, peak *fakePeak) (common.Wave, common.WaveProbeReason, common.HeavyReserveTarget, error) {
 	t.Helper()
-	return NewWavePort(sw, res, lanes, peak, stoppedClock{time.Unix(1_700_000_000, 0)}).
+	wave, reason, target, _, err := NewWavePort(sw, res, lanes, peak, stoppedClock{time.Unix(1_700_000_000, 0)}).
 		Wave(context.Background(), 1)
+	return wave, reason, target, err
+}
+
+// holdOf reads the fourth answer off the SAME assembly waveOf reads the regime from. Kept as a
+// second helper rather than widening waveOf so that every case predating the no-consumer hold still
+// asserts against the untouched three — a regime this term could disturb fails there first.
+func holdOf(t *testing.T, sw *fakeSwitch, res *fakeReserveTarget, lanes *fakeLanes, peak *fakePeak) (common.ProbeSpendHold, error) {
+	t.Helper()
+	_, _, _, hold, err := NewWavePort(sw, res, lanes, peak, stoppedClock{time.Unix(1_700_000_000, 0)}).
+		Wave(context.Background(), 1)
+	return hold, err
 }
 
 // --- the assembly ------------------------------------------------------------
@@ -161,7 +185,7 @@ func TestWavePort_PeakIsReadOverTheSharedTradeCycleWindow(t *testing.T) {
 	sw, res, lanes, peak := reachableWorld()
 	now := time.Unix(1_700_000_000, 0)
 
-	_, _, _, err := NewWavePort(sw, res, lanes, peak, stoppedClock{now}).Wave(context.Background(), 1)
+	_, _, _, _, err := NewWavePort(sw, res, lanes, peak, stoppedClock{now}).Wave(context.Background(), 1)
 
 	require.NoError(t, err)
 	require.Equal(t, 1, peak.calls)
@@ -254,7 +278,7 @@ func TestWavePort_UnwiredCollaboratorErrors(t *testing.T) {
 		"no lanes":   NewWavePort(sw, res, nil, peak, nil),
 		"no peak":    NewWavePort(sw, res, lanes, nil, nil),
 	} {
-		wave, _, _, err := port.Wave(context.Background(), 1)
+		wave, _, _, _, err := port.Wave(context.Background(), 1)
 		require.Error(t, err, "%s must fail closed", name)
 		require.Empty(t, string(wave), "%s must publish no regime", name)
 	}

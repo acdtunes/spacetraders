@@ -94,11 +94,12 @@ type BuyReport struct {
 	// guard; it is what tells an operator watching a HEAVY wave WHAT the fleet is
 	// pausing probe buying for.
 	HeavyReserveTarget common.HeavyReserveTarget
+	ProbeSpendHold     common.ProbeSpendHold
 	// SpendingPaused reports that this tick made no purchase at all because a purchase
-	// gate was shut — the operator's expansion switch (BuyKnobs.SpendEnabled) or a HEAVY
-	// wave. WHICH of the two is read off Wave, which is why both are published: an
-	// operator told only "paused" cannot tell "you switched this off" from "the fleet is
-	// saving for a hull", and would go hunting for a knob nobody touched.
+	// gate was shut — the expansion switch (BuyKnobs.SpendEnabled), a HEAVY wave, or the
+	// hold above. WHICH of the three is read off Wave and ProbeSpendHold, which is why all
+	// are published: an operator told only "paused" cannot tell "you switched this off"
+	// from "the fleet is saving for a hull", and would hunt a knob nobody touched.
 	//
 	// A SEPARATE FIELD RATHER THAN A FloorHeld VALUE, for the same reason
 	// ExpandReport.SpendingPaused is separate from Skipped: a floor or a cap is the

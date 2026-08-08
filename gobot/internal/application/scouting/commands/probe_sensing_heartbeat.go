@@ -130,13 +130,17 @@ func (h *RunProbeSensingCoordinatorHandler) heartbeat(ctx context.Context, cmd *
 		// whenever the switch is off too — "expansion switch off" sends an operator hunting a knob
 		// nobody touched.
 		held = "heavy wave: probe buying is paused while the treasury climbs toward a heavy hull"
+	case hb.buy.ProbeSpendHold != "":
+		// AHEAD OF THE SWITCH ARM, which the hold also sets, or a switch that is ON reads as off.
+		held = "heavy cap reached and the trade surface already holds more than the fleet can lift" +
+			" — probe buying earns nothing until a hull can consume the depth (" + string(hb.buy.ProbeSpendHold) + ")"
 	case hb.buy.SpendingPaused:
-		// FIRST, because it is the only reason on this list that is not the fleet
-		// declining to afford something. An operator hunting a money leak reads this
-		// line and must be told "you switched this off" in those words rather than
-		// left to infer it from a bought count of zero — the whole cost of sp-com1h
-		// was a cycle line that looked healthy while the switch it named did not
-		// cover the spending.
+		// AHEAD OF EVERY CEILING BELOW and BEHIND the two arms above, which are the more
+		// specific answers whenever they are also true: this is the only reason on the list
+		// that is not the fleet declining to afford something. An operator hunting a money
+		// leak must be told "you switched this off" in those words rather than left to infer
+		// it from a bought count of zero — the whole cost of sp-com1h was a cycle line that
+		// looked healthy while the switch it named did not cover the spending.
 		held = "expansion switch: expansion_enabled is off, so no probe is bought"
 	case hb.buy.CapHeld:
 		held = "probe cap"
@@ -226,11 +230,13 @@ func (h *RunProbeSensingCoordinatorHandler) heartbeat(ctx context.Context, cmd *
 			"buy_spending_paused": hb.buy.SpendingPaused,
 			"buy_cap_held":        hb.buy.CapHeld,
 			"buy_floor_held":      hb.buy.FloorHeld,
-			// The regime, which clause forced PROBE, and what the pause is FOR. An EMPTY
-			// wave means no regime could be derived — a third state, never a PROBE.
+			// The regime, which clause forced PROBE, what the pause is FOR, and the THIRD gate
+			// buy_wave cannot explain. An EMPTY wave means no regime could be derived — a third
+			// state, never a PROBE; an empty hold on a paused PROBE tick is the operator's switch.
 			"buy_wave":                 string(hb.buy.Wave),
 			"buy_wave_probe_reason":    string(hb.buy.WaveProbeReason),
 			"buy_heavy_reserve_target": int64(hb.buy.HeavyReserveTarget),
+			"buy_probe_spend_hold":     string(hb.buy.ProbeSpendHold),
 			"buy_price_drift":          hb.buy.HaltedPriceDrift,
 			// Claims handed back because their system lost IN_SCOPE — the other
 			// half of buy_queued, not a count of abandoned placements.
@@ -356,6 +362,12 @@ func (h *RunProbeSensingCoordinatorHandler) publishWave(playerID int, hb heartbe
 		return
 	}
 	h.recorder.RecordWave(playerID, hb.buy.Wave, hb.buy.WaveProbeReason)
+
+	// EVERY REASON, EVERY TICK, so a hold that lifts is seen to lift — and behind the same guard,
+	// since a tick that derived no regime evaluated no refusal either.
+	for _, hold := range common.ProbeSpendHolds() {
+		h.recorder.RecordProbeSpendHold(playerID, string(hold), hold == hb.buy.ProbeSpendHold)
+	}
 }
 
 // heldSuffix names the ceiling that stopped the drain, or nothing at all.

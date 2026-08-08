@@ -55,6 +55,10 @@ type ParkedSensingMetricsCollector struct {
 	// growth_lane_surface pattern, because the parts answer different questions
 	// and the sum answers none of them.
 	coverageSurface *prometheus.GaugeVec
+
+	// probeSpendHold is why probe PURCHASES were refused inside a PROBE wave. Every known
+	// reason is written every tick, so a superseded one falls to 0 and no seen-set is kept.
+	probeSpendHold *prometheus.GaugeVec
 }
 
 // NewParkedSensingMetricsCollector creates a new parked-probe sensing collector.
@@ -101,6 +105,12 @@ func NewParkedSensingMetricsCollector() *ParkedSensingMetricsCollector {
 			"player_id",
 			"component",
 		),
+		probeSpendHold: newGaugeVec(
+			"parked_sensing_probe_spend_hold",
+			"Why probe PURCHASES were refused inside a PROBE wave, 1=this reason holds 0=it does not, one series per reason with every reason written each tick. It is NOT fleet_growth_wave_probe_reason: that names which clause chose the regime, this names a refusal INSIDE the probe regime, and the two are deliberately separate vocabularies because a wave reason diverging between its two readers is an alarm. reason=heavy_capped_ample_depth is the sp-5iz7a loop caught — the heavy class sits at the operator's cap while the reachable surface already absorbs more than the trade pool can lift, so every further probe buys depth no hull will ever consume (measured live 2026-08-08: 42 probes and 1,585,996 credits in one hour, depth 1,983 -> 2,772 against an unmoving 1,540 units of hold). ALL ZERO IS THE ORDINARY TICK and says nothing about whether anything was bought — read it beside parked_sensing_slots and the buy heartbeat, never alone. A hold standing for hours is the intended steady state under a cap, not a fault; what it tells an operator is that raising heavy_cap, not the expansion switch, is the knob that resumes spending",
+			"player_id",
+			"reason",
+		),
 	}
 }
 
@@ -118,6 +128,7 @@ func (c *ParkedSensingMetricsCollector) Register() error {
 		c.yardPresence,
 		c.yardSlots,
 		c.coverageSurface,
+		c.probeSpendHold,
 	)
 }
 
@@ -175,6 +186,21 @@ func (c *ParkedSensingMetricsCollector) RecordCoverageSurface(playerID int, comp
 		return
 	}
 	c.coverageSurface.WithLabelValues(strconv.Itoa(playerID), component).Set(float64(count))
+}
+
+// RecordProbeSpendHold sets one refusal reason for one player: 1 when it held probe purchases this
+// tick, 0 when it did not. THE CALLER WRITES EVERY REASON, EVERY TICK — the shape
+// RecordCoverageSurface has, and why no seen-set is kept here the way the fleet-growth reason gauge
+// must: a stale 1 on a spend hold says the fleet is refusing to spend when it is not.
+func (c *ParkedSensingMetricsCollector) RecordProbeSpendHold(playerID int, reason string, held bool) {
+	if c == nil || c.probeSpendHold == nil {
+		return
+	}
+	value := 0.0
+	if held {
+		value = 1
+	}
+	c.probeSpendHold.WithLabelValues(strconv.Itoa(playerID), reason).Set(value)
 }
 
 // globalParkedSensingCollector is the process-wide collector the sensing

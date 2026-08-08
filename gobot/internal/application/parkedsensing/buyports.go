@@ -264,7 +264,8 @@ type BuyPorts struct {
 	ClaimOwnerContainerID string
 }
 
-// WaveReader answers which regime this tick is in, and what the fleet is saving toward.
+// WaveReader answers the regime, what the fleet is saving toward, and the spend hold — a FOURTH
+// answer, never a third Wave value, which would pass every `wave != WaveHeavy` gate.
 //
 // IT RETURNS THE WHOLE ANSWER, not the inputs to it. The drain must not assemble a second
 // WaveInputs and call common.DeriveWave itself: two assemblies of one predicate is the split-brain
@@ -272,7 +273,7 @@ type BuyPorts struct {
 // coordinator's facts and the drain's meet. The target is carried for the heartbeat, not for a
 // decision — since the wave owns the hold-back, no path may add it into a spend floor.
 type WaveReader interface {
-	Wave(ctx context.Context, playerID int) (common.Wave, common.WaveProbeReason, common.HeavyReserveTarget, error)
+	Wave(ctx context.Context, playerID int) (common.Wave, common.WaveProbeReason, common.HeavyReserveTarget, common.ProbeSpendHold, error)
 }
 
 // BuyKnobs are the operator-set economics of the queue.

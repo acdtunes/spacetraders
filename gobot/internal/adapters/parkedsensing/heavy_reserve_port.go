@@ -77,7 +77,10 @@ func NewHeavyReservePort(census heavyCensusCounter, yards heavyYardPricer, caps 
 	return &HeavyReservePort{census: census, yards: yards, caps: caps}
 }
 
-// Reserve returns the credits to hold back for the next heavy.
+// Reserve returns the ask to hold back for the next heavy and, SEPARATELY, whether the operator's
+// cap is what bars it (common.HeavyCapBinding) — NOT derivable from the first, since a zero target
+// is every "cannot" at once and they call for opposite responses downstream. Both come off ONE set
+// of reads, so they cannot disagree, and EVERY BLIND PATH BELOW REPORTS false.
 //
 // THE TWO DATA READS ANSWER ONE RULE: an unreadable input reserves ZERO, loudly. Both the census
 // and the yard-target reads follow the same shape, so this function has one policy rather than
@@ -118,31 +121,34 @@ func NewHeavyReservePort(census heavyCensusCounter, yards heavyYardPricer, caps 
 // The error return is kept deliberately: the wave port propagates it and the drain fails the tick
 // CLOSED on any reserve that does surface one. This implementation simply never needs to, because
 // "cannot tell" has a well-defined answer here, and it is zero.
-func (p *HeavyReservePort) Reserve(ctx context.Context, playerID int) (common.HeavyReserveTarget, error) {
+func (p *HeavyReservePort) Reserve(ctx context.Context, playerID int) (common.HeavyReserveTarget, bool, error) {
 	heavyCap, capOK := p.resolveHeavyCap(ctx, playerID)
 	if !capOK {
 		// Nothing owns heavy buying, or the owner cannot spend ⇒ nothing to save for.
-		return 0, nil
+		return 0, false, nil
 	}
 
 	owned, err := p.census.CountHeavyHulls(ctx, playerID)
 	if err != nil {
 		warnBlindReserve(ctx, playerID, "census", err)
-		return 0, nil
+		return 0, false, nil
 	}
 
 	target, err := p.yards.HeavyTarget(ctx, playerID)
 	if err != nil {
 		warnBlindReserve(ctx, playerID, "yard prices", err)
-		return 0, nil
+		return 0, false, nil
 	}
 
-	return common.HeavyReserve(common.HeavyReserveInputs{
+	// ONE inputs value, read by both predicates. Assembling it twice is how the reservation and the
+	// cap verdict would end up describing different fleets.
+	in := common.HeavyReserveInputs{
 		CapabilityOpen:  target.CapabilityOpen,
 		HeaviesOwned:    owned,
 		HeavyCap:        heavyCap,
 		TargetYardPrice: target.PurchasePrice,
-	}), nil
+	}
+	return common.HeavyReserve(in), common.HeavyCapBinding(in), nil
 }
 
 // warnBlindReserve announces that a durable input went unreadable, so nothing is being held back.

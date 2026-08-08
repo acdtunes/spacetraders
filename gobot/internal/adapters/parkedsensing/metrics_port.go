@@ -74,3 +74,9 @@ func (MetricsPort) RecordWave(playerID int, wave common.Wave, reason common.Wave
 		string(reason),
 	)
 }
+
+// RecordProbeSpendHold publishes one probe-purchase refusal reason for this tick. It reaches the
+// SENSING collector, not the reader-labelled wave series beside it: this refusal is the drain's own.
+func (MetricsPort) RecordProbeSpendHold(playerID int, reason string, held bool) {
+	metrics.GetGlobalParkedSensingCollector().RecordProbeSpendHold(playerID, reason, held)
+}

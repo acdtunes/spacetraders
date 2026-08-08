@@ -42,7 +42,7 @@ func waveThroughTheDrainPort(t *testing.T, in common.WaveInputs) (common.Wave, c
 		&fakePeak{peak: in.HighWaterTreasury, readable: in.HighWaterReadable},
 		stoppedClock{time.Unix(1_700_000_000, 0)},
 	)
-	wave, reason, _, err := port.Wave(context.Background(), 1)
+	wave, reason, _, _, err := port.Wave(context.Background(), 1)
 	if err != nil {
 		t.Fatalf("the drain's port errored on a fully readable world: %v", err)
 	}

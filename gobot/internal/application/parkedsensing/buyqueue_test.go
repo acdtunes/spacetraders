@@ -1392,13 +1392,16 @@ type waveReader struct {
 	wave   common.Wave
 	reason common.WaveProbeReason
 	target common.HeavyReserveTarget
-	err    error
-	calls  int
+	// hold is the fourth answer: probe PURCHASES have no consumer this tick. Its zero value is "they
+	// do", which is the state every case written before the no-consumer gate was asserting against.
+	hold  common.ProbeSpendHold
+	err   error
+	calls int
 }
 
-func (f *waveReader) Wave(_ context.Context, _ int) (common.Wave, common.WaveProbeReason, common.HeavyReserveTarget, error) {
+func (f *waveReader) Wave(_ context.Context, _ int) (common.Wave, common.WaveProbeReason, common.HeavyReserveTarget, common.ProbeSpendHold, error) {
 	f.calls++
-	return f.wave, f.reason, f.target, f.err
+	return f.wave, f.reason, f.target, f.hold, f.err
 }
 
 // probeWave carries a REAL reason: a blank one would let a test pass against a reader that

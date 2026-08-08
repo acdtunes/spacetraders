@@ -201,7 +201,7 @@ func TestHeavyReservePort_ConfiguredHoldReservesExactlyZero(t *testing.T) {
 		capPort,
 	)
 
-	got, err := port.Reserve(context.Background(), pid)
+	got, _, err := port.Reserve(context.Background(), pid)
 	require.NoError(t, err)
 	require.Equal(t, common.HeavyReserveTarget(0), got, "heavy_cap: 0 is a HOLD — sensing must reserve nothing, or expansion starves permanently for a heavy that will never be bought")
 }
@@ -288,7 +288,7 @@ func TestHeavyReservePort_UndeclaredHeavyBuyerReservesAndWarns(t *testing.T) {
 		capPort,
 	)
 	log := &warnLogger{}
-	got, err := port.Reserve(logging.WithLogger(context.Background(), log), pid)
+	got, _, err := port.Reserve(logging.WithLogger(context.Background(), log), pid)
 
 	require.NoError(t, err)
 	require.NotEqual(t, common.HeavyReserveTarget(0), got, "a running heavy buyer must have treasury saved toward it")
@@ -307,7 +307,7 @@ func TestHeavyReservePort_NoHeavyBuyerAnywhereIsSilent(t *testing.T) {
 		capPort,
 	)
 	log := &warnLogger{}
-	got, err := port.Reserve(logging.WithLogger(context.Background(), log), pid)
+	got, _, err := port.Reserve(logging.WithLogger(context.Background(), log), pid)
 
 	require.NoError(t, err)
 	require.Equal(t, common.HeavyReserveTarget(0), got)
@@ -326,7 +326,7 @@ func TestHeavyReservePort_ConfiguredCapAtOwnedReservesZero(t *testing.T) {
 		capPort,
 	)
 
-	got, err := port.Reserve(context.Background(), pid)
+	got, _, err := port.Reserve(context.Background(), pid)
 	require.NoError(t, err)
 	require.Equal(t, common.HeavyReserveTarget(0), got, "at the operator's cap the buyer refuses, so sensing must not reserve")
 }

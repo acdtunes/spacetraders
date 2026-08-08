@@ -18,13 +18,21 @@ import (
 type fakeCensus struct {
 	owned int
 	err   error
+	// calls counts the reads. The reservation and the cap verdict must share ONE of them; a second
+	// census inside a tick is how the two would come to describe different fleets.
+	calls int
 }
 
-func (f *fakeCensus) CountHeavyHulls(_ context.Context, _ int) (int, error) { return f.owned, f.err }
+func (f *fakeCensus) CountHeavyHulls(_ context.Context, _ int) (int, error) {
+	f.calls++
+	return f.owned, f.err
+}
 
 type fakeYardPricer struct {
 	price int
 	found bool
+	// calls counts the reads, for the same reason fakeCensus does.
+	calls int
 	// capabilityOpenUnpriced is the production state: a known heavy yard whose ask nobody has
 	// ever read, so the capability is open with no price to reserve against.
 	capabilityOpenUnpriced bool
@@ -42,6 +50,7 @@ type fakeYardPricer struct {
 // it is the same adversarial shape TestHeavyReservePort_YardErrorReservesNothingAndWarns already
 // claimed in prose but did not deliver.
 func (f *fakeYardPricer) HeavyTarget(_ context.Context, _ int) (shipyardQueries.HeavyTarget, error) {
+	f.calls++
 	if !f.found {
 		return shipyardQueries.HeavyTarget{CapabilityOpen: f.capabilityOpenUnpriced}, f.err
 	}
@@ -85,7 +94,7 @@ func TestHeavyReservePort_NoAutosizerContainerReservesNothing(t *testing.T) {
 		&fakeCensus{owned: 0},
 		&fakeYardPricer{price: 1_565_500, found: true},
 	)
-	got, err := p.Reserve(ctx, 1)
+	got, _, err := p.Reserve(ctx, 1)
 	require.NoError(t, err)
 	require.Equal(t, common.HeavyReserveTarget(0), got, "no autosizer container ⇒ no heavy buyer ⇒ nothing to reserve")
 	require.Empty(t, log.lines, "an absent autosizer is an expected configuration, not a fault — it must not warn")
@@ -99,7 +108,7 @@ func TestHeavyReservePort_AbsentCapUsesTheCompiledDefault(t *testing.T) {
 		&fakeCensus{owned: hullbuy.DefaultHeavyCap - 1},
 		&fakeYardPricer{price: 1_565_500, found: true},
 	)
-	got, err := p.Reserve(ctx, 1)
+	got, _, err := p.Reserve(ctx, 1)
 	require.NoError(t, err)
 	require.Equal(t, common.HeavyReserveTarget(1_565_500), got, "one under the default cap still has room, so a heavy is reserved")
 
@@ -109,7 +118,7 @@ func TestHeavyReservePort_AbsentCapUsesTheCompiledDefault(t *testing.T) {
 		&fakeCensus{owned: hullbuy.DefaultHeavyCap},
 		&fakeYardPricer{price: 1_565_500, found: true},
 	)
-	got2, err := atCap.Reserve(ctx2, 1)
+	got2, _, err := atCap.Reserve(ctx2, 1)
 	require.NoError(t, err)
 	require.Equal(t, common.HeavyReserveTarget(0), got2)
 }
@@ -123,7 +132,7 @@ func TestHeavyReservePort_PresentCapWins(t *testing.T) {
 		&fakeCensus{owned: 2},
 		&fakeYardPricer{price: 1_565_500, found: true},
 	)
-	got, err := p.Reserve(ctx, 1)
+	got, _, err := p.Reserve(ctx, 1)
 	require.NoError(t, err)
 	require.Equal(t, common.HeavyReserveTarget(0), got, "the tuned cap must bind, not the compiled default")
 }
@@ -150,7 +159,7 @@ func TestHeavyReservePort_UnreadableCapFallsBackToTheDocumentedDefaultAndWarns(t
 		&fakeCensus{owned: hullbuy.DefaultHeavyCap - 1},
 		&fakeYardPricer{price: 1_565_500, found: true},
 	)
-	got, err := p.Reserve(ctx, 1)
+	got, _, err := p.Reserve(ctx, 1)
 	require.NoError(t, err, "a config read failure must not halt probe buying")
 	require.Equal(t, common.HeavyReserveTarget(1_565_500), got, "an unreadable cap must not silently stop the fleet saving for a heavy")
 	require.Len(t, log.lines, 1, "an unresolvable heavy_cap MUST still be loud — the operator has a container read to investigate")
@@ -163,7 +172,7 @@ func TestHeavyReservePort_UnreadableCapFallsBackToTheDocumentedDefaultAndWarns(t
 		&fakeCensus{owned: hullbuy.DefaultHeavyCap},
 		&fakeYardPricer{price: 1_565_500, found: true},
 	)
-	got2, err := atCap.Reserve(capCtx, 1)
+	got2, _, err := atCap.Reserve(capCtx, 1)
 	require.NoError(t, err)
 	require.Equal(t, common.HeavyReserveTarget(0), got2, "the fallback must be the documented cap, not an unbounded one")
 }
@@ -220,7 +229,7 @@ func TestHeavyReservePort_CancelledTickIsSilent(t *testing.T) {
 				ctx = cancelled
 			}
 
-			got, err := p.Reserve(ctx, 1)
+			got, _, err := p.Reserve(ctx, 1)
 			require.NoError(t, err)
 			require.Equal(t, common.HeavyReserveTarget(0), got, "an abandoned tick buys nothing either way, so it reserves nothing")
 			require.Empty(t, log.lines, "abandoned work must not raise the one alarm that means the feature is broken")
@@ -254,7 +263,7 @@ func TestHeavyReservePort_CensusErrorReservesNothingAndWarns(t *testing.T) {
 		&fakeCensus{owned: 0, err: errors.New("ships table unreadable")},
 		&fakeYardPricer{price: 1_565_500, found: true},
 	)
-	got, err := p.Reserve(ctx, 1)
+	got, _, err := p.Reserve(ctx, 1)
 	require.NoError(t, err, "an unreadable census must not halt probe buying — the autosizer keeps spending on lights either way")
 	require.Equal(t, common.HeavyReserveTarget(0), got, "a blind reserve is reserve 0, not a held one")
 	require.Len(t, log.lines, 1, "reserving nothing because we are BLIND must be visible — a silent zero reads as 'nothing to save for'")
@@ -274,7 +283,7 @@ func TestHeavyReservePort_YardErrorReservesNothingAndWarns(t *testing.T) {
 		&fakeCensus{owned: 0},
 		&fakeYardPricer{price: 1_565_500, found: true, err: errors.New("shipyard inventory unreadable")},
 	)
-	got, err := p.Reserve(ctx, 1)
+	got, _, err := p.Reserve(ctx, 1)
 	require.NoError(t, err, "an unreadable yard surface must not halt probe buying")
 	require.Equal(t, common.HeavyReserveTarget(0), got)
 	require.Len(t, log.lines, 1, "a blind yard read must be visible, not a silent zero")
@@ -302,7 +311,7 @@ func TestHeavyReservePort_NoTargetYardReservesNothing(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			p, _, ctx := portWith(&fakeCapSource{exists: true, present: true, cap: 5}, &fakeCensus{owned: 0}, yards)
 
-			got, err := p.Reserve(ctx, 1)
+			got, _, err := p.Reserve(ctx, 1)
 			require.NoError(t, err)
 			require.Equal(t, common.HeavyReserveTarget(0), got)
 		})
@@ -332,7 +341,7 @@ func TestHeavyReservePort_ReservesOneHeavyAtATimeThenReleasesAtTheCap(t *testing
 			&fakeCensus{owned: owned},
 			&fakeYardPricer{price: int(ask), found: true},
 		)
-		got, err := p.Reserve(ctx, 1)
+		got, _, err := p.Reserve(ctx, 1)
 		require.NoError(t, err)
 		require.Equal(t, ask, got,
 			"owned=%d (headroom %d): reserve must be exactly ONE heavy's ask, never cap−owned multiples — expansion needs a spending window between purchases",
@@ -348,7 +357,7 @@ func TestHeavyReservePort_ReservesOneHeavyAtATimeThenReleasesAtTheCap(t *testing
 			&fakeCensus{owned: owned},
 			&fakeYardPricer{price: int(ask), found: true},
 		)
-		got, err := p.Reserve(ctx, 1)
+		got, _, err := p.Reserve(ctx, 1)
 		require.NoError(t, err)
 		require.Equal(t, common.HeavyReserveTarget(0), got, "owned=%d at cap %d: the reserve must release the treasury to expansion", owned, heavyCap)
 	}

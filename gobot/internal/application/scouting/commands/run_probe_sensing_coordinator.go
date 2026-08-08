@@ -70,6 +70,10 @@ type ParkedSensingRecorder interface {
 	// RecordWave publishes the regime THIS reader derived under its own reader label,
 	// beside the growth coordinator's; the pair is what catches the two DISAGREEING.
 	RecordWave(playerID int, wave common.Wave, reason common.WaveProbeReason)
+
+	// RecordProbeSpendHold publishes ONE refusal reason for probe purchases inside a PROBE wave,
+	// held or not. Every known reason is written every tick, so a superseded one falls to 0.
+	RecordProbeSpendHold(playerID int, reason string, held bool)
 }
 
 // RunProbeSensingCoordinatorCommand launches the standing coordinator for a

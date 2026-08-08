@@ -54,11 +54,12 @@ func DrainBuyQueue(
 	// including the ones that stop before a floor is built. It is published beside the growth
 	// coordinator's own per-tick gauge, and the two must not disagree merely because a tick took a
 	// short path. Every read behind this port is a LOCAL DB query, so it costs no API call.
-	wave, waveReason, heavyTarget, err := readWave(ctx, p, playerID)
+	wave, waveReason, heavyTarget, spendHold, err := readWave(ctx, p, playerID)
 	if err != nil {
 		return rep, err
 	}
 	rep.Wave, rep.WaveProbeReason, rep.HeavyReserveTarget = wave, waveReason, heavyTarget
+	rep.ProbeSpendHold = spendHold
 
 	// Cheapest-first gate order: the ledger reads are local, the treasury and
 	// price reads are network. A tick with nothing to buy must not cost an API call.
@@ -90,9 +91,9 @@ func DrainBuyQueue(
 	// design exists to remove.
 	//
 	// IT PAUSES PURCHASES ONLY. The free half below still re-tasks an idle spare and still flies a
-	// surplus hull to a foothold, at zero credits and zero API calls, so a paused wave keeps
-	// coverage growing on hulls already paid for.
-	mayBuy := k.SpendEnabled && wave != common.WaveHeavy
+	// surplus hull to a foothold at zero credits, so a pause keeps coverage growing on hulls already
+	// paid for. The third gate can only SUBTRACT a buy: a conjunct in an AND (DeriveProbeSpendHold).
+	mayBuy := k.SpendEnabled && wave != common.WaveHeavy && spendHold == common.ProbeSpendHoldNone
 	rep.SpendingPaused = !mayBuy
 
 	// st stays zero-valued while paused, and every consumer of it below is behind
@@ -184,8 +185,8 @@ func (t *drainTick) fundPlacement(ctx context.Context, slot QueuedSlot, now time
 		return true, false, nil
 	}
 
-	// PAUSED — by the operator's switch or by a HEAVY wave, which stop purchases
-	// identically here. The free half is done for this placement, and everything
+	// PAUSED — by the operator's switch, a HEAVY wave or the no-consumer hold, which
+	// stop purchases identically. The free half is done for this placement, and everything
 	// past this point either prices a hull or pays for one. The foothold is still
 	// attempted: it fills a placement by flying a hull we ALREADY OWN across a gate
 	// — no credit, no API call — so switching it off with the purchases would starve
@@ -241,19 +242,19 @@ func (t *drainTick) fundPlacement(ctx context.Context, slot QueuedSlot, now time
 // readWave resolves this tick's regime. AN UNWIRED READER IS THE PROBE WAVE, never HEAVY: a nil
 // seam means no heavy buyer is deployed, and failing the other way would let a wiring omission
 // pause probe buying forever. AN ERRORING READER FAILS THE TICK CLOSED, because a silently-PROBE
-// tick derived from an unreadable signal is the blind spend RULINGS #4 forbids.
-func readWave(ctx context.Context, p BuyPorts, playerID int) (common.Wave, common.WaveProbeReason, common.HeavyReserveTarget, error) {
+// tick derived from an unreadable signal is the blind spend RULINGS #4 forbids. It holds nothing.
+func readWave(ctx context.Context, p BuyPorts, playerID int) (common.Wave, common.WaveProbeReason, common.HeavyReserveTarget, common.ProbeSpendHold, error) {
 	if p.Wave == nil {
-		return common.WaveProbe, common.WaveProbeReasonGrowthDisabled, 0, nil
+		return common.WaveProbe, common.WaveProbeReasonGrowthDisabled, 0, common.ProbeSpendHoldNone, nil
 	}
-	wave, reason, target, err := p.Wave.Wave(ctx, playerID)
+	wave, reason, target, hold, err := p.Wave.Wave(ctx, playerID)
 	if err != nil {
-		return "", "", 0, fmt.Errorf("wave unreadable, buying nothing this tick: %w", err)
+		return "", "", 0, common.ProbeSpendHoldNone, fmt.Errorf("wave unreadable, buying nothing this tick: %w", err)
 	}
 	if target <= 0 {
 		target = 0
 	}
-	return wave, reason, target, nil
+	return wave, reason, target, hold, nil
 }
 
 // openDrainBudget prices the tick. The second return reports the probe cap

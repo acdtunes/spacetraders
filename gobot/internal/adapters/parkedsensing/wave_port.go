@@ -37,11 +37,12 @@ type growthSwitchSource interface {
 	GrowthEnabled(ctx context.Context, playerID int) (enabled bool, buyerExists bool, err error)
 }
 
-// heavyReserveSource reports the ask the fleet is saving toward. Satisfied by *HeavyReservePort —
-// the SAME reservation, over the same shared heavy-target finder, that the coordinator sizes its
-// buy against.
+// heavyReserveSource reports the ask the fleet is saving toward, and whether the operator's CAP is
+// what bars the next heavy. Satisfied by *HeavyReservePort — the SAME reservation, over the same
+// shared heavy-target finder, the coordinator sizes its buy against. The cap verdict rides along
+// rather than being fetched again — two reads is two answers about one bound.
 type heavyReserveSource interface {
-	Reserve(ctx context.Context, playerID int) (common.HeavyReserveTarget, error)
+	Reserve(ctx context.Context, playerID int) (target common.HeavyReserveTarget, capBinding bool, err error)
 }
 
 // UnservedLaneCounter reports the capacity-short signal AND the depth verdict that switches it back.
@@ -93,41 +94,42 @@ func NewWavePort(
 // A missing wiring is one of those failures. An unwired port cannot be told from one whose reads
 // all happen to return zero, and a zero high-water beside a zero lane count is a perfectly
 // plausible-looking PROBE.
-func (p *WavePort) Wave(ctx context.Context, playerID int) (common.Wave, common.WaveProbeReason, common.HeavyReserveTarget, error) {
+func (p *WavePort) Wave(ctx context.Context, playerID int) (common.Wave, common.WaveProbeReason, common.HeavyReserveTarget, common.ProbeSpendHold, error) {
 	if p.switches == nil || p.reserve == nil || p.lanes == nil || p.highWater == nil {
-		return "", "", 0, fmt.Errorf("sensing wave port is not fully wired, so no regime can be derived")
+		return "", "", 0, common.ProbeSpendHoldNone, fmt.Errorf("sensing wave port is not fully wired, so no regime can be derived")
 	}
 
 	enabled, buyerExists, err := p.switches.GrowthEnabled(ctx, playerID)
 	if err != nil {
-		return "", "", 0, fmt.Errorf("heavy buyer switch unreadable: %w", err)
+		return "", "", 0, common.ProbeSpendHoldNone, fmt.Errorf("heavy buyer switch unreadable: %w", err)
 	}
 	// No heavy buyer deployed at all is a quiet, expected configuration — a probe-only deployment —
 	// and it means there is nothing to save for. It is the same rung the cap read already treats as
-	// silent, applied to the container instead of the knob.
+	// silent, applied to the container instead of the knob. NOTHING IS HELD EITHER — probe buying is
+	// the only spender such a deployment has.
 	if !buyerExists {
-		return common.WaveProbe, common.WaveProbeReasonGrowthDisabled, 0, nil
+		return common.WaveProbe, common.WaveProbeReasonGrowthDisabled, 0, common.ProbeSpendHoldNone, nil
 	}
 
-	target, err := p.reserve.Reserve(ctx, playerID)
+	target, capBinding, err := p.reserve.Reserve(ctx, playerID)
 	if err != nil {
-		return "", "", 0, fmt.Errorf("heavy reserve target unreadable: %w", err)
+		return "", "", 0, common.ProbeSpendHoldNone, fmt.Errorf("heavy reserve target unreadable: %w", err)
 	}
 
 	lanes, lanesOK, err := p.lanes.LaneDemand(ctx, playerID)
 	if err != nil {
-		return "", "", 0, fmt.Errorf("unserved lane count unreadable: %w", err)
+		return "", "", 0, common.ProbeSpendHoldNone, fmt.Errorf("unserved lane count unreadable: %w", err)
 	}
 
 	pid, err := shared.NewPlayerID(playerID)
 	if err != nil {
-		return "", "", 0, fmt.Errorf("wave read needs a valid player: %w", err)
+		return "", "", 0, common.ProbeSpendHoldNone, fmt.Errorf("wave read needs a valid player: %w", err)
 	}
 	// Demonstrated capacity, over the SAME window the growth coordinator measures. The two ports
 	// read one ledger with one window, which is what keeps the two consumers on one answer.
 	highWater, highWaterOK, err := p.highWater.TreasuryHighWaterSince(ctx, pid, p.clock.Now().Add(-fleetgrowth.TradeCycleWindow))
 	if err != nil {
-		return "", "", 0, fmt.Errorf("demonstrated capacity unreadable: %w", err)
+		return "", "", 0, common.ProbeSpendHoldNone, fmt.Errorf("demonstrated capacity unreadable: %w", err)
 	}
 
 	wave, reason := common.DeriveWave(common.WaveInputs{
@@ -141,5 +143,16 @@ func (p *WavePort) Wave(ctx context.Context, playerID int) (common.Wave, common.
 		HighWaterTreasury:       highWater,
 		HighWaterReadable:       highWaterOK,
 	})
-	return wave, reason, target, nil
+	// THE SPEND HOLD IS ASSEMBLED FROM THE SAME LOCALS, never from the regime, and returned ALONGSIDE
+	// it: a hold only the drain can act on has no business moving what both readers must agree on.
+	hold := common.DeriveProbeSpendHold(common.ProbeSpendInputs{
+		GrowthEnabled:           enabled,
+		UnservedLanes:           lanes.UnservedLanes,
+		UnservedLanesReadable:   lanesOK,
+		TradeHoldCapacity:       lanes.TradeHoldCapacity,
+		TradeSaturated:          lanes.Saturated,
+		TradeSaturationReadable: lanesOK,
+		HeavyCapBinding:         capBinding,
+	})
+	return wave, reason, target, hold, nil
 }
