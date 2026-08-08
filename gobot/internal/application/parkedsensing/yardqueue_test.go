@@ -218,7 +218,7 @@ func saturatedQueue() ([]QueuedSlot, []ScreenedSystem, *fakeYardDemand) {
 func assertFixtureSaturates(t *testing.T, slots []QueuedSlot, systems []ScreenedSystem, waypoint string) {
 	t.Helper()
 	ports, _ := yardQueuePorts(slots, systems, nil) // nil demand: the yard-blind ordering
-	blind, _, err := drainCandidates(context.Background(), ports, testPlayerID)
+	blind, _, _, err := drainCandidates(context.Background(), ports, testPlayerID)
 	if err != nil {
 		t.Fatalf("drainCandidates returned error building the blind baseline: %v", err)
 	}
@@ -250,7 +250,7 @@ func TestDrainCandidates_ADarkHeavyYardReachesTheHeadOfASaturatedQueue(t *testin
 	assertFixtureSaturates(t, slots, systems, "X1-DARK-Y1")
 
 	ports, _ := yardQueuePorts(slots, systems, demand)
-	got, _, err := drainCandidates(context.Background(), ports, testPlayerID)
+	got, _, _, err := drainCandidates(context.Background(), ports, testPlayerID)
 	if err != nil {
 		t.Fatalf("drainCandidates returned error: %v", err)
 	}
@@ -293,7 +293,7 @@ func TestDrainCandidates_ADarkYardTakesItsSystemsFirstPlacement(t *testing.T) {
 	ports, _ := yardQueuePorts(slots, systems, &fakeYardDemand{
 		yards: []fakeYard{darkYard("X1-DEEP-Y1", "X1-DEEP", true)},
 	})
-	got, _, err := drainCandidates(context.Background(), ports, testPlayerID)
+	got, _, _, err := drainCandidates(context.Background(), ports, testPlayerID)
 	if err != nil {
 		t.Fatalf("drainCandidates returned error: %v", err)
 	}
@@ -331,7 +331,7 @@ func TestDrainCandidates_ADarkYardOutranksADeeperSystemAtEqualCoverage(t *testin
 	ports, _ := yardQueuePorts(slots, systems, &fakeYardDemand{
 		yards: []fakeYard{darkYard("X1-POOR-Y1", "X1-POOR", true)},
 	})
-	got, _, err := drainCandidates(context.Background(), ports, testPlayerID)
+	got, _, _, err := drainCandidates(context.Background(), ports, testPlayerID)
 	if err != nil {
 		t.Fatalf("drainCandidates returned error: %v", err)
 	}
@@ -377,7 +377,7 @@ func TestDrainCandidates_AHeavyYardOutranksAProbeOnlyYardInsideTheTier(t *testin
 		darkYard("X1-AAA-A1", "X1-AAA", false), // probes only
 		darkYard("X1-ZZZ-Z9", "X1-ZZZ", true),  // heavy freighters
 	}})
-	got, _, err := drainCandidates(context.Background(), ports, testPlayerID)
+	got, _, _, err := drainCandidates(context.Background(), ports, testPlayerID)
 	if err != nil {
 		t.Fatalf("drainCandidates returned error: %v", err)
 	}
@@ -440,7 +440,7 @@ func TestDrainCandidates_EveryYardOfAMultiYardSystemIsPromoted(t *testing.T) {
 	}
 
 	ports, _ := yardQueuePorts(slots, systems, &fakeYardDemand{yards: yardFacts})
-	got, _, err := drainCandidates(context.Background(), ports, testPlayerID)
+	got, _, _, err := drainCandidates(context.Background(), ports, testPlayerID)
 	if err != nil {
 		t.Fatalf("drainCandidates returned error: %v", err)
 	}
@@ -494,7 +494,7 @@ func TestDrainCandidates_TheYardTierDoesNotConcentrateOnOneSystem(t *testing.T) 
 	systems = append(systems, rivalSys...)
 
 	ports, _ := yardQueuePorts(slots, systems, &fakeYardDemand{yards: yardFacts})
-	got, _, err := drainCandidates(context.Background(), ports, testPlayerID)
+	got, _, _, err := drainCandidates(context.Background(), ports, testPlayerID)
 	if err != nil {
 		t.Fatalf("drainCandidates returned error: %v", err)
 	}
@@ -539,7 +539,7 @@ func TestDrainCandidates_APricedYardIsNotPromoted(t *testing.T) {
 	}}}
 
 	ports, _ := yardQueuePorts(slots, systems, priced)
-	got, _, err := drainCandidates(context.Background(), ports, testPlayerID)
+	got, _, _, err := drainCandidates(context.Background(), ports, testPlayerID)
 	if err != nil {
 		t.Fatalf("drainCandidates returned error: %v", err)
 	}
@@ -564,7 +564,7 @@ func TestDrainCandidates_AnUnknownYardIsNotPromoted(t *testing.T) {
 	}}}
 
 	ports, _ := yardQueuePorts(slots, systems, unknown)
-	got, _, err := drainCandidates(context.Background(), ports, testPlayerID)
+	got, _, _, err := drainCandidates(context.Background(), ports, testPlayerID)
 	if err != nil {
 		t.Fatalf("drainCandidates returned error: %v", err)
 	}
@@ -598,6 +598,19 @@ func TestDrainCandidates_ADarkYardAtHighCoverageStillBeatsEveryMarketAtZero(t *t
 	// head of six. Their depth is the highest in the fixture, so every ordinary
 	// tiebreak in the sort is working against the yard.
 	rivals, rivalSys := rivalSystems(9, 2, 90_000)
+	// EVERY RIVAL IS ENTERED TOO, which is what keeps this fixture discriminating
+	// now that the market tier finishes entered systems first: with the rivals
+	// unentered the saturation tier alone would carry X1-COVERED-Y1 into the head
+	// and the yard term under test would be doing none of the work
+	// (assertFixtureSaturates below catches exactly that). All ten systems held,
+	// all on the same remaining count, the yard's system the most covered of them:
+	// only the yard tier can promote it.
+	for i := range rivalSys {
+		rivals = append(rivals, QueuedSlot{
+			Waypoint: fmt.Sprintf("%s-P0", rivalSys[i].System), System: rivalSys[i].System,
+			Kind: SlotKindMarket, State: SlotStateParked, AssignedShip: fmt.Sprintf("PROBE-R%d", i),
+		})
+	}
 	covered := []QueuedSlot{
 		{Waypoint: "X1-COVERED-M1", System: "X1-COVERED", Kind: SlotKindMarket, State: SlotStateWanted},
 		{Waypoint: "X1-COVERED-Y1", System: "X1-COVERED", Kind: SlotKindMarket, State: SlotStateWanted},
@@ -618,7 +631,7 @@ func TestDrainCandidates_ADarkYardAtHighCoverageStillBeatsEveryMarketAtZero(t *t
 	ports, _ := yardQueuePorts(slots, systems, &fakeYardDemand{
 		yards: []fakeYard{darkYard("X1-COVERED-Y1", "X1-COVERED", true)},
 	})
-	got, _, err := drainCandidates(context.Background(), ports, testPlayerID)
+	got, _, _, err := drainCandidates(context.Background(), ports, testPlayerID)
 	if err != nil {
 		t.Fatalf("drainCandidates returned error: %v", err)
 	}
@@ -636,16 +649,22 @@ func TestDrainCandidates_ADarkYardAtHighCoverageStillBeatsEveryMarketAtZero(t *t
 	}
 }
 
-// TestDrainCandidates_TheMarketTierIsStillOrderedCoverageFirst is the other side of
+// TestDrainCandidates_TheMarketTierIsOrderedSaturationFirst is the other side of
 // the partition, and it is what stops "absolute precedence" being read as "throw
 // the ordering away".
 //
-// Coverage-first exists because depth alone put 67% of parked probes in three
-// systems. Nothing about the yard tier changes that for the markets: below the
-// partition the queue must order exactly as it always did, coverage ascending with
-// depth as the tiebreak. The fixture holds no yard at all in the covered system, so
-// only the market tier is under test.
-func TestDrainCandidates_TheMarketTierIsStillOrderedCoverageFirst(t *testing.T) {
+// Nothing about the yard tier changes how the markets below it are ordered: the
+// yard takes the head, and then the market tier applies its own rule in full.
+//
+// THIS TEST PREVIOUSLY ASSERTED THE OPPOSITE MARKET RULE (TestDrainCandidates_
+// TheMarketTierIsStillOrderedCoverageFirst): X1-RICH-M1 at position 4, behind three
+// uncovered rivals, because coverage-ascending put every untouched system ahead of
+// an entered system's next placement. That is the ordering sp-xfdep replaced — it
+// is what left 118 probes spread one per system across 104 systems while 96 of them
+// still had 804 placements outstanding. The market tier now finishes the system the
+// fleet STANDS IN first, so X1-RICH-M1 follows the yard immediately and the three
+// systems nobody has entered are ordered among themselves exactly as before.
+func TestDrainCandidates_TheMarketTierIsOrderedSaturationFirst(t *testing.T) {
 	rivals, rivalSys := rivalSystems(3, 1, 100)
 	slots := append([]QueuedSlot{
 		{Waypoint: "X1-RICH-P1", System: "X1-RICH", Kind: SlotKindMarket, State: SlotStateParked, AssignedShip: "PROBE-1"},
@@ -660,20 +679,29 @@ func TestDrainCandidates_TheMarketTierIsStillOrderedCoverageFirst(t *testing.T) 
 	ports, _ := yardQueuePorts(slots, systems, &fakeYardDemand{
 		yards: []fakeYard{darkYard("X1-LONE-Y1", "X1-LONE", true)},
 	})
-	got, _, err := drainCandidates(context.Background(), ports, testPlayerID)
+	got, _, _, err := drainCandidates(context.Background(), ports, testPlayerID)
 	if err != nil {
 		t.Fatalf("drainCandidates returned error: %v", err)
 	}
 
-	// The yard takes the head, then the market tier: three uncovered rivals at
-	// coverage 0 before the 900,000-deep covered system's market at coverage 1.
+	// The yard takes the head, then the market tier: the ENTERED system's market
+	// next, and only then the three systems nobody has stood in.
 	if got[0].Waypoint != "X1-LONE-Y1" {
 		t.Fatalf("the yard did not take the head: got %q. head=%v", got[0].Waypoint, head(got))
 	}
-	if rich := positionOf(got, "X1-RICH-M1"); rich != 4 {
-		t.Fatalf("X1-RICH-M1 sits at %d, want 4: below the yard tier the market ordering is unchanged — "+
-			"three uncovered rivals at coverage 0, then the covered system at coverage 1, however deep it "+
-			"is. order=%v", rich, head(got))
+	if rich := positionOf(got, "X1-RICH-M1"); rich != 1 {
+		t.Fatalf("X1-RICH-M1 sits at %d, want 1: below the yard tier the market tier finishes the system "+
+			"the fleet already stands in before entering one it has never visited. order=%v", rich, head(got))
+	}
+	// And the unentered rivals keep their own order behind it, untouched: this
+	// change reorders held-against-unentered, never unentered-against-unentered.
+	for i := 0; i < 3; i++ {
+		want := fmt.Sprintf("X1-RIVAL%d-M0", i)
+		if got[2+i].Waypoint != want {
+			t.Fatalf("unentered rival %d is %q at position %d, want %q — the unentered half of the queue "+
+				"must be ordered exactly as it was before the saturation tier. order=%v",
+				i, got[2+i].Waypoint, 2+i, want, head(got))
+		}
 	}
 }
 
@@ -687,7 +715,7 @@ func TestDrainCandidates_TheMarketTierIsStillOrderedCoverageFirst(t *testing.T) 
 func TestDrainCandidates_APromotedYardDoesNotBringItsSystemAlong(t *testing.T) {
 	slots, systems, demand := saturatedQueue()
 	ports, _ := yardQueuePorts(slots, systems, demand)
-	got, _, err := drainCandidates(context.Background(), ports, testPlayerID)
+	got, _, _, err := drainCandidates(context.Background(), ports, testPlayerID)
 	if err != nil {
 		t.Fatalf("drainCandidates returned error: %v", err)
 	}
@@ -723,7 +751,7 @@ func TestDrainCandidates_AnUnwiredYardDemandOrdersExactlyAsBefore(t *testing.T) 
 	systems := []ScreenedSystem{{System: "X1-AA", DepthCredits: 100}, {System: "X1-BB", DepthCredits: 9_000}}
 
 	ports, _ := yardQueuePorts(slots, systems, nil)
-	got, yards, err := drainCandidates(context.Background(), ports, testPlayerID)
+	got, yards, _, err := drainCandidates(context.Background(), ports, testPlayerID)
 	if err != nil {
 		t.Fatalf("drainCandidates returned error: %v", err)
 	}
@@ -759,7 +787,7 @@ func TestDrainCandidates_AnUnreachableDarkYardIsNotPromoted(t *testing.T) {
 	})
 	ports.YardDemand = &fakeYardDemand{yards: []fakeYard{darkYard("X1-FAR-Y1", "X1-FAR", true)}}
 
-	got, yards, err := drainCandidates(context.Background(), ports, testPlayerID)
+	got, yards, _, err := drainCandidates(context.Background(), ports, testPlayerID)
 	if err != nil {
 		t.Fatalf("drainCandidates returned error: %v", err)
 	}
@@ -803,7 +831,7 @@ func TestDrainCandidates_ReportsWhatTheOrderingDid(t *testing.T) {
 	}
 
 	ports, _ := yardQueuePorts(slots, systems, &fakeYardDemand{yards: yardFacts})
-	got, yards, err := drainCandidates(context.Background(), ports, testPlayerID)
+	got, yards, _, err := drainCandidates(context.Background(), ports, testPlayerID)
 	if err != nil {
 		t.Fatalf("drainCandidates returned error: %v", err)
 	}
@@ -934,7 +962,7 @@ func TestDrainCandidates_AParkedMarketIsNeverACandidate(t *testing.T) {
 	ports, _ := yardQueuePorts(slots, systems, &fakeYardDemand{
 		yards: []fakeYard{darkYard("X1-OLD-Y1", "X1-OLD", true)},
 	})
-	got, _, err := drainCandidates(context.Background(), ports, testPlayerID)
+	got, _, _, err := drainCandidates(context.Background(), ports, testPlayerID)
 	if err != nil {
 		t.Fatalf("drainCandidates returned error: %v", err)
 	}

@@ -54,6 +54,11 @@ func (MetricsPort) RecordYardSlots(playerID int, stage string, count int) {
 	metrics.GetGlobalParkedSensingCollector().RecordYardSlots(playerID, stage, count)
 }
 
+// RecordCoverageSurface publishes one component of the dark-marketplace surface.
+func (MetricsPort) RecordCoverageSurface(playerID int, component string, count int) {
+	metrics.GetGlobalParkedSensingCollector().RecordCoverageSurface(playerID, component, count)
+}
+
 // RecordWave publishes the regime the DRAIN derived this tick, onto the SAME series the growth
 // coordinator writes under its own reader label. One gauge, two readers: a divergence between them
 // is the split-brain the shared predicate forbids, and it is visible only because both write.

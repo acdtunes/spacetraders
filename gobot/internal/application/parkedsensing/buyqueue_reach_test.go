@@ -70,7 +70,7 @@ func hasSystem(systems []string, want string) bool {
 func TestDrainCandidates_DoesNotFundAnUnreachableSystem(t *testing.T) {
 	ports, _, _ := reachPorts()
 
-	got, _, err := drainCandidates(context.Background(), ports, testPlayerID)
+	got, _, _, err := drainCandidates(context.Background(), ports, testPlayerID)
 	if err != nil {
 		t.Fatalf("drainCandidates returned error: %v", err)
 	}
@@ -102,7 +102,7 @@ func TestDrainCandidates_AnInFlightTargetDoesNotSeedItsOwnFootprint(t *testing.T
 		State: SlotStateInTransit, AssignedShip: "PROBE-DOOMED",
 	})
 
-	got, _, err := drainCandidates(context.Background(), ports, testPlayerID)
+	got, _, _, err := drainCandidates(context.Background(), ports, testPlayerID)
 	if err != nil {
 		t.Fatalf("drainCandidates returned error: %v", err)
 	}
@@ -126,7 +126,7 @@ func TestDrainCandidates_FailsOpenWhenReachabilityIsUnknowable(t *testing.T) {
 		ports, _, _ := reachPorts()
 		ports.Gates = nil
 
-		got, _, err := drainCandidates(context.Background(), ports, testPlayerID)
+		got, _, _, err := drainCandidates(context.Background(), ports, testPlayerID)
 		if err != nil {
 			t.Fatalf("an unwired gate port must not fail the drain: %v", err)
 		}
@@ -139,7 +139,7 @@ func TestDrainCandidates_FailsOpenWhenReachabilityIsUnknowable(t *testing.T) {
 		ports, _, gates := reachPorts()
 		gates.err = errors.New("gate edge store unreachable")
 
-		got, _, err := drainCandidates(context.Background(), ports, testPlayerID)
+		got, _, _, err := drainCandidates(context.Background(), ports, testPlayerID)
 		if err != nil {
 			t.Fatalf("an unreadable gate store must not fail the drain: %v", err)
 		}
@@ -159,7 +159,7 @@ func TestDrainCandidates_FailsOpenWhenReachabilityIsUnknowable(t *testing.T) {
 func TestDrainCandidates_ReachabilityIsDerivedNeverPersisted(t *testing.T) {
 	ports, led, _ := reachPorts()
 
-	if _, _, err := drainCandidates(context.Background(), ports, testPlayerID); err != nil {
+	if _, _, _, err := drainCandidates(context.Background(), ports, testPlayerID); err != nil {
 		t.Fatalf("drainCandidates returned error: %v", err)
 	}
 
@@ -195,7 +195,7 @@ func TestDrainCandidates_UnchartedIsNotUnreachable(t *testing.T) {
 		t.Fatalf("fixture error: X1-UNKNOWN must be absent from the graph for this test to mean anything")
 	}
 
-	got, _, err := drainCandidates(context.Background(), ports, testPlayerID)
+	got, _, _, err := drainCandidates(context.Background(), ports, testPlayerID)
 	if err != nil {
 		t.Fatalf("drainCandidates returned error: %v", err)
 	}

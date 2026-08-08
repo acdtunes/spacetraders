@@ -62,7 +62,14 @@ func DrainBuyQueue(
 
 	// Cheapest-first gate order: the ledger reads are local, the treasury and
 	// price reads are network. A tick with nothing to buy must not cost an API call.
-	candidates, yards, err := drainCandidates(ctx, p, playerID)
+	candidates, yards, surface, err := drainCandidates(ctx, p, playerID)
+	// PUBLISHED BEFORE THE EMPTY-QUEUE RETURN, so an empty queue reports a zero it
+	// measured rather than leaving the last tick's value standing. The error path
+	// publishes nothing: an unread surface is not a small one.
+	if err == nil {
+		rep.DarkMarkets, rep.DarkMarketsHeld = surface.inReach, surface.held
+		rep.DarkMarketsUnreached, rep.DarkMarketsReadable = surface.unreached, surface.readable
+	}
 	if err != nil || len(candidates) == 0 {
 		return rep, err
 	}

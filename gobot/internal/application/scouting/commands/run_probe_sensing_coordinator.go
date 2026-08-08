@@ -60,6 +60,13 @@ type ParkedSensingRecorder interface {
 	RecordYardPresence(playerID int, outcome string, count int)
 	RecordYardSlots(playerID int, stage string, count int)
 
+	// RecordCoverageSurface publishes the demand the buy queue is holding: the
+	// whitelisted marketplaces the fleet wants watched and has no probe standing
+	// in. Published from the heartbeat beside the yard gauges, and for the same
+	// reason — the tick an operator most needs it for is the one where something
+	// else failed.
+	RecordCoverageSurface(playerID int, component string, count int)
+
 	// RecordWave publishes the regime THIS reader derived under its own reader label,
 	// beside the growth coordinator's; the pair is what catches the two DISAGREEING.
 	RecordWave(playerID int, wave common.Wave, reason common.WaveProbeReason)

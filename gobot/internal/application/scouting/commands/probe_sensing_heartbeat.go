@@ -49,6 +49,11 @@ const (
 	yardSlotsQueued = "queued"
 	yardSlotsAtHead = "at_head"
 	yardSlotsFilled = "filled"
+
+	darkMarketsInReach   = "in_reach"
+	darkMarketsHeld      = "held"
+	darkMarketsUnreached = "unreached"
+	darkMarketsReadable  = "readable"
 )
 
 // heartbeat is one tick's reportable outcome, gathered from every engine.
@@ -318,6 +323,29 @@ func (h *RunProbeSensingCoordinatorHandler) publishYards(playerID int, hb heartb
 	} {
 		h.recorder.RecordYardSlots(playerID, stage, count)
 	}
+
+	// THE DEMAND, published beside the yards and under the same every-label-every-tick
+	// rule. It is what makes an operator hold legible: the buy queue reports zero
+	// bought whether it was forbidden to spend or had nothing to spend on, and only
+	// this surface separates them. `readable` is published as a 0/1 gauge rather than
+	// folded into the counts, so a blind reachability read is never mistaken for a map
+	// with nothing out of reach.
+	for component, count := range map[string]int{
+		darkMarketsInReach:   hb.buy.DarkMarkets,
+		darkMarketsHeld:      hb.buy.DarkMarketsHeld,
+		darkMarketsUnreached: hb.buy.DarkMarketsUnreached,
+		darkMarketsReadable:  boolGauge(hb.buy.DarkMarketsReadable),
+	} {
+		h.recorder.RecordCoverageSurface(playerID, component, count)
+	}
+}
+
+// boolGauge renders a readability flag as the 0/1 a gauge can carry.
+func boolGauge(v bool) int {
+	if v {
+		return 1
+	}
+	return 0
 }
 
 // publishWave republishes THIS reader's regime under the drain's own reader label: a gauge only the

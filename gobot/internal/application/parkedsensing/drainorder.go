@@ -7,62 +7,67 @@ import (
 )
 
 // drainCandidates returns the placements to work this tick, in priority order:
-// every IN_SCOPE fill sorted by COVERAGE ascending with depth as the tiebreak,
-// then the seeds.
+// every IN_SCOPE fill sorted SATURATION-FIRST, then the seeds.
 //
-// COVERAGE FIRST, BECAUSE A SMALL BUDGET IS SPENT ON THE HEAD OF THIS LIST: depth
-// alone lets the richest system's placements occupy the whole head of every tick,
-// so a poorer system never gets a turn. Depth remains the tiebreak, so once
-// coverage is even this degenerates to depth order exactly.
+// SATURATE, THEN ADVANCE: a system the fleet has ENTERED — one holding a hull, or
+// with one on the way — is filled to saturation before a probe is spent entering a
+// system it has never stood in, nearest-to-saturation first, so systems complete
+// and leave the queue one at a time. It replaced a plain COVERAGE-ASCENDING order,
+// which ranked the i-th outstanding placement of a system at parked + i so that a
+// second system on 0 outranked the first system's SECOND slot; with the frontier
+// discovering systems faster than a six-attempt tick consumes them, no system's
+// second market was ever reachable and the fleet saturated none.
 //
-// EVERY SLOT CARRIES ITS OWN COVERAGE — the i-th outstanding placement of a system
-// ranks at parked + i, so a second system on 0 outranks the first system's second
-// slot. Ranking purely on probes already parked would tie a 0-probe system's whole
-// backlog at rank 0 and hand it the entire tick. The index is taken walking the
-// list in the order the LEDGER returned it, BEFORE any sort, because that order is
-// FIFO per system and the sort below is stable — which keeps a placement from
-// being overtaken by a newer one in its own system, tick after tick. The hulls a
-// system already holds come from a separate narrow read; see coverageBySystem.
+// PURE DEPTH IS STILL REFUSED, and this tier cannot become it: it is FINITE AND
+// SELF-DRAINING — a system leaves by being saturated and only a seed puts a new one
+// in — and coverage still orders the systems nobody has entered, untouched.
+//
+// EVERY SLOT STILL CARRIES ITS OWN COVERAGE, which keeps a system's own placements
+// FIFO inside the tier: the index is taken in the order the LEDGER returned it,
+// BEFORE any sort, and the sort is stable. The hulls a system already holds come
+// from a separate narrow read; see coverageBySystem.
 //
 // QUEUED slots are drained alongside WANTED ones, or a claim whose purchase failed
 // would be a one-way door and the placement would never be retried. A QUEUED slot
 // is a candidate AND consumes a coverage index: it still needs working, and a
 // claim already made is a probe already spoken for.
 //
-// DARK SHIPYARDS ARE A TIER ABOVE COVERAGE, NOT A TERM INSIDE IT (Admiral
-// directive: all of a system's yards are manned ahead of ordinary markets). Every
-// placement standing on a counter that sells a hull we buy at a price we cannot
-// see sorts ahead of EVERY ordinary market, whatever either one's coverage;
-// coverage-first orders within each tier, and all of a system's dark yards are
-// promoted rather than only its best one (see yardqueue.go). The yardOrder built
-// here is returned so the loop below can report what the ordering did.
-func drainCandidates(ctx context.Context, p BuyPorts, playerID int) ([]QueuedSlot, yardOrder, error) {
+// DARK SHIPYARDS REMAIN THE TIER ABOVE ALL OF IT (Admiral directive: a system's
+// yards are manned ahead of its ordinary markets). Every placement standing on a
+// counter that sells a hull we buy at a price we cannot see sorts ahead of EVERY
+// ordinary market, whatever either one's coverage or saturation, and all of a
+// system's dark yards are promoted rather than only its best (see yardqueue.go).
+// The yardOrder is returned so the loop below can report what the ordering did;
+// the coverageSurface beside it is the demand the tick is holding, published
+// whether or not it may spend so a hold never reads as absent demand.
+func drainCandidates(ctx context.Context, p BuyPorts, playerID int) ([]QueuedSlot, yardOrder, coverageSurface, error) {
 	slots, err := p.Ledger.SlotsByState(ctx, playerID, SlotStateWanted, SlotStateQueued)
 	if err != nil {
-		return nil, yardOrder{}, fmt.Errorf("failed to list unfilled sensing slots: %w", err)
+		return nil, yardOrder{}, coverageSurface{}, fmt.Errorf("failed to list unfilled sensing slots: %w", err)
 	}
 	if len(slots) == 0 {
-		return nil, yardOrder{}, nil
+		return nil, yardOrder{}, coverageSurface{}, nil
 	}
 
 	systems, err := p.Ledger.SystemsByVerdict(ctx, playerID, VerdictInScope)
 	if err != nil {
-		return nil, yardOrder{}, fmt.Errorf("failed to list in-scope sensing systems: %w", err)
+		return nil, yardOrder{}, coverageSurface{}, fmt.Errorf("failed to list in-scope sensing systems: %w", err)
 	}
 	depth, inScope := indexScreenedSystems(systems)
 	fills, seeds := partitionFillsAndSeeds(slots, inScope)
 
 	if len(fills) == 0 {
-		return seeds, yardOrder{}, nil
+		return seeds, yardOrder{}, coverageSurface{}, nil
 	}
-	fills = reachableFills(ctx, p, playerID, fills)
+	fills, surface := reachableFills(ctx, p, playerID, fills)
 	if len(fills) == 0 {
-		return seeds, yardOrder{}, nil
+		return seeds, yardOrder{}, surface, nil
 	}
 	covered, err := coverageBySystem(ctx, p, playerID)
 	if err != nil {
-		return nil, yardOrder{}, err
+		return nil, yardOrder{}, coverageSurface{}, err
 	}
+	surface.measure(fills, covered)
 
 	// AFTER the reachability partition, and that order is load-bearing: a yard in
 	// a system no hull can walk to is still a dark yard, so promoting it before
@@ -71,12 +76,26 @@ func drainCandidates(ctx context.Context, p BuyPorts, playerID int) ([]QueuedSlo
 	// a tick with nothing to buy never reaches here.
 	yards := readYardDemand(ctx, p, playerID)
 
+	// How much each system has LEFT to fill, over exactly the set being ordered: the raw
+	// ledger would rank a system by placements this tick already ruled out.
+	remaining := make(map[string]int, len(fills))
+	for _, fill := range fills {
+		remaining[fill.System]++
+	}
+
 	// Each fill's effective coverage. The per-system offset is FIFO except that
 	// dark yards take the low positions — see yardFirstOffsets.
 	offsets := yardFirstOffsets(fills, yards)
 	ranked := make([]rankedFill, len(fills))
 	for i, fill := range fills {
-		ranked[i] = rankedFill{slot: fill, coverage: covered[fill.System] + offsets[i]}
+		// ENTERED, not merely PARKED IN: coverageBySystem counts from BOUGHT onwards, so
+		// a system with a probe still flying to it is finished rather than re-entered.
+		ranked[i] = rankedFill{
+			slot:      fill,
+			coverage:  covered[fill.System] + offsets[i],
+			held:      covered[fill.System] > 0,
+			remaining: remaining[fill.System],
+		}
 	}
 
 	// Stable, so the ledger's own waypoint ordering survives as the last
@@ -97,7 +116,31 @@ func drainCandidates(ctx context.Context, p BuyPorts, playerID int) ([]QueuedSlo
 			yards.atHead++
 		}
 	}
-	return append(out, seeds...), yards, nil
+	return append(out, seeds...), yards, surface, nil
+}
+
+// coverageSurface is one tick's measurement of the map the fleet wants watched and has
+// no probe standing in. MEASURED BEFORE ANY PURCHASE GATE so it can be published while
+// paused: a queue that computed no demand and one forbidden to act on it otherwise
+// report the same zeros. See BuyReport's DarkMarkets fields for the parts.
+type coverageSurface struct {
+	inReach, held, unreached int
+	readable                 bool
+}
+
+// measure counts the reachable half of the surface, splitting off the part standing in
+// systems the fleet has already entered. MARKETS ONLY: a YARD placement is a counter
+// with its own accounting.
+func (s *coverageSurface) measure(fills []QueuedSlot, covered map[string]int) {
+	for _, fill := range fills {
+		if fill.Kind != SlotKindMarket {
+			continue
+		}
+		s.inReach++
+		if covered[fill.System] > 0 {
+			s.held++
+		}
+	}
 }
 
 func indexScreenedSystems(systems []ScreenedSystem) (map[string]int64, map[string]bool) {
@@ -127,14 +170,15 @@ func partitionFillsAndSeeds(slots []QueuedSlot, inScope map[string]bool) (fills,
 	return fills, seeds
 }
 
-// fillOutranks is the queue's whole priority order: the dark-yard tier, then
-// coverage, then the yard demand key, then system depth.
+// fillOutranks is the queue's whole priority order: the dark-yard tier, then the
+// saturation tier, then nearness to saturation, then coverage, then the yard
+// demand key, then system depth.
 //
-// THE TIER IS ABOVE COVERAGE, not a tiebreak inside it. A dark yard outranks every
-// ordinary market in the queue, including one in a system holding no hull at all.
-// A tiebreak inside coverage never fires between two different coverage values, so
-// a yard in a system already holding three probes would lose to every coverage-0
-// market row elsewhere.
+// THE YARD TIER IS ABOVE EVERYTHING, not a tiebreak inside it. A dark yard
+// outranks every ordinary market in the queue, including one in a system holding
+// no hull at all. A tiebreak inside coverage never fires between two different
+// coverage values, so a yard in a system already holding three probes would lose
+// to every coverage-0 market row elsewhere.
 //
 // THE COST IS REAL AND ACCEPTED: placement capacity goes to yards until yards are
 // exhausted, and market coverage grows only afterwards. A yard is what makes every
@@ -146,10 +190,23 @@ func partitionFillsAndSeeds(slots []QueuedSlot, inScope map[string]bool) (fills,
 // happen to be spread: a system's dark yards take its coverage indices 0,1,2,…
 // (yardFirstOffsets), so its second yard ranks behind every other system's first
 // and no system can take more than one place in any coverage band.
+//
+// THE SATURATION TIER sits below the yards and above everything else. `held` is the
+// tier and `remaining` orders within it — FEWEST LEFT FIRST, so a system completes
+// instead of every entered system creeping up a probe at a time, and it is a stable
+// attractor rather than an oscillation because filling a placement moves its system
+// FORWARD. `remaining` is CONSULTED ONLY INSIDE THE TIER: among unentered systems it
+// would rank on backlog size, which is what would change that half of the queue.
 func fillOutranks(a, b rankedFill, yards yardOrder, depth map[string]int64) bool {
 	ya, yb := yards.wants(a.slot.Waypoint), yards.wants(b.slot.Waypoint)
 	if ya != yb {
 		return ya
+	}
+	if a.held != b.held {
+		return a.held
+	}
+	if a.held && a.remaining != b.remaining {
+		return a.remaining < b.remaining
 	}
 	if a.coverage != b.coverage {
 		return a.coverage < b.coverage
@@ -168,12 +225,14 @@ func fillOutranks(a, b rankedFill, yards yardOrder, depth map[string]int64) bool
 	return depth[a.slot.System] > depth[b.slot.System]
 }
 
-// rankedFill is one fill beside the coverage it competes at — the count of hulls
-// its system already holds, plus its own position among that system's outstanding
-// placements.
+// rankedFill is one fill beside the keys it competes on: hulls its system holds plus its
+// own position among that system's outstanding placements, whether the system has been
+// ENTERED (held), and how many placements it has left this tick (remaining).
 type rankedFill struct {
-	slot     QueuedSlot
-	coverage int
+	slot      QueuedSlot
+	coverage  int
+	held      bool
+	remaining int
 }
 
 // reachableFills drops the fills whose system no hull can currently walk to.
@@ -195,11 +254,16 @@ type rankedFill struct {
 // TIME-VARYING — a system is unreachable only until the next graph refresh or the next gate
 // completion — so a stored "unreachable" flag would outlive the staleness that produced it and
 // blacklist the system permanently. The walk is re-derived every drain and thrown away.
-func reachableFills(ctx context.Context, p BuyPorts, playerID int, fills []QueuedSlot) []QueuedSlot {
+// It also reports what it dropped, as the surface's unreachable half — counted HERE so
+// the published number and the filtered queue cannot disagree.
+func reachableFills(ctx context.Context, p BuyPorts, playerID int, fills []QueuedSlot) ([]QueuedSlot, coverageSurface) {
 	graph, reachable, ok := reachableSystems(ctx, p, playerID)
 	if !ok {
-		return fills // unknowable this tick — filter nothing (see FAILS OPEN above)
+		// Unknowable this tick — filter nothing (see FAILS OPEN above), and say so: an
+		// unreached 0 with readable false is a blind read, not a walkable map.
+		return fills, coverageSurface{}
 	}
+	surface := coverageSurface{readable: true}
 	kept := make([]QueuedSlot, 0, len(fills))
 	for _, fill := range fills {
 		// REJECT ONLY ON POSITIVE EVIDENCE: we have READ this system's gates, and none of them
@@ -209,11 +273,14 @@ func reachableFills(ctx context.Context, p BuyPorts, playerID int, fills []Queue
 		// everything unreachable, and a filter that cannot tell that from a genuinely stranded
 		// fleet would stop the drain buying anything at all.
 		if graph.Mapped[fill.System] && !reachable[fill.System] {
+			if fill.Kind == SlotKindMarket {
+				surface.unreached++
+			}
 			continue
 		}
 		kept = append(kept, fill)
 	}
-	return kept
+	return kept, surface
 }
 
 // reachableSystems walks the fleet's own effective gate graph ONCE and returns every system a hull

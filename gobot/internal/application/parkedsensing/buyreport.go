@@ -123,6 +123,17 @@ type BuyReport struct {
 	//     foothold or purchase — stood on one. The only one of the three that costs
 	//     anything, and correctly zero while the expansion switch is off.
 	YardsQueued, YardsAtHead, YardsFilled int
+	// The COVERAGE SURFACE — marketplaces wanted with no probe standing in them, in
+	// parts on the growth_lane_surface pattern: DarkMarkets is the half a hull can walk
+	// to, DarkMarketsHeld the SATURATION BACKLOG within it (systems the fleet ALREADY
+	// STANDS IN, what the drain's ordering drives to zero), DarkMarketsUnreached what no
+	// hull can walk to, and DarkMarketsReadable false when reachability was unresolvable
+	// — a zero Unreached beside a false there is a BLIND read, not a verdict.
+	//
+	// ALL FOUR ARE PUBLISHED WHILE PAUSED, which is why they are measured ahead of the
+	// purchase gates: blocked-by-hold must not read as blocked-by-bug.
+	DarkMarkets, DarkMarketsHeld, DarkMarketsUnreached int
+	DarkMarketsReadable                                bool
 	// HaltedPriceDrift reports that a yard charged MORE than it had just quoted, and
 	// the drain stopped for the tick because of it. The hull is still bought and
 	// recorded — an overrun cannot un-buy it — but every remaining quote this tick was

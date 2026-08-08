@@ -49,6 +49,12 @@ type ParkedSensingMetricsCollector struct {
 	yardCatalogue *prometheus.GaugeVec
 	yardPresence  *prometheus.GaugeVec
 	yardSlots     *prometheus.GaugeVec
+
+	// coverageSurface is the demand behind all of it: how much of the map the
+	// fleet wants watched and has no probe standing in. Published in PARTS on the
+	// growth_lane_surface pattern, because the parts answer different questions
+	// and the sum answers none of them.
+	coverageSurface *prometheus.GaugeVec
 }
 
 // NewParkedSensingMetricsCollector creates a new parked-probe sensing collector.
@@ -89,6 +95,12 @@ func NewParkedSensingMetricsCollector() *ParkedSensingMetricsCollector {
 			"player_id",
 			"stage",
 		),
+		coverageSurface: newGaugeVec(
+			"parked_sensing_dark_market_surface",
+			"Whitelisted marketplaces the fleet WANTS watched and has no probe standing in, published in parts. component=in_reach is the fillable surface — dark markets in systems a hull can currently walk to, the work the buy queue could do. component=held is the SATURATION BACKLOG, the subset standing in systems the fleet has ALREADY ENTERED: it is what the queue's saturation ordering exists to drive to zero, and a held count that does not fall while probes are being bought is the fleet spreading instead of saturating (measured 2026-08-08 before sp-xfdep: 804 held across 96 of the 104 systems holding a probe, every one ranked behind 17,337 placements in systems no probe had ever visited). component=unreached is the surface no hull can walk to, kept APART because a fleet sealed behind an unbuilt gate and a fleet simply not buying publish the same zero otherwise. component=readable is 1 when reachability was resolved at all: an unreached of 0 with readable=0 is a BLIND read, never a verdict that everything is walkable, and in that case the whole surface falls into in_reach unpartitioned. EVERY COMPONENT IS PUBLISHED ON THE PAUSED PATH TOO — under an operator spend hold the demand must read as held-and-visible rather than absent, or blocked-by-hold is indistinguishable from blocked-by-bug. YARD placements are excluded; they are counters rather than marketplaces and have their own accounting in parked_sensing_yard_slots",
+			"player_id",
+			"component",
+		),
 	}
 }
 
@@ -105,6 +117,7 @@ func (c *ParkedSensingMetricsCollector) Register() error {
 		c.yardCatalogue,
 		c.yardPresence,
 		c.yardSlots,
+		c.coverageSurface,
 	)
 }
 
@@ -154,6 +167,14 @@ func (c *ParkedSensingMetricsCollector) RecordYardSlots(playerID int, stage stri
 		return
 	}
 	c.yardSlots.WithLabelValues(strconv.Itoa(playerID), stage).Set(float64(count))
+}
+
+// RecordCoverageSurface sets one component of the dark-marketplace surface.
+func (c *ParkedSensingMetricsCollector) RecordCoverageSurface(playerID int, component string, count int) {
+	if c == nil || c.coverageSurface == nil {
+		return
+	}
+	c.coverageSurface.WithLabelValues(strconv.Itoa(playerID), component).Set(float64(count))
 }
 
 // globalParkedSensingCollector is the process-wide collector the sensing

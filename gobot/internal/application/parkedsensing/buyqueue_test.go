@@ -546,10 +546,21 @@ func TestDrain_SpreadsAcrossSystemsBeforeDeepeningOne(t *testing.T) {
 	}
 }
 
-func TestDrain_AlreadyParkedProbesPushARichSystemDownTheOrder(t *testing.T) {
-	// X1-DEEP is the deeper system AND its placement is FIRST in ledger order, so
-	// both of the old sort's keys point at it. It already holds two parked probes;
-	// X1-MID holds none. Only effective coverage puts X1-MID first.
+func TestDrain_AlreadyParkedProbesPullARichSystemUPTheOrder(t *testing.T) {
+	// X1-DEEP already holds two parked probes; X1-MID holds none. The fleet is
+	// STANDING IN X1-DEEP, so X1-DEEP is finished before X1-MID is entered.
+	//
+	// THIS TEST PREVIOUSLY ASSERTED THE EXACT OPPOSITE (TestDrain_
+	// AlreadyParkedProbesPushARichSystemDownTheOrder, want MID then DEEP): parked
+	// probes PUSHED a system DOWN, which is the coverage-ascending rule sp-xfdep
+	// replaced. Held live it meant no system's second probe was ever bought — 118
+	// hulls over 104 systems at 1.1 each, 804 placements outstanding behind 17,337
+	// in systems no probe had ever visited. It is inverted deliberately, not broken.
+	//
+	// The fixture is unchanged, so the two orders are directly comparable: depth
+	// and ledger order both still point at X1-DEEP, and only the saturation tier
+	// decides. A change that merely made depth the top key would pass this and fail
+	// TestDrain_UnenteredSystemsKeepTheirCoverageOrderingAmongThemselves.
 	led := &fakeBuyLedger{
 		slots: []QueuedSlot{
 			{Waypoint: "X1-DEEP-M1", System: "X1-DEEP", Kind: SlotKindMarket, State: SlotStateWanted},
@@ -583,7 +594,7 @@ func TestDrain_AlreadyParkedProbesPushARichSystemDownTheOrder(t *testing.T) {
 		t.Fatalf("DrainBuyQueue returned error: %v", err)
 	}
 
-	want := []string{"X1-MID-Y1", "X1-DEEP-Y1"}
+	want := []string{"X1-DEEP-Y1", "X1-MID-Y1"}
 	if len(pur.buys) != len(want) {
 		t.Fatalf("made %d purchases, want %d: %v", len(pur.buys), len(want), pur.buys)
 	}
