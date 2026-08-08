@@ -20,7 +20,8 @@ type growthRunConfig struct {
 	HeavyCap int
 
 	UnservedLanesMin int
-	// RunwayMilliHours is the working-capital term's multiplier on the observed cargo outflow.
+	// RunwayMilliHours is the working-capital runway arm's multiplier on the fleet's UNRECOVERED
+	// cargo position — spend net of what was sold back, never gross spend.
 	RunwayMilliHours int
 
 	PurchaseMarginOverFloor int64

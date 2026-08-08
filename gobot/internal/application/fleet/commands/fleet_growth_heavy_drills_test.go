@@ -175,7 +175,7 @@ func TestGrowthHeavyBuy_UnreadableHeavyCensusFailsTheCapGuardClosed(t *testing.T
 func TestGrowthHeavyBuy_PoolSizeDoesNotBlock(t *testing.T) {
 	h, buyer, blocks := armedForHeavy(t, growthFixture{
 		lanes: &fakeLanes{count: 2, readable: true}, tradeHulls: 15,
-		outflow: &fakeOutflow{total: 10_000, largest: 5_000},
+		outflow: &fakeOutflow{obs: observedOutflow(10_000, 0, 5_000)},
 	})
 
 	if _, err := h.reconcileOnce(context.Background(), growthCmd()); err != nil {

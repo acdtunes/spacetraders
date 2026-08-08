@@ -4,6 +4,8 @@ import (
 	"sync"
 
 	"github.com/prometheus/client_golang/prometheus"
+
+	"github.com/andrescamacho/spacetraders-go/internal/domain/fleetgrowth"
 )
 
 // The wave's two reader names. They are the label values of fleet_growth_wave, and the whole point
@@ -53,6 +55,8 @@ type FleetGrowthMetricsCollector struct {
 	heaviesOwned        *prometheus.GaugeVec
 	heavyCap            *prometheus.GaugeVec
 	workingCapital      *prometheus.GaugeVec
+	workingCapitalArm   *prometheus.GaugeVec
+	workingCapitalBinds *prometheus.GaugeVec
 	heavyPricePremium   *prometheus.SummaryVec
 
 	laneSurface *prometheus.GaugeVec
@@ -122,8 +126,18 @@ func NewFleetGrowthMetricsCollector() *FleetGrowthMetricsCollector {
 		),
 		workingCapital: newGaugeVec(
 			"growth_working_capital_credits",
-			"Credits the trading fleet's OBSERVED activity has already spoken for, held back ON TOP OF the immutable reserve floor before a heavy may be bought. Read it beside growth_blocked_total{guard=\"affordability\"}: a rising value there is the runway term refusing hulls the fleet cannot afford to stop trading for",
+			"Credits the trading fleet's OBSERVED activity has already spoken for, held back ON TOP OF the immutable reserve floor before a heavy may be bought — the MAXIMUM of the two arms published beside it. Read it beside growth_blocked_total{guard=\"affordability\"}: a rising value there is the reserve refusing hulls the fleet cannot afford to stop trading for, and growth_working_capital_binding says which arm is doing the refusing",
 			"player_id",
+		),
+		workingCapitalArm: newGaugeVec(
+			"growth_working_capital_arm_credits",
+			"The two arms growth_working_capital_credits is the maximum of, published in parts every tick. arm=runway is the runway knob applied to the fleet's UNRECOVERED cargo position (cargo bought minus cargo sold back over the same window — NOT gross spend, which counts the same credits again on every recycle and grows as trading improves); arm=hold_fill is the trade pool's hull count times the largest observed single fill, the per-hull bound that keeps binding when fresh capacity has no spend history yet. The arms fail for opposite reasons and are answered with different knobs, so a total alone cannot tell an operator which one to act on",
+			"player_id", "arm",
+		),
+		workingCapitalBinds: newGaugeVec(
+			"growth_working_capital_binding",
+			"Which working-capital arm set the reserve this tick, 1=this arm 0=not, arm=runway|hold_fill|none. ALL THREE are written every tick, so a superseded arm cannot linger at 1 claiming a tick it did not decide. arm=none is a reserve of zero — the immutable floor alone is holding the buy, not this term. This series is the one that makes an affordability block explainable without a source read: growth_working_capital_credits says how much, this says by what measure",
+			"player_id", "arm",
 		),
 		heavyPricePremium: prometheus.NewSummaryVec(
 			prometheus.SummaryOpts{
@@ -170,6 +184,8 @@ func (c *FleetGrowthMetricsCollector) Register() error {
 		c.heaviesOwned,
 		c.heavyCap,
 		c.workingCapital,
+		c.workingCapitalArm,
+		c.workingCapitalBinds,
 		c.heavyPricePremium,
 		c.laneSurface,
 		c.growthEnabled,
@@ -267,9 +283,25 @@ func (c *FleetGrowthMetricsCollector) RecordHeavyReserve(playerID string, reserv
 	c.heavyCap.WithLabelValues(playerID).Set(float64(capacity))
 }
 
-// RecordWorkingCapital sets the observed-commitment gauge for this tick.
-func (c *FleetGrowthMetricsCollector) RecordWorkingCapital(playerID string, credits int64) {
-	c.workingCapital.WithLabelValues(playerID).Set(float64(credits))
+// RecordWorkingCapital sets the observed-commitment gauges for this tick: the reserve, both arms it
+// is the maximum of, and which arm bound.
+//
+// EVERY ARM IS WRITTEN EVERY TICK, the non-binding ones to 0. The arm set is closed and known, so
+// unlike the probe-reason series there is nothing to remember between ticks — writing all of them
+// unconditionally is what makes a superseded arm impossible rather than merely tidied up after.
+func (c *FleetGrowthMetricsCollector) RecordWorkingCapital(playerID string, terms fleetgrowth.WorkingCapitalTerms) {
+	c.workingCapital.WithLabelValues(playerID).Set(float64(terms.Credits()))
+	c.workingCapitalArm.WithLabelValues(playerID, fleetgrowth.BindingRunway).Set(float64(terms.Runway))
+	c.workingCapitalArm.WithLabelValues(playerID, fleetgrowth.BindingHoldFill).Set(float64(terms.HoldFill))
+
+	binding := terms.Binding()
+	for _, arm := range []string{fleetgrowth.BindingRunway, fleetgrowth.BindingHoldFill, fleetgrowth.BindingNone} {
+		value := 0.0
+		if arm == binding {
+			value = 1
+		}
+		c.workingCapitalBinds.WithLabelValues(playerID, arm).Set(value)
+	}
 }
 
 // RecordDemand sets the demand/current gauges for a class.
@@ -350,10 +382,10 @@ func RecordGrowthHeavyReserve(playerID string, reserve, target int64, owned, cap
 	}
 }
 
-// RecordGrowthWorkingCapital sets the observed-commitment gauge globally.
-func RecordGrowthWorkingCapital(playerID string, credits int64) {
+// RecordGrowthWorkingCapital sets the observed-commitment gauges globally.
+func RecordGrowthWorkingCapital(playerID string, terms fleetgrowth.WorkingCapitalTerms) {
 	if globalFleetGrowthCollector != nil {
-		globalFleetGrowthCollector.RecordWorkingCapital(playerID, credits)
+		globalFleetGrowthCollector.RecordWorkingCapital(playerID, terms)
 	}
 }
 

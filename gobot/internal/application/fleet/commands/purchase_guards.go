@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/fleetgrowth"
 )
 
 // The MONEY-GUARD HEART. A purchase fires ONLY when every guard passes — spending is irreversible,
@@ -136,6 +137,10 @@ type PurchaseRequest struct {
 	// about to spend on cargo, which this purchase does not fund and must not consume — buying
 	// a hull out of it stalls the trades that pay for everything, including the next hull.
 	WorkingCapital int64
+
+	// WorkingCapitalArms are the two terms WorkingCapital is the maximum of, for the DECISION LINE
+	// ALONE — never re-derived into it. Left zero it prints no arm clause: unmeasured is not zero.
+	WorkingCapitalArms fleetgrowth.WorkingCapitalTerms
 
 	// API utilization (dynamic; fails CLOSED when unreadable). Holds concurrency growth
 	// when sustained utilization is at/over the ceiling OR the signal cannot be read.
@@ -360,14 +365,24 @@ func guardAffordability(req PurchaseRequest) GuardVerdict {
 	spendable := req.LiveTreasury - floor - heavyReserve - maxGuardInt64(0, req.WorkingCapital)
 	need := req.Price + req.MarginOverFloor
 	floorOK := spendable >= need
-	floorDetail := fmt.Sprintf("treasury %d − floor %d%s − working capital %d = %d >= price %d + margin %d = %d",
-		req.LiveTreasury, floor, reserveNote, maxGuardInt64(0, req.WorkingCapital), spendable, req.Price, req.MarginOverFloor, need)
+	floorDetail := fmt.Sprintf("treasury %d − floor %d%s − working capital %d%s = %d >= price %d + margin %d = %d",
+		req.LiveTreasury, floor, reserveNote, maxGuardInt64(0, req.WorkingCapital), workingCapitalArmNote(req.WorkingCapitalArms),
+		spendable, req.Price, req.MarginOverFloor, need)
 
 	return GuardVerdict{
 		Guard:  GuardAffordability,
 		Passed: pctOK && floorOK,
 		Detail: pctDetail + "; " + floorDetail,
 	}
+}
+
+// workingCapitalArmNote names the MEASURE that refused the hull, not only its size. Empty when
+// nothing was measured — see PurchaseRequest.WorkingCapitalArms.
+func workingCapitalArmNote(arms fleetgrowth.WorkingCapitalTerms) string {
+	if arms.Credits() <= 0 {
+		return ""
+	}
+	return fmt.Sprintf(" [%s binds: runway %d, hold_fill %d]", arms.Binding(), arms.Runway, arms.HoldFill)
 }
 
 // maxGuardInt64 clamps a term non-negative before it reaches the floor arithmetic. A negative

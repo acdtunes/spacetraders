@@ -9,6 +9,7 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/application/liveconfig"
+	"github.com/andrescamacho/spacetraders-go/internal/application/logging"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/fleetgrowth"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
@@ -30,16 +31,22 @@ func (f *fakeLanes) LaneDemand(ctx context.Context, playerID int) (fleetgrowth.L
 }
 
 type fakeOutflow struct {
-	total, largest int64
-	err            error
-	since          time.Time
-	calls          int
+	obs   fleetgrowth.CargoOutflow
+	err   error
+	since time.Time
+	calls int
 }
 
-func (f *fakeOutflow) CargoOutflowSince(ctx context.Context, playerID int, since time.Time) (int64, int64, error) {
+func (f *fakeOutflow) CargoOutflowSince(ctx context.Context, playerID int, since time.Time) (fleetgrowth.CargoOutflow, error) {
 	f.calls++
 	f.since = since
-	return f.total, f.largest, f.err
+	return f.obs, f.err
+}
+
+// observedOutflow builds a WHOLE-window observation — the ordinary case, and the one where netting
+// the recovery is honest. Tests that need the truncated window build the struct themselves.
+func observedOutflow(spent, recovered, largest int64) fleetgrowth.CargoOutflow {
+	return fleetgrowth.CargoOutflow{Spent: spent, Recovered: recovered, Largest: largest, Complete: true}
 }
 
 type fakeHighWater struct {
@@ -129,20 +136,34 @@ func (r *growthPurchaseRecorder) BuyAndDedicate(ctx context.Context, order BuyOr
 // un-overridden call, which reads as a coordinator bug rather than a fixture gap.
 type noopGrowthSink struct{}
 
-func (noopGrowthSink) RecordWave(string, common.Wave, common.WaveProbeReason) {}
-func (noopGrowthSink) RecordGrowthEnabled(string, bool)                       {}
-func (noopGrowthSink) RecordHeavyReserve(string, int64, int64, int, int)      {}
-func (noopGrowthSink) RecordWorkingCapital(string, int64)                     {}
-func (noopGrowthSink) RecordDemand(HullClass, int, int)                       {}
-func (noopGrowthSink) RecordPurchase(HullClass)                               {}
-func (noopGrowthSink) RecordBlocked(HullClass, GuardName)                     {}
-func (noopGrowthSink) RecordZeroEffectAlarm()                                 {}
-func (noopGrowthSink) ObserveHeavyPricePremium(string, int64, int64)          {}
+func (noopGrowthSink) RecordWave(string, common.Wave, common.WaveProbeReason)       {}
+func (noopGrowthSink) RecordGrowthEnabled(string, bool)                             {}
+func (noopGrowthSink) RecordHeavyReserve(string, int64, int64, int, int)            {}
+func (noopGrowthSink) RecordWorkingCapital(string, fleetgrowth.WorkingCapitalTerms) {}
+func (noopGrowthSink) RecordDemand(HullClass, int, int)                             {}
+func (noopGrowthSink) RecordPurchase(HullClass)                                     {}
+func (noopGrowthSink) RecordBlocked(HullClass, GuardName)                           {}
+func (noopGrowthSink) RecordZeroEffectAlarm()                                       {}
+func (noopGrowthSink) ObserveHeavyPricePremium(string, int64, int64)                {}
 
 type recordingWaveSink struct {
 	noopGrowthSink
 	waves   []common.Wave
 	reasons []common.WaveProbeReason
+}
+
+// recordingCapitalSink captures the working-capital terms as the coordinator publishes them, which
+// is the only way to prove the ARMS reach the gauges rather than being collapsed to a total on the
+// way out.
+type recordingCapitalSink struct {
+	noopGrowthSink
+	terms fleetgrowth.WorkingCapitalTerms
+	calls int
+}
+
+func (r *recordingCapitalSink) RecordWorkingCapital(_ string, terms fleetgrowth.WorkingCapitalTerms) {
+	r.calls++
+	r.terms = terms
 }
 
 func (r *recordingWaveSink) RecordWave(playerID string, w common.Wave, reason common.WaveProbeReason) {
@@ -385,7 +406,7 @@ func TestGrowthReconcile_WorkingCapitalBlocksTheBuy(t *testing.T) {
 	h := newGrowthHandlerWith(t, growthFixture{
 		lanes: &fakeLanes{count: 9, readable: true}, treasury: 5_000_000, yardAsk: 1_000_000, streak: 3,
 		tradeHulls: 4,
-		outflow:    &fakeOutflow{total: 2_000_000, largest: 100_000},
+		outflow:    &fakeOutflow{obs: observedOutflow(2_000_000, 0, 100_000)},
 	})
 	h.SetPurchaser(buyer)
 
@@ -394,6 +415,159 @@ func TestGrowthReconcile_WorkingCapitalBlocksTheBuy(t *testing.T) {
 	}
 	if buyer.calls != 0 {
 		t.Fatalf("the observed cargo commitment must block this buy, got %d", buyer.calls)
+	}
+}
+
+// THE LIVE FRAME, staging 2026-08-08 07:02. Nine trade hulls recycling 4,319,078 credits of cargo
+// an hour and recovering more than that back through sales; the heavy asks 1,742,500. Measured as
+// GROSS spend the reserve was 8,638,156 and the heavy's effective bar was 10,630,656 of treasury —
+// a bar that RISES with every trading win, because gross outflow counts the same credits again on
+// every recycle. Measured as the UNRECOVERED position the reserve is the hold-bounded float,
+// 9 × 182,000 = 1,638,000, and the bar is 3,630,500.
+//
+// The fixture stands exactly ON the new bar and the credit BELOW it is asserted too, so this pins
+// the arithmetic rather than its direction: a reserve that merely got smaller passes the first
+// assertion, and only the exact figure passes both.
+func TestGrowthReconcile_HighVelocityFleetIsHeldToItsFloatNotItsTurnover(t *testing.T) {
+	atTreasury := func(treasury int64) *growthPurchaseRecorder {
+		buyer := &growthPurchaseRecorder{}
+		h := newGrowthHandlerWith(t, growthFixture{
+			lanes: &fakeLanes{count: 73, readable: true}, treasury: treasury, yardAsk: 1_742_500, streak: 3,
+			tradeHulls: 9,
+			outflow:    &fakeOutflow{obs: observedOutflow(4_319_078, 4_750_000, 182_000)},
+		})
+		h.SetPurchaser(buyer)
+		if _, err := h.reconcileOnce(context.Background(), growthCmd()); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		return buyer
+	}
+
+	if got := atTreasury(3_630_500).calls; got != 1 {
+		t.Fatalf("a fleet holding 1638000 of float must clear a 3630500 bar, got %d buys", got)
+	}
+	if got := atTreasury(3_630_499).calls; got != 0 {
+		t.Fatalf("one credit under the bar must still refuse — the reserve is 1638000 exactly, got %d buys", got)
+	}
+}
+
+// THE ANTI-VACUITY CONTROL FOR THE FRAME ABOVE. The identical tick with the recovery removed — the
+// same hulls, the same spend, the same treasury, nothing sold back — reserves the full 8,638,156
+// and refuses. The two tests differ in ONE field, so a change that stopped netting at all cannot
+// leave both of them passing.
+func TestGrowthReconcile_UnrecoveredSpendOnTheSameFrameStillRefuses(t *testing.T) {
+	buyer := &growthPurchaseRecorder{}
+	h := newGrowthHandlerWith(t, growthFixture{
+		lanes: &fakeLanes{count: 73, readable: true}, treasury: 3_630_500, yardAsk: 1_742_500, streak: 3,
+		tradeHulls: 9,
+		outflow:    &fakeOutflow{obs: observedOutflow(4_319_078, 0, 182_000)},
+	})
+	h.SetPurchaser(buyer)
+
+	if _, err := h.reconcileOnce(context.Background(), growthCmd()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if buyer.calls != 0 {
+		t.Fatalf("cargo bought and NOT sold back is capital in flight and must still refuse the hull, got %d buys", buyer.calls)
+	}
+}
+
+// THE COLD-START REGIME THE RUNWAY ARM WAS WRITTEN FOR, and the half of this guard a fix must not
+// disarm. Two hulls, 500,000 spent, nothing recovered: the runway arm reserves 2h × 500,000 and
+// blocks a treasury that the hold-fill arm alone (2 × 80,000 = 160,000) would have let through.
+//
+// The pair below is what makes the block attributable to the RUNWAY arm rather than to the frame:
+// the same tick with the position fully recovered buys, and nothing else about it changes.
+func TestGrowthReconcile_ColdStartRunwayArmStillBinds(t *testing.T) {
+	coldStart := func(recovered int64) *growthPurchaseRecorder {
+		buyer := &growthPurchaseRecorder{}
+		h := newGrowthHandlerWith(t, growthFixture{
+			lanes: &fakeLanes{count: 5, readable: true}, treasury: 1_500_000, yardAsk: 1_000_000, streak: 3,
+			tradeHulls: 2,
+			outflow:    &fakeOutflow{obs: observedOutflow(500_000, recovered, 80_000)},
+		})
+		h.SetPurchaser(buyer)
+		if _, err := h.reconcileOnce(context.Background(), growthCmd()); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		return buyer
+	}
+
+	if got := coldStart(0).calls; got != 0 {
+		t.Fatalf("an unrecovered 500000 position must still reserve 1000000 and refuse the hull, got %d buys", got)
+	}
+	if got := coldStart(500_000).calls; got != 1 {
+		t.Fatalf("with the position recovered only the 160000 hold-fill arm remains and this treasury clears it, got %d buys", got)
+	}
+}
+
+// THE ARMS SURVIVE THE TRIP TO THE DECISION LINE — the one an operator actually reads when a heavy
+// is refused. The guard renders the clause and the coordinator fills the field, and only a test
+// that drives BOTH can see the field going unfilled: a request that never carries the arms renders
+// a line the guard tests would still pass, saying how much was held back and not by which measure.
+func TestGrowthReconcile_DecisionLineNamesTheBindingWorkingCapitalArm(t *testing.T) {
+	logger := &capturingLogger{}
+	h := newGrowthHandlerWith(t, growthFixture{
+		lanes: &fakeLanes{count: 73, readable: true}, treasury: 3_630_499, yardAsk: 1_742_500, streak: 3,
+		tradeHulls: 9,
+		outflow:    &fakeOutflow{obs: observedOutflow(4_319_078, 4_750_000, 182_000)},
+	})
+
+	if _, err := h.reconcileOnce(logging.WithLogger(context.Background(), logger), growthCmd()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	joined := strings.Join(logger.lines, "\n")
+	if !strings.Contains(joined, "hold_fill binds: runway 0, hold_fill 1638000") {
+		t.Fatalf("the refusal an operator reads must name the arm that bound:\n%s", joined)
+	}
+}
+
+// THE ARMS SURVIVE THE TRIP TO THE GAUGES. The coordinator derives both terms and the sink must
+// receive both: publishing only the maximum is exactly the blindness that made the binding arm a
+// source read in the field, and it is invisible from inside the money math.
+func TestGrowthReconcile_BothWorkingCapitalArmsReachTheMetricsSink(t *testing.T) {
+	sink := &recordingCapitalSink{}
+	h := newGrowthHandlerWith(t, growthFixture{
+		lanes: &fakeLanes{count: 73, readable: true}, treasury: 3_630_500, yardAsk: 1_742_500, streak: 3,
+		tradeHulls: 9,
+		outflow:    &fakeOutflow{obs: observedOutflow(4_319_078, 4_750_000, 182_000)},
+	})
+	h.SetMetricsSink(sink)
+
+	if _, err := h.reconcileOnce(context.Background(), growthCmd()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sink.calls != 1 {
+		t.Fatalf("the reserve must be published once per tick, got %d", sink.calls)
+	}
+	if sink.terms.Runway != 0 || sink.terms.HoldFill != 1_638_000 {
+		t.Fatalf("both arms must reach the sink: got %+v", sink.terms)
+	}
+	if got := sink.terms.Binding(); got != fleetgrowth.BindingHoldFill {
+		t.Fatalf("the published terms must name the binding arm %q, got %q", fleetgrowth.BindingHoldFill, got)
+	}
+}
+
+// A WINDOW THE READER COULD NOT SEE WHOLE IS NOT NETTED. The recovery is real and the position IS
+// recovered, but the read hit its row bound, so the reserve falls back to the gross measure and the
+// buy is refused — the strict direction, on an observation that cannot be trusted to net.
+func TestGrowthReconcile_TruncatedLedgerWindowFallsBackToGross(t *testing.T) {
+	buyer := &growthPurchaseRecorder{}
+	h := newGrowthHandlerWith(t, growthFixture{
+		lanes: &fakeLanes{count: 5, readable: true}, treasury: 1_500_000, yardAsk: 1_000_000, streak: 3,
+		tradeHulls: 2,
+		outflow: &fakeOutflow{obs: fleetgrowth.CargoOutflow{
+			Spent: 500_000, Recovered: 500_000, Largest: 80_000, Complete: false,
+		}},
+	})
+	h.SetPurchaser(buyer)
+
+	if _, err := h.reconcileOnce(context.Background(), growthCmd()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if buyer.calls != 0 {
+		t.Fatalf("a half-seen window must reserve the gross spend, not the netted one, got %d buys", buyer.calls)
 	}
 }
 

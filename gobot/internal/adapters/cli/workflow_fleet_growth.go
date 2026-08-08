@@ -42,7 +42,8 @@ the next tick with no restart (` + "`spacetraders tune --operation growth --show
   growth_enabled              master switch: 1=on, 2=off (off also forces the wave to PROBE, so
                               probe buying resumes rather than pausing for a buyer that cannot buy)
   heavy_cap                   ceiling on owned HEAVY HULLS, counted fleet-wide
-  growth_runway_milli_hours   milli-hours of measured cargo runway held back above the reserve floor
+  growth_runway_milli_hours   milli-hours of the fleet's UNRECOVERED cargo position (bought minus
+                              sold back) held back above the reserve floor
 
 Examples:
   spacetraders workflow fleet-growth --agent TORWIND

@@ -13,6 +13,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/health"
 	tradingQueries "github.com/andrescamacho/spacetraders-go/internal/application/trading/queries"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/fleetgrowth"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/ledger"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 )
@@ -162,8 +163,8 @@ func (m *growthMetricsSink) RecordHeavyReserve(playerID string, reserve, target 
 	metrics.RecordGrowthHeavyReserve(playerID, reserve, target, owned, capacity)
 }
 
-func (m *growthMetricsSink) RecordWorkingCapital(playerID string, credits int64) {
-	metrics.RecordGrowthWorkingCapital(playerID, credits)
+func (m *growthMetricsSink) RecordWorkingCapital(playerID string, terms fleetgrowth.WorkingCapitalTerms) {
+	metrics.RecordGrowthWorkingCapital(playerID, terms)
 }
 
 func (m *growthMetricsSink) RecordDemand(class fleetCmd.HullClass, demand, current int) {

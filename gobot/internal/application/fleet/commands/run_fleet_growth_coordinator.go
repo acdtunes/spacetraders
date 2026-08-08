@@ -77,10 +77,10 @@ type UnservedLaneReader interface {
 	LaneDemand(ctx context.Context, playerID int) (demand fleetgrowth.LaneDemand, readable bool, err error)
 }
 
-// CargoOutflowReader reports the trading fleet's observed cargo outflow over a trailing window
-// as the two statistics the working-capital formula consumes.
+// CargoOutflowReader reports ONE trailing window of the trading fleet's cargo ledger — spend,
+// recovery, largest purchase, seen-whole — because spend alone measures turnover, not commitment.
 type CargoOutflowReader interface {
-	CargoOutflowSince(ctx context.Context, playerID int, since time.Time) (total int64, largestSingle int64, err error)
+	CargoOutflowSince(ctx context.Context, playerID int, since time.Time) (fleetgrowth.CargoOutflow, error)
 }
 
 // TreasuryHighWaterReader reports the fleet's demonstrated capacity: the highest balance held across
@@ -108,7 +108,8 @@ type GrowthMetricsSink interface {
 	RecordWave(playerID string, wave common.Wave, reason common.WaveProbeReason)
 	RecordGrowthEnabled(playerID string, enabled bool)
 	RecordHeavyReserve(playerID string, reserve, target int64, owned, capacity int)
-	RecordWorkingCapital(playerID string, credits int64)
+	// RecordWorkingCapital publishes the reserve AND both arms: a total cannot name the measure.
+	RecordWorkingCapital(playerID string, terms fleetgrowth.WorkingCapitalTerms)
 	RecordDemand(class HullClass, demand, current int)
 	RecordPurchase(class HullClass)
 	RecordBlocked(class HullClass, guard GuardName)

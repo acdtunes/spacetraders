@@ -44,9 +44,9 @@ type growthTickInputs struct {
 	// term's multiplier.
 	tradeHulls   int
 	tradeHullsOK bool
-	// workingCapital is the credits the trading fleet's observed activity has already spoken for.
-	// workingCapitalOK=false REFUSES the buy: an unknowable commitment is not a zero one.
-	workingCapital   int64
+	// workingCapital is what the trading fleet's observed activity has spoken for, carried as BOTH
+	// arms so the line and the gauges name the binding one. Not-OK REFUSES: unknowable is not zero.
+	workingCapital   fleetgrowth.WorkingCapitalTerms
 	workingCapitalOK bool
 }
 
@@ -127,14 +127,14 @@ func (h *RunFleetGrowthCoordinatorHandler) readWorkingCapital(ctx context.Contex
 	if h.outflow == nil || !in.tradeHullsOK {
 		return
 	}
-	total, largest, err := h.outflow.CargoOutflowSince(ctx, playerID, h.clock.Now().Add(-fleetgrowth.TradeCycleWindow))
+	obs, err := h.outflow.CargoOutflowSince(ctx, playerID, h.clock.Now().Add(-fleetgrowth.TradeCycleWindow))
 	if err != nil {
 		return
 	}
-	if in.tradeHulls > 0 && largest == 0 {
+	if in.tradeHulls > 0 && obs.Largest == 0 {
 		return
 	}
-	in.workingCapital = fleetgrowth.WorkingCapital(cfg.RunwayMilliHours, total, in.tradeHulls, largest)
+	in.workingCapital = fleetgrowth.WorkingCapital(cfg.RunwayMilliHours, obs, in.tradeHulls)
 	in.workingCapitalOK = true
 }
 
@@ -300,10 +300,11 @@ func (h *RunFleetGrowthCoordinatorHandler) buildPurchaseRequest(
 		MarginOverFloor:   cfg.PurchaseMarginOverFloor,
 		TreasuryPctPerBuy: cfg.TreasuryPctPerPurchase,
 
-		// The trading fleet's observed commitment, ABOVE the immutable floor and never instead of
-		// it, and NOT waived for this buy: a hull bought out of the money the pool is about to
-		// spend on cargo stalls the trades that fund everything, including the next hull.
-		WorkingCapital: in.workingCapital,
+		// The trading fleet's observed commitment, ABOVE the immutable floor and never instead of it,
+		// and NOT waived for this buy: a hull bought out of the money the pool is about to spend on
+		// cargo stalls the trades that fund everything. The arms name the binding one.
+		WorkingCapital:     in.workingCapital.Credits(),
+		WorkingCapitalArms: in.workingCapital,
 
 		APIUtilPct:      in.apiUtil,
 		APIUtilReadable: in.apiOK,

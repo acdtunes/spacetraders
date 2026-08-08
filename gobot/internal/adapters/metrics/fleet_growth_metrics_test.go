@@ -5,6 +5,8 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
+
+	"github.com/andrescamacho/spacetraders-go/internal/domain/fleetgrowth"
 )
 
 // gaugeSamples collects one GaugeVec into label→value pairs, so a test can assert both the value
@@ -150,5 +152,64 @@ func TestRecordWave_SupersededReasonIsZeroedWithinOneReader(t *testing.T) {
 	}
 	if got["player_id=1;reader=drain;reason=none;"] != 1 {
 		t.Fatalf("the drain's current reason must read 1, got %v", got)
+	}
+}
+
+// THE ARMS ARE PUBLISHED IN PARTS BESIDE THE TOTAL, and the binding one is NAMED. A single
+// working-capital figure says a heavy was held back but not by which measure, and the two arms are
+// answered with different knobs — the runway by retuning growth_runway_milli_hours or by trading
+// the position down, the hold-fill by the pool's size and the fills it takes.
+func TestRecordWorkingCapital_PublishesBothArmsAndNamesTheBindingOne(t *testing.T) {
+	c := NewFleetGrowthMetricsCollector()
+
+	c.RecordWorkingCapital("1", fleetgrowth.WorkingCapitalTerms{Runway: 0, HoldFill: 1_638_000})
+
+	if got := gaugeSamples(t, c.workingCapital); got["player_id=1;"] != 1_638_000 {
+		t.Fatalf("the total must be the larger arm, got %v", got)
+	}
+	arms := gaugeSamples(t, c.workingCapitalArm)
+	if arms["arm=runway;player_id=1;"] != 0 {
+		t.Fatalf("the runway arm must be published even at 0 — a missing series reads as a stalled writer: %v", arms)
+	}
+	if arms["arm=hold_fill;player_id=1;"] != 1_638_000 {
+		t.Fatalf("the hold-fill arm must carry its own credits, got %v", arms)
+	}
+	binds := gaugeSamples(t, c.workingCapitalBinds)
+	if binds["arm=hold_fill;player_id=1;"] != 1 {
+		t.Fatalf("the binding arm must read 1, got %v", binds)
+	}
+	if binds["arm=runway;player_id=1;"] != 0 || binds["arm=none;player_id=1;"] != 0 {
+		t.Fatalf("every arm that did not bind must read 0, got %v", binds)
+	}
+}
+
+// EVERY ARM IS WRITTEN EVERY TICK, so a superseded binding cannot linger at 1 claiming a tick it
+// did not decide — the failure the probe-reason series needs a whole bookkeeping map to avoid.
+func TestRecordWorkingCapital_SupersededBindingIsZeroed(t *testing.T) {
+	c := NewFleetGrowthMetricsCollector()
+
+	c.RecordWorkingCapital("1", fleetgrowth.WorkingCapitalTerms{Runway: 900_000, HoldFill: 160_000})
+	c.RecordWorkingCapital("1", fleetgrowth.WorkingCapitalTerms{Runway: 0, HoldFill: 160_000})
+
+	binds := gaugeSamples(t, c.workingCapitalBinds)
+	if binds["arm=runway;player_id=1;"] != 0 {
+		t.Fatalf("the superseded runway binding must read 0, got %v", binds)
+	}
+	if binds["arm=hold_fill;player_id=1;"] != 1 {
+		t.Fatalf("the current binding must read 1, got %v", binds)
+	}
+}
+
+// A RESERVE OF ZERO IS ITS OWN STATE, not a missing one: nothing the trading fleet is doing is
+// holding the heavy back, and the immutable floor alone is. Published as arm=none so an operator
+// reading the binding series is never left with three zeros and no answer.
+func TestRecordWorkingCapital_NothingReservedNamesTheNoneArm(t *testing.T) {
+	c := NewFleetGrowthMetricsCollector()
+
+	c.RecordWorkingCapital("1", fleetgrowth.WorkingCapitalTerms{})
+
+	binds := gaugeSamples(t, c.workingCapitalBinds)
+	if binds["arm=none;player_id=1;"] != 1 {
+		t.Fatalf("a zero reserve must publish arm=none, got %v", binds)
 	}
 }

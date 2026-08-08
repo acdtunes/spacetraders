@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/andrescamacho/spacetraders-go/internal/domain/fleetgrowth"
 )
 
 // passingRequest is a candidate purchase where EVERY guard passes. Each test flips ONE field to
@@ -372,6 +374,64 @@ func TestGuardAffordability_NegativeWorkingCapitalCannotLoosenTheFloor(t *testin
 				t.Fatalf("the clamped term must print the 0 it applied, never the negative it was handed: %s", got.Detail)
 			}
 		})
+	}
+}
+
+// THE DECISION LINE MUST NAME THE ARM THAT BOUND. Working capital is a max() over two terms that
+// fail for opposite reasons and are answered with different knobs, and a line carrying only the
+// total says a heavy was refused without saying by which measure — the diagnosis this guard exists
+// to hand an operator becomes a source read.
+//
+// The frame is the live staging block of 2026-08-08 07:02, with the corrected measure: nine trade
+// hulls, a fully recovered cargo position (runway 0) and a hold-bounded float of 1638000.
+func TestGuardAffordability_NamesTheBindingWorkingCapitalArm(t *testing.T) {
+	req := PurchaseRequest{
+		Class: HullClassHeavy, TreasuryReadable: true,
+		LiveTreasury: 2_815_910, Price: 1_742_500, MarginOverFloor: 200_000,
+		HeavyReserve:       1_742_500,
+		WorkingCapital:     1_638_000,
+		WorkingCapitalArms: fleetgrowth.WorkingCapitalTerms{Runway: 0, HoldFill: 1_638_000},
+	}
+
+	v := guardAffordability(req)
+	for _, want := range []string{"working capital 1638000", "hold_fill binds", "runway 0", "hold_fill 1638000"} {
+		if !strings.Contains(v.Detail, want) {
+			t.Fatalf("the decision line must carry %q so the binding arm is legible in the field: %s", want, v.Detail)
+		}
+	}
+}
+
+// THE ANTI-VACUITY CONTROL FOR THE LINE ABOVE: the same rendering on a cold-start frame names the
+// OTHER arm. A clause hard-coded to one arm passes the test above and fails this one.
+func TestGuardAffordability_NamesTheRunwayArmWhenItBinds(t *testing.T) {
+	req := PurchaseRequest{
+		Class: HullClassHeavy, TreasuryReadable: true,
+		LiveTreasury: 2_815_910, Price: 1_742_500, MarginOverFloor: 200_000,
+		WorkingCapital:     1_000_000,
+		WorkingCapitalArms: fleetgrowth.WorkingCapitalTerms{Runway: 1_000_000, HoldFill: 160_000},
+	}
+
+	v := guardAffordability(req)
+	if !strings.Contains(v.Detail, "runway binds") {
+		t.Fatalf("a runway-bound frame must say so: %s", v.Detail)
+	}
+	if strings.Contains(v.Detail, "hold_fill binds") {
+		t.Fatalf("only one arm may be named as binding: %s", v.Detail)
+	}
+}
+
+// A REQUEST CARRYING NO ARMS PRINTS NO ARM CLAUSE. The arms are a display term filled by the one
+// production call site; a caller that has not filled them must not have zeros attributed to it as
+// if they were measured, and the un-armed line must read exactly as it did before this change —
+// which is also what keeps the clamped-negative verdict above byte-identical to the zero one.
+func TestGuardAffordability_UnattributedWorkingCapitalPrintsNoArmClause(t *testing.T) {
+	req := PurchaseRequest{
+		Class: HullClassHeavy, TreasuryReadable: true,
+		LiveTreasury: 1_000_000, Price: 700_000, MarginOverFloor: 200_000,
+		WorkingCapital: 100_000,
+	}
+	if v := guardAffordability(req); strings.Contains(v.Detail, "binds") {
+		t.Fatalf("no arm may be named when none was measured: %s", v.Detail)
 	}
 }
 
