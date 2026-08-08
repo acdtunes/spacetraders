@@ -390,24 +390,24 @@ COMMENT_BASELINE := .comment-baseline.json
 comment-audit:
 	@go run ./cmd/comment-audit -root . $(ARGS)
 
-# Fail if a package got DENSER than the recorded baseline, or a file sits over the per-file
-# ceiling. This is the check a lane self-runs before the gate; scope it with ONLY=.
+# Fail if this lane left a package carrying more prose than the code it wrote beside it earns,
+# or a file over the per-file ceiling.
 #   make comment-audit-check
-#   make comment-audit-check ONLY=internal/application/parkedsensing
-#   make comment-audit-check ONLY="internal/application/parkedsensing internal/domain/hullbuy"
-# ONLY takes commas or spaces; the value is quoted through, so a list stays one argument. An
-# unquoted list would reach the tool already split, and it refuses that rather than checking
-# the first entry and reporting OK.
-# -gate carries the limits, so no number is spelled out here to drift from the test's, and it
-# refuses any limit flag you add beside it rather than quietly overriding it.
-# TestCommentDensityGate applies the same policy to the packages the working tree changed
-# against main, which it works out from git — that test is what actually blocks a merge, so
-# ONLY= here is a convenience, not the scope of record. ONLY= also names a SUBTREE: naming a
-# parent checks every package under it, where the gate answers only for the packages whose
-# own files changed. So this can report a package the gate will not hold you to.
+# THIS RUNS THE GATE ITSELF, not a second implementation of it. The two used to differ in what
+# they anchored a package to — the tool reads the recorded census, the gate re-anchors every
+# touched package to its density on main — so a package main had drifted since the last record
+# could pass one and fail the other, and the answer a lane needs before merging is the gate's.
+# The tool's own -gate survives for ad-hoc audits of a subtree, which is what ONLY= now means:
+#   make comment-audit ARGS="-only internal/application/parkedsensing"
+# -count=1 because a cached PASS is a pass that never looked at the tree.
 comment-audit-check:
-	@go run ./cmd/comment-audit -root . -gate -baseline $(COMMENT_BASELINE) \
-		$(if $(ONLY),-only "$(ONLY)",) -quiet
+	@if [ -n "$(ONLY)" ]; then \
+		echo "ONLY= is not honoured here: this target runs the gate, which scopes itself to the"; \
+		echo "packages git reports you changed. To census a subtree instead, run:"; \
+		echo "  make comment-audit ARGS=\"-only $(ONLY)\""; \
+		exit 2; \
+	fi
+	@go test ./cmd/comment-audit -run TestCommentDensityGate -count=1
 
 # Re-record the baseline. Run this only after a deliberate sweep LOWERS a
 # package; never to bless a regression.

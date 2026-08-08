@@ -72,10 +72,23 @@ func WriteBaseline(path string, bl *Baseline) error {
 // reason to move a number that currently means something.
 const DefaultMaxFileProseRatio = 0.50
 
-// GatePolicy is the standing check every lane is held to: no package denser
-// than its recorded baseline, no file over the per-file ceiling. The Makefile
-// self-check and the test that blocks the gate both call it, so neither carries
-// a limit that could drift from the other's.
+// ProseOverage is the comment lines a lane wrote beyond what the other lines it wrote
+// carry at the anchor's own rate; above zero is a violation and the value is the cut that
+// clears it. REMOVING LINES NEITHER EARNS ALLOWANCE NOR COSTS ANY — see ENGINEERING §6a.
+func ProseOverage(base BaselineEntry, p *PkgStat, tolerance float64) float64 {
+	added := float64(p.Comment - base.Comment)
+	other := math.Max(0, float64((p.Total-p.Comment)-(base.Total-base.Comment)))
+	rate := 0.0
+	if n := base.Total - base.Comment; n > 0 {
+		rate = float64(base.Comment) / float64(n)
+	}
+	return added - rate*other - tolerance*float64(base.Total)
+}
+
+// GatePolicy is the standing check every lane is held to: no package carrying more
+// prose than the lane's own code earns, no file over the per-file ceiling. The
+// Makefile self-check and the test that blocks the gate both call it, so neither
+// carries a limit that could drift from the other's.
 func GatePolicy(bl *Baseline, scope Scope) CheckOpts {
 	return CheckOpts{
 		Baseline:          bl,
@@ -170,8 +183,7 @@ func (v Violation) String() string {
 // CheckOpts configures a gate run. Every limit is a flag whose help carries its
 // reasoning; a field documents only what the command line cannot say.
 type CheckOpts struct {
-	// Baseline, when non-nil, fails any package whose ratio rose above its
-	// recorded value by more than Tolerance.
+	// Baseline, when non-nil, is the anchor ProseOverage measures each package against.
 	Baseline *Baseline
 	// MaxRatio also holds a package the baseline does not know, which is what
 	// stops a lane adding a fresh dense one.
@@ -197,14 +209,20 @@ func Check(pkgs map[string]*PkgStat, opts CheckOpts) []Violation {
 		if opts.Baseline != nil {
 			base, known := opts.Baseline.Packages[p.Package]
 			switch {
-			case known && ratio > base.Ratio+opts.Tolerance:
+			case known:
+				over := ProseOverage(base, p, opts.Tolerance)
+				if over <= 0 {
+					continue
+				}
 				out = append(out, Violation{
 					Package: p.Package, Kind: "regression",
-					Ratio: ratio, Limit: base.Ratio + opts.Tolerance,
-					Detail: fmt.Sprintf("baseline %.1f%% (%d/%d) -> now %d/%d",
-						base.Ratio*100, base.Comment, base.Total, p.Comment, p.Total),
+					Ratio: ratio, Limit: base.Ratio,
+					Detail: fmt.Sprintf("baseline %.1f%% (%d/%d) -> now %d/%d: %+d comment line(s) beside %+d other; cut %d",
+						base.Ratio*100, base.Comment, base.Total, p.Comment, p.Total,
+						p.Comment-base.Comment, (p.Total-p.Comment)-(base.Total-base.Comment),
+						int(math.Ceil(over))),
 				})
-			case !known && opts.MaxRatio > 0 && ratio > opts.MaxRatio:
+			case opts.MaxRatio > 0 && ratio > opts.MaxRatio:
 				out = append(out, Violation{
 					Package: p.Package, Kind: "new package over max-ratio",
 					Ratio: ratio, Limit: opts.MaxRatio,

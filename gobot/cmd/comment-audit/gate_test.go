@@ -134,7 +134,9 @@ func mainPackageStats(t *testing.T, moduleDir string, touched []string) map[stri
 	if err != nil {
 		t.Fatalf("locating the repository root: %v", err)
 	}
-	rel, err := filepath.Rel(strings.TrimSpace(top), moduleDir)
+	// Both sides resolved, or Rel compares a symlinked path against the real one it
+	// points at and answers with a walk out of the repository that git then refuses.
+	rel, err := filepath.Rel(resolved(strings.TrimSpace(top)), resolved(moduleDir))
 	if err != nil {
 		t.Fatalf("locating the module inside the repository: %v", err)
 	}
@@ -260,6 +262,14 @@ func looksLikeSHA(s string) bool {
 		}
 	}
 	return true
+}
+
+// resolved follows symlinks, keeping the path as given when it cannot.
+func resolved(path string) string {
+	if p, err := filepath.EvalSymlinks(path); err == nil {
+		return p
+	}
+	return path
 }
 
 // runGit captures stdout and stderr separately so a failure is reported by its
@@ -448,7 +458,8 @@ func gateReport(touched []string, violations []Violation) string {
 		len(touched), strings.Join(touched, ", "))
 
 	if len(regressions) > 0 {
-		fmt.Fprintf(&b, "\n%d PACKAGE(S) DENSER THAN THE BASELINE (§6a, the ratchet)\n", len(regressions))
+		fmt.Fprintf(&b, "\n%d PACKAGE(S) CARRYING MORE PROSE THAN THIS LANE'S CODE EARNS (§6a, the ratchet)\n",
+			len(regressions))
 		sort.Slice(regressions, func(i, j int) bool {
 			return regressions[i].Ratio-regressions[i].Limit > regressions[j].Ratio-regressions[j].Limit
 		})
@@ -456,8 +467,12 @@ func gateReport(touched []string, violations []Violation) string {
 			fmt.Fprintf(&b, "  %-62s %5.2f%% -> %5.2f%%  (+%.2f pts)  %s\n",
 				v.Package, v.Limit*100, v.Ratio*100, (v.Ratio-v.Limit)*100, v.Detail)
 		}
-		b.WriteString("  Cut the archaeology out of the comments you added: history, bead ids and\n" +
-			"  measured numbers all belong in the commit, the bead or docs/retrospectives/.\n" +
+		b.WriteString("  The cut named above is THIS LANE'S OWN prose, weighed against the other lines\n" +
+			"  it wrote beside it. Lines you REMOVED neither earn that allowance nor spend it, so\n" +
+			"  nothing here is charging you for a deletion, however far it moved the ratio — the\n" +
+			"  figure is the exact number of comment lines that clears it, no more.\n" +
+			"  Cut the archaeology first: history, bead ids and measured numbers all belong in the\n" +
+			"  commit, the bead or docs/retrospectives/.\n" +
 			"  Re-recording .comment-baseline.json to clear this is the one move §6a forbids.\n")
 	}
 

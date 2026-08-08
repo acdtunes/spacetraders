@@ -159,14 +159,37 @@ A comment exists for the NEXT reader of the code, not to narrate your change to 
 Self-check from `gobot/` before the gate:
 
 ```
-make comment-audit-check ONLY=<touched packages>   # fails if a package you touched got DENSER
+make comment-audit-check                           # runs the gate itself, over what THIS lane wrote
 make comment-audit ARGS="-explain"                 # every archaeology marker, with file:line
 make comment-audit-baseline                        # re-record — only after a sweep LOWERS a package
 ```
 
-A package inherited dense does not block a lane that merely touches it, but no lane may
-leave one denser than it found it. Re-recording the baseline to clear a regression is the
-one move that defeats the whole rule — re-record only to bank an improvement.
+A package inherited dense does not block a lane that merely touches it, and **the subject is
+the prose the lane WROTE, not the ratio it left behind**. The check weighs the comment lines a
+lane added against the other lines it added, at the rate the package already carried on main:
+write prose at or under that rate and you pass, write more and the report names the number of
+comment lines that clears it — the exact minimum, not an estimate to negotiate with.
+
+**Removing lines neither earns that allowance nor spends it.** Deleting code that was leaner
+than its package raises the ratio of everything left standing without anyone writing a word,
+and a ratio comparison cannot tell that from prose somebody added — it sends the lane to cut
+live invariants out of the survivors to pay for an arithmetic artefact. So the check comes to
+*the ratio rose AND the comment count rose*. A lane that wrote no prose cannot fail however far
+the ratio moves. A lane that wrote some is charged for what the package ends up carrying OVER
+what it carried before — prose removed pays for prose added, which is what a REWRITE is and
+what §6 asks for over blank-deleting. **What no lane may do is leave a package carrying more
+prose than it found there with no code to carry it**, so a deletion is a budget and not an
+amnesty: prose can grow only in proportion to the code documenting it, which is a property the
+ratio comparison never actually guaranteed.
+
+`make comment-audit-check` runs `TestCommentDensityGate`, the same test that blocks the merge,
+rather than a second implementation of the policy: the tool's own `-gate` anchors a package to
+the recorded census where the gate re-anchors it to main, and a package main had drifted since
+the last record could pass one and fail the other. Use `-gate` for an ad-hoc audit of a
+subtree, never as the answer to "will I clear the gate".
+
+Re-recording the baseline to clear a regression is the one move that defeats the whole rule —
+re-record only to bank an improvement.
 
 `tools/commentclean` is not a shortcut for the rule above, and it is **already at fixpoint**.
 It strips BARE provenance tokens only — a trailing `(sp-xxxx)` removable without touching
