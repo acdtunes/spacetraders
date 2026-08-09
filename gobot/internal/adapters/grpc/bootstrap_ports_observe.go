@@ -153,18 +153,37 @@ func (o *bootstrapObserver) readTreasury(ctx context.Context, obs *bootstrapCmd.
 	return true
 }
 
-// readHomeCoverage counts home-system marketplaces against those with fresh market data. A
-// read miss on either leaves that count 0, which simply reads as uncovered on the heartbeat.
+// readHomeCoverage counts SCOUTABLE home-system marketplaces (FindAllMarketsInSystem — the same
+// MARKETPLACE-minus-FUEL_STATION predicate scout-all-markets builds circuits from) against those
+// with fresh data, so the ratio reaches 1.0 once scouting finishes the job it is designed to do. A
+// FUEL_STATION stays out of both terms even when it holds data of its own (an incidental refuel-
+// side-effect scan — still live via `market list`, just not what this signal measures). A read
+// miss fails both counts closed to 0.
 func (o *bootstrapObserver) readHomeCoverage(ctx context.Context, playerID int, obs *bootstrapCmd.Observation) {
 	if obs.HomeSystem == "" {
 		return
 	}
-	if wps, werr := o.waypointRepo.ListBySystemWithTrait(ctx, obs.HomeSystem, marketplaceTrait); werr == nil {
-		obs.MarketsTotal = len(wps)
+	scoutable, serr := o.marketRepo.FindAllMarketsInSystem(ctx, obs.HomeSystem, playerID)
+	if serr != nil {
+		return
 	}
-	if mkts, merr := o.marketRepo.ListMarketsInSystem(ctx, uint(playerID), obs.HomeSystem, bootstrapMarketFreshnessMin); merr == nil {
-		obs.MarketsCovered = len(mkts)
+	obs.MarketsTotal = len(scoutable)
+
+	mkts, merr := o.marketRepo.ListMarketsInSystem(ctx, uint(playerID), obs.HomeSystem, bootstrapMarketFreshnessMin)
+	if merr != nil {
+		return
 	}
+	isScoutable := make(map[string]bool, len(scoutable))
+	for _, wp := range scoutable {
+		isScoutable[wp] = true
+	}
+	covered := 0
+	for i := range mkts {
+		if isScoutable[mkts[i].WaypointSymbol()] {
+			covered++
+		}
+	}
+	obs.MarketsCovered = covered
 }
 
 // readUntouredProbes counts the home probes that have never been given a circuit — the signal

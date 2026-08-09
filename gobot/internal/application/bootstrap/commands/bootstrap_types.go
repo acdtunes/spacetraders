@@ -58,11 +58,11 @@ type Observation struct {
 	// HasIdlePurchaser reports whether an idle hull exists to fly to a shipyard and execute a buy
 	// (the batch-purchase path needs a purchasing hull). When false the buy is BLOCKED, not failed.
 	HasIdlePurchaser bool
-	// MarketsCovered is how many home-system marketplaces have (fresh) market data — the heartbeat's
-	// scan-progress numerator (observability only; coverage gates nothing).
+	// MarketsCovered is how many SCOUTABLE home-system marketplaces have (fresh) market data — the
+	// heartbeat's scan-progress numerator (observability only; coverage gates nothing).
 	MarketsCovered int
-	// MarketsTotal is how many marketplaces the home system has — that same denominator. 0 when no
-	// waypoints are known yet (a cold agent), which reads as 0 coverage.
+	// MarketsTotal is how many SCOUTABLE marketplaces the home system has (not FUEL_STATION) — that
+	// same denominator. 0 when no waypoints are known yet (a cold agent), which reads as 0 coverage.
 	MarketsTotal int
 	// Treasury is live agent credits — the capital-gate input.
 	Treasury int64
@@ -224,8 +224,8 @@ type GateWorkerSnapshot struct {
 	Idle   bool
 }
 
-// CoverageFraction is MarketsCovered / MarketsTotal, and 0 when nothing is known yet (total 0) so
-// a cold agent reads as uncovered rather than dividing by zero.
+// CoverageFraction is MarketsCovered / MarketsTotal (scoutable markets only), and 0 when nothing
+// is known yet (total 0) so a cold agent reads as uncovered rather than dividing by zero.
 func (o Observation) CoverageFraction() float64 {
 	if o.MarketsTotal <= 0 {
 		return 0

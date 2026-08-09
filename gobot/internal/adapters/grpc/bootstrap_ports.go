@@ -14,7 +14,7 @@ import (
 const (
 	// commandRole is the flagship's registration role — its system is the cold-start home system.
 	commandRole = "COMMAND"
-	// marketplaceTrait / shipyardTrait are the waypoint traits the coverage + price reads filter on.
+	// marketplaceTrait / shipyardTrait are the waypoint traits the home-tour + price reads filter on.
 	marketplaceTrait = "MARKETPLACE"
 	shipyardTrait    = "SHIPYARD"
 	// bootstrapMarketFreshnessMin bounds how old a market's data may be and still count as
