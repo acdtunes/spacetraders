@@ -157,6 +157,19 @@ func (r *GormTransactionRepository) ReadMatchedPositions(ctx context.Context, pl
 	return ledger.MatchPositions(legs), stats, nil
 }
 
+// OutstandingPurchases reconstructs every hull's undischarged obligation under operationType
+// from the SAME legs position matching reads — the boot-time reload for a coordinator whose
+// running count is in-memory and does not survive a daemon restart (RULINGS #2).
+func (r *GormTransactionRepository) OutstandingPurchases(
+	ctx context.Context, playerID int, operationType string,
+) (map[string]map[string]int, error) {
+	legs, _, err := r.ReadCargoLegs(ctx, playerID)
+	if err != nil {
+		return nil, err
+	}
+	return ledger.OutstandingPurchases(legs, operationType), nil
+}
+
 // parseUnits reads the units field, tolerating both the JSON number the current writer emits
 // and a quoted string, so a formatting change in a writer degrades into a correct read rather
 // than a silent zero.

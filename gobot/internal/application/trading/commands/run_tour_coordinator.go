@@ -16,6 +16,7 @@ import (
 	tradingsvc "github.com/andrescamacho/spacetraders-go/internal/application/trading/services"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/absorption"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/ledger"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/routing"
@@ -292,11 +293,23 @@ type RunTourCoordinatorHandler struct {
 	// reached a success=true exit. Guarded by purchaseObligationMu because the handler is a
 	// SHARED singleton dispatched concurrently for every touring hull (the same per-hull
 	// discipline as strandedStreak). Dropped the moment the hull's hold discharges, so it can
-	// never wedge a healthy hull. In-memory only: a daemon restart resets it (acceptable — the
-	// hull re-accrues its obligation on its next buy, and the veto is a backstop for a strand
-	// the ordinary sell path is meant to prevent, not the only guard).
+	// never wedge a healthy hull. The map is in-memory, but it is not the record: a daemon
+	// restart is routine and the CARGO outlives it, so the first read after a bounce rebuilds
+	// the fleet's obligations from the ledger (obligationReader) before anything can exit on
+	// an empty one (RULINGS #2).
 	purchaseObligationMu sync.Mutex
 	purchaseObligation   map[string]map[string]int
+
+	// obligationReader rebuilds the purchase obligations above from the transactions ledger,
+	// once per player per daemon lifetime, on the first run that needs them. DERIVED, never
+	// persisted: the ledger already records every buy's hull, good, units and operation, so a
+	// second stored copy could only drift from it. Optional and nil-safe — unset (every test
+	// that does not wire it) the map simply starts empty after a restart, which is the
+	// pre-reload behaviour and never worse. obligationSeeded tracks which players are already
+	// rebuilt; obligationSeedMu is its own lock, always taken BEFORE purchaseObligationMu.
+	obligationReader ledger.OutstandingPurchaseReader
+	obligationSeedMu sync.Mutex
+	obligationSeeded map[int]bool
 
 	// rateFloorLastRelocation records the last rate-floor relocation time per hull for the
 	// dwell window: a hull that relocated within reposition_rate_floor_dwell_minutes is not
@@ -421,7 +434,7 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 	// the graduation gate measures the tour against (the baseline filters
 	// operation_type <> 'tour'). Mirrors how every coordinator tags its writes at
 	// the boundary (run_trade_route_coordinator.go's "trade_route").
-	ctx = shared.WithOperationContext(ctx, shared.NewOperationContext(cmd.ContainerID, "tour_run"))
+	ctx = shared.WithOperationContext(ctx, shared.NewOperationContext(cmd.ContainerID, tourRawOperationType))
 
 	// Stamp the tour-scan load policy so the shared arrival + post-trade scans SAMPLE
 	// the deliberate price-impact instrumentation (the top API consumer) rather than
@@ -449,7 +462,7 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 	// current cargo and the solver sells it as launch inventory. Only cargo BOUGHT and never
 	// discharged survives to veto the completion; cargo the tour never bought is never in here,
 	// so a hull handed a foreign load is never falsely vetoed.
-	netBought := h.adoptPurchaseObligation(cmd.ShipSymbol)
+	netBought := h.adoptPurchaseObligation(ctx, cmd.ShipSymbol, cmd.PlayerID)
 
 	// The honest-completion epilogue. Deferred so EVERY exit funnels through it — a fail-open
 	// "tour unavailable", a planner outage, margins-death, an unreadable model artifact — and

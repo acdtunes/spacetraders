@@ -19,6 +19,7 @@ import (
 	shipQueries "github.com/andrescamacho/spacetraders-go/internal/application/ship/queries"
 	storageApp "github.com/andrescamacho/spacetraders-go/internal/application/storage"
 	tradingsvc "github.com/andrescamacho/spacetraders-go/internal/application/trading/services"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/ledger"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/routing"
@@ -124,6 +125,28 @@ type tourFixture struct {
 	// the mediator seam so a test can prove the coordinator threads "tour".
 	buyOpTypes  []string
 	sellOpTypes []string
+
+	// ledgerLegs is the cargo row each buy/sell would write to the transactions ledger —
+	// hull, good, units, direction and the NORMALIZED operation tag, the same fields
+	// ReadCargoLegs extracts. Recording them at the mediator seam lets a restart test
+	// replay a real daemon bounce against the real derivation instead of a hand-written
+	// obligation map. Purely additive; a test that never reads it is unaffected.
+	ledgerLegs []ledger.CargoLeg
+}
+
+// recordLegLocked appends the ledger row a cargo transaction writes. Caller holds fx.mu. The
+// instant is a synthetic per-leg tick so the chronological replay has a real order to walk,
+// and the tx id makes each fragment traceable exactly as a live row is.
+func (f *tourFixture) recordLegLocked(ctx context.Context, hull, good string, units int, isBuy bool) {
+	f.ledgerLegs = append(f.ledgerLegs, ledger.CargoLeg{
+		TxID:          fmt.Sprintf("tx-%03d", len(f.ledgerLegs)),
+		Hull:          hull,
+		Good:          good,
+		Units:         units,
+		OperationType: shared.OperationContextFromContext(ctx).NormalizedOperationType(),
+		At:            time.Unix(1_700_000_000, 0).Add(time.Duration(len(f.ledgerLegs)) * time.Second),
+		IsBuy:         isBuy,
+	})
 }
 
 // activeHull models one hull in the fleet snapshot the anti-herd count reads (sp-uf64): the
@@ -238,6 +261,7 @@ func (m *tourFakeMediator) Send(ctx context.Context, request common.Request) (co
 		m.fx.timeline = append(m.fx.timeline, "BUY:"+cmd.GoodSymbol)
 		m.fx.buys++
 		m.fx.buyOpTypes = append(m.fx.buyOpTypes, shared.OperationContextFromContext(ctx).NormalizedOperationType())
+		m.fx.recordLegLocked(ctx, cmd.ShipSymbol, cmd.GoodSymbol, units, true)
 		m.fx.mu.Unlock()
 		return &shipCargo.PurchaseCargoResponse{TotalCost: units * price, UnitsAdded: units, TransactionCount: 1}, nil
 	case *shipCargo.SellCargoCommand:
@@ -252,6 +276,7 @@ func (m *tourFakeMediator) Send(ctx context.Context, request common.Request) (co
 		m.fx.sells++
 		m.fx.unloads++
 		m.fx.sellOpTypes = append(m.fx.sellOpTypes, shared.OperationContextFromContext(ctx).NormalizedOperationType())
+		m.fx.recordLegLocked(ctx, cmd.ShipSymbol, cmd.GoodSymbol, units, false)
 		m.fx.mu.Unlock()
 		return &shipCargo.SellCargoResponse{TotalRevenue: units * price, UnitsSold: units, TransactionCount: 1}, nil
 	case *gasCmd.TransferCargoCommand:

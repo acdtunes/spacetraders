@@ -7,6 +7,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	tradingsvc "github.com/andrescamacho/spacetraders-go/internal/application/trading/services"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/ledger"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
@@ -58,6 +59,7 @@ func NewRunTourCoordinatorHandler(
 		strandedStreak:             make(map[string]*strandedHullState),
 		repositionTieSweep:         make(map[string]*repositionTieState),
 		purchaseObligation:         make(map[string]map[string]int),
+		obligationSeeded:           make(map[int]bool),
 		rateFloorLastRelocation:    make(map[string]time.Time),
 		pendingRelocationsBySystem: make(map[string]int),
 	}
@@ -205,6 +207,17 @@ type RepositionStatePersister interface {
 // arb SetCostPersister optional-injection idiom.
 func (h *RunTourCoordinatorHandler) SetRepositionPersister(p RepositionStatePersister) {
 	h.repositionPersister = p
+}
+
+// SetPurchaseObligationReader wires the ledger-backed rebuild of the per-hull tour-purchase
+// obligation, so a hull holding cargo it bought before a daemon restart is still known to owe
+// it afterwards and cannot be released as a clean completion (RULINGS #2). Read once per
+// player on the first run that needs it; nothing is written back, so the ledger stays the
+// single record of what was bought. Left unset (every test that does not wire it), a restart
+// starts the map empty exactly as before — the veto simply cannot see pre-restart purchases,
+// which is the behaviour this reader replaces and never worse than it.
+func (h *RunTourCoordinatorHandler) SetPurchaseObligationReader(r ledger.OutstandingPurchaseReader) {
+	h.obligationReader = r
 }
 
 // SetEventRecorder wires the captain outbox the coordinator emits its error-loop event

@@ -1529,6 +1529,7 @@ func run(cfg *config.Config) error {
 		routingClient, marketScanner, nil, apiClient,
 	)
 	marketFreshness := circuits.configureTourCoordinator(tourCoordinatorHandler)
+	tourCoordinatorHandler.SetPurchaseObligationReader(transactionRepo)
 	if err := mediator.RegisterHandler[*tradeRouteCmd.RunTourCoordinatorCommand](med, tourCoordinatorHandler); err != nil {
 		return fmt.Errorf("failed to register TourCoordinator handler: %w", err)
 	}
