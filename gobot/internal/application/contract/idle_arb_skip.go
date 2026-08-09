@@ -57,6 +57,19 @@ func (r idleArbSkipReason) String() string {
 	}
 }
 
+// logLevel is INFO for a verdict a hull's price/position alone can't explain —
+// an explicit exclusion or contention over a (good, sink) with another
+// engine's leg. Routine per-trip economics and an eligible-but-unchosen
+// candidate (its winner logs its own INFO line once launched) are DEBUG.
+func (r idleArbSkipReason) logLevel() string {
+	switch r {
+	case skipReasonBlacklist, skipReasonContractGood, skipReasonLaneHeld, skipReasonReserved:
+		return "INFO"
+	default: // skipNone (eligible), skipReasonLeash, skipReasonUnprofitable
+		return "DEBUG"
+	}
+}
+
 // logCandidate emits one terse per-candidate verdict line in MESSAGE TEXT
 // (the CLI renderer drops metadata maps). It carries every
 // value the leash decision turned on so a masked mis-pick is impossible to hide:
@@ -102,7 +115,7 @@ func (d *IdleArbDispatcher) logCandidate(ctx context.Context, c laneCandidate, r
 	now := d.clock.Now()
 	legSeconds := shared.FlightModeCruise.TravelTime(c.lane.Distance, c.hull.EngineSpeed())
 	logger := common.LoggerFromContext(ctx)
-	logger.Log("INFO", fmt.Sprintf(
+	logger.Log(reason.logLevel(), fmt.Sprintf(
 		"Idle-arb candidate: %s %s buy@%s(%.0f,%.0f) -> sell@%s(%.0f,%.0f) dist %.0fu (leash %.0f, hub %.0f), leg %ds (cap %s), margin %d/u (bid %d - ask %d), net %d/u after fuel %d (floor %d), age buy %s/sell %s, verdict %s",
 		c.hull.ShipSymbol(), c.lane.Good,
 		c.buy.Symbol, c.buy.X, c.buy.Y, c.sell.Symbol, c.sell.X, c.sell.Y,

@@ -567,6 +567,11 @@ func TestIdleArb_HarvestSummary_CountsInMessageText(t *testing.T) {
 			t.Fatalf("harvest summary must carry %q in message TEXT, got: %s", want, summary)
 		}
 	}
+	// blacklist is an explicit policy exclusion an operator cannot derive from
+	// prices, so its candidate line stays at INFO.
+	if level := logger.levelForMessage(t, "verdict skipped:blacklist"); level != "INFO" {
+		t.Fatalf("a blacklist candidate line must log at INFO, got %s", level)
+	}
 }
 
 // Per-candidate verdict logging: every positive-margin candidate emits a terse
@@ -574,7 +579,8 @@ func TestIdleArb_HarvestSummary_CountsInMessageText(t *testing.T) {
 // coordinates) it measured between, the quoted margin, and the verdict — in
 // MESSAGE TEXT. This is the candidate list an all-pairs analyst scan is diffed
 // against; without it, a masked mis-pick (wrong distance, stale row, over-broad
-// exclusion) is invisible. An ELIGIBLE lane and a leash-SKIPPED lane both log.
+// exclusion) is invisible. An ELIGIBLE lane and a leash-SKIPPED lane both log,
+// both at DEBUG — routine economics, not contention.
 func TestIdleArb_CandidateLogging_PerLaneVerdictInMessageText(t *testing.T) {
 	// (a) An eligible in-leash candidate: hub(0,0)->near(0,50), margin 250, dist 50<80.
 	loggerA := &idleArbCapturingLogger{}
@@ -589,6 +595,11 @@ func TestIdleArb_CandidateLogging_PerLaneVerdictInMessageText(t *testing.T) {
 		if !strings.Contains(eligible, want) {
 			t.Fatalf("eligible candidate line must carry %q in message TEXT, got: %s", want, eligible)
 		}
+	}
+	// An eligible-but-not-yet-chosen candidate is routine per-pass scoring detail
+	// (its winner gets its own INFO line once launched), so it logs at DEBUG.
+	if level := loggerA.levelForMessage(t, "verdict eligible"); level != "DEBUG" {
+		t.Fatalf("an eligible candidate line must log at DEBUG, got %s", level)
 	}
 
 	// (b) A leash-skipped candidate: hub(0,0)->mid(0,150), inside hub-radius 250 but
@@ -617,6 +628,11 @@ func TestIdleArb_CandidateLogging_PerLaneVerdictInMessageText(t *testing.T) {
 		if !strings.Contains(skipped, want) {
 			t.Fatalf("leash-skipped candidate line must carry %q in message TEXT, got: %s", want, skipped)
 		}
+	}
+	// A leash skip is routine geometry, fully recomputable from the printed
+	// coordinates and radii, so it logs at DEBUG rather than INFO.
+	if level := loggerB.levelForMessage(t, "verdict skipped:leash"); level != "DEBUG" {
+		t.Fatalf("a leash-skipped candidate line must log at DEBUG, got %s", level)
 	}
 }
 
@@ -831,14 +847,17 @@ func TestIdleArb_ReHome_CountedInHarvestSummary(t *testing.T) {
 	}
 }
 
-// idleArbCapturingLogger records log message text so the guard-5 summary can be
-// asserted (the CLI drops metadata, so the counts must live in the text).
+// idleArbCapturingLogger records log level+message text so the guard-5 summary
+// can be asserted (the CLI drops metadata, so the counts must live in the text)
+// and so a verdict's level (INFO vs DEBUG) is independently checkable.
 type idleArbCapturingLogger struct {
 	messages []string
+	levels   []string
 }
 
-func (l *idleArbCapturingLogger) Log(_ string, message string, _ map[string]interface{}) {
+func (l *idleArbCapturingLogger) Log(level string, message string, _ map[string]interface{}) {
 	l.messages = append(l.messages, message)
+	l.levels = append(l.levels, level)
 }
 
 func (l *idleArbCapturingLogger) messageWithPrefix(t *testing.T, prefix string) string {
@@ -849,5 +868,18 @@ func (l *idleArbCapturingLogger) messageWithPrefix(t *testing.T, prefix string) 
 		}
 	}
 	t.Fatalf("no log message with prefix %q; got %v", prefix, l.messages)
+	return ""
+}
+
+// levelForMessage returns the level of the first captured message containing
+// needle, so a test can pin a verdict to its intended level.
+func (l *idleArbCapturingLogger) levelForMessage(t *testing.T, needle string) string {
+	t.Helper()
+	for i, m := range l.messages {
+		if strings.Contains(m, needle) {
+			return l.levels[i]
+		}
+	}
+	t.Fatalf("no log message containing %q; got %v", needle, l.messages)
 	return ""
 }

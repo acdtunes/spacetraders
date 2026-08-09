@@ -138,6 +138,11 @@ func TestIdleArb_Consult_ReservedSink_Skips(t *testing.T) {
 	if !strings.Contains(candidate, "verdict skipped:reserved") {
 		t.Fatalf("candidate line must show skipped:reserved, got: %s", candidate)
 	}
+	// reserved is cross-engine contention, not derivable from prices, so it
+	// stays at INFO even though the routine per-candidate line was demoted.
+	if level := logger.levelForMessage(t, "verdict skipped:reserved"); level != "INFO" {
+		t.Fatalf("a reserved candidate line must log at INFO, got %s", level)
+	}
 }
 
 // A sink under a recovering shadow still above its floor (Outstanding reports a
@@ -247,6 +252,9 @@ func TestIdleArb_TwoDispatcherCollision_SecondSkipsReserved(t *testing.T) {
 	candidate := logger.messageWithPrefix(t, "Idle-arb candidate:")
 	if !strings.Contains(candidate, "verdict skipped:reserved") {
 		t.Fatalf("B's candidate line must show skipped:reserved, got: %s", candidate)
+	}
+	if level := logger.levelForMessage(t, "verdict skipped:reserved"); level != "INFO" {
+		t.Fatalf("B's reserved candidate line must log at INFO, got %s", level)
 	}
 }
 

@@ -152,9 +152,11 @@ func TestIdleArbLaneMutex_CandidateLog_NamesLaneHeldHolder(t *testing.T) {
 	d.DispatchOnce(common.WithLogger(context.Background(), logger))
 
 	var laneHeldLine string
-	for _, m := range logger.messages {
+	var laneHeldLevel string
+	for i, m := range logger.messages {
 		if strings.HasPrefix(m, "Idle-arb candidate:") && strings.Contains(m, "verdict skipped:lane-held") {
 			laneHeldLine = m
+			laneHeldLevel = logger.levels[i]
 		}
 	}
 	if laneHeldLine == "" {
@@ -163,10 +165,19 @@ func TestIdleArbLaneMutex_CandidateLog_NamesLaneHeldHolder(t *testing.T) {
 	if !strings.Contains(laneHeldLine, "flying") {
 		t.Fatalf("a lane-held verdict must name the still-flying holding leg, got: %s", laneHeldLine)
 	}
-	// The harvest summary surfaces the lane-held skip count in message text too.
+	// lane-held is contention an operator cannot derive from prices, so it stays
+	// at INFO even though the routine per-candidate line was demoted to DEBUG.
+	if laneHeldLevel != "INFO" {
+		t.Fatalf("a lane-held candidate line must log at INFO, got %s", laneHeldLevel)
+	}
+	// The harvest summary surfaces the lane-held skip count in message text too,
+	// and (unlike the per-candidate line) it always logs at INFO.
 	summary := logger.messageWithPrefix(t, "Idle-arb harvest:")
 	if !strings.Contains(summary, "lane-held") {
 		t.Fatalf("harvest summary must carry the lane-held count, got: %s", summary)
+	}
+	if level := logger.levelForMessage(t, "Idle-arb harvest:"); level != "INFO" {
+		t.Fatalf("the harvest summary must log at INFO, got %s", level)
 	}
 }
 

@@ -199,9 +199,19 @@ func TestArb_UnprofitableLane_SurfacesInLogs(t *testing.T) {
 	if !strings.Contains(candidate, "verdict skipped:unprofitable") {
 		t.Fatalf("candidate line must show skipped:unprofitable, got: %s", candidate)
 	}
+	// unprofitable is routine per-trip economics, fully recomputable from the
+	// prices the line itself prints, so it logs at DEBUG rather than INFO.
+	if level := logger.levelForMessage(t, "verdict skipped:unprofitable"); level != "DEBUG" {
+		t.Fatalf("an unprofitable candidate line must log at DEBUG, got %s", level)
+	}
 	summary := logger.messageWithPrefix(t, "Idle-arb harvest:")
 	if !strings.Contains(summary, "unprofitable") {
 		t.Fatalf("harvest summary must carry the unprofitable skip count, got: %s", summary)
+	}
+	// The aggregate harvest line always stays at INFO, unaffected by the
+	// per-candidate demotion.
+	if level := logger.levelForMessage(t, "Idle-arb harvest:"); level != "INFO" {
+		t.Fatalf("the harvest summary must log at INFO, got %s", level)
 	}
 }
 
