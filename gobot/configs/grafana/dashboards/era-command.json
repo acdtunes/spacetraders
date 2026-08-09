@@ -131,7 +131,8 @@
             "stacking": {
               "group": "A",
               "mode": "none"
-            }
+            },
+            "lineInterpolation": "smooth"
           }
         },
         "overrides": []
@@ -886,7 +887,8 @@
             "stacking": {
               "group": "A",
               "mode": "none"
-            }
+            },
+            "lineInterpolation": "smooth"
           }
         },
         "overrides": []
@@ -950,7 +952,8 @@
             "stacking": {
               "group": "A",
               "mode": "none"
-            }
+            },
+            "lineInterpolation": "smooth"
           }
         },
         "overrides": []
