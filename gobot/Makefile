@@ -1,4 +1,4 @@
-.PHONY: comment-audit comment-audit-check comment-audit-baseline build test clean proto lint install-tools routing-service build-watchkeeper run-watchkeeper build-captain run-captain cli-reference restart-daemon restart-watchkeeper install-cli launchd install-launchd deploy assert-live-stamp man cli-docs install-man assert-prod-env
+.PHONY: comment-audit comment-audit-check comment-audit-baseline build test clean proto lint install-tools routing-service build-watchkeeper run-watchkeeper build-captain run-captain cli-reference restart-daemon restart-watchkeeper era-bring-up install-cli launchd install-launchd deploy assert-live-stamp man cli-docs install-man assert-prod-env
 
 # ---- Build stamp (sp-898q) --------------------------------------------------
 # Injected into internal/infrastructure/buildinfo at LINK time so every binary's
@@ -135,6 +135,53 @@ restart-watchkeeper: assert-prod-env build-watchkeeper
 	else \
 		echo "watchkeeper not loaded via launchd — leaving it alone (disabled or manually unloaded)"; \
 	fi
+
+# ---- Era bring-up ------------------------------------------------------------
+# One command for the DAEMON half of a universe-reset bring-up
+# (docs/runbooks/universe-reset.md Phase 8). Watchkeeper/captain bring-up
+# (launchctl enable, the kill switch) is a separate manual step and stays out
+# of scope here — this target never touches captain/DISABLED,
+# com.spacetraders.captain, or internal/captain.
+#
+# The restart itself is delegated to restart-daemon (already resilient);
+# everything below is a bounded poll plus pure reads, so the whole target is
+# safe to re-run. Player is resolved from captain.player_id in config.yaml —
+# not the CLI's own persisted default — because universe transition repoints
+# that field every era, making it the daemon's own record of which player
+# this era's fleet belongs to.
+ERA_BRING_UP_TIMEOUT ?= 60
+BOOT_STANDING_TYPES  := CONSTRUCTION_COORDINATOR|PROBE_SENSING_COORDINATOR|BOOTSTRAP_COORDINATOR|OPPORTUNITY_RELOCATOR_COORDINATOR
+era-bring-up: restart-daemon
+	@echo "era-bring-up: polling for daemon health (timeout $(ERA_BRING_UP_TIMEOUT)s)..."; \
+	ok=0; \
+	for i in $$(seq 1 $(ERA_BRING_UP_TIMEOUT)); do \
+		if ./bin/spacetraders health 2>/dev/null | grep -qi healthy; then ok=1; break; fi; \
+		sleep 1; \
+	done; \
+	if [ $$ok -ne 1 ]; then \
+		echo "ERA-BRING-UP: FAIL daemon did not report healthy within $(ERA_BRING_UP_TIMEOUT)s" >&2; \
+		exit 1; \
+	fi; \
+	echo "era-bring-up: daemon healthy"; \
+	player_id=$$(awk '/^captain:/{f=1;next} f&&/^  player_id:/{print $$2; exit}' config.yaml); \
+	if [ -z "$$player_id" ]; then \
+		echo "ERA-BRING-UP: FAIL could not resolve captain.player_id from config.yaml" >&2; \
+		exit 1; \
+	fi; \
+	echo "era-bring-up: resolved captain.player_id=$$player_id"; \
+	ship_count=$$(./bin/spacetraders ship list --player-id "$$player_id" --json 2>/dev/null | grep -c '"symbol"'); \
+	if [ "$${ship_count:-0}" -lt 1 ]; then \
+		echo "ERA-BRING-UP: FAIL ship list shows no ships for player $$player_id" >&2; \
+		exit 1; \
+	fi; \
+	echo "era-bring-up: $$ship_count ship(s) visible for player $$player_id"; \
+	boot_standing=$$(./bin/spacetraders container list --player-id "$$player_id" --status RUNNING,PENDING 2>/dev/null | grep -cE '$(BOOT_STANDING_TYPES)'); \
+	if [ "$${boot_standing:-0}" -lt 1 ]; then \
+		echo "ERA-BRING-UP: FAIL no boot-standing coordinator RUNNING/PENDING for player $$player_id" >&2; \
+		exit 1; \
+	fi; \
+	echo "era-bring-up: $$boot_standing boot-standing coordinator(s) RUNNING/PENDING"; \
+	echo "ERA-BRING-UP: PASS"
 
 # ---- launchd deploy (sp-898q) -----------------------------------------------
 # The live ~/Library/LaunchAgents plists are RENDERED from committed templates
