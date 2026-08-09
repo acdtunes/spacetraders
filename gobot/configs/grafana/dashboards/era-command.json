@@ -99,6 +99,70 @@
   },
   "panels": [
     {
+      "type": "timeseries",
+      "id": 21,
+      "title": "Treasury Over Time",
+      "description": "Balance-after per ledger transaction, averaged per bucket, across the time-picker window. Source panel: financial.json id5, with the current-era scope added (player_id = MAX(id)) so a dead era's balances cannot be averaged into the line.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "unit": "locale",
+          "decimals": 0,
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "pointSize": 5,
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT $__timeGroupAlias(\"timestamp\", $__interval),\n       AVG(balance_after) AS \"treasury\"\n  FROM transactions\n WHERE $__timeFilter(\"timestamp\")\n   AND player_id = (SELECT MAX(id) FROM players)\n GROUP BY 1 ORDER BY 1",
+          "editorMode": "code"
+        }
+      ]
+    },
+    {
       "type": "row",
       "id": 1,
       "title": "Position - what the era is worth right now (live, ignores the time picker)",
@@ -108,7 +172,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 0
+        "y": 9
       }
     },
     {
@@ -124,7 +188,7 @@
         "h": 5,
         "w": 5,
         "x": 0,
-        "y": 1
+        "y": 10
       },
       "fieldConfig": {
         "defaults": {
@@ -199,7 +263,7 @@
         "h": 5,
         "w": 5,
         "x": 5,
-        "y": 1
+        "y": 10
       },
       "fieldConfig": {
         "defaults": {
@@ -266,7 +330,7 @@
         "h": 5,
         "w": 3,
         "x": 10,
-        "y": 1
+        "y": 10
       },
       "fieldConfig": {
         "defaults": {
@@ -333,7 +397,7 @@
         "h": 5,
         "w": 3,
         "x": 13,
-        "y": 1
+        "y": 10
       },
       "fieldConfig": {
         "defaults": {
@@ -400,7 +464,7 @@
         "h": 5,
         "w": 3,
         "x": 16,
-        "y": 1
+        "y": 10
       },
       "fieldConfig": {
         "defaults": {
@@ -475,7 +539,7 @@
         "h": 5,
         "w": 5,
         "x": 19,
-        "y": 1
+        "y": 10
       },
       "fieldConfig": {
         "defaults": {
@@ -560,13 +624,13 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 6
+        "y": 15
       }
     },
     {
       "type": "stat",
       "id": 11,
-      "title": "Net P/L (selected window)",
+      "title": "Net P/L",
       "description": "Signed sum of every ledger amount for the current era inside the dashboard's time-picker window. Source panel: financial.json id8, whose hardcoded \"NOW() - INTERVAL '24 hours'\" was replaced with $__timeFilter(created_at) so the tile agrees with the window shown above it. All-in: capex (ship purchases) included.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
@@ -576,7 +640,7 @@
         "h": 5,
         "w": 8,
         "x": 0,
-        "y": 7
+        "y": 16
       },
       "fieldConfig": {
         "defaults": {
@@ -637,7 +701,7 @@
     {
       "type": "stat",
       "id": 12,
-      "title": "Trade Net (selected window)",
+      "title": "Trade Net",
       "description": "Cargo sales minus cargo purchases for operation_type='tour' inside the time-picker window. Realised only: cargo still in a hold has been paid for but not yet sold, so this understates mid-run - see 'Fleet Inventory Value (at COST)' above. Source panel: trading-hulls.json id102 (already window-relative; copied unchanged).",
       "datasource": {
         "type": "grafana-postgresql-datasource",
@@ -647,7 +711,7 @@
         "h": 5,
         "w": 8,
         "x": 8,
-        "y": 7
+        "y": 16
       },
       "fieldConfig": {
         "defaults": {
@@ -708,7 +772,7 @@
     {
       "type": "stat",
       "id": 13,
-      "title": "Contract Net (selected window)",
+      "title": "Contract Net",
       "description": "Net credits across every operation_type='contract' transaction inside the time-picker window: advances plus payouts minus cargo and fuel. Kept separate from trade because CONTRACT_FULFILLED carries no ship_symbol and cannot be attributed to a hull. Source panel: trading-hulls.json id111 (already window-relative; copied unchanged).",
       "datasource": {
         "type": "grafana-postgresql-datasource",
@@ -718,7 +782,7 @@
         "h": 5,
         "w": 8,
         "x": 16,
-        "y": 7
+        "y": 16
       },
       "fieldConfig": {
         "defaults": {
@@ -786,72 +850,8 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 12
+        "y": 21
       }
-    },
-    {
-      "type": "timeseries",
-      "id": 21,
-      "title": "Treasury Over Time",
-      "description": "Balance-after per ledger transaction, averaged per bucket, across the time-picker window. Source panel: financial.json id5, with the current-era scope added (player_id = MAX(id)) so a dead era's balances cannot be averaged into the line.",
-      "datasource": {
-        "type": "grafana-postgresql-datasource",
-        "uid": "postgresql"
-      },
-      "gridPos": {
-        "h": 9,
-        "w": 24,
-        "x": 0,
-        "y": 13
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "mappings": [],
-          "unit": "locale",
-          "decimals": 0,
-          "custom": {
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "lineWidth": 2,
-            "pointSize": 5,
-            "showPoints": "never",
-            "spanNulls": true,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            }
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "grafana-postgresql-datasource",
-            "uid": "postgresql"
-          },
-          "format": "time_series",
-          "rawQuery": true,
-          "rawSql": "SELECT $__timeGroupAlias(\"timestamp\", $__interval),\n       AVG(balance_after) AS \"treasury\"\n  FROM transactions\n WHERE $__timeFilter(\"timestamp\")\n   AND player_id = (SELECT MAX(id) FROM players)\n GROUP BY 1 ORDER BY 1",
-          "editorMode": "code"
-        }
-      ]
     },
     {
       "type": "timeseries",
