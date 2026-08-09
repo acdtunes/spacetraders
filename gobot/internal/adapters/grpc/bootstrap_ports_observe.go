@@ -67,6 +67,7 @@ func (o *bootstrapObserver) Observe(ctx context.Context, playerID int) (bootstra
 		return obs, nil
 	}
 	o.readHomeCoverage(ctx, playerID, &obs)
+	o.readUntouredProbes(ctx, playerID, ships, &obs)
 	o.readContractWorkstream(ctx, playerID, &obs)
 	o.readGatePhase(ctx, playerID, &obs)
 
@@ -164,6 +165,38 @@ func (o *bootstrapObserver) readHomeCoverage(ctx context.Context, playerID int, 
 	if mkts, merr := o.marketRepo.ListMarketsInSystem(ctx, uint(playerID), obs.HomeSystem, bootstrapMarketFreshnessMin); merr == nil {
 		obs.MarketsCovered = len(mkts)
 	}
+}
+
+// readUntouredProbes counts the home probes that have never been given a circuit — the signal
+// that separates a fleet that GREW from a tour that ENDED. BEST-EFFORT: an unreadable container
+// table leaves the count 0, which reads as "the post is the right size" and touches nothing.
+func (o *bootstrapObserver) readUntouredProbes(ctx context.Context, playerID int, ships []*navigation.Ship, obs *bootstrapCmd.Observation) {
+	if o.containerRepo == nil || obs.HomeSystem == "" {
+		return
+	}
+	toured, err := o.containerRepo.ListScoutTourShips(ctx, playerID)
+	if err != nil {
+		return
+	}
+	obs.ProbesUntoured = countUntouredHomeProbes(ships, obs.HomeSystem, toured)
+}
+
+// countUntouredHomeProbes counts the probes at home that are IDLE and carry no scout-tour
+// history. Both qualifiers are load-bearing, because acting on this count re-partitions live
+// tours and must terminate: a hull the tour will never be handed — someone else's claim
+// (RULINGS #7), or one parked outside the in-system partition — would re-cut the post forever.
+func countUntouredHomeProbes(ships []*navigation.Ship, homeSystem string, toured map[string]bool) int {
+	untoured := 0
+	for _, s := range ships {
+		if s == nil || !s.IsScoutType() || !s.IsIdle() || toured[s.ShipSymbol()] {
+			continue
+		}
+		if loc := s.CurrentLocation(); loc == nil || shared.ExtractSystemSymbol(loc.Symbol) != homeSystem {
+			continue
+		}
+		untoured++
+	}
+	return untoured
 }
 
 // readContractWorkstream fills the contract half. Every read is BEST-EFFORT and the

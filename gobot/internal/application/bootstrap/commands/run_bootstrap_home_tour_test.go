@@ -78,6 +78,74 @@ func TestBootstrap_ColdStart_DoesNotRestartATourAlreadyFlying(t *testing.T) {
 	}
 }
 
+// THE RAMP. The probe fleet fills 1 → probeTarget across SUCCESSIVE ticks, so the post is cut on
+// whatever existed first and must GROW to the rest, or those probes park for the whole cold start.
+func TestBootstrap_ColdStart_TourGrowsToTheProbesTheRampBuys(t *testing.T) {
+	obs := freshDataObs()
+	obs.MarketsTotal = 27
+	obs.ProbeCount = 1 // only the starting satellite, and it has never toured
+	obs.ProbesScouting = 0
+	obs.ProbesUntoured = 1
+	starter := &fakeTourStarter{hulls: 1}
+	h, spies := wiredForTour(obs, starter)
+
+	res, err := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
+	if err != nil {
+		t.Fatalf("tick 1: reconcileOnce: %v", err)
+	}
+	if starter.calls != 1 || res.TourHulls != 1 {
+		t.Fatalf("tick 1 must put the one probe there is on tour; got calls=%d hulls=%d", starter.calls, res.TourHulls)
+	}
+
+	spies.observer.obs.ProbeCount = probeTarget // the ramp lands: two more, idle, never toured
+	spies.observer.obs.ProbesScouting = 1
+	spies.observer.obs.ProbesUntoured = 2
+	starter.hulls = probeTarget
+
+	res, err = h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
+	if err != nil {
+		t.Fatalf("tick 2: reconcileOnce: %v", err)
+	}
+	if starter.calls != 2 {
+		t.Fatalf("the post must be RE-CUT for the probes the ramp bought — they sit idle for the whole cold start otherwise; got %d calls", starter.calls)
+	}
+	if res.TourHulls != probeTarget {
+		t.Fatalf("the re-cut must cover the WHOLE probe fleet (%d disjoint circuits), got %d hulls", probeTarget, res.TourHulls)
+	}
+
+	spies.observer.obs.ProbesScouting = probeTarget
+	spies.observer.obs.ProbesUntoured = 0
+	for tick := 3; tick <= 7; tick++ {
+		if _, err := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd()); err != nil {
+			t.Fatalf("tick %d: reconcileOnce: %v", tick, err)
+		}
+	}
+	if starter.calls != 2 {
+		t.Fatalf("a fully-manned post must never be re-cut again (it would re-partition forever and finish no circuit); got %d calls", starter.calls)
+	}
+}
+
+// BOUNDED BY WHAT THE PARTITION CAN EMPLOY: a hull it can give no market never tours, so it
+// would re-cut the live tours every tick.
+func TestBootstrap_ColdStart_DoesNotRecutForAProbeTheHomeMarketsCannotEmploy(t *testing.T) {
+	obs := freshDataObs()
+	obs.MarketsTotal = 2 // fewer markets than probes ⇒ one hull can be given nothing
+	obs.ProbeCount = probeTarget
+	obs.ProbesScouting = 2
+	obs.ProbesUntoured = 1
+	starter := &fakeTourStarter{hulls: 2}
+	h, _ := wiredForTour(obs, starter)
+
+	for tick := 1; tick <= 5; tick++ {
+		if _, err := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd()); err != nil {
+			t.Fatalf("tick %d: reconcileOnce: %v", tick, err)
+		}
+	}
+	if starter.calls != 0 {
+		t.Fatalf("a probe the home markets cannot employ must not re-cut the post — that is an every-tick re-partition that finishes no circuit; got %d calls over 5 ticks", starter.calls)
+	}
+}
+
 // It is NOT a re-manner. One probe dying leaves the others flying and is not corrected —
 // re-growing the deleted standing engine one guard at a time is exactly what the ruling cut.
 func TestBootstrap_ColdStart_PartialLossIsNotReMannedMidTour(t *testing.T) {

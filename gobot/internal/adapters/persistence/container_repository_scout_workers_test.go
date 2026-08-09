@@ -79,3 +79,33 @@ func TestListRunningScoutWorkers_FiltersAndParsesCoordinatorID(t *testing.T) {
 	require.NotContains(t, byID, "ferry-1")
 	require.NotContains(t, byID, "tour-foreign")
 }
+
+// ListScoutTourShips is the bootstrap tour's HISTORY read: which hulls have ever been given a
+// circuit. Status is deliberately unscoped — a COMPLETED or FAILED tour still answers "this hull
+// has been out" — because the caller uses the absence of a row to decide a hull is one the fleet
+// GAINED rather than one whose tour ended, and re-cuts the post for it.
+func TestListScoutTourShips_ReadsEveryStatusForThisPlayerOnly(t *testing.T) {
+	db, playerID := newScoutWorkersTestDB(t)
+	repo := persistence.NewContainerRepository(db)
+
+	insertScoutWorkerContainer(t, db, "tour-running", "scout_tour", "RUNNING",
+		`{"ship_symbol":"SAT-1","markets":["X1-GZ7-A1"],"iterations":-1}`, playerID)
+	insertScoutWorkerContainer(t, db, "tour-completed", "scout_tour", "COMPLETED",
+		`{"ship_symbol":"SAT-2","markets":["X1-GZ7-B2"],"iterations":-1}`, playerID)
+	insertScoutWorkerContainer(t, db, "tour-failed", "scout_tour", "FAILED",
+		`{"ship_symbol":"SAT-3","markets":["X1-GZ7-C3"],"iterations":-1}`, playerID)
+	// Excluded: another command type, an unattributable config, and another player's tour.
+	insertScoutWorkerContainer(t, db, "relay-1", "scout_reposition", "RUNNING",
+		`{"ship_symbol":"SAT-4","destination":"X1-QW1-A1"}`, playerID)
+	insertScoutWorkerContainer(t, db, "tour-garbled", "scout_tour", "RUNNING", `not-json`, playerID)
+	foreign := persistence.PlayerModel{AgentSymbol: "OTHER-TOUR-AGENT", Token: "tok3", CreatedAt: time.Now()}
+	require.NoError(t, db.Create(&foreign).Error)
+	insertScoutWorkerContainer(t, db, "tour-foreign", "scout_tour", "RUNNING",
+		`{"ship_symbol":"SAT-9","markets":["X1-ZZ9-A1"],"iterations":-1}`, foreign.ID)
+
+	ships, err := repo.ListScoutTourShips(context.Background(), playerID)
+	require.NoError(t, err)
+
+	require.Equal(t, map[string]bool{"SAT-1": true, "SAT-2": true, "SAT-3": true}, ships,
+		"every status counts as history; a relay, an unreadable config and a foreign player's tour do not")
+}

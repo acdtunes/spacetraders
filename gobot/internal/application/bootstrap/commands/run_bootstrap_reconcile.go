@@ -433,14 +433,13 @@ func (h *RunBootstrapCoordinatorHandler) actData(ctx context.Context, cmd *RunBo
 // startHomeMarketTour puts bootstrap's probes on a market tour of the home system, through the
 // SAME path the captain's `scout markets` verb uses.
 //
-// IDEMPOTENCY IS AN OBSERVATION, NOT A LATCH: it starts only when NO probe is scouting. The
-// tour path re-partitions every hull it is handed, tearing down whatever is flying, so an
-// unguarded per-tick call would restart the tour forever and never finish a circuit. Reading
-// the live fleet is also what makes it restart-safe — nothing is persisted.
+// IDEMPOTENCY IS AN OBSERVATION, NOT A LATCH: it starts when no probe is scouting, and re-cuts
+// only to take in probes that have never toured. The tour path re-partitions every hull it is
+// handed, so an unguarded per-tick call would restart the tour forever and never finish a
+// circuit. Reading the live fleet is what makes it restart-safe — nothing is persisted.
 //
-// Deliberately NOT a re-manner: one probe dying leaves the others flying and is not
-// corrected. Re-growing the deleted standing engine one guard at a time inside bootstrap is
-// exactly the shape being cut.
+// Deliberately NOT a re-manner: a probe whose tour ENDED leaves the others flying, uncorrected.
+// It DOES grow to the ramp — the same numbers, opposite cause.
 //
 // A BACKGROUND action in the ensureContractScalerEarly sense: it never claims res.Blocker,
 // which is single-valued and owned by the money guards — a tour that could not start must
@@ -448,7 +447,10 @@ func (h *RunBootstrapCoordinatorHandler) actData(ctx context.Context, cmd *RunBo
 func (h *RunBootstrapCoordinatorHandler) startHomeMarketTour(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, obs Observation, res *reconcileResult) {
 	logger := common.LoggerFromContext(ctx)
 
-	if obs.HomeSystem == "" || obs.ProbeCount == 0 || obs.ProbesScouting > 0 {
+	if obs.HomeSystem == "" || obs.ProbeCount == 0 {
+		return
+	}
+	if obs.ProbesScouting > 0 && !homeTourIsUndersized(obs) {
 		return
 	}
 	if h.tourStarter == nil {
@@ -478,6 +480,13 @@ func (h *RunBootstrapCoordinatorHandler) startHomeMarketTour(ctx context.Context
 		"system":       obs.HomeSystem,
 		"hulls":        hulls,
 	})
+}
+
+// homeTourIsUndersized reports whether the post is smaller than the probe fleet it should be
+// partitioned across. It must TERMINATE, since acting on it re-partitions live tours: it clears
+// once every idle home probe has a circuit, and holds back a hull the partition cannot employ.
+func homeTourIsUndersized(obs Observation) bool {
+	return obs.ProbesUntoured > 0 && obs.MarketsTotal >= obs.ProbeCount
 }
 
 // ensureContractScalerEarly ensures the standing dedicated contract auto-scaler is running DURING the

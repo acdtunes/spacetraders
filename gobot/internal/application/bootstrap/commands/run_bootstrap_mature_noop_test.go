@@ -49,6 +49,7 @@ type coldStartSpies struct {
 	contracts *fakeContractRunner
 	frigate   *fakeFrigateLoop
 	refresher *fakeRefresher
+	observer  *fakeObserver
 }
 
 // spiedHandler wires a handler over the given observation with every cold-start port spied.
@@ -61,10 +62,11 @@ func spiedHandler(obs Observation, ho HandoffLauncher) (*RunBootstrapCoordinator
 		contracts: &fakeContractRunner{},
 		frigate:   &fakeFrigateLoop{},
 		refresher: &fakeRefresher{},
+		observer:  &fakeObserver{obs: obs},
 	}
 	h := NewRunBootstrapCoordinatorHandler(nil)
 	h.SetShipRefresher(s.refresher)
-	h.SetWorldObserver(&fakeObserver{obs: obs})
+	h.SetWorldObserver(s.observer)
 	h.SetProbeAcquirer(s.probes)
 	h.SetHaulerAcquirer(s.haulers)
 	h.SetGateWorkerAcquirer(s.gateWork)

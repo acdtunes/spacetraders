@@ -205,7 +205,11 @@ type ScoutWorkerSummary struct {
 // scoutWorkerCommandTypes are the two container command types the scout-post
 // coordinator spawns as managed workers. Kept in lockstep with the Add calls in
 // PersistScoutTourWorker / PersistScoutRepositionWorker.
-var scoutWorkerCommandTypes = []string{"scout_tour", "scout_reposition"}
+var scoutWorkerCommandTypes = []string{scoutTourCommandType, "scout_reposition"}
+
+// scoutTourCommandType is the command_type every market tour is persisted under, whichever
+// path created it.
+const scoutTourCommandType = "scout_tour"
 
 // ListRunningScoutWorkers returns every RUNNING scout_tour / scout_reposition
 // container for the player, each with the coordinator_id parsed from its
@@ -279,6 +283,40 @@ func (r *ContainerRepositoryGORM) ListJumpContainersForShip(
 		}
 	}
 	return ids, nil
+}
+
+// ListScoutTourShips returns the hulls the player has EVER had a scout_tour container for, in
+// ANY status. It is the bootstrap tour's "has this probe already been given a circuit?" read: an
+// idle probe with a row here is one whose tour ENDED, one with none is one the fleet GAINED, and
+// only the second is grown to. Status is unscoped because the question is history, not liveness
+// — a COMPLETED or FAILED tour still answers "this hull has been out".
+func (r *ContainerRepositoryGORM) ListScoutTourShips(
+	ctx context.Context,
+	playerID int,
+) (map[string]bool, error) {
+	var models []*ContainerModel
+	err := r.db.WithContext(ctx).
+		Where("player_id = ? AND command_type = ?", playerID, scoutTourCommandType).
+		Find(&models).Error
+	if err != nil {
+		return nil, fmt.Errorf("failed to list scout tour containers: %w", err)
+	}
+
+	ships := make(map[string]bool, len(models))
+	for _, m := range models {
+		var cfg struct {
+			ShipSymbol string `json:"ship_symbol"`
+		}
+		// An unparseable config names no hull, so its probe reads as untoured: one extra
+		// re-cut, never a stranded hull.
+		if err := json.Unmarshal([]byte(m.Config), &cfg); err != nil {
+			continue
+		}
+		if cfg.ShipSymbol != "" {
+			ships[cfg.ShipSymbol] = true
+		}
+	}
+	return ships, nil
 }
 
 // HasActiveContainerOfType reports whether any container of the given types is currently RUNNING

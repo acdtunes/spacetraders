@@ -51,6 +51,10 @@ type Observation struct {
 	// ProbesScouting is how many probes are already assigned to a scout-tour — the idempotency
 	// guard for the scout-assignment action (skip re-assigning when every probe is already scouting).
 	ProbesScouting int
+	// ProbesUntoured is how many probes sit IDLE at HOME having never been put on a scout tour —
+	// what separates a fleet that GREW from a tour that ENDED, since both read ProbesScouting <
+	// ProbeCount yet call for opposite answers. 0 on an unreadable read, which holds the tour.
+	ProbesUntoured int
 	// HasIdlePurchaser reports whether an idle hull exists to fly to a shipyard and execute a buy
 	// (the batch-purchase path needs a purchasing hull). When false the buy is BLOCKED, not failed.
 	HasIdlePurchaser bool

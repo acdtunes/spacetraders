@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
@@ -16,8 +19,8 @@ import (
 // state, and no engine mans anything.
 type bootstrapHomeTourStarter struct{ server *DaemonServer }
 
-// StartHomeMarketTour flies every IDLE probe over the home system's marketplaces, returning
-// how many it put on tour.
+// StartHomeMarketTour flies the home probe fleet over the home system's marketplaces, returning
+// how many hulls it put on tour.
 //
 // Returning (0, nil) is a first-class answer, not a failure: a fleet whose probes are all
 // busy, or a home system with no known marketplace yet, has nothing to start this tick and
@@ -33,18 +36,11 @@ func (b *bootstrapHomeTourStarter) StartHomeMarketTour(ctx context.Context, play
 	if err != nil {
 		return 0, fmt.Errorf("read fleet: %w", err)
 	}
-	var probes []string
-	for _, ship := range ships {
-		// IDLE and AT HOME. A probe already flying is somebody's, and one parked elsewhere
-		// would have to cross a gate to get here — travel this tour has no business ordering.
-		if ship == nil || !ship.IsScoutType() || !ship.IsIdle() {
-			continue
-		}
-		if loc := ship.CurrentLocation(); loc == nil || shared.ExtractSystemSymbol(loc.Symbol) != homeSystem {
-			continue
-		}
-		probes = append(probes, ship.ShipSymbol())
+	ourTours, err := liveScoutTourContainerIDs(ctx, b.server.containerRepo, playerID)
+	if err != nil {
+		return 0, fmt.Errorf("read live scout tours: %w", err)
 	}
+	probes := selectHomeTourHulls(ships, homeSystem, ourTours)
 	if len(probes) == 0 {
 		return 0, nil
 	}
@@ -71,4 +67,48 @@ func (b *bootstrapHomeTourStarter) StartHomeMarketTour(ctx context.Context, play
 		return 0, err
 	}
 	return len(started), nil
+}
+
+// selectHomeTourHulls picks the hulls this tour may partition the home markets across: every
+// probe AT HOME that is either idle or already flying one of OUR OWN tours.
+//
+// THE HULLS ALREADY FLYING ARE THE POINT. ScoutMarkets re-partitions exactly the hulls it is
+// handed, so naming only the idle probes would leave the incumbent flying the whole market set
+// beside a partition of that same set across the newcomers — overlapping copies of one tour
+// instead of disjoint circuits. A probe held by ANYTHING ELSE is somebody's and is left alone
+// (RULINGS #7); a captain reservation carries no container id, so it matches no live tour. So
+// is one parked in another system, which this tour may not order travel for.
+func selectHomeTourHulls(ships []*navigation.Ship, homeSystem string, ourTours map[string]bool) []string {
+	var probes []string
+	for _, ship := range ships {
+		if ship == nil || !ship.IsScoutType() {
+			continue
+		}
+		if !ship.IsIdle() && !ourTours[ship.ContainerID()] {
+			continue
+		}
+		if loc := ship.CurrentLocation(); loc == nil || shared.ExtractSystemSymbol(loc.Symbol) != homeSystem {
+			continue
+		}
+		probes = append(probes, ship.ShipSymbol())
+	}
+	return probes
+}
+
+// liveScoutTourContainerIDs returns the IDs of the player's RUNNING-or-PENDING market tours —
+// the claims a re-cut may take back because they are its own. One query over both live statuses,
+// so a row transitioning between them cannot fall through the gap and read as a stranger's.
+func liveScoutTourContainerIDs(ctx context.Context, repo *persistence.ContainerRepositoryGORM, playerID int) (map[string]bool, error) {
+	if repo == nil {
+		return nil, nil
+	}
+	summaries, err := repo.ListActiveByTypeSimple(ctx, playerID, string(container.ContainerTypeScout))
+	if err != nil {
+		return nil, err
+	}
+	ids := make(map[string]bool, len(summaries))
+	for _, s := range summaries {
+		ids[s.ID] = true
+	}
+	return ids, nil
 }
