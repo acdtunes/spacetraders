@@ -739,7 +739,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "((sum by (operation_type)(rate(spacetraders_daemon_ledger_revenue_total[$smooth])) or (sum by (operation_type)(rate(spacetraders_daemon_ledger_cost_total[$smooth])) * 0)) - (sum by (operation_type)(rate(spacetraders_daemon_ledger_cost_total[$smooth])) or (sum by (operation_type)(rate(spacetraders_daemon_ledger_revenue_total[$smooth])) * 0))) * 3600",
+          "expr": "avg_over_time((((sum by (operation_type)(rate(spacetraders_daemon_ledger_revenue_total[$smooth])) or (sum by (operation_type)(rate(spacetraders_daemon_ledger_cost_total[$smooth])) * 0)) - (sum by (operation_type)(rate(spacetraders_daemon_ledger_cost_total[$smooth])) or (sum by (operation_type)(rate(spacetraders_daemon_ledger_revenue_total[$smooth])) * 0))) * 3600)[30m:1m])",
           "legendFormat": "{{operation_type}}",
           "range": true,
           "refId": "A"
@@ -757,7 +757,8 @@
         }
       ],
       "title": "Net P/L per Hour by Operation",
-      "type": "timeseries"
+      "type": "timeseries",
+      "maxDataPoints": 200
     },
     {
       "datasource": {
@@ -1521,7 +1522,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "(sum(rate(spacetraders_daemon_ledger_revenue_total{category!=\"SHIP_INVESTMENTS\"}[3h])) - sum(rate(spacetraders_daemon_ledger_cost_total{category!=\"SHIP_INVESTMENTS\"}[3h]))) * 3600",
+          "expr": "avg_over_time(((sum(rate(spacetraders_daemon_ledger_revenue_total{category!=\"SHIP_INVESTMENTS\"}[3h])) - sum(rate(spacetraders_daemon_ledger_cost_total{category!=\"SHIP_INVESTMENTS\"}[3h]))) * 3600)[30m:1m])",
           "legendFormat": "operating 3h avg",
           "range": true,
           "refId": "A"
@@ -1532,7 +1533,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "(sum(rate(spacetraders_daemon_ledger_revenue_total{category!=\"SHIP_INVESTMENTS\"}[6h])) - sum(rate(spacetraders_daemon_ledger_cost_total{category!=\"SHIP_INVESTMENTS\"}[6h]))) * 3600",
+          "expr": "avg_over_time(((sum(rate(spacetraders_daemon_ledger_revenue_total{category!=\"SHIP_INVESTMENTS\"}[6h])) - sum(rate(spacetraders_daemon_ledger_cost_total{category!=\"SHIP_INVESTMENTS\"}[6h]))) * 3600)[30m:1m])",
           "legendFormat": "operating 6h avg",
           "range": true,
           "refId": "B"
@@ -1550,7 +1551,8 @@
         }
       ],
       "title": "Operating Profit/hr - Smoothed (3h/6h trailing)",
-      "type": "timeseries"
+      "type": "timeseries",
+      "maxDataPoints": 200
     },
     {
       "collapsed": false,

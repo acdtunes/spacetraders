@@ -903,11 +903,12 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "((sum by (operation_type)(rate(spacetraders_daemon_ledger_revenue_total{player_id=\"$player\"}[$smooth])) or (sum by (operation_type)(rate(spacetraders_daemon_ledger_cost_total{player_id=\"$player\"}[$smooth])) * 0)) - (sum by (operation_type)(rate(spacetraders_daemon_ledger_cost_total{player_id=\"$player\"}[$smooth])) or (sum by (operation_type)(rate(spacetraders_daemon_ledger_revenue_total{player_id=\"$player\"}[$smooth])) * 0))) * 3600",
+          "expr": "avg_over_time((((sum by (operation_type)(rate(spacetraders_daemon_ledger_revenue_total{player_id=\"$player\"}[$smooth])) or (sum by (operation_type)(rate(spacetraders_daemon_ledger_cost_total{player_id=\"$player\"}[$smooth])) * 0)) - (sum by (operation_type)(rate(spacetraders_daemon_ledger_cost_total{player_id=\"$player\"}[$smooth])) or (sum by (operation_type)(rate(spacetraders_daemon_ledger_revenue_total{player_id=\"$player\"}[$smooth])) * 0))) * 3600)[30m:1m])",
           "range": true,
           "legendFormat": "{{operation_type}}"
         }
-      ]
+      ],
+      "maxDataPoints": 200
     },
     {
       "type": "timeseries",
@@ -968,7 +969,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "(sum(rate(spacetraders_daemon_ledger_revenue_total{category!=\"SHIP_INVESTMENTS\",player_id=\"$player\"}[1h])) - sum(rate(spacetraders_daemon_ledger_cost_total{category!=\"SHIP_INVESTMENTS\",player_id=\"$player\"}[1h]))) * 3600",
+          "expr": "avg_over_time(((sum(rate(spacetraders_daemon_ledger_revenue_total{category!=\"SHIP_INVESTMENTS\",player_id=\"$player\"}[1h])) - sum(rate(spacetraders_daemon_ledger_cost_total{category!=\"SHIP_INVESTMENTS\",player_id=\"$player\"}[1h]))) * 3600)[30m:1m])",
           "range": true,
           "legendFormat": "operating 1h avg"
         },
@@ -979,7 +980,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "(sum(rate(spacetraders_daemon_ledger_revenue_total{category!=\"SHIP_INVESTMENTS\",player_id=\"$player\"}[3h])) - sum(rate(spacetraders_daemon_ledger_cost_total{category!=\"SHIP_INVESTMENTS\",player_id=\"$player\"}[3h]))) * 3600",
+          "expr": "avg_over_time(((sum(rate(spacetraders_daemon_ledger_revenue_total{category!=\"SHIP_INVESTMENTS\",player_id=\"$player\"}[3h])) - sum(rate(spacetraders_daemon_ledger_cost_total{category!=\"SHIP_INVESTMENTS\",player_id=\"$player\"}[3h]))) * 3600)[30m:1m])",
           "range": true,
           "legendFormat": "operating 3h avg"
         },
@@ -990,11 +991,12 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "(sum(rate(spacetraders_daemon_ledger_revenue_total{category!=\"SHIP_INVESTMENTS\",player_id=\"$player\"}[6h])) - sum(rate(spacetraders_daemon_ledger_cost_total{category!=\"SHIP_INVESTMENTS\",player_id=\"$player\"}[6h]))) * 3600",
+          "expr": "avg_over_time(((sum(rate(spacetraders_daemon_ledger_revenue_total{category!=\"SHIP_INVESTMENTS\",player_id=\"$player\"}[6h])) - sum(rate(spacetraders_daemon_ledger_cost_total{category!=\"SHIP_INVESTMENTS\",player_id=\"$player\"}[6h]))) * 3600)[30m:1m])",
           "range": true,
           "legendFormat": "operating 6h avg"
         }
-      ]
+      ],
+      "maxDataPoints": 200
     }
   ]
 }
