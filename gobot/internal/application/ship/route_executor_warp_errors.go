@@ -145,3 +145,27 @@ func (e *RouteExecutor) strand(
 		Reason:     reason,
 	}
 }
+
+// IsPermanentWarpFailure reports whether retrying err cannot change the outcome: a
+// genuine 4xx (the isPermanentGateAbsence shape gategraph also uses — 5xx/429/network
+// never construct an *ports.APIError, so those can't be misclassified), or one of this
+// file's own pre-typed terminal refusals below.
+func IsPermanentWarpFailure(err error) bool {
+	var apiErr *domainPorts.APIError
+	if errors.As(err, &apiErr) && apiErr.IsClientError() {
+		return true
+	}
+	var strand *ErrWarpWouldStrand
+	if errors.As(err, &strand) {
+		return true
+	}
+	var deadEnd *ErrWarpDeadEnd
+	if errors.As(err, &deadEnd) {
+		return true
+	}
+	var noDrive *ErrShipHasNoWarpDrive
+	if errors.As(err, &noDrive) {
+		return true
+	}
+	return false
+}

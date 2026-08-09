@@ -15,6 +15,7 @@ import (
 	bootstrapCmd "github.com/andrescamacho/spacetraders-go/internal/application/bootstrap/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	contractCmd "github.com/andrescamacho/spacetraders-go/internal/application/contract/commands"
+	shipApp "github.com/andrescamacho/spacetraders-go/internal/application/ship"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
@@ -544,6 +545,11 @@ func (r *ContainerRunner) restartAfterFailure(err error) bool {
 	canRestart := r.containerEntity.CanRestart()
 	restartsSoFar := r.containerEntity.RestartCount()
 	r.mu.RUnlock()
+
+	// A verdict retrying cannot change must not spend the restart budget — scoped to WARP only.
+	if canRestart && r.containerEntity.Type() == container.ContainerTypeWarp && shipApp.IsPermanentWarpFailure(err) {
+		canRestart = false
+	}
 
 	if !canRestart {
 		// FAILED is persisted only NOW: earlier would drop a live restarting container from
