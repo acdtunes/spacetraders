@@ -1,0 +1,1007 @@
+{
+  "uid": "spacetraders-era-command",
+  "title": "SpaceTraders - Era Command",
+  "description": "Single-screen command view of the current era: position (treasury, inventory at cost, hull counts, API cost), net performance over the selected window, and the trend lines behind it. Assembled from the live-validated panels in financial.json, trading-hulls.json and frontier.json (sp-iv3lt).",
+  "tags": [
+    "spacetraders",
+    "command",
+    "financial"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 41,
+  "version": 1,
+  "editable": true,
+  "graphTooltip": 1,
+  "refresh": "30s",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "annotations": {
+    "list": []
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "player",
+        "label": "Player",
+        "description": "Current era's player id, taken straight from MAX(id) so it re-points itself across an era rollover with no edit. Used to scope the Prometheus ledger panels the same way every SQL panel scopes itself. sort=4 (numeric desc) is deliberate: sp-ox2mj showed an unsorted player variable defaulting to the DEAD prior era during a Prometheus retention overlap.",
+        "type": "query",
+        "datasource": {
+          "type": "grafana-postgresql-datasource",
+          "uid": "postgresql"
+        },
+        "definition": "SELECT MAX(id) FROM players",
+        "query": "SELECT MAX(id) FROM players",
+        "current": {},
+        "options": [],
+        "hide": 2,
+        "includeAll": false,
+        "multi": false,
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 4
+      },
+      {
+        "name": "smooth",
+        "label": "Smoothing",
+        "description": "rate() smoothing window applied to the 'Net P/L per Hour by Operation' panel - a larger window is a smoother, slower-moving line. The Operating Profit/hr panel keeps its own fixed 1h/3h/6h windows and ignores this.",
+        "type": "interval",
+        "auto": false,
+        "auto_count": 30,
+        "auto_min": "10s",
+        "current": {
+          "selected": true,
+          "text": "30m",
+          "value": "30m"
+        },
+        "options": [
+          {
+            "selected": false,
+            "text": "5m",
+            "value": "5m"
+          },
+          {
+            "selected": false,
+            "text": "15m",
+            "value": "15m"
+          },
+          {
+            "selected": true,
+            "text": "30m",
+            "value": "30m"
+          },
+          {
+            "selected": false,
+            "text": "1h",
+            "value": "1h"
+          },
+          {
+            "selected": false,
+            "text": "3h",
+            "value": "3h"
+          },
+          {
+            "selected": false,
+            "text": "6h",
+            "value": "6h"
+          }
+        ],
+        "query": "5m,15m,30m,1h,3h,6h",
+        "queryValue": "",
+        "hide": 0,
+        "refresh": 2,
+        "skipUrlSync": false
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "row",
+      "id": 1,
+      "title": "Position - what the era is worth right now (live, ignores the time picker)",
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      }
+    },
+    {
+      "type": "stat",
+      "id": 2,
+      "title": "Treasury",
+      "description": "Latest balance_after from the transaction ledger for the current era (exact; updates with every transaction). Live figure - not affected by the time picker. Source panel: financial.json id2.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 5,
+        "x": 0,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "color": {
+            "mode": "thresholds"
+          },
+          "unit": "locale",
+          "decimals": 0,
+          "noValue": "0",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 100000
+              },
+              {
+                "color": "green",
+                "value": 1000000
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "auto",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT balance_after AS \"treasury\"\n  FROM transactions\n WHERE player_id = (SELECT MAX(id) FROM players)\n ORDER BY created_at DESC\n LIMIT 1",
+          "editorMode": "code"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "id": 3,
+      "title": "Fleet Inventory Value (at COST)",
+      "description": "Cargo actually aboard the fleet right now (ships.cargo_inventory), valued at the era's average PURCHASE price per good from the ledger - i.e. what we paid, NOT what it might fetch. This is the cost basis; financial.json's 'Fleet Inventory Value' is the mark-to-bid ceiling and reads much higher. Caveat: a good the fleet never purchased (mined, salvaged, contract-supplied) has no cost basis and contributes 0.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 5,
+        "x": 5,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "color": {
+            "mode": "thresholds"
+          },
+          "unit": "locale",
+          "decimals": 0,
+          "noValue": "0",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#3987e5",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "auto",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH me AS (SELECT MAX(id) AS pid FROM players),\nfleet_inv AS (\n  SELECT g->>'symbol' AS good, SUM((g->>'units')::int) AS units\n    FROM ships s CROSS JOIN me, jsonb_array_elements(s.cargo_inventory::jsonb) g\n   WHERE s.player_id = me.pid AND s.cargo_units > 0\n   GROUP BY 1),\ncost AS (\n  SELECT t.metadata->>'good_symbol' AS good,\n         SUM(-t.amount) / NULLIF(SUM((t.metadata->>'units')::numeric), 0) AS avg_unit_cost\n    FROM transactions t CROSS JOIN me\n   WHERE t.player_id = me.pid AND t.transaction_type = 'PURCHASE_CARGO'\n     AND COALESCE(t.metadata->>'good_symbol','') <> ''\n   GROUP BY 1)\nSELECT COALESCE(SUM(f.units * COALESCE(c.avg_unit_cost, 0)), 0)::bigint AS \"at cost\"\n  FROM fleet_inv f LEFT JOIN cost c ON c.good = f.good;",
+          "editorMode": "code"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "id": 4,
+      "title": "Total Trade Hulls",
+      "description": "Ships whose dedicated_fleet is 'trade' right now. Live fleet state, not filtered by the time window. Hulls assigned to contract or purchasing duty are NOT counted here. Source panel: trading-hulls.json id107.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 3,
+        "x": 10,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "color": {
+            "mode": "thresholds"
+          },
+          "unit": "short",
+          "decimals": 0,
+          "noValue": "0",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "none",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "auto",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH me AS (SELECT MAX(id) AS pid FROM players)\nSELECT COUNT(*)::bigint AS \"trade hulls\"\n  FROM ships s CROSS JOIN me\n WHERE s.player_id = me.pid AND s.dedicated_fleet = 'trade';",
+          "editorMode": "code"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "id": 5,
+      "title": "Total Probes",
+      "description": "Hulls with the SATELLITE role - the probes that produce market data. Live fleet state. Source panel: frontier.json id115 (its unused CTEs were dropped; the counting clause is unchanged).",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 3,
+        "x": 13,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "color": {
+            "mode": "thresholds"
+          },
+          "unit": "short",
+          "decimals": 0,
+          "noValue": "0",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "none",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "auto",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH me AS (SELECT MAX(id) AS pid FROM players)\nSELECT COUNT(*)::int AS \"probes\"\n  FROM ships s CROSS JOIN me\n WHERE s.player_id = me.pid AND s.role = 'SATELLITE';",
+          "editorMode": "code"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "id": 6,
+      "title": "API Utilization %",
+      "description": "Current API request rate as a % of the client's steady-state rate-limit budget (golang.org/x/time/rate limiter: refill=2 req/s, burst=30 - 2.0 is the correct steady-state denominator, not the 30 burst ceiling; see gobot/internal/adapters/api/client.go). Source panel: financial.json id108.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 3,
+        "x": 16,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "color": {
+            "mode": "thresholds"
+          },
+          "unit": "percent",
+          "decimals": 1,
+          "noValue": "0",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 80
+              },
+              {
+                "color": "red",
+                "value": 100
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "auto",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(spacetraders_daemon_api_requests_total[5m])) / 2.0 * 100",
+          "instant": true,
+          "range": false
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "id": 7,
+      "title": "$/request (fixed 24h) - OVER-ESTIMATE",
+      "description": "KNOWN OVER-ESTIMATE - do not use as a precise cost-efficiency figure (bug sp-ac7l).\n\nNet profit (Postgres, all transactions, current era, last 24h) divided by API requests (Prometheus, increase over 24h), joined by a server-side Math expression $A/$B.\n\nWhy it reads HIGH: the Prometheus denominator can only reach as far back as the TSDB actually holds samples, and that history restarts whenever Prometheus restarts - it is routinely SHORTER than 24h. Measured at build time: samples went back only ~19h, and increase([20h]), increase([24h]) and increase([48h]) all returned the identical value, proving the window was saturated. The numerator is always a true 24h. Under-counted denominator over a full-length numerator = inflated $/request. Read it as a CEILING; the real number is lower, and the gap is widest right after a Prometheus restart.\n\nThis tile uses a FIXED 24h window and deliberately IGNORES the dashboard time picker.",
+      "datasource": {
+        "type": "datasource",
+        "uid": "-- Mixed --"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 5,
+        "x": 19,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "color": {
+            "mode": "thresholds"
+          },
+          "unit": "locale",
+          "decimals": 2,
+          "noValue": "-",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#e0a03b",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "auto",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COALESCE(SUM(amount), 0)::float AS net_profit\n  FROM transactions\n WHERE created_at >= NOW() - INTERVAL '24 hours'\n   AND player_id = (SELECT MAX(id) FROM players)",
+          "editorMode": "code",
+          "hide": true
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(increase(spacetraders_daemon_api_requests_total[24h]))",
+          "instant": true,
+          "range": false,
+          "hide": true
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "__expr__",
+            "uid": "__expr__"
+          },
+          "type": "math",
+          "expression": "$A / $B"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "id": 10,
+      "title": "Performance - net over the SELECTED time-picker window",
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 6
+      }
+    },
+    {
+      "type": "stat",
+      "id": 11,
+      "title": "Net P/L (selected window)",
+      "description": "Signed sum of every ledger amount for the current era inside the dashboard's time-picker window. Source panel: financial.json id8, whose hardcoded \"NOW() - INTERVAL '24 hours'\" was replaced with $__timeFilter(created_at) so the tile agrees with the window shown above it. All-in: capex (ship purchases) included.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 8,
+        "x": 0,
+        "y": 7
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "color": {
+            "mode": "thresholds"
+          },
+          "unit": "locale",
+          "decimals": 0,
+          "noValue": "0",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#d03b3b",
+                "value": null
+              },
+              {
+                "color": "#0ca30c",
+                "value": 0
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "auto",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COALESCE(SUM(amount), 0) AS \"net p/l\"\n  FROM transactions\n WHERE player_id = (SELECT MAX(id) FROM players)\n   AND $__timeFilter(created_at)",
+          "editorMode": "code"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "id": 12,
+      "title": "Trade Net (selected window)",
+      "description": "Cargo sales minus cargo purchases for operation_type='tour' inside the time-picker window. Realised only: cargo still in a hold has been paid for but not yet sold, so this understates mid-run - see 'Fleet Inventory Value (at COST)' above. Source panel: trading-hulls.json id102 (already window-relative; copied unchanged).",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 8,
+        "x": 8,
+        "y": 7
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "color": {
+            "mode": "thresholds"
+          },
+          "unit": "locale",
+          "decimals": 0,
+          "noValue": "0",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#d03b3b",
+                "value": null
+              },
+              {
+                "color": "#0ca30c",
+                "value": 0
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "auto",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH me AS (SELECT MAX(id) AS pid FROM players)\nSELECT COALESCE(SUM(t.amount), 0) AS \"trade net\"\n  FROM transactions t CROSS JOIN me\n WHERE t.player_id = me.pid AND t.operation_type = 'tour'\n   AND t.transaction_type IN ('PURCHASE_CARGO','SELL_CARGO')\n   AND COALESCE(t.metadata->>'ship_symbol','') <> ''\n   AND $__timeFilter(t.created_at);",
+          "editorMode": "code"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "id": 13,
+      "title": "Contract Net (selected window)",
+      "description": "Net credits across every operation_type='contract' transaction inside the time-picker window: advances plus payouts minus cargo and fuel. Kept separate from trade because CONTRACT_FULFILLED carries no ship_symbol and cannot be attributed to a hull. Source panel: trading-hulls.json id111 (already window-relative; copied unchanged).",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 8,
+        "x": 16,
+        "y": 7
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "color": {
+            "mode": "thresholds"
+          },
+          "unit": "locale",
+          "decimals": 0,
+          "noValue": "0",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#d03b3b",
+                "value": null
+              },
+              {
+                "color": "#0ca30c",
+                "value": 0
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "auto",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH me AS (SELECT MAX(id) AS pid FROM players)\nSELECT COALESCE(SUM(t.amount), 0) AS \"contract net\"\n  FROM transactions t CROSS JOIN me\n WHERE t.player_id = me.pid AND t.operation_type = 'contract'\n   AND $__timeFilter(t.created_at);",
+          "editorMode": "code"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "id": 20,
+      "title": "Trend - how we got here",
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 12
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 21,
+      "title": "Treasury Over Time",
+      "description": "Balance-after per ledger transaction, averaged per bucket, across the time-picker window. Source panel: financial.json id5, with the current-era scope added (player_id = MAX(id)) so a dead era's balances cannot be averaged into the line.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 13
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "unit": "locale",
+          "decimals": 0,
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "pointSize": 5,
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT $__timeGroupAlias(\"timestamp\", $__interval),\n       AVG(balance_after) AS \"treasury\"\n  FROM transactions\n WHERE $__timeFilter(\"timestamp\")\n   AND player_id = (SELECT MAX(id) FROM players)\n GROUP BY 1 ORDER BY 1",
+          "editorMode": "code"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 22,
+      "title": "Net P/L per Hour by Operation",
+      "description": "Net credits/hour per ledger operation_type as UNSTACKED lines: rate() over the $smooth window of the ledger counters, revenue minus cost per operation_type, x3600. The zero-backfill (`... or (... * 0)`) keeps cost-only ops (e.g. fleet expansion) and revenue-only ops on the chart instead of dropping them from the subtraction. Each operation_type is its own line - positive above zero, negative below. Source panel: financial.json id9, with player_id=\"$player\" added so a dead era's counters cannot bleed in during a retention overlap.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 22
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "unit": "locale",
+          "decimals": 0,
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "pointSize": 5,
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "((sum by (operation_type)(rate(spacetraders_daemon_ledger_revenue_total{player_id=\"$player\"}[$smooth])) or (sum by (operation_type)(rate(spacetraders_daemon_ledger_cost_total{player_id=\"$player\"}[$smooth])) * 0)) - (sum by (operation_type)(rate(spacetraders_daemon_ledger_cost_total{player_id=\"$player\"}[$smooth])) or (sum by (operation_type)(rate(spacetraders_daemon_ledger_revenue_total{player_id=\"$player\"}[$smooth])) * 0))) * 3600",
+          "range": true,
+          "legendFormat": "{{operation_type}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 23,
+      "title": "Operating Profit/hr - Smoothed (1h/3h/6h trailing)",
+      "description": "Trailing moving average of operating profit (ex-capex) in cr/hr. rate() over a FIXED window IS the trailing mean rate over that window, so rate([1h]), rate([3h]) and rate([6h]) are the 1h, 3h and 6h moving averages directly - reading the trend through the lumpy tour buy/sell texture. The fixed windows are this panel's identity, so the $smooth dropdown deliberately does NOT apply here. category!='SHIP_INVESTMENTS' is what makes it ex-capex. Source panel: financial.json id104, which carried 3h/6h only - the 1h series is new, built in the same shape - plus player_id=\"$player\" era scoping.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 22
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "unit": "locale",
+          "decimals": 0,
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "pointSize": 5,
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "(sum(rate(spacetraders_daemon_ledger_revenue_total{category!=\"SHIP_INVESTMENTS\",player_id=\"$player\"}[1h])) - sum(rate(spacetraders_daemon_ledger_cost_total{category!=\"SHIP_INVESTMENTS\",player_id=\"$player\"}[1h]))) * 3600",
+          "range": true,
+          "legendFormat": "operating 1h avg"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "(sum(rate(spacetraders_daemon_ledger_revenue_total{category!=\"SHIP_INVESTMENTS\",player_id=\"$player\"}[3h])) - sum(rate(spacetraders_daemon_ledger_cost_total{category!=\"SHIP_INVESTMENTS\",player_id=\"$player\"}[3h]))) * 3600",
+          "range": true,
+          "legendFormat": "operating 3h avg"
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "(sum(rate(spacetraders_daemon_ledger_revenue_total{category!=\"SHIP_INVESTMENTS\",player_id=\"$player\"}[6h])) - sum(rate(spacetraders_daemon_ledger_cost_total{category!=\"SHIP_INVESTMENTS\",player_id=\"$player\"}[6h]))) * 3600",
+          "range": true,
+          "legendFormat": "operating 6h avg"
+        }
+      ]
+    }
+  ]
+}
