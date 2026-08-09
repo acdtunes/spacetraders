@@ -25,11 +25,11 @@ import (
 // that serialised construction against itself would still have left a contract source-buy free
 // to race the same float, so this suite drives the contract side of the SHARED cap.
 //
-// affordableSourceBuyLot is untouched and still enforces the 50k contract floor per buy. What
-// is added is the cross-operation reservation, and the asymmetry between the two floors is
-// deliberate and preserved: construction reserves against the 150k non-contract floor while
-// contract reserves against the 50k one, so the contract-exclusive 50k-150k band (sp-q8bon)
-// survives a shared ledger intact.
+// affordableSourceBuyLot enforces the contract solvency reserve per buy. What is added here is
+// the cross-operation reservation, and the asymmetry between the two engines' floors is
+// deliberate and preserved: construction reserves against the non-contract working-capital
+// floor while contract reserves against its exempt solvency reserve, so the shared ledger
+// keeps them distinct rather than collapsing both onto one figure.
 
 // recordingCapLedger is a scripted ConcurrentSpendLedger. It INVOKES readBudget, deliberately:
 // the real ledger reads the balance inside its own critical section, and a fake that skipped
@@ -107,8 +107,8 @@ func runContractSourceBuy(t *testing.T, ledger ConcurrentSpendLedger, liveCredit
 // ACCEPTANCE 4. A contract source-buy consults the SHARED cap, and parks when the combined
 // in-flight spend across operations would breach — even though its own cost clears its floor.
 func TestContractSourceBuy_ParksOnAggregateHeadroom(t *testing.T) {
-	// 500k treasury against a 36k lot: the per-buy floor passes comfortably (500k-36k = 464k,
-	// far above the 50k contract floor), so a park here can ONLY come from the aggregate cap.
+	// 500k treasury against a 36k lot: the per-buy reserve passes comfortably (500k-36k = 464k),
+	// so a park here can ONLY come from the aggregate cap.
 	ledger := &recordingCapLedger{ok: false}
 	purchased, parked, logs := runContractSourceBuy(t, ledger, 500_000, 2_000)
 
@@ -123,20 +123,22 @@ func TestContractSourceBuy_ParksOnAggregateHeadroom(t *testing.T) {
 		"expected a WARNING naming the concurrent spend cap, got %v", logs.warnings())
 }
 
-// ACCEPTANCE 4, floor direction. The contract side must reserve against ITS OWN 50k floor, not
-// construction's 150k one. Sharing a ledger must not silently raise the contract floor — that
-// would recreate exactly the full-economy deadlock the contract-exclusive band prevents
-// (sp-q8bon), where the sole earner parks and nothing can refill the treasury.
+// ACCEPTANCE 4, floor direction. The contract side must reserve against ITS OWN exempt solvency
+// reserve, not construction's working-capital floor. Sharing a ledger must not silently raise
+// the contract floor — that would recreate exactly the full-economy deadlock the exemption
+// prevents, where the sole earner parks and nothing can refill the treasury.
 func TestContractSourceBuy_ReservesAgainstTheContractFloorNotTheConstructionFloor(t *testing.T) {
 	ledger := &recordingCapLedger{ok: true}
 	_, parked, _ := runContractSourceBuy(t, ledger, 500_000, 2_000)
 
 	require.False(t, parked, "an accepted reservation must let the buy proceed")
-	require.Equal(t, common.ImmutableReserveFloor, ledger.gotFloor,
-		"the contract source-buy must reserve against the 50k contract floor. Passing construction's %d non-contract floor would starve the sole earner out of the band reserved for it",
-		common.NonContractWorkingCapitalFloor)
+	require.Equal(t, int(common.ContractSolvencyReserve), ledger.gotFloor,
+		"the contract source-buy must reserve against its exempt %d solvency reserve. Passing construction's %d non-contract floor would starve the sole earner out of the working capital the exemption released to it",
+		common.ContractSolvencyReserve, common.NonContractWorkingCapitalFloor)
 	require.NotEqual(t, common.NonContractWorkingCapitalFloor, ledger.gotFloor,
-		"the two floors must stay distinct on a shared ledger")
+		"the two engines' floors must stay distinct on a shared ledger")
+	require.NotEqual(t, int(common.ImmutableReserveFloor), ledger.gotFloor,
+		"the cap must not re-impose the working-capital floor the contract engine is exempt from")
 	require.Equal(t, int64(500_000), ledger.gotCredits, "the cap must judge against the live treasury it read")
 }
 
@@ -192,17 +194,17 @@ func TestContractSourceBuy_SerialisesAgainstAnInFlightConstructionBuy(t *testing
 
 	const (
 		treasury          = 200_000
-		constructionSpend = 145_000
+		constructionSpend = 160_000
 		unitAsk           = 2_000 // 18 units wanted, hull capacity 20 -> a 36,000 lot
 	)
 
 	// The construction_supply buy takes its reservation first and HOLDS it across its purchase,
 	// exactly as buyInputTranche does. What this test pins is that the CONTRACT side sees that
 	// exposure, so the construction reservation only has to be genuinely admitted and in
-	// flight — the floor it was admitted under is not the subject here, and 50k is used simply
-	// because it is the figure that admits a 145,000 buy against a 200,000 treasury.
+	// flight — the floor it was admitted under is not the subject here, and the contract
+	// reserve is used simply because it is a figure that admits this buy against this treasury.
 	constructionRes, ok, err := sharedCap.Reserve(context.Background(), 1, "construction-gate", constructionSpend,
-		func(context.Context) (int64, int, error) { return treasury, common.ImmutableReserveFloor, nil })
+		func(context.Context) (int64, int, error) { return treasury, common.ContractSolvencyReserve, nil })
 	require.NoError(t, err)
 	require.True(t, ok, "the construction reservation must be admitted so it is genuinely IN FLIGHT for the contract check")
 	require.NotEmpty(t, constructionRes)
@@ -210,8 +212,8 @@ func TestContractSourceBuy_SerialisesAgainstAnInFlightConstructionBuy(t *testing
 	purchased, parked, logs := runContractSourceBuy(t, sharedCap, treasury, unitAsk)
 
 	require.True(t, parked,
-		"a contract source-buy must park while a %d construction_supply buy is in flight: its own %d lot clears the %d contract floor against a %d treasury, but the COMBINED exposure leaves %d. This is the arbitration a construction-only cap cannot perform",
-		constructionSpend, 18*unitAsk, common.ImmutableReserveFloor, treasury, treasury-constructionSpend-18*unitAsk)
+		"a contract source-buy must park while a %d construction_supply buy is in flight: its own %d lot clears the %d contract solvency reserve against a %d treasury, but the COMBINED exposure leaves %d. This is the arbitration a construction-only cap cannot perform",
+		constructionSpend, 18*unitAsk, common.ContractSolvencyReserve, treasury, treasury-constructionSpend-18*unitAsk)
 	require.Empty(t, purchased, "the parked contract buy must dispatch ZERO purchases")
 	require.True(t, warningsContain(logs, "concurrent spend cap"), "expected the cross-operation park WARNING, got %v", logs.warnings())
 

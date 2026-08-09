@@ -16,22 +16,21 @@ const contractSpendOperation = "contract"
 
 // reserveConcurrentSpendOrPark records this source-buy's spend intent on the shared
 // cross-operation cap and reports whether it must PARK because the COMBINED in-flight spend
-// would breach the working-capital reserve. On the proceed path it returns the reservation id
+// would breach the contract solvency reserve. On the proceed path it returns the reservation id
 // the caller must release after the buy.
 //
 // WHY THE CONTRACT SIDE NEEDS THIS AT ALL. affordableSourceBuyLot already floors this buy against
-// common.ImmutableReserveFloor from a live treasury read. That guard is correct and untouched — but
-// it is PER-BUY, and a contract hauler does not spend alone. Several buys landing inside one
-// check->buy window are each individually affordable while their AGGREGATE takes treasury below the
-// reserve, after which the contract engine parks against its own floor with nothing left to earn
-// with. A cap serialising only one operation against itself leaves this path free to race the float.
+// common.ContractSolvencyReserve from a live treasury read. That guard is correct — but it is
+// PER-BUY, and a contract hauler does not spend alone. Several buys landing inside one check->buy
+// window are each individually affordable while their AGGREGATE takes treasury below the reserve,
+// stranding the fleet without fuel. A cap serialising only one operation against itself leaves
+// this path free to race the float.
 //
-// THE FLOOR IS UNCHANGED AND UNWEAKENED (RULINGS #4/#5). This reserves against
-// common.ImmutableReserveFloor — the same CONTRACT floor affordableSourceBuyLot enforces, not the
-// higher non-contract floor construction uses. That asymmetry is deliberate: the band between the
-// two is contract-exclusive so the sole earner is not starved by margin-blind gate fills, and the
-// shared ledger preserves it exactly, each operation checking the ONE in-flight total against ITS
-// OWN floor. This adds a constraint and removes none.
+// IT MUST CARRY THE SAME FLOOR THE PER-BUY GUARD DOES — common.ContractSolvencyReserve, the
+// contract exemption's mobility floor, not the working-capital floor construction uses. Each
+// operation checks the ONE in-flight total against ITS OWN floor, so the shared ledger keeps the
+// two engines' floors distinct; raising the contract side back to the working-capital floor here
+// would re-park the exempt buy one guard later and make the exemption inert in production.
 //
 // Fails OPEN when no cap is wired — the optional-port contract every existing test relies on.
 // Fails CLOSED (parks) on any ledger or balance-read error: a cap whose job is protecting the
@@ -77,7 +76,7 @@ func (e *DeliveryExecutor) reserveConcurrentSpendOrPark(
 			return 0, 0, fmt.Errorf("live treasury unreadable")
 		}
 		observedTreasury = treasury
-		return int64(treasury), common.ImmutableReserveFloor, nil
+		return int64(treasury), common.ContractSolvencyReserve, nil
 	}
 
 	resID, ok, err := e.spendLedger.Reserve(ctx, pid, containerID, projectedCost, readBudget)
@@ -92,11 +91,11 @@ func (e *DeliveryExecutor) reserveConcurrentSpendOrPark(
 		// Numbers in the MESSAGE: the container log renderer drops the metadata map, so an
 		// operator who never opens the ledger still sees why this hauler parked.
 		logger.Log("WARNING", fmt.Sprintf(
-			"Parked contract source-buy of %s at %s — cross-operation concurrent spend cap: treasury %d minus in-flight reservations from every operation would breach the working-capital reserve %d (this buy %d); resumes when the competing spend completes",
-			good, market, observedTreasury, common.ImmutableReserveFloor, projectedCost), map[string]interface{}{
+			"Parked contract source-buy of %s at %s — cross-operation concurrent spend cap: treasury %d minus in-flight reservations from every operation would breach the contract solvency reserve %d (this buy %d); resumes when the competing spend completes",
+			good, market, observedTreasury, common.ContractSolvencyReserve, projectedCost), map[string]interface{}{
 			"action": "source_buy_cap_park", "reason": "concurrent_spend_cap",
 			"good": good, "market": market, "projected_cost": projectedCost,
-			"treasury": observedTreasury, "reserve": common.ImmutableReserveFloor,
+			"treasury": observedTreasury, "reserve": common.ContractSolvencyReserve,
 		})
 		return "", true
 	}

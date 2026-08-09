@@ -54,14 +54,14 @@ func (e *DeliveryExecutor) lookupLiveCredits(ctx context.Context, playerID share
 	return playerResp.Player.Credits
 }
 
-// affordableSourceBuyLot sizes the source-buy lot the flat, immutable working-capital reserve floor
-// (common.ImmutableReserveFloor) allows, from a live treasury read right before the buy. It is the
-// contract-side analogue of the factory's spendFloorBreached and the trade/arb spend floor.
+// affordableSourceBuyLot sizes the source-buy lot the contract solvency reserve
+// (common.ContractSolvencyReserve) allows, from a live treasury read right before the buy.
+// Contract work is EXEMPT from the working-capital floor the factory's spendFloorBreached and
+// the trade/arb spend floor enforce, so what binds here is MOBILITY, not working capital.
 //
 // IT SHRINKS RATHER THAN PARKING ALL-OR-NOTHING, because the contract engine is the sole earner:
 // parking it over a small gap deadlocks the operation, since nothing else refills treasury. The
-// floor itself is untouched (RULINGS #4/#5) — a partial lot's projected cost still leaves treasury
-// at or above the reserve.
+// reserve itself is never crossed — a partial lot still leaves treasury at or above it.
 //
 // Returns (units, held):
 //   - guard unarmed (WithSourceBuyFloor not wired) → (unitsWanted, false): the optional-guard
@@ -99,7 +99,7 @@ func (e *DeliveryExecutor) affordableSourceBuyLot(ctx context.Context, playerID 
 	// set while the coordinator re-projects the parked delivery each pass.
 	if unitPrice <= 0 {
 		logger.Log("WARNING", fmt.Sprintf(
-			"Contract source-buy of %d units has no positive unit price to project a cost from — parking the buy (fail-closed, sp-gef01). An unpriced lot would clear the working-capital reserve floor and the aggregate spend cap at a projected cost of 0 while charging the real amount; resumes when the market is re-priced",
+			"Contract source-buy of %d units has no positive unit price to project a cost from — parking the buy (fail-closed, sp-gef01). An unpriced lot would clear the solvency reserve and the aggregate spend cap at a projected cost of 0 while charging the real amount; resumes when the market is re-priced",
 			unitsWanted), map[string]interface{}{
 			"action": "source_buy_floor_park", "reason": "unpriced_lot",
 			"units_wanted": unitsWanted, "unit_price": unitPrice,
@@ -109,12 +109,12 @@ func (e *DeliveryExecutor) affordableSourceBuyLot(ctx context.Context, playerID 
 
 	treasury := e.lookupLiveCredits(ctx, playerID)
 	if treasury < 0 {
-		logger.Log("WARNING", "Contract source-buy: live treasury unreadable for the working-capital reserve check — parking the buy (fail-closed)", map[string]interface{}{
+		logger.Log("WARNING", "Contract source-buy: live treasury unreadable for the solvency reserve check — parking the buy (fail-closed)", map[string]interface{}{
 			"action": "source_buy_floor_park", "reason": "treasury_unreadable",
 		})
 		return 0, true
 	}
-	const floor = common.ImmutableReserveFloor
+	const floor = common.ContractSolvencyReserve
 	fullCost := int64(unitsWanted) * int64(unitPrice)
 	if int64(treasury)-fullCost >= floor {
 		return unitsWanted, false
@@ -123,7 +123,7 @@ func (e *DeliveryExecutor) affordableSourceBuyLot(ctx context.Context, playerID 
 		affordable := int((int64(treasury) - floor) / int64(unitPrice))
 		if affordable >= appContract.MinPartialSourceBuyUnits {
 			logger.Log("WARNING", fmt.Sprintf(
-				"Contract source-buy full lot would breach the working-capital reserve floor — treasury %d, full cost %d, reserve %d; buying the affordable partial lot of %d units (cost %d) instead so fulfillment keeps advancing (sp-8f8fg)",
+				"Contract source-buy full lot would breach the contract solvency reserve — treasury %d, full cost %d, reserve %d; buying the affordable partial lot of %d units (cost %d) instead so fulfillment keeps advancing",
 				treasury, fullCost, floor, affordable, affordable*unitPrice), map[string]interface{}{
 				"action": "source_buy_floor_partial", "treasury": treasury, "full_cost": fullCost, "reserve": floor,
 				"units_wanted": unitsWanted, "units_affordable": affordable,
@@ -132,9 +132,9 @@ func (e *DeliveryExecutor) affordableSourceBuyLot(ctx context.Context, playerID 
 		}
 	}
 	logger.Log("WARNING", fmt.Sprintf(
-		"Contract source-buy would breach the working-capital reserve floor — treasury %d, projected cost %d, reserve %d; parking (resumes when treasury recovers)",
+		"Contract source-buy would breach the contract solvency reserve — treasury %d, projected cost %d, reserve %d; parking (resumes when treasury recovers)",
 		treasury, fullCost, floor), map[string]interface{}{
-		"action": "source_buy_floor_park", "reason": "reserve_floor", "treasury": treasury, "projected_cost": fullCost, "reserve": floor,
+		"action": "source_buy_floor_park", "reason": "solvency_reserve", "treasury": treasury, "projected_cost": fullCost, "reserve": floor,
 	})
 	return 0, true
 }
@@ -229,14 +229,13 @@ func (e *DeliveryExecutor) executeSinglePurchaseTrip(
 		return ship, unitsToPurchase, true, false, nil
 	}
 
-	// PROACTIVE working-capital reserve floor (sp-zq635 §4b): size the buy BEFORE the
-	// flight to market. A lot that would drop treasury below the immutable reserve is
-	// shrunk to the largest affordable lot (sp-8f8fg) — and only when even the minimum
-	// partial is unaffordable is the buy HELD, parked as ErrInsufficientCredits so the
-	// existing park-not-crash path resumes it next tick. This closes the gap where a
-	// source-buy leaves treasury above 0 (so the API's reactive 4600 never fires) but
-	// under the 50k reserve; the reactive 4600 below stays the backstop. Inert unless
-	// WithSourceBuyFloor is wired.
+	// PROACTIVE contract solvency reserve: size the buy BEFORE the flight to market. A lot
+	// that would drop treasury below the reserve is shrunk to the largest affordable lot —
+	// and only when even the minimum partial is unaffordable is the buy HELD, parked as
+	// ErrInsufficientCredits so the existing park-not-crash path resumes it next tick. This
+	// closes the gap where a source-buy leaves treasury above 0 (so the API's reactive 4600
+	// never fires) but too low for the fleet to refuel; the reactive 4600 below stays the
+	// backstop. Inert unless WithSourceBuyFloor is wired.
 	affordableUnits, held := e.affordableSourceBuyLot(ctx, playerID, unitsThisTrip, projectedUnitAsk)
 	if held {
 		return nil, 0, false, false, &ErrInsufficientCredits{

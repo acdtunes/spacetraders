@@ -44,11 +44,11 @@ type DeliveryExecutor struct {
 	withdrawalRecorder storage.WithdrawalRecorder
 	withdrawalClock    shared.Clock
 
-	// enforceSourceBuyFloor arms the PROACTIVE working-capital reserve floor on the
-	// market source-buy (sp-zq635 §4b). Opt-in (WithSourceBuyFloor): OFF leaves the
-	// buy reactive-only (the ErrInsufficientCredits 4600 park below), so every existing
-	// caller/test is byte-identical; production wires it so a source-buy can never
-	// silently land treasury above 0 but under the immutable reserve.
+	// enforceSourceBuyFloor arms the PROACTIVE contract solvency reserve on the market
+	// source-buy. Opt-in (WithSourceBuyFloor): OFF leaves the buy reactive-only (the
+	// ErrInsufficientCredits 4600 park below), so every existing caller/test is
+	// byte-identical; production wires it so a source-buy can never silently land
+	// treasury above 0 but too low for the fleet to refuel.
 	enforceSourceBuyFloor bool
 
 	// spendLedger is the CROSS-OPERATION concurrent spend cap. The floor above is

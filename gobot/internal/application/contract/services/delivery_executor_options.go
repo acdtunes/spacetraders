@@ -39,10 +39,11 @@ func WithWithdrawalRecorder(recorder storage.WithdrawalRecorder, clock shared.Cl
 	}
 }
 
-// WithSourceBuyFloor arms the proactive working-capital reserve floor on the market
-// source-buy (sp-zq635 §4b): before a buy the executor reads live treasury and HOLDS
-// (parks, resuming when treasury recovers) any buy that would drop it below the flat,
-// immutable reserve floor (common.ImmutableReserveFloor).
+// WithSourceBuyFloor arms the proactive contract solvency reserve on the market source-buy:
+// before a buy the executor reads live treasury and HOLDS (parks, resuming when treasury
+// recovers) any buy that would drop it below common.ContractSolvencyReserve. Contract work is
+// exempt from the working-capital floor (RULINGS #5 contract exemption), so what this enforces
+// is the fleet's ability to refuel and reach a market, not its working capital.
 // Fail-closed: an unreadable treasury parks the buy. A DeliveryExecutor built without
 // this option has reactive 4600 handling only.
 func WithSourceBuyFloor() DeliveryExecutorOption {

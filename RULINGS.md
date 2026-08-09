@@ -154,6 +154,18 @@ This file exists so that class of miss cannot recur.)
   crew on the mid-tier; the shipwright picks the model per dispatch by task complexity;
   cross-model review panels for high-blast-radius work; review-class models are never
   handed bulk code generation.
+- **#5 contract exemption (2026-08-09):** **contract work is EXEMPT from the immutable
+  working-capital floor.** (Origin: the hour-0 deadlock at era torwind-2026-08-09 — a
+  procurement contract 14/24 delivered needed 28,880 to unlock a 109,635 payout, treasury
+  56,958, and the 50k floor parked the buy while the command frigate was the fleet's SOLE
+  earner; treasury sat flat until an Admiral-authorised temporary waiver, sp-x75rf, let it
+  complete. Second occurrence of the shape already documented in sp-q8bon.) The contract
+  engine's source-buys ARE the fleet's earning path, not discretionary spend: floor-blocking
+  them starves the very cash flow the floor exists to protect. A minimal absolute solvency
+  reserve remains, sized only to keep a hull able to refuel and reach a market — the fleet
+  may spend its working capital, never strand itself. The floor continues to bind every
+  NON-contract engine unchanged. RULINGS #4 is otherwise untouched: this is a scoped
+  exemption the Admiral granted, not a licence to weaken guards.
 
 ## Maintenance
 

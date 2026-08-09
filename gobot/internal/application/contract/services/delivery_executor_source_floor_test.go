@@ -54,19 +54,18 @@ func (m *sourceFloorFakeMediator) Send(ctx context.Context, request common.Reque
 	}
 }
 
-// TestSourceBuyReserveFloor proves the proactive working-capital reserve floor
-// (sp-zq635 §4b) on a contract source-buy: a buy whose affordable lot is below the
-// minimum partial (sp-8f8fg) is HELD before it (and before the flight to market),
-// ample treasury proceeds byte-identical, an unreadable treasury fails CLOSED
-// (parks), and the whole guard is INERT unless WithSourceBuyFloor is wired (so
-// every existing caller/test is unchanged). One behavior, its variations
-// parametrized. The affordable-PARTIAL lot (full breaches, partial >= min) lives in
-// TestSourceBuyPartialLotUnwedge below.
+// TestSourceBuyReserveFloor proves the proactive solvency reserve on a contract
+// source-buy: a buy whose affordable lot is below the minimum partial is HELD before
+// it (and before the flight to market), ample treasury proceeds byte-identical, an
+// unreadable treasury fails CLOSED (parks), and the whole guard is INERT unless
+// WithSourceBuyFloor is wired (so every existing caller/test is unchanged). One
+// behavior, its variations parametrized. The affordable-PARTIAL lot (full breaches,
+// partial >= min) lives in TestSourceBuyPartialLotUnwedge below.
 func TestSourceBuyReserveFloor(t *testing.T) {
-	// The floor in force is the flat common.ImmutableReserveFloor (50k) — sp-05glh scrapped
-	// the old EffectiveReserveFloor(50k, 40%, treasury) proportional formula this comment used
-	// to describe. affordableSourceBuyLot reads the constant directly (delivery_executor.go),
-	// so every case below is a flat-50k check, not a proportional-clamp regime.
+	// The floor in force is the flat common.ContractSolvencyReserve: contract work is exempt
+	// from the working-capital floor (RULINGS #5 contract exemption) and answers only to the
+	// mobility reserve. affordableSourceBuyLot reads the constant directly, so every case
+	// below is a flat check against it.
 	cases := []struct {
 		name        string
 		wireFloor   bool
@@ -77,22 +76,21 @@ func TestSourceBuyReserveFloor(t *testing.T) {
 		wantPark    bool
 	}{
 		{
-			name:        "held below floor: even the min partial lot would breach the 50k reserve — parks pre-buy",
+			name:        "held below floor: even the min partial lot would breach the solvency reserve — parks pre-buy",
 			wireFloor:   true,
-			liveCredits: 52_000, // headroom 52k-50k=2k buys 1 unit at 2k — below the 5-unit min partial -> HOLD
+			liveCredits: 12_000, // headroom 12k-12k=0 buys nothing — below the 5-unit min partial -> HOLD
 			unitAsk:     2_000,
 			wantUnits:   nil,
 			wantPark:    true,
 		},
 		{
-			// sp-q8bon regression pin: the NON-CONTRACT engines' reserve default rose to
-			// common.NonContractWorkingCapitalFloor (150k) so the 50k–150k band is
-			// contract-EXCLUSIVE — which only works if the contract engine itself keeps
-			// gating on the untouched 50k ImmutableReserveFloor. A source-buy landing
-			// INSIDE the band (100k − 36k = 64k ≥ 50k) must therefore PROCEED; parking it
-			// would mean the contract floor was accidentally raised too, recreating the
-			// full-economy deadlock the band exists to prevent.
-			name:        "contract keeps the 50k floor: a buy landing in the 50k-150k band proceeds (sp-q8bon)",
+			// The whole point of the exemption: the NON-CONTRACT engines hold
+			// common.NonContractWorkingCapitalFloor while a contract source-buy answers only
+			// to the solvency reserve. A buy landing well inside the band the non-contract
+			// engines are fenced out of (100k − 36k = 64k) must PROCEED; parking it would
+			// mean the contract engine had picked up a working-capital floor again,
+			// recreating the full-economy deadlock the exemption exists to prevent.
+			name:        "a buy landing inside the non-contract band proceeds",
 			wireFloor:   true,
 			liveCredits: 100_000,
 			unitAsk:     2_000,
@@ -116,9 +114,9 @@ func TestSourceBuyReserveFloor(t *testing.T) {
 			wantPark:    true,
 		},
 		{
-			name:        "inert when not wired: byte-identical, the buy proceeds even below the floor",
+			name:        "inert when not wired: byte-identical, the buy proceeds even below the reserve",
 			wireFloor:   false,
-			liveCredits: 52_000,
+			liveCredits: 12_000,
 			unitAsk:     2_000,
 			wantUnits:   []int{18},
 			wantPark:    false,
@@ -126,7 +124,7 @@ func TestSourceBuyReserveFloor(t *testing.T) {
 		{
 			name:        "zero projected ask below the floor still parks (no partial-lot math on a priceless basis)",
 			wireFloor:   true,
-			liveCredits: 40_000, // already under the reserve; ask 0 gives no basis to size a partial lot
+			liveCredits: 10_000, // already under the reserve; ask 0 gives no basis to size a partial lot
 			unitAsk:     0,
 			wantUnits:   nil,
 			wantPark:    true,
@@ -173,14 +171,13 @@ func TestSourceBuyReserveFloor(t *testing.T) {
 	}
 }
 
-// TestSourceBuyPartialLotUnwedge pins sp-8f8fg: an all-or-nothing floor park
-// deadlocked the sole earner over a small gap (the full 70-unit FOOD lot cost
-// 106,400 against treasury 142,185 — a 14,215 breach of the 50k reserve — so the
-// worker parked forever with nothing to refill treasury). When the FULL lot would
-// breach the floor, the executor must instead buy the largest affordable lot,
-// halt further sourcing this pass, and deliver that partial through the existing
-// sourcing-halt flow so fulfillment keeps advancing. The floor itself is
-// untouched: the partial's projected cost still leaves treasury >= the reserve.
+// TestSourceBuyPartialLotUnwedge pins the partial-lot fallback: an all-or-nothing
+// reserve park deadlocks the sole earner over a small gap, because nothing else can
+// refill the treasury it is waiting on. When the FULL lot would breach the reserve,
+// the executor must instead buy the largest affordable lot, halt further sourcing
+// this pass, and deliver that partial through the existing sourcing-halt flow so
+// fulfillment keeps advancing. The reserve itself is never crossed: the partial's
+// projected cost still leaves treasury >= it.
 func TestSourceBuyPartialLotUnwedge(t *testing.T) {
 	cases := []struct {
 		name          string
@@ -189,11 +186,11 @@ func TestSourceBuyPartialLotUnwedge(t *testing.T) {
 		wantHaltPark  bool  // partial delivered via the sourcing-halt park (not an error park)
 	}{
 		{
-			// The observed incident numbers: treasury 142,185, ask 1,520, 70 units wanted
-			// in one hull-sized lot. Affordable = floor((142185-50000)/1520) = 60 units
-			// (cost 91,200 leaves 50,985 >= the 50k floor; 61 units would cost 92,720 and
-			// breach). Exactly one purchase of exactly 60, then sourcing halts and the
-			// delivery leg parks the remainder honestly.
+			// Ask 1,520, 70 units wanted in one hull-sized lot against the treasury below.
+			// Affordable = floor((104320-12000)/1520) = 60 units (cost 91,200 leaves
+			// 13,120 >= the reserve; 61 units would cost 92,720 and breach). Exactly one
+			// purchase of exactly 60, then sourcing halts and the delivery leg parks the
+			// remainder honestly.
 			name:          "full lot breaches -> buys exactly the affordable partial lot and halts sourcing",
 			cargoCapacity: 80,
 			wantUnits:     []int{60},
@@ -202,7 +199,7 @@ func TestSourceBuyPartialLotUnwedge(t *testing.T) {
 		{
 			// Bound pin: the affordable-lot formula never overrides the smaller
 			// hull-sized lot. With a 40-capacity hull each trip's lot (40, then 30)
-			// clears the floor on the static treasury, so both trips buy FULL lots —
+			// clears the reserve on the static treasury, so both trips buy FULL lots —
 			// the 60-unit affordability figure must not leak into either trip.
 			name:          "per-trip lots within the floor stay full-sized (capacity caps the lot, not the formula)",
 			cargoCapacity: 40,
@@ -215,7 +212,7 @@ func TestSourceBuyPartialLotUnwedge(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ship := buildContractHauler(t, tc.cargoCapacity)
 			shipRepo := &reconcileFakeShipRepo{cached: ship, server: ship}
-			med := &sourceFloorFakeMediator{navShip: ship, liveCredits: 142_185}
+			med := &sourceFloorFakeMediator{navShip: ship, liveCredits: 104_320}
 			cargoManager := NewCargoManager(med, shipRepo)
 			executor := NewDeliveryExecutor(med, shipRepo, cargoManager, WithSourceBuyFloor())
 
@@ -229,7 +226,7 @@ func TestSourceBuyPartialLotUnwedge(t *testing.T) {
 				UnitsFulfilled:    0,
 			}
 			profitResult := &contractQueries.ProfitabilityResult{
-				PurchaseCost:           70 * 1_520, // 106,400 — the incident's full-lot projection
+				PurchaseCost:           70 * 1_520, // the full-lot projection the reserve has to shrink
 				CheapestMarketWaypoint: "X1-TEST-M1",
 				MarketPrices:           map[string]int{"IRON_ORE": 1_520},
 			}
@@ -243,7 +240,7 @@ func TestSourceBuyPartialLotUnwedge(t *testing.T) {
 
 			haltParked := logContains(logger, "parked partial after sourcing halt")
 			if haltParked != tc.wantHaltPark {
-				t.Errorf("sourcing-halt park logged = %v, want %v (a floor-sized partial must deliver-then-park via the existing halt flow)", haltParked, tc.wantHaltPark)
+				t.Errorf("sourcing-halt park logged = %v, want %v (a reserve-sized partial must deliver-then-park via the existing halt flow)", haltParked, tc.wantHaltPark)
 			}
 		})
 	}

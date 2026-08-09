@@ -183,7 +183,7 @@ func TestSourceBuy_PricedLot_ReservesTheRealProjectedCost(t *testing.T) {
 	require.Equal(t, unpricedUnitsRequired*unpricedRealAsk, ledger.gotCost,
 		"the cap must reserve the REAL projected cost (%d units x %d), which is the whole point: reserving 0 records an intent that constrains nobody",
 		unpricedUnitsRequired, unpricedRealAsk)
-	require.Equal(t, common.ImmutableReserveFloor, ledger.gotFloor, "the contract side still reserves against its own 50k floor")
+	require.Equal(t, int(common.ContractSolvencyReserve), ledger.gotFloor, "the contract side still reserves against its own exempt solvency reserve")
 }
 
 // NON-INTERFERENCE. The refusal rides the floor's OWN arming and adds no new seam.

@@ -35,6 +35,30 @@ func TestContractCushionsUnaffected(t *testing.T) {
 	}
 }
 
+// TestContractExemptionLeavesTheNonContractFloorsIntact pins the SHAPE of the RULINGS #5
+// contract exemption: it added a separate, lower reserve for contract source-buys and moved
+// nothing else. The base and every tier derived from it keep their exact values, so every
+// non-contract spender that gates on them — trade, factory, construction, arb, stocker,
+// outfitting, scaler capex, bootstrap capex — is unchanged. The exemption is a NEW constant
+// with two call sites, never an edit to the base, which would have silently dragged all three
+// derived tiers with it.
+func TestContractExemptionLeavesTheNonContractFloorsIntact(t *testing.T) {
+	if ImmutableReserveFloor != 50_000 {
+		t.Fatalf("ImmutableReserveFloor = %d, want 50000 — the exemption must not move the base", ImmutableReserveFloor)
+	}
+	if NonContractWorkingCapitalFloor != 150_000 || ContractReserveCushion != 150_000 || ContractScalerCushion != 200_000 {
+		t.Fatalf("derived tiers moved: non-contract %d, cushion %d, scaler %d — want 150000/150000/200000",
+			NonContractWorkingCapitalFloor, ContractReserveCushion, ContractScalerCushion)
+	}
+	if ContractSolvencyReserve >= ImmutableReserveFloor {
+		t.Fatalf("ContractSolvencyReserve = %d, must sit strictly BELOW the %d working-capital floor: it exists because contract work is exempt from that floor, so at or above it the exemption is a no-op",
+			ContractSolvencyReserve, ImmutableReserveFloor)
+	}
+	if ContractSolvencyReserve <= 0 {
+		t.Fatalf("ContractSolvencyReserve = %d, must be a real positive reserve: a zero floor lets a contract buy drain the treasury to nothing, and a fleet that cannot refuel has no recovery path at all", ContractSolvencyReserve)
+	}
+}
+
 // TestEffectiveReserveFloorShimIsFlat pins the kept-for-compatibility EffectiveReserveFloor
 // shim (sp-05glh): every argument is ignored, the result is always ImmutableReserveFloor —
 // no proportional-of-treasury computation survives, regardless of what absolute/pct/treasury
