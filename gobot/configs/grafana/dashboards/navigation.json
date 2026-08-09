@@ -295,7 +295,7 @@
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
       },
-      "description": "THE freshness measure: market_data age per posted system vs the scout post's own target. Sorted worst-first.",
+      "description": "THE freshness measure: market_data age per posted system vs the scout post's own target.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -405,7 +405,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Live scout freshness per system (sp-s0nx): seconds since each system's market data was last refreshed. History twin of 'Market Freshness vs Post Target' (PG, above) - this is the promQL feed the tour-lane eligibility gate reads from in real time.",
+      "description": "Live scout freshness per system (sp-s0nx): seconds since each system's market data was last refreshed.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -466,7 +466,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Rate of tour lanes excluded for stale scout data, by system (sp-s0nx). Chicken-and-egg pair with Scout Freshness (left): a lane goes stale here precisely when its system's freshness (left panel) has drifted past the post target - watch them together.",
+      "description": "Rate of tour lanes excluded for stale scout data, by system (sp-s0nx).",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -540,7 +540,7 @@
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
       },
-      "description": "Corpses in the travel/scout class. scout_tour dominates historically - watch for regressions after nav fixes.",
+      "description": "Corpses in the travel/scout class.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -797,7 +797,7 @@
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
       },
-      "description": "Jump gate fees burned per hour, trailing 6h. The window START is clamped to the first whole minute of TRAVEL_COSTS data, so this reads the TRUE rate instead of being diluted by pre-deploy hours with no data. Expect ~1.7-1.8M/hr at current fleet size; near zero means the category filter is wrong, far higher means it is double-counting FUEL_COSTS. This is pure opex and is already inside financial.json's ex-capex operating profit — it is NOT a new cost, it is a cost that was previously invisible. TRAVEL_COSTS has NO backfill (sp-shq63): it is zero for all time before the deploy and real after, so a long window shows a step change that is an artefact of INSTRUMENTATION, not of behaviour — do not read it as a cost spike.",
+      "description": "Jump gate fees burned per hour, trailing 6h.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -860,7 +860,7 @@
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
       },
-      "description": "Gate transits per hour, trailing 6h, window clamped to the instrumented era as with Travel Spend. Expect ~270-310/hr at current fleet size. Pair with the fee distribution on the right: spend falls either by jumping less or by jumping cheaper, and this tells you which lever moved. Filtered on transaction_type='JUMP' rather than the category alone so the count stays literally correct if TRAVEL_COSTS ever widens beyond gate fees. TRAVEL_COSTS has NO backfill (sp-shq63): it is zero for all time before the deploy and real after, so a long window shows a step change that is an artefact of INSTRUMENTATION, not of behaviour — do not read it as a cost spike.",
+      "description": "Gate transits per hour, trailing 6h, window clamped to the instrumented era as with Travel Spend.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -923,7 +923,7 @@
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
       },
-      "description": "Jump gate fees as a percentage of operating profit BEFORE those fees (revenue less all non-travel opex, ex-capex). Currently ~42%: routing is the single largest controllable drag on the trading business, which is what makes this a decision rather than a line item. Use it to price routing work — a change that cuts jumps 10% is worth ~4% of gross operating profit. Numerator and denominator share ONE clamped window (start = first whole minute of TRAVEL_COSTS data), which is essential: an unclamped ratio would divide minutes of fee data by hours of profit and read far too low. Expect this to be volatile for the first hour after a deploy — the denominator is lumpy over short windows because a single large cargo buy dents gross profit — and to settle as the 6h window fills. TRAVEL_COSTS has NO backfill (sp-shq63): it is zero for all time before the deploy and real after, so a long window shows a step change that is an artefact of INSTRUMENTATION, not of behaviour — do not read it as a cost spike.",
+      "description": "Jump gate fees as a percentage of operating profit BEFORE those fees (revenue less all non-travel opex, ex-capex).",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -978,7 +978,7 @@
           "refId": "A"
         }
       ],
-      "title": "Jump Cost — Share of Gross Operating Profit",
+      "title": "Jump Cost \u2014 Share of Gross Operating Profit",
       "type": "stat"
     },
     {
@@ -986,7 +986,7 @@
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
       },
-      "description": "Cost of a single gate transit, 15m buckets. This distribution has never been visible before and is the number that says whether routing changes pay for themselves: if p75 sits far above p50, a minority of expensive jumps carries the spend and lane selection is the lever; if the band is tight, only jumping LESS reduces cost. Currently p25/p50/p75 ≈ 5.2k/5.5k/6.4k. Unlike the stats to the left this honours the time picker directly, so it will show empty buckets before the deploy rather than a misleading flat line. TRAVEL_COSTS has NO backfill (sp-shq63): it is zero for all time before the deploy and real after, so a long window shows a step change that is an artefact of INSTRUMENTATION, not of behaviour — do not read it as a cost spike.",
+      "description": "Cost of a single gate transit, 15m buckets.",
       "fieldConfig": {
         "defaults": {
           "color": {

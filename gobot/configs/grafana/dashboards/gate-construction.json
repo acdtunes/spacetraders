@@ -151,7 +151,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Construction progress rate in %/hr (deriv over a 1h window). Red when stalled or regressing.",
+      "description": "Construction progress rate in %/hr (deriv over a 1h window).",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -218,7 +218,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Linear ETA to 100%: (100 - pct) / deriv(pct[1h]). Shows 'No data' when progress is stalled or regressing (rate <= 0).",
+      "description": "Linear ETA to 100%: (100 - pct) / deriv(pct[1h]).",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -289,7 +289,7 @@
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
       },
-      "description": "Latest balance_after from the transaction ledger (exact; updates with every transaction). The daemon gauge is P14 — it oscillates 0<->balance (conflicting writers).",
+      "description": "Latest balance_after from the transaction ledger (exact; updates with every transaction).",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -361,7 +361,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Gate delivery progress over time. Line colored by threshold (red < 25 < orange < 50 < yellow < 75 < green).",
+      "description": "Gate delivery progress over time.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -466,7 +466,7 @@
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
       },
-      "description": "Per-material delivered vs target for the EXECUTING construction pipeline (from manufacturing_pipelines.materials JSONB). Bar label carries absolute delivered/target; bar value is percent.",
+      "description": "Per-material delivered vs target for the EXECUTING construction pipeline (from manufacturing_pipelines.materials JSONB).",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -675,7 +675,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Manufacturing pipeline health: running pipelines, tasks ready to execute, factories ready for collection. tasks_ready is a labeled gauge — empty until the coordinator first sets it.",
+      "description": "Manufacturing pipeline health: running pipelines, tasks ready to execute, factories ready for collection.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -785,7 +785,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Minutes since last task assignment by task type — alert if > 15 (dashed threshold line). Labeled gauge: series appear once the coordinator assigns tasks.",
+      "description": "Minutes since last task assignment by task type \u2014 alert if > 15 (dashed threshold line).",
       "fieldConfig": {
         "defaults": {
           "color": {

@@ -24,7 +24,7 @@
       "type": "stat",
       "id": 101,
       "title": "Bootstrap Phase",
-      "description": "Live bootstrap phase from spacetraders_daemon_bootstrap_phase (the gauge is one series per phase, 1=active; this folds them to a single ordinal so the phase name and its colour render in one tile). Phase context changes what every other panel on this dashboard means.",
+      "description": "Live bootstrap phase from spacetraders_daemon_bootstrap_phase (the gauge is one series per phase, 1=active; this folds them to a single\u2026",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -118,7 +118,7 @@
       "type": "stat",
       "id": 102,
       "title": "Home System",
-      "description": "Headquarters system from players.metadata, falling back to the system holding the most hulls. Every 'beyond home' number on this dashboard is relative to this.",
+      "description": "Headquarters system from players.metadata, falling back to the system holding the most hulls.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
@@ -202,7 +202,7 @@
       "type": "stat",
       "id": 103,
       "title": "Systems Priced",
-      "description": "Distinct systems with any cached market_data this era. Trade can only plan inside these systems - this is the ceiling on where the fleet can go. 1 means the bot is confined to its home system.",
+      "description": "Distinct systems with any cached market_data this era.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
@@ -298,7 +298,7 @@
       "type": "stat",
       "id": 104,
       "title": "Neighbours Priced",
-      "description": "Jump-reachable neighbour systems that have cached market data. This is the expansion scoreboard: at 0 the tour coordinator's reposition fallback rejects every neighbour as 'no-cached-market' and trade parks when home sinks saturate.",
+      "description": "Jump-reachable neighbour systems that have cached market data.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
@@ -390,7 +390,7 @@
       "type": "stat",
       "id": 105,
       "title": "Neighbours Reachable",
-      "description": "Systems directly jump-reachable from home via a gate edge in the current era. The denominator for 'Neighbours Priced' - read the two tiles together.",
+      "description": "Systems directly jump-reachable from home via a gate edge in the current era.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
@@ -474,7 +474,7 @@
       "type": "stat",
       "id": 106,
       "title": "Unpriced Markets In Reach",
-      "description": "Marketplaces we already know exist in reachable neighbour systems but have never priced. This is the size of the prize sitting one jump away - and the cost of the current stall.",
+      "description": "Marketplaces we already know exist in reachable neighbour systems but have never priced.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
@@ -562,7 +562,7 @@
       "type": "stat",
       "id": 107,
       "title": "Fleet Beyond Home",
-      "description": "Hulls currently outside the home system. 0 means the entire fleet is confined to home - the physical signature of a stalled expansion.",
+      "description": "Hulls currently outside the home system.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
@@ -667,7 +667,7 @@
       "type": "table",
       "id": 109,
       "title": "Jump-Reachable Neighbours - pricing status",
-      "description": "Every system one jump from home, ranked so the highest-yield unpriced target sits at the top. 'Markets Known' comes from waypoint traits we have already surveyed, so an UNPRICED row with a high count is a probe that pays for itself immediately. 'Priced Age' is blank where a system has never been priced.",
+      "description": "Every system one jump from home, ranked so the highest-yield unpriced target sits at the top.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
@@ -991,7 +991,7 @@
       "type": "timeseries",
       "id": 110,
       "title": "Expansion Reach - priced vs reachable",
-      "description": "The expansion scoreboard over time. The gap between the two lines is unexploited reach; a flat 'systems priced' line means expansion is stalled, not slow. Cumulative from the first time each system was priced this era.",
+      "description": "The expansion scoreboard over time.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
@@ -1166,7 +1166,7 @@
       "type": "state-timeline",
       "id": 112,
       "title": "Phase Timeline (COLDSTART -> GATE -> EXPANSION)",
-      "description": "Which bootstrap phase was active when. Each band is named and coloured directly, so a re-entry into an earlier phase (GATE falling back to COLDSTART) is visible as a colour reversal rather than something to decode off an axis. The band ends where bootstrap hands off and exits.",
+      "description": "Which bootstrap phase was active when.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1273,7 +1273,7 @@
       "type": "table",
       "id": 113,
       "title": "Coordinator Handoff - bootstrap exit & standing crew",
-      "description": "The phase's defining event: BOOTSTRAP_COORDINATOR reaching COMPLETED is the handoff to the standing crew. Every other row is a coordinator bootstrap launched on its way out - a RUNNING row here is what keeps the fleet working now.",
+      "description": "The phase's defining event: BOOTSTRAP_COORDINATOR reaching COMPLETED is the handoff to the standing crew.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
@@ -1453,7 +1453,7 @@
       "type": "stat",
       "id": 115,
       "title": "Probe Fleet",
-      "description": "Hulls with the SATELLITE role - the probes that produce market data. Compiled cap is 40 by default.",
+      "description": "Hulls with the SATELLITE role - the probes that produce market data.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
@@ -1537,7 +1537,7 @@
       "type": "stat",
       "id": 116,
       "title": "Unmanned Slots",
-      "description": "Declared scout slots with no hull assigned and no reposition in flight. This is unmet coverage demand: slots the fleet has asked for but cannot fill.",
+      "description": "Declared scout slots with no hull assigned and no reposition in flight.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
@@ -1629,7 +1629,7 @@
       "type": "stat",
       "id": 117,
       "title": "Scout Sweep Age (worst)",
-      "description": "Seconds since the worst-served scout post completed a sweep, live from the daemon. This is sweep cadence, not row age in market_data - trading scans keep last_updated fresh even when the scout itself is overdue. Default post target is 3600s.",
+      "description": "Seconds since the worst-served scout post completed a sweep, live from the daemon.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1705,7 +1705,7 @@
       "type": "stat",
       "id": 118,
       "title": "Scout Posts",
-      "description": "Declared scout posts this era. One post means coverage is being maintained in a single system only - no standing presence anywhere else.",
+      "description": "Declared scout posts this era.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
@@ -1797,7 +1797,7 @@
       "type": "timeseries",
       "id": 119,
       "title": "Scout Sweep Age by System",
-      "description": "Live scout freshness per system (sp-s0nx) - the feed the tour-lane eligibility gate reads. A system climbing past its post target stops being usable for tour planning.",
+      "description": "Live scout freshness per system (sp-s0nx) - the feed the tour-lane eligibility gate reads.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1901,7 +1901,7 @@
       "type": "table",
       "id": 120,
       "title": "Scout Posts by Kind",
-      "description": "Slot-level coverage per post kind, counting extra_slots as well as the primary slot. 'Tour Not Running' is a manned slot whose tour container has died - a silent coverage hole.",
+      "description": "Slot-level coverage per post kind, counting extra_slots as well as the primary slot.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
@@ -2092,7 +2092,7 @@
       "type": "stat",
       "id": 122,
       "title": "Probes Bought",
-      "description": "Probe hull purchases booked this era. EVERY engine's probes, deliberately: two of them buy (frontier expansion, and the parked-sensing coordinator's coverage queue) and they carry DIFFERENT operation_type values since sp-com1h. This panel is scoped by category='SHIP_INVESTMENTS' + ship_type instead, which is exactly 'a probe was bought' and cannot go stale when another engine starts buying. Do not re-add an operation_type filter here - it silently dropped the larger spender.",
+      "description": "Probe hull purchases booked this era.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
@@ -2176,7 +2176,7 @@
       "type": "stat",
       "id": 123,
       "title": "Probe Capex",
-      "description": "Total credits spent on probe hulls this era. EVERY engine's probes, deliberately: two of them buy (frontier expansion, and the parked-sensing coordinator's coverage queue) and they carry DIFFERENT operation_type values since sp-com1h. This panel is scoped by category='SHIP_INVESTMENTS' + ship_type instead, which is exactly 'a probe was bought' and cannot go stale when another engine starts buying. Do not re-add an operation_type filter here - it silently dropped the larger spender.",
+      "description": "Total credits spent on probe hulls this era.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
@@ -2260,7 +2260,7 @@
       "type": "stat",
       "id": 124,
       "title": "Capex per System Priced",
-      "description": "Probe capex divided by systems priced. With coverage confined to one system this is the whole probe budget attributed to a single system - the efficiency argument for pushing a probe outward.",
+      "description": "Probe capex divided by systems priced.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
@@ -2436,7 +2436,7 @@
       "type": "timeseries",
       "id": 126,
       "title": "Probe Purchases",
-      "description": "Probe hull purchases over time. Gaps are cycles where the coordinator declined to buy - the probe cap, the buy floor, or the expansion switch turned off (the cycle line names which). EVERY engine's probes, deliberately: two of them buy (frontier expansion, and the parked-sensing coordinator's coverage queue) and they carry DIFFERENT operation_type values since sp-com1h. This panel is scoped by category='SHIP_INVESTMENTS' + ship_type instead, which is exactly 'a probe was bought' and cannot go stale when another engine starts buying. Do not re-add an operation_type filter here - it silently dropped the larger spender.",
+      "description": "Probe hull purchases over time.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
@@ -2550,7 +2550,7 @@
       "type": "timeseries",
       "id": 127,
       "title": "Cumulative Probe Capex",
-      "description": "Running probe spend this era, all history (not clipped to the dashboard range). EVERY engine's probes, deliberately: two of them buy (frontier expansion, and the parked-sensing coordinator's coverage queue) and they carry DIFFERENT operation_type values since sp-com1h. This panel is scoped by category='SHIP_INVESTMENTS' + ship_type instead, which is exactly 'a probe was bought' and cannot go stale when another engine starts buying. Do not re-add an operation_type filter here - it silently dropped the larger spender.",
+      "description": "Running probe spend this era, all history (not clipped to the dashboard range).",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
@@ -2700,7 +2700,7 @@
       "type": "table",
       "id": 130,
       "title": "Realised Capital by Operation",
-      "description": "Where capital actually went this era, straight from the transactions ledger. This is realised flow - it is NOT the sp-ftqgp planned budget, which is log-only. 'construction_supply' running deeply negative while 'contract' carries the surplus is the signature of the gate build.",
+      "description": "Where capital actually went this era, straight from the transactions ledger.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
@@ -2865,7 +2865,7 @@
       "type": "timeseries",
       "id": 131,
       "title": "Cumulative Net Capital by Operation",
-      "description": "Running net credits per operation this era. Divergence between construction_supply and contract shows which activity is funding the other.",
+      "description": "Running net credits per operation this era.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
@@ -2989,7 +2989,7 @@
       "type": "stat",
       "id": 133,
       "title": "Gate Edges (this era)",
-      "description": "Gate edges discovered in the current era only. gate_edges is keyed by era_id and retains every prior era - an unscoped count here reads roughly 28x high.",
+      "description": "Gate edges discovered in the current era only.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
@@ -3073,7 +3073,7 @@
       "type": "stat",
       "id": 134,
       "title": "Systems in Gate Graph",
-      "description": "Distinct systems appearing anywhere in this era's gate graph - the outer bound of what is known to be reachable, several jumps out. Compare with 'Systems Priced'.",
+      "description": "Distinct systems appearing anywhere in this era's gate graph - the outer bound of what is known to be reachable, several jumps out.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
@@ -3157,7 +3157,7 @@
       "type": "stat",
       "id": 135,
       "title": "Edges Under Construction",
-      "description": "Gate edges whose gate is still being built. These are not traversable yet.",
+      "description": "Gate edges whose gate is still being built.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
@@ -3241,7 +3241,7 @@
       "type": "stat",
       "id": 136,
       "title": "Gates in Probe-Backoff",
-      "description": "Gate rows the probe could not read (sp-ikx1 markers), now in exponential backoff. Each one is a neighbour we cannot even enumerate, let alone price.",
+      "description": "Gate rows the probe could not read (sp-ikx1 markers), now in exponential backoff.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
@@ -3333,7 +3333,7 @@
       "type": "table",
       "id": 137,
       "title": "Probe-Backoff Detail",
-      "description": "Systems whose gate could not be read this era, with backoff tier and age. Empty is the healthy state.",
+      "description": "Systems whose gate could not be read this era, with backoff tier and age.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
@@ -3463,7 +3463,7 @@
       "type": "table",
       "id": 138,
       "title": "Gate Graph Frontier - most-connected known systems",
-      "description": "The best-connected systems in this era's known gate graph, whether or not they are adjacent to home. High edge count plus UNPRICED marks a future hub worth reaching once a first hop lands.",
+      "description": "The best-connected systems in this era's known gate graph, whether or not they are adjacent to home.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"

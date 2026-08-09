@@ -24,7 +24,7 @@
       "type": "stat",
       "id": 101,
       "title": "Treasury",
-      "description": "Latest credit balance on the newest transaction for the current era's player. Moves on every operation, not just trading.",
+      "description": "Latest credit balance on the newest transaction for the current era's player.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
@@ -109,7 +109,7 @@
       "type": "stat",
       "id": 102,
       "title": "Trade Net (realised)",
-      "description": "Cargo sales minus cargo purchases for operation_type='tour' in the window. Realised only: cargo still in a hold has been paid for but not yet sold, so this understates mid-run. See 'Capital in Cargo' beside it.",
+      "description": "Cargo sales minus cargo purchases for operation_type='tour' in the window.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
@@ -368,7 +368,7 @@
       "type": "stat",
       "id": 105,
       "title": "Gross Margin",
-      "description": "Realised trade net as a percentage of cargo spend in the window. Shows the empty-state string rather than dividing by zero when nothing was bought.",
+      "description": "Realised trade net as a percentage of cargo spend in the window.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
@@ -457,7 +457,7 @@
       "type": "stat",
       "id": 106,
       "title": "Realised Net / Hour",
-      "description": "Trade net divided by the length of the selected window, so 30m / 2h / 24h are comparable. A rate over the window, not an instantaneous reading.",
+      "description": "Trade net divided by the length of the selected window, so 30m / 2h / 24h are comparable.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
@@ -546,7 +546,7 @@
       "type": "stat",
       "id": 107,
       "title": "Trade Hulls",
-      "description": "Ships whose dedicated_fleet is 'trade' right now. Live fleet state, not filtered by the time window.",
+      "description": "Ships whose dedicated_fleet is 'trade' right now.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
@@ -631,7 +631,7 @@
       "type": "stat",
       "id": 108,
       "title": "Capital in Cargo (at cost)",
-      "description": "Credits spent in this window on cargo not yet sold, valued at purchase price. The counterweight to a negative realised net: money deployed, not lost.",
+      "description": "Credits spent in this window on cargo not yet sold, valued at purchase price.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
@@ -799,7 +799,7 @@
       "type": "stat",
       "id": 110,
       "title": "Worst Hull",
-      "description": "Lowest realised net in the window. A MID-RUN hull can appear here purely because it has bought and not yet sold -- check 'Net @ Cost' below before reading it as a loss.",
+      "description": "Lowest realised net in the window.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
@@ -882,7 +882,7 @@
       "type": "stat",
       "id": 111,
       "title": "Contract Net (all ops)",
-      "description": "Net credits across every contract transaction in the window: advances plus payouts minus cargo and fuel. Kept separate from trade because CONTRACT_FULFILLED carries no ship_symbol and cannot be attributed to a hull.",
+      "description": "Net credits across every contract transaction in the window: advances plus payouts minus cargo and fuel.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
@@ -988,7 +988,7 @@
       "type": "table",
       "id": 113,
       "title": "Per-Hull P&L - realised, deployed, and honest net",
-      "description": "One row per hull in the trade fleet, plus any that traded in the window and has since been released; tour operations only. Net @ Cost = Realised Net + In Cargo, so a hull caught mid-run reads about zero, not a loss. Money columns honour the time picker; State, Hold and the nav columns read 'now'.",
+      "description": "One row per hull in the trade fleet, plus any that traded in the window and has since been released; tour operations only.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
@@ -1567,7 +1567,7 @@
       "type": "barchart",
       "id": 115,
       "title": "Realised Net by Hull",
-      "description": "Realised tour net per hull over the window, worst to best. Bars below zero are hulls that have bought and not yet sold -- compare with 'Net @ Cost' above.",
+      "description": "Realised tour net per hull over the window, worst to best.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
@@ -1682,7 +1682,7 @@
       "type": "timeseries",
       "id": 116,
       "title": "Cumulative Net by Hull",
-      "description": "Running realised net per hull across the window. A flat line is a hull in transit or loading; a step up is a sale landing.",
+      "description": "Running realised net per hull across the window.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
@@ -1814,7 +1814,7 @@
       "type": "stat",
       "id": 130,
       "title": "Trade-Hull Capex (actual)",
-      "description": "Every credit spent on PURCHASE_SHIP for a trade-capable hull type this era. Lifetime, not windowed. An exact ledger sum, so it counts hulls since lost or released and exceeds the table's Capex column.",
+      "description": "Every credit spent on PURCHASE_SHIP for a trade-capable hull type this era.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
@@ -1899,7 +1899,7 @@
       "type": "stat",
       "id": 131,
       "title": "Trade Net (lifetime, all hulls)",
-      "description": "Realised tour cargo net -- sells minus buys -- for every hull this era, including hulls that have since left the fleet. Lifetime, not windowed. Cargo still in a hold is not credited, so this is a conservative floor.",
+      "description": "Realised tour cargo net -- sells minus buys -- for every hull this era, including hulls that have since left the fleet.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
@@ -1988,7 +1988,7 @@
       "type": "stat",
       "id": 132,
       "title": "Fleet Payback %",
-      "description": "Lifetime realised tour net over lifetime trade-hull capex: 100% means trading has earned back every credit ever spent on trade hulls. Lifetime, not windowed. Open cargo is excluded, so it reads slightly low.",
+      "description": "Lifetime realised tour net over lifetime trade-hull capex: 100% means trading has earned back every credit ever spent on trade hulls.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
@@ -2081,7 +2081,7 @@
       "type": "stat",
       "id": 133,
       "title": "Trade Fleet Paid Back",
-      "description": "How many hulls now in the trade fleet have had cumulative realised net cross their capex at least once; a hull bought minutes ago counts as not-paid-back. Lifetime, not windowed. Capex is the hull's own receipt where the purchase recorded one, a frame-class average otherwise.",
+      "description": "How many hulls now in the trade fleet have had cumulative realised net cross their capex at least once; a hull bought minutes ago counts as\u2026",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
@@ -2164,7 +2164,7 @@
       "type": "stat",
       "id": 134,
       "title": "Median Payback Time",
-      "description": "Median hours from a hull's recorded purchase -- or first tour trade, where none was recorded -- to the moment cumulative realised net first covered its capex. Lifetime, not windowed. Only hulls that HAVE paid back are in the sample; read it beside Median Age, Unpaid Hulls.",
+      "description": "Median hours from a hull's recorded purchase -- or first tour trade, where none was recorded -- to the moment cumulative realised net first\u2026",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
@@ -2249,7 +2249,7 @@
       "type": "stat",
       "id": 135,
       "title": "p90 Payback Time",
-      "description": "90th percentile of the same measure as Median Payback Time: the slow tail of the hulls that got there. Lifetime, not windowed. Only hulls that HAVE paid back are in the sample, and frames are mixed -- a light hauler costs a fifth of a heavy.",
+      "description": "90th percentile of the same measure as Median Payback Time: the slow tail of the hulls that got there.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
@@ -2334,7 +2334,7 @@
       "id": 139,
       "type": "stat",
       "title": "Median Age, Unpaid Hulls",
-      "description": "Median age of the trade-fleet hulls that have NOT yet paid back -- the cohort the payback medians exclude. Lifetime, not windowed. Only meaningful against Median Payback Time beside it: well below it the unpaid hulls are simply young; well above it there is a slow tail the medians never see.",
+      "description": "Median age of the trade-fleet hulls that have NOT yet paid back -- the cohort the payback medians exclude.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
@@ -2400,7 +2400,7 @@
       "type": "table",
       "id": 136,
       "title": "Per-Hull Payback - how long each hull takes to earn back its price",
-      "description": "One row per hull in the trade fleet now, worst-remaining first. Lifetime, not windowed. Capex is the hull's own receipt where the purchase recorded one and a frame-class average otherwise -- Capex basis names which. Payback %, rate and ETA use Net @ Cost, so a fresh load does not read as a loss.",
+      "description": "One row per hull in the trade fleet now, worst-remaining first.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
@@ -2984,7 +2984,7 @@
       "type": "barchart",
       "id": 137,
       "title": "Payback % by Hull",
-      "description": "One bar per trade-fleet hull: lifetime Net @ Cost over attributed capex, worst first; the 100% line is the point. Lifetime, not windowed. Capex is the hull's own receipt where the purchase recorded one, a frame-class average otherwise. Light haulers cost a fifth of a heavy and stretch the axis.",
+      "description": "One bar per trade-fleet hull: lifetime Net @ Cost over attributed capex, worst first; the 100% line is the point.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
@@ -3104,7 +3104,7 @@
       "type": "timeseries",
       "id": 138,
       "title": "Fleet Cumulative Trade Net vs Trade-Hull Capex",
-      "description": "Green is cumulative realised tour net across every hull; amber is cumulative PURCHASE_SHIP outlay on trade hulls. Where green crosses above amber the fleet has paid for itself. Both sums cover the whole era -- the fixed 7-day axis clips the view, never the maths.",
+      "description": "Green is cumulative realised tour net across every hull; amber is cumulative PURCHASE_SHIP outlay on trade hulls.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"

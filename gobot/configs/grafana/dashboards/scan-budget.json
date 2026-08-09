@@ -38,7 +38,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Spend against allowance. 1.0 is at budget. Sustained overshoot means the allowance is undersized for the reads the fleet can't avoid \u2014 raise it rather than loosening a guard.",
+      "description": "Spend against allowance.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -108,7 +108,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Watch the shape, not the number. The dashed lines mark 1x and 2x allowance. A step down means a fix landed; a flat line above 1 is structural and won't correct itself.",
+      "description": "Watch the shape, not the number.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -200,7 +200,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Reads that went through on an empty bucket. Earning is a money guard that can't be refused; discretionary is opportunistic and can be.",
+      "description": "Reads that went through on an empty bucket.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -259,7 +259,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "The share rather than the count \u2014 a bigger fleet raises the count without the allowance being any more wrong. A gap in the line is a window where the budget spent nothing at all, not a zero.",
+      "description": "The share rather than the count \u2014 a bigger fleet raises the count without the allowance being any more wrong.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -351,7 +351,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Which kind of read is spending the budget. Earning can never be declined, so a budget dominated by it is only fixable by making fewer reads, not by pacing them.",
+      "description": "Which kind of read is spending the budget.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -414,7 +414,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "What the budget actually refused \u2014 only discretionary reads can be, so earning never appears here. Flat zero is a real line rather than missing data: the budget binds on nothing and the pacing is decorative.",
+      "description": "What the budget actually refused \u2014 only discretionary reads can be, so earning never appears here.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -486,7 +486,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Coverage should climb as the map is charted while the dashed spend rate on the right stays flat \u2014 each waypoint simply waits longer. Both lines climbing together means cost is scaling with the map.",
+      "description": "Coverage should climb as the map is charted while the dashed spend rate on the right stays flat \u2014 each waypoint simply waits longer.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -585,7 +585,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "How long each waypoint waits between looks. Rising is expected as the map grows; it's the total cost that's supposed to hold still.",
+      "description": "How long each waypoint waits between looks.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -657,7 +657,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Two independent counts of the same requests. Short windows disagree by a fifth on scrape timing alone, so judge drift by direction over time and check the cumulative stat beside this before calling it divergence.",
+      "description": "Two independent counts of the same requests.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -762,7 +762,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "The same check without the jitter. Just under 100% is correct \u2014 one request is always counted before it lands. Drift away from that means these panels are measuring nothing.",
+      "description": "The same check without the jitter.",
       "fieldConfig": {
         "defaults": {
           "color": {

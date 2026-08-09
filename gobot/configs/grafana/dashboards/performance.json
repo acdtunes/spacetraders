@@ -743,7 +743,7 @@
       ],
       "title": "Market Scan (API)",
       "type": "timeseries",
-      "description": "API latency percentiles for market-endpoint calls (endpoint display names, e.g. 'Get Market')."
+      "description": "API latency percentiles for market-endpoint calls (endpoint display names, e.g."
     },
     {
       "datasource": {
@@ -862,7 +862,7 @@
         "type": "datasource",
         "uid": "-- Mixed --"
       },
-      "description": "Program KPI (sp-qxx4): hourly $/request trend = net profit (Postgres, all txns/hr, same 'net (all-in)' definition used in financial.json) / API requests (Prometheus, hourly increase), joined via Grafana server-side Math expression on matching bucket timestamps. Prometheus currently retains only ~4-5h of request history post-deploy, so this fills sparse-to-full over the next ~24h as retention accumulates (same caveat as the Manufacturing Task Completions panel).",
+      "description": "Program KPI (sp-qxx4): hourly $/request trend = net profit (Postgres, all txns/hr, same 'net (all-in)' definition used in financial.json) /\u2026",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -945,7 +945,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Program KPI (sp-qxx4): top-8 busiest endpoints by request rate. Curated companion to the broader 'API Call Rate by Endpoint' panel above (all endpoints, stacked) - this is the KPI-focused top-N view.",
+      "description": "Program KPI (sp-qxx4): top-8 busiest endpoints by request rate.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1342,7 +1342,7 @@
       ],
       "title": "Parked Sensing - Market Staleness by Tier",
       "type": "timeseries",
-      "description": "Age of the parked-probe fleet's market data, by percentile tier: hot=p10, median=p50, cold=p90. COLD is the operational number \u2014 it is the tail the trade planner's fail-closed sink-freshness cap actually binds on, and a mean would hide it entirely. Never-scanned slots are excluded rather than counted as infinitely stale, so the series is honest while the rotation warms up."
+      "description": "Age of the parked-probe fleet's market data, by percentile tier: hot=p10, median=p50, cold=p90."
     },
     {
       "datasource": {
@@ -1467,7 +1467,7 @@
       ],
       "title": "Parked Sensing - Scan Rate vs Rate-Limit Pressure",
       "type": "timeseries",
-      "description": "The scan pacer's rate (left, req/s) against the fleet's p95 rate-limiter wait (right, seconds). Sensing is the RESIDUAL consumer: its rate should fall as the wait rises and recover as it drops. A flat rate through rising pressure means the emergency brake is not engaging; a rate pinned at the min_scan_rate floor means the rest of the fleet is consuming the whole utilization target."
+      "description": "The scan pacer's rate (left, req/s) against the fleet's p95 rate-limiter wait (right, seconds)."
     },
     {
       "datasource": {
@@ -1562,7 +1562,7 @@
       ],
       "title": "Parked Sensing - Placement Pipeline",
       "type": "timeseries",
-      "description": "Probe placements by lifecycle state. WANTED piling up with nothing moving to BOUGHT means the buy floor or the probe cap is holding; QUEUED means CLAIMED for purchase \u2014 including claims whose yard then quoted above the floor \u2014 and is NOT a count of purchases in flight. PARKED is the fleet actually earning its keep."
+      "description": "Probe placements by lifecycle state."
     },
     {
       "datasource": {
@@ -1723,7 +1723,7 @@
       ],
       "title": "Heavy reservation vs probe buying \u2014 is the fleet SAVING or STUCK?",
       "type": "timeseries",
-      "description": "When the heavy reserve is non-zero, probe and light buying deliberately stand down so treasury can accumulate toward the next heavy freighter. That is the design working, but it looks identical to a broken buyer, so read them together here.\n\nSAVING: reserve > 0 and probes-parked flat \u2014 expected; it resolves when the heavy lands or the capability closes.\nSTUCK: reserve == 0 and probes-parked flat \u2014 something else is holding; check the autosizer decision log.\n\nPARKED is a LEVEL, not a rate, so it also flat-lines when the fleet is fully provisioned and every wanted waypoint is covered \u2014 a healthy state that reads as STUCK. The decision log tells the two apart: no unmet demand means covered, not stuck.\n\nAXES: credits (the reserve) read on the LEFT, hull and placement counts on the RIGHT. They differ by roughly six orders of magnitude, so on one axis every count sits flat on zero and cannot be told from no-data.\n\n\"probes parked\" is the TERMINAL placement state: it grows when probe buying succeeds and flat-lines when the reserve holds it down. The other half of the fingerprint \u2014 WANTED piling up \u2014 is on \"Parked Sensing - Placement Pipeline\" directly above; a total across all states would RISE during the hold and read as healthy.\n\nNote the reserve alone does not mean a heavy is imminent: a heavy is not LEGAL until treasury clears the 25%-of-treasury rule (~6.26M at a 1,565,500 ask), so a long non-zero reserve below that is normal. See docs/runbooks/heavy-trade.md."
+      "description": "When the heavy reserve is non-zero, probe and light buying deliberately stand down so treasury can accumulate toward the next heavy\u2026"
     },
     {
       "datasource": {
@@ -1831,7 +1831,7 @@
       ],
       "title": "Heavy price premium \u2014 what buying WITH presence costs",
       "type": "timeseries",
-      "description": "What presence-lag costs: how far above the cheapest KNOWN yard ask the autosizer actually paid, because it buys at the cheapest yard WITH PRESENCE rather than the cheapest absolutely. 0 means we paid the best known price.\n\nMEAN ONLY, deliberately. The underlying summary declares no quantile objectives, so Prometheus exports only _sum and _count and there is no _percent{quantile=...} series to graph. A heavy is bought a handful of times per era; quantiles over a sliding window at that sample count are noisy and stale, and the mean is the honest read.\n\n\"all-time\" is the plain _sum/_count ratio since the daemon started \u2014 it is populated as soon as ONE heavy has ever been bought, and is the series to read first. \"over window\" respects the dashboard time range and goes empty when no heavy was bought inside it; empty there means no purchases, not a broken metric.\n\nBoth are blank until the first heavy purchase ever. See docs/runbooks/heavy-trade.md."
+      "description": "What presence-lag costs: how far above the cheapest KNOWN yard ask the autosizer actually paid, because it buys at the cheapest yard WITH\u2026"
     }
   ],
   "preload": false,

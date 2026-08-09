@@ -102,7 +102,7 @@
       "type": "timeseries",
       "id": 21,
       "title": "Treasury Over Time",
-      "description": "Balance-after per ledger transaction, averaged per bucket, across the time-picker window. Source panel: financial.json id5, with the current-era scope added (player_id = MAX(id)) so a dead era's balances cannot be averaged into the line.",
+      "description": "Treasury, current era.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
@@ -165,7 +165,7 @@
     {
       "type": "row",
       "id": 1,
-      "title": "Position - what the era is worth right now (live, ignores the time picker)",
+      "title": "Position (live)",
       "collapsed": false,
       "panels": [],
       "gridPos": {
@@ -179,7 +179,7 @@
       "type": "stat",
       "id": 2,
       "title": "Treasury",
-      "description": "Latest balance_after from the transaction ledger for the current era (exact; updates with every transaction). Live figure - not affected by the time picker. Source panel: financial.json id2.",
+      "description": "Credits on hand.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
@@ -254,7 +254,7 @@
       "type": "stat",
       "id": 3,
       "title": "Fleet Inventory Value (at COST)",
-      "description": "Cargo actually aboard the fleet right now (ships.cargo_inventory), valued at the era's average PURCHASE price per good from the ledger - i.e. what we paid, NOT what it might fetch. This is the cost basis; financial.json's 'Fleet Inventory Value' is the mark-to-bid ceiling and reads much higher. Caveat: a good the fleet never purchased (mined, salvaged, contract-supplied) has no cost basis and contributes 0.",
+      "description": "Cargo aboard, valued at what we paid \u2014 not market. Goods with no purchase record count 0.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
@@ -321,7 +321,7 @@
       "type": "stat",
       "id": 4,
       "title": "Total Trade Hulls",
-      "description": "Ships whose dedicated_fleet is 'trade' right now. Live fleet state, not filtered by the time window. Hulls assigned to contract or purchasing duty are NOT counted here. Source panel: trading-hulls.json id107.",
+      "description": "Hulls dedicated to trade.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
@@ -388,7 +388,7 @@
       "type": "stat",
       "id": 5,
       "title": "Total Probes",
-      "description": "Hulls with the SATELLITE role - the probes that produce market data. Live fleet state. Source panel: frontier.json id115 (its unused CTEs were dropped; the counting clause is unchanged).",
+      "description": "Probes/satellites owned.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
@@ -455,7 +455,7 @@
       "type": "stat",
       "id": 6,
       "title": "API Utilization %",
-      "description": "Current API request rate as a % of the client's steady-state rate-limit budget (golang.org/x/time/rate limiter: refill=2 req/s, burst=30 - 2.0 is the correct steady-state denominator, not the 30 burst ceiling; see gobot/internal/adapters/api/client.go). Source panel: financial.json id108.",
+      "description": "Share of the API rate limit in use.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -530,7 +530,7 @@
       "type": "stat",
       "id": 7,
       "title": "$/request (fixed 24h) - OVER-ESTIMATE",
-      "description": "KNOWN OVER-ESTIMATE - do not use as a precise cost-efficiency figure (bug sp-ac7l).\n\nNet profit (Postgres, all transactions, current era, last 24h) divided by API requests (Prometheus, increase over 24h), joined by a server-side Math expression $A/$B.\n\nWhy it reads HIGH: the Prometheus denominator can only reach as far back as the TSDB actually holds samples, and that history restarts whenever Prometheus restarts - it is routinely SHORTER than 24h. Measured at build time: samples went back only ~19h, and increase([20h]), increase([24h]) and increase([48h]) all returned the identical value, proving the window was saturated. The numerator is always a true 24h. Under-counted denominator over a full-length numerator = inflated $/request. Read it as a CEILING; the real number is lower, and the gap is widest right after a Prometheus restart.\n\nThis tile uses a FIXED 24h window and deliberately IGNORES the dashboard time picker.",
+      "description": "Net profit per API request. Reads HIGH: Prometheus holds under 24h of samples, so the denominator is short (sp-ac7l). Treat as a ceiling.",
       "datasource": {
         "type": "datasource",
         "uid": "-- Mixed --"
@@ -617,7 +617,7 @@
     {
       "type": "row",
       "id": 10,
-      "title": "Performance - net over the SELECTED time-picker window",
+      "title": "Performance (selected window)",
       "collapsed": false,
       "panels": [],
       "gridPos": {
@@ -631,7 +631,7 @@
       "type": "stat",
       "id": 11,
       "title": "Net P/L",
-      "description": "Signed sum of every ledger amount for the current era inside the dashboard's time-picker window. Source panel: financial.json id8, whose hardcoded \"NOW() - INTERVAL '24 hours'\" was replaced with $__timeFilter(created_at) so the tile agrees with the window shown above it. All-in: capex (ship purchases) included.",
+      "description": "All transactions, net, over the selected window.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
@@ -702,7 +702,7 @@
       "type": "stat",
       "id": 12,
       "title": "Trade Net",
-      "description": "Cargo sales minus cargo purchases for operation_type='tour' inside the time-picker window. Realised only: cargo still in a hold has been paid for but not yet sold, so this understates mid-run - see 'Fleet Inventory Value (at COST)' above. Source panel: trading-hulls.json id102 (already window-relative; copied unchanged).",
+      "description": "Trading revenue minus trading costs, selected window.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
@@ -773,7 +773,7 @@
       "type": "stat",
       "id": 13,
       "title": "Contract Net",
-      "description": "Net credits across every operation_type='contract' transaction inside the time-picker window: advances plus payouts minus cargo and fuel. Kept separate from trade because CONTRACT_FULFILLED carries no ship_symbol and cannot be attributed to a hull. Source panel: trading-hulls.json id111 (already window-relative; copied unchanged).",
+      "description": "Contract revenue minus sourcing costs, selected window.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
@@ -843,7 +843,7 @@
     {
       "type": "row",
       "id": 20,
-      "title": "Trend - how we got here",
+      "title": "Trend",
       "collapsed": false,
       "panels": [],
       "gridPos": {
@@ -857,7 +857,7 @@
       "type": "timeseries",
       "id": 22,
       "title": "Net P/L per Hour by Operation",
-      "description": "Net credits/hour per ledger operation_type as UNSTACKED lines: rate() over the $smooth window of the ledger counters, revenue minus cost per operation_type, x3600. The zero-backfill (`... or (... * 0)`) keeps cost-only ops (e.g. fleet expansion) and revenue-only ops on the chart instead of dropping them from the subtraction. Each operation_type is its own line - positive above zero, negative below. Source panel: financial.json id9, with player_id=\"$player\" added so a dead era's counters cannot bleed in during a retention overlap.",
+      "description": "Hourly net, split by operation.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -921,7 +921,7 @@
       "type": "timeseries",
       "id": 23,
       "title": "Operating Profit/hr - Smoothed (1h/3h/6h trailing)",
-      "description": "Trailing moving average of operating profit (ex-capex) in cr/hr. rate() over a FIXED window IS the trailing mean rate over that window, so rate([1h]), rate([3h]) and rate([6h]) are the 1h, 3h and 6h moving averages directly - reading the trend through the lumpy tour buy/sell texture. The fixed windows are this panel's identity, so the $smooth dropdown deliberately does NOT apply here. category!='SHIP_INVESTMENTS' is what makes it ex-capex. Source panel: financial.json id104, which carried 3h/6h only - the 1h series is new, built in the same shape - plus player_id=\"$player\" era scoping.",
+      "description": "Profit per hour excluding hull capex, trailing 1h/3h/6h.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"

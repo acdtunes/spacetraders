@@ -38,7 +38,7 @@
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
       },
-      "description": "Latest balance_after from the transaction ledger (exact; updates with every transaction). The daemon gauge is P14 \u2014 it oscillates 0<->balance (conflicting writers).",
+      "description": "Latest balance_after from the transaction ledger (exact; updates with every transaction).",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -109,7 +109,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Secondary/live cross-check for Treasury (live) at left: max(spacetraders_daemon_player_credits_balance) (sp-s0nx, P14 gauge revival). PG stays primary/exact for Treasury - this gauge doubles as metric-health proof that the credits-balance exporter is alive and tracking the ledger.",
+      "description": "Secondary/live cross-check for Treasury (live) at left: max(spacetraders_daemon_player_credits_balance) (sp-s0nx, P14 gauge revival).",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -235,7 +235,7 @@
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
       },
-      "description": "Balance-after per ledger transaction, averaged per bucket. Full history from the income ledger.",
+      "description": "Balance-after per ledger transaction, averaged per bucket.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -307,7 +307,7 @@
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
       },
-      "description": "Total value of all cargo currently aboard the fleet (in transit + stored), marked to the best-known bid (MAX purchase_price) across scouted markets per good. This is an OPTIMISTIC CEILING, not a guaranteed realization \u2014 selling this much volume would move prices and may exceed what markets can actually absorb. Goods with no scouted market price at 0.",
+      "description": "Total value of all cargo currently aboard the fleet (in transit + stored), marked to the best-known bid (MAX purchase_price) across scouted\u2026",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -370,7 +370,7 @@
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
       },
-      "description": "Value of cargo aboard hulls currently serving as warehouse storage (ship symbols listed in storage_operations.storage_ships for RUNNING ops), marked to best-known bid. At an era reset, stored goods are a TOTAL LOSS \u2014 this number is pure downside risk parked in warehouse hulls, not banked profit.",
+      "description": "Value of cargo aboard hulls currently serving as warehouse storage (ship symbols listed in storage_operations.storage_ships for RUNNING\u2026",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -433,7 +433,7 @@
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
       },
-      "description": "Value of cargo aboard all other laden hulls (tour legs, factory workflows, relocation \u2014 anything not parked as warehouse storage), marked to best-known bid. Same optimistic-ceiling caveat as the fleet total: realized value depends on market absorption at sale time.",
+      "description": "Value of cargo aboard all other laden hulls (tour legs, factory workflows, relocation \u2014 anything not parked as warehouse storage), marked\u2026",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -496,7 +496,7 @@
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
       },
-      "description": "Per-good breakdown of the fleet total above: units held, best-known bid, mark-to-bid value, and the stored share (aboard warehouse hulls per storage_operations.storage_ships, RUNNING) vs in-transit/working. Sorted by value. Valuation is an optimistic ceiling \u2014 realized value depends on market absorption; stored goods are a total loss at an era reset.",
+      "description": "Per-good breakdown of the fleet total above: units held, best-known bid, mark-to-bid value, and the stored share (aboard warehouse hulls\u2026",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -687,7 +687,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Net credits/hour per ledger operation_type as UNSTACKED lines: rate() over $smooth of the sp-miqt ledger counters, revenue minus cost per operation_type, x3600. A zero-backfill (`... or (... * 0)`) keeps cost-only ops (e.g. fleet expansion) and revenue-only ops on the chart instead of dropping from the subtraction. Each operation_type is its own line — positive above zero, negative below — since stacking signed net across opposite-direction ops (tour + vs factory/fleet -) was visually meaningless; rate()*3600 also removes the old partial-bucket x4 distortion. Legacy SQL kept hidden as a cross-check.",
+      "description": "Net credits/hour per ledger operation_type as UNSTACKED lines: rate() over $smooth of the sp-miqt ledger counters, revenue minus cost per\u2026",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -860,7 +860,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Realized contract profit per hour. operation_type='contract' spans exactly CONTRACT_ACCEPTED/CONTRACT_FULFILLED (revenue, positive) and PURCHASE_CARGO/REFUEL (costs, negative) with no leakage either direction (live-verified), so SUM(amount) over that filter is net contract profit directly. 15m buckets x4 for cr/hr, mirroring Revenue vs Costs; current incomplete bucket excluded so the right edge does not dive.",
+      "description": "Realized contract profit per hour.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1011,7 +1011,7 @@
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
       },
-      "description": "tour_run corpses. Margins-death is an HONEST completion, not a failure - failures here are travel/claim/crash classes.",
+      "description": "tour_run corpses.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1153,7 +1153,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Realized vs planned unit prices per leg, as the windowed-average signed drift percent: (rate(_over_plan_pct_total) - rate(_under_plan_pct_total)) / rate(_legs_total). Positive buy drift = paying over plan (ladder pressure); negative sell drift = margin decay between plan and execution. The SQL cross-check is plotted alongside and the two lines should track each other; a sustained gap means the metric is lying, not the market. sp-fpgl2: this panel formerly read rate(_sum)/rate(_count) over a SIGNED summary, whose _sum FELL on every under-plan leg (~30% of them) - rate() reads any fall as a counter reset and adds the whole accumulated sum back, which ramped the line to ~130% against a true ~0.6%. Every drift figure quoted from this panel before that fix is an artifact, not a measurement; the SQL series from the same window is the honest one. Legs are labelled by basis (solver = the planner's own projection, the one that tests the market model; lookback = the look-back manifest's cached SourceAsk, which the buy is gated against and so largely reproduces itself) - both are summed here, split on basis to separate them.",
+      "description": "Realized vs planned unit prices per leg, as the windowed-average signed drift percent: (rate(_over_plan_pct_total) -\u2026",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1247,7 +1247,7 @@
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
       },
-      "description": "Operating profit = every transaction EXCEPT category='SHIP_INVESTMENTS' (hull capex). Hull purchases (~22M/day) swamp net P/L; splitting them out shows the trading business's real rate. Traded modules (MODULE_%/MOUNT_% bought+sold via PURCHASE_CARGO/SELL_CARGO) stay in opex - they are flipped as goods, not installed, and total <0.4M/7d vs hull capex 100:1.",
+      "description": "Operating profit = every transaction EXCEPT category='SHIP_INVESTMENTS' (hull capex).",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1314,7 +1314,7 @@
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
       },
-      "description": "How much ship-investment capex pulled net P/L below operating profit in the last 24h (= operating - net). This is the distortion the operating split removes.",
+      "description": "How much ship-investment capex pulled net P/L below operating profit in the last 24h (= operating - net).",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1385,7 +1385,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Hourly operating profit (ex-capex) vs net (all-in). The gap between the lines in any hour IS that hour's ship-investment capex burn.",
+      "description": "Hourly operating profit (ex-capex) vs net (all-in).",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1467,7 +1467,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Trailing moving average of operating profit (ex-capex) in cr/hr. rate() over a FIXED window IS the trailing mean rate over that window, so rate([3h]) and rate([6h]) are the 3h and 6h moving averages directly — reading the trend through the lumpy tour buy/sell texture. The fixed 3h/6h windows are this panel's identity, so the $smooth dropdown deliberately does NOT apply here. Reuses the sp-miqt ledger counters (category!=SHIP_INVESTMENTS = ex-capex); legacy SQL kept hidden as a cross-check.",
+      "description": "Trailing moving average of operating profit (ex-capex) in cr/hr.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1562,7 +1562,7 @@
         "type": "datasource",
         "uid": "-- Mixed --"
       },
-      "description": "Program KPI (sp-qxx4): dollars-per-API-request = net profit (Postgres, all txns, 24h, no category exclusion - same 'net (all-in)' definition as the Operating vs Net Profit panel above) / API requests (Prometheus, 24h increase), joined via Grafana server-side Math expression ($A/$B). Live-validated via /api/ds/query.",
+      "description": "Program KPI (sp-qxx4): dollars-per-API-request = net profit (Postgres, all txns, 24h, no category exclusion - same 'net (all-in)'\u2026",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1646,7 +1646,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Program KPI (sp-qxx4): current API request rate as a % of the client's steady-state rate-limit budget (golang.org/x/time/rate limiter: refill=2 req/s, burst=30 - 2.0 is the correct steady-state denominator, not the 30 burst ceiling; see gobot/internal/adapters/api/client.go:90).",
+      "description": "Program KPI (sp-qxx4): current API request rate as a % of the client's steady-state rate-limit budget (golang.org/x/time/rate limiter:\u2026",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1731,17 +1731,41 @@
           "text": "30m",
           "value": "30m"
         },
-        "description": "rate() smoothing window applied to every cr/hr PromQL panel — a larger window is a smoother, slower-moving line (sp-umyb).",
+        "description": "rate() smoothing window applied to every cr/hr PromQL panel \u2014 a larger window is a smoother, slower-moving line (sp-umyb).",
         "hide": 0,
         "label": "Smoothing",
         "name": "smooth",
         "options": [
-          { "selected": false, "text": "5m", "value": "5m" },
-          { "selected": false, "text": "15m", "value": "15m" },
-          { "selected": true, "text": "30m", "value": "30m" },
-          { "selected": false, "text": "1h", "value": "1h" },
-          { "selected": false, "text": "3h", "value": "3h" },
-          { "selected": false, "text": "6h", "value": "6h" }
+          {
+            "selected": false,
+            "text": "5m",
+            "value": "5m"
+          },
+          {
+            "selected": false,
+            "text": "15m",
+            "value": "15m"
+          },
+          {
+            "selected": true,
+            "text": "30m",
+            "value": "30m"
+          },
+          {
+            "selected": false,
+            "text": "1h",
+            "value": "1h"
+          },
+          {
+            "selected": false,
+            "text": "3h",
+            "value": "3h"
+          },
+          {
+            "selected": false,
+            "text": "6h",
+            "value": "6h"
+          }
         ],
         "query": "5m,15m,30m,1h,3h,6h",
         "queryValue": "",
