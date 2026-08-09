@@ -543,13 +543,16 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 			continue
 		}
 
-		// AUTO-LIQUIDATION: hulls just parked for holding cargo unrelated to this
-		// contract are handed a one-shot cargo_liquidation worker that sells the
-		// leftover at the best in-system bid so the hull re-enters candidacy,
-		// instead of staying filtered out of candidacy every pass. Never blocks
-		// the contract work below — claimableShips (which excludes parkedShips)
-		// proceeds regardless.
-		h.dispatchLiquidationForParked(ctx, cmd, parkedShips, requiredCargo, liquidationCooldown)
+		// SELECT OVER THE POOL AS IT STANDS AT DISPATCH. FilterUnrelatedCargo parks
+		// on the fleet SNAPSHOT, and a hold can empty between that decision and this
+		// point; the one moment the code learns its exclusion premise is void must be
+		// the moment it acts on it. reconcileParkedHulls re-reads each parked hull
+		// once, HERE, and hands back those whose hold has cleared so they rejoin
+		// candidacy for THIS pass — through the spawn governor and the atomic claim
+		// below like any other candidate. A confirmed strand stays parked with its
+		// liquidation worker, and never blocks the contract work below.
+		readmittedShips, parkedShips := h.reconcileParkedHulls(ctx, cmd, parkedShips, requiredCargo, liquidationCooldown)
+		claimableShips = append(claimableShips, readmittedShips...)
 
 		// Spawn-governor exclusion: drop hulls in post-instant-death backoff or
 		// quarantined for repeated instant deaths / repeated identical failures,

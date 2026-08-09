@@ -2,7 +2,6 @@ package commands
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -23,41 +22,66 @@ import (
 // (RULINGS #1).
 const liquidationDispatchCooldown = 5 * time.Minute
 
-// dispatchLiquidationForParked self-clears the hulls FilterUnrelatedCargo
-// parked for holding cargo unrelated to the active contract: each gets a
-// one-shot cargo_liquidation worker that sells the strand at the best
-// in-system bid (jettison only as a last resort below the configured floor),
-// so the hull re-enters candidacy on a later pass instead of sitting filtered
-// out of the pool forever. It is a STANDING mechanism (runs every discovery
-// pass), gated by the AutoLiquidationDisabled escape hatch and a per-hull
-// cooldown so an unsellable hold never storms. Best-effort: a spawn failure is
-// logged and the hull is put on cooldown so a persistent failure cannot spin;
-// contract work on the spawnable hulls is never blocked by it.
-func (h *RunFleetCoordinatorHandler) dispatchLiquidationForParked(
+// reconcileParkedHulls settles every hull FilterUnrelatedCargo parked for unrelated
+// cargo against ONE hold read taken HERE, at dispatch, never the older fleet-snapshot
+// read the parking decision was made on. A hull whose hold is CLEAR is READMITTED
+// (first return) to the candidate pool for THIS pass — its exclusion premise is void,
+// and deferring that correction to the next pass is what once flew a 766-unit ferry
+// past a hull docked on the source market. A hull whose strand is confirmed stays
+// parked (second return) behind the NO-CARGO-DUMP guard and gets a one-shot
+// cargo_liquidation worker, so it re-enters candidacy later rather than never.
+//
+// The liquidation half is STANDING, gated by the AutoLiquidationDisabled escape hatch
+// and a per-hull cooldown so an unsellable hold never storms. RE-ADMISSION IGNORES
+// THAT ESCAPE HATCH: opting out of liquidation is a choice about spawning workers,
+// never a licence to select over a pool already known to be wrong. It does honor the
+// cooldown, which is what stops an unverifiable hull being re-read every pass — an
+// unexamined hull keeps its parking (fail closed, RULINGS #1). A spawn failure is
+// logged and left on cooldown so a persistent failure cannot spin.
+func (h *RunFleetCoordinatorHandler) reconcileParkedHulls(
 	ctx context.Context,
 	cmd *RunFleetCoordinatorCommand,
 	parkedShips []string,
 	requiredCargo string,
 	cooldown map[string]time.Time,
-) {
-	if cmd.AutoLiquidationDisabled || len(parkedShips) == 0 {
-		return
+) (readmitted, stillParked []string) {
+	if len(parkedShips) == 0 {
+		return nil, nil
 	}
 	logger := common.LoggerFromContext(ctx)
 	now := h.clock.Now()
 	for _, shipSymbol := range parkedShips {
 		if until, ok := cooldown[shipSymbol]; ok && now.Before(until) {
-			continue // recently dispatched — don't re-storm a stuck hull
-		}
-		cooldown[shipSymbol] = now.Add(liquidationDispatchCooldown)
-		workerID, err := h.spawnLiquidationWorker(ctx, cmd, shipSymbol, requiredCargo)
-		if errors.Is(err, errHoldAlreadyClear) {
-			logger.Log("INFO", fmt.Sprintf("Auto-liquidation for parked hull %s skipped - its hold cleared between the parking decision and dispatch, so nothing was spawned or claimed", shipSymbol), map[string]interface{}{
-				"action":      "liquidation_dispatch_skipped_clear",
-				"ship_symbol": shipSymbol,
-			})
+			// Unexamined this pass, so the parking premise stands.
+			stillParked = append(stillParked, shipSymbol)
 			continue
 		}
+		cooldown[shipSymbol] = now.Add(liquidationDispatchCooldown)
+
+		ship, err := h.verifyParkedHold(ctx, cmd, shipSymbol)
+		if err != nil {
+			logger.Log("WARNING", fmt.Sprintf("Hold of parked hull %s is unverifiable (%v) - it stays parked and is retried after cooldown", shipSymbol, err), map[string]interface{}{
+				"action":      "parked_hold_unverifiable",
+				"ship_symbol": shipSymbol,
+			})
+			stillParked = append(stillParked, shipSymbol)
+			continue
+		}
+
+		if cargo := ship.Cargo(); cargo == nil || !cargo.HasItemsOtherThan(requiredCargo) {
+			logger.Log("INFO", fmt.Sprintf("Parked hull %s cleared its hold between the parking decision and dispatch - returning it to the candidate pool for THIS pass; no liquidation was spawned or claimed", shipSymbol), map[string]interface{}{
+				"action":      "parked_hull_readmitted",
+				"ship_symbol": shipSymbol,
+			})
+			readmitted = append(readmitted, shipSymbol)
+			continue
+		}
+
+		stillParked = append(stillParked, shipSymbol)
+		if cmd.AutoLiquidationDisabled {
+			continue
+		}
+		workerID, err := h.spawnLiquidationWorker(ctx, cmd, ship)
 		if err != nil {
 			logger.Log("WARNING", fmt.Sprintf("Auto-liquidation dispatch for parked hull %s failed: %v - will retry after cooldown", shipSymbol, err), map[string]interface{}{
 				"action":      "liquidation_dispatch_failed",
@@ -72,52 +96,58 @@ func (h *RunFleetCoordinatorHandler) dispatchLiquidationForParked(
 			"min_jettison": cmd.LiquidationMinJettisonValue,
 		})
 	}
+	return readmitted, stillParked
 }
 
-// errHoldAlreadyClear reports that the hull stopped holding unrelated cargo between
-// the parking decision and this dispatch, so there is nothing to liquidate.
-var errHoldAlreadyClear = errors.New("hold no longer holds cargo unrelated to the contract")
-
-// spawnLiquidationWorker persists, claims, and starts a one-shot cargo_liquidation worker on a
-// parked hull, mirroring spawnContractWorker's atomic-claim + rollback lifecycle. The claim goes
-// through ClaimShip under the contract fleet identity, so an unpinned or contract-pinned hull
-// claims cleanly while a hull pinned to another fleet is rejected at the DB rather than poached. On
-// a start failure the assignment is released so the hull returns to the pool.
+// verifyParkedHold resolves what a parked hull is ACTUALLY holding, because the
+// parking decision can be right when made and wrong when acted on: a contract
+// turnover empties the hold and flips requiredCargo within about a second, so a hull
+// parked for the OUTGOING good is routinely clear by the time it would be acted on.
+// This is the ONE cargo read of the dispatch and BOTH verdicts are taken from it, so
+// the coordinator never decides on one read and acts on another. It is the read the
+// liquidation worker itself opens with, so no extra call is spent on a hull that gets
+// one, and the sync persists the true hold for the next pass's snapshot.
 //
-// The hold is re-verified against SERVER TRUTH first, because the parking decision can be right
-// when made and wrong when acted on: a contract turnover empties the hold and flips requiredCargo
-// within about a second, so a hull parked for the OUTGOING good is routinely clear by the time the
-// worker would run. Re-evaluating FilterUnrelatedCargo's own predicate against the API — the same
-// read the worker itself opens with, so no extra call is spent — is what makes decision and action
-// agree, and the sync persists the true hold so the hull re-enters candidacy next pass.
-//
-// When that live read FAILS it falls back to the PERSISTED hold: the call that strands a hull is the
-// same one that would clear it, and an unreadable ship must not make its own remedy unreachable. No
-// freshness bound — FilterUnrelatedCargo parks on that very read, so a hold too stale to escape on
-// is too stale to have parked on. Fails CLOSED with BOTH reads unavailable (RULINGS #1).
-func (h *RunFleetCoordinatorHandler) spawnLiquidationWorker(
+// A FAILED live read falls back to the PERSISTED hold: the call that strands a hull is
+// the same one that would clear it, and an unreadable ship must not make its own remedy
+// unreachable. No freshness bound — FilterUnrelatedCargo parks on that very read, and the
+// whole pool is admitted on that trust already. Fails CLOSED with BOTH reads unavailable
+// (RULINGS #1): the caller leaves the hull parked.
+func (h *RunFleetCoordinatorHandler) verifyParkedHold(
 	ctx context.Context,
 	cmd *RunFleetCoordinatorCommand,
 	shipSymbol string,
-	requiredCargo string,
-) (string, error) {
+) (*navigation.Ship, error) {
 	logger := common.LoggerFromContext(ctx)
 
 	ship, err := h.shipRepo.SyncShipFromAPI(ctx, shipSymbol, cmd.PlayerID)
-	if err != nil {
-		cached, cachedErr := h.shipRepo.FindBySymbol(ctx, shipSymbol, cmd.PlayerID)
-		if cachedErr != nil || cached == nil {
-			return "", fmt.Errorf("failed to verify hold of %s: %w", shipSymbol, err)
-		}
-		logger.Log("INFO", fmt.Sprintf("Auto-liquidation for parked hull %s fell back to the persisted hold - the live read failed (%v), and the unreadable ship is the one that needs clearing", shipSymbol, err), map[string]interface{}{
-			"action":      "liquidation_hold_fallback",
-			"ship_symbol": shipSymbol,
-		})
-		ship = cached
+	if err == nil {
+		return ship, nil
 	}
-	if cargo := ship.Cargo(); cargo == nil || !cargo.HasItemsOtherThan(requiredCargo) {
-		return "", errHoldAlreadyClear
+	cached, cachedErr := h.shipRepo.FindBySymbol(ctx, shipSymbol, cmd.PlayerID)
+	if cachedErr != nil || cached == nil {
+		return nil, fmt.Errorf("failed to verify hold of %s: %w", shipSymbol, err)
 	}
+	logger.Log("INFO", fmt.Sprintf("Hold check for parked hull %s fell back to the persisted hold - the live read failed (%v), and the unreadable ship is the one that needs clearing", shipSymbol, err), map[string]interface{}{
+		"action":      "liquidation_hold_fallback",
+		"ship_symbol": shipSymbol,
+	})
+	return cached, nil
+}
+
+// spawnLiquidationWorker persists, claims, and starts a one-shot cargo_liquidation worker on a
+// parked hull whose strand verifyParkedHold has already confirmed, mirroring spawnContractWorker's
+// atomic-claim + rollback lifecycle. The claim goes through ClaimShip under the contract fleet
+// identity, so an unpinned or contract-pinned hull claims cleanly while a hull pinned to another
+// fleet is rejected at the DB rather than poached. On a start failure the assignment is released so
+// the hull returns to the pool.
+func (h *RunFleetCoordinatorHandler) spawnLiquidationWorker(
+	ctx context.Context,
+	cmd *RunFleetCoordinatorCommand,
+	ship *navigation.Ship,
+) (string, error) {
+	logger := common.LoggerFromContext(ctx)
+	shipSymbol := ship.ShipSymbol()
 
 	workerContainerID := utils.GenerateContainerID("cargo-liquidation", shipSymbol)
 	workerCmd := &liquidation.LiquidateCargoCommand{

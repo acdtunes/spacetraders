@@ -454,7 +454,9 @@ Each entry: **what · logic (formulas/thresholds) · armed · hands off · sourc
   loss, log loudly), never skipped. In-flight cargo dedup (don't buy what a running worker
   already carries). Candidate ladder: idle lights (incl. command frigate) → cargo-baseline
   filter → EXCLUSIVE dedicated `contract` fleet if it has members → scope to contract-home
-  system → drop unrelated cargo → spawn-governor eligibility → `SelectClosestShip` to the source.
+  system → drop unrelated cargo (each parked hull is then re-read ONCE at dispatch; a hold that
+  cleared since the parking decision is re-admitted for THAT pass, not the next one) →
+  spawn-governor eligibility → `SelectClosestShip` to the source.
   Command frigate hauls only as last resort (RULINGS #7, `ErrCommandFrigateNotLastResort`).
   Depot routing localizes buffered contract supply. Worker timeout 30m. External hauler sizing:
   bootstrap caps INCOME haulers at `hauler_target = 4`.
