@@ -52,6 +52,11 @@ func (f *fakeSeedCommander) NavigateTo(_ context.Context, _ int, ship, waypoint 
 	return f.navErr
 }
 
+func (f *fakeSeedCommander) Dock(_ context.Context, _ int, ship string) error {
+	f.calls = append(f.calls, seedCall{"dock", ship, ""})
+	return nil
+}
+
 func (f *fakeSeedCommander) Chart(_ context.Context, _ int, ship string) error {
 	f.calls = append(f.calls, seedCall{"chart", ship, ""})
 	return f.chartErr

@@ -118,6 +118,8 @@ type SeedCommander interface {
 	JumpTo(ctx context.Context, playerID int, shipSymbol, fromWaypoint, targetSystem string) error
 	// NavigateTo moves a hull to a waypoint inside the system it is in.
 	NavigateTo(ctx context.Context, playerID int, shipSymbol, waypoint string) error
+	// Dock berths a hull where it stands, so a counter it is orbiting reads as staffed.
+	Dock(ctx context.Context, playerID int, shipSymbol string) error
 	// Chart publicly charts the waypoint the hull is standing on. A waypoint somebody
 	// else already charted is a benign no-op, and implementations swallow it.
 	Chart(ctx context.Context, playerID int, shipSymbol string) error

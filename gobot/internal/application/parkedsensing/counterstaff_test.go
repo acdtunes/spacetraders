@@ -380,12 +380,15 @@ func TestAdvanceExpansion_DoesNotFlyALentHullToTheWaypointItIsAlreadyOn(t *testi
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if rep.CountersStaffed != 0 {
-		t.Fatalf("CountersStaffed = %d, want 0 — TORWIND-1 is already at X1-HOME-YARD and no berth command "+
-			"exists here, so flying it to itself buys nothing and never stops", rep.CountersStaffed)
+	if rep.CountersStaffed != 1 {
+		t.Fatalf("CountersStaffed = %d, want 1 — TORWIND-1 stands on the unstaffed counter, so it is BERTHED "+
+			"there; leaving it orbiting is what made the pass fly it to the other counter forever", rep.CountersStaffed)
 	}
 	if n := h.seed.countOf("navigate"); n != 0 {
 		t.Fatalf("issued %d navigate commands to the hull's own waypoint", n)
+	}
+	if n := h.seed.countOf("dock"); n != 1 {
+		t.Fatalf("dock commands = %d, want 1 — the counter is staffed by berthing, not by flying", n)
 	}
 }
 

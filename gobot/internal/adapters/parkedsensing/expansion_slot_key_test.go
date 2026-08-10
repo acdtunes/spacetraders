@@ -118,6 +118,7 @@ type keyTestSeedCommander struct{}
 
 func (keyTestSeedCommander) JumpTo(_ context.Context, _ int, _, _, _ string) error  { return nil }
 func (keyTestSeedCommander) NavigateTo(_ context.Context, _ int, _, _ string) error { return nil }
+func (keyTestSeedCommander) Dock(_ context.Context, _ int, _ string) error          { return nil }
 func (keyTestSeedCommander) Chart(_ context.Context, _ int, _ string) error         { return nil }
 func (keyTestSeedCommander) ReadMarketAt(_ context.Context, _ int, _ string) error  { return nil }
 func (keyTestSeedCommander) SyncWaypoints(_ context.Context, _ int, _ string) error { return nil }

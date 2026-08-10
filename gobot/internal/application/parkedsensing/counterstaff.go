@@ -142,6 +142,15 @@ func (t *expandTick) staffCounters(ctx context.Context) error {
 			if !serves {
 				continue
 			}
+			// Berth before flying: a hull standing on an unstaffed counter is orbiting
+			// it, and docking is all that is left — the flight already happened.
+			berthed, err := t.berthOnCounter(ctx, hull, wantEvidence)
+			if err != nil {
+				return err
+			}
+			if berthed {
+				return nil
+			}
 			yard, err := t.unstaffedCounterIn(ctx, hull.System, hull.Waypoint, inbound, wantEvidence)
 			if err != nil {
 				return err
@@ -154,6 +163,55 @@ func (t *expandTick) staffCounters(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// berthOnCounter docks a borrowed hull already standing on an unstaffed probe counter,
+// reporting whether it spent the tick's action. Without it the pass flies the hull to
+// the OTHER counter every tick, forever, since a yard it stands on is always skipped.
+func (t *expandTick) berthOnCounter(ctx context.Context, hull LendableHull, wantEvidence bool) (bool, error) {
+	yards, err := t.probeYardsIn(ctx, hull.System)
+	if err != nil {
+		return false, err
+	}
+	for _, yard := range yards {
+		if yard != hull.Waypoint {
+			continue
+		}
+		stock, err := t.stagedProbeStock(ctx, yard)
+		if err != nil {
+			return false, err
+		}
+		if !stock.acceptsStaging(wantEvidence) {
+			continue
+		}
+		manned, err := t.staffedAt(ctx, yard)
+		if err != nil {
+			return false, err
+		}
+		if manned {
+			continue
+		}
+		if err := t.p.SeedShip.Dock(ctx, t.playerID, hull.ShipSymbol); err != nil {
+			logging.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf(
+				"Could not berth %s at the probe counter at %s it is standing on; the next tick retries: %v",
+				hull.ShipSymbol, yard, err), map[string]interface{}{
+				"action": "parked_sensing_counter_berth_refused", "ship_symbol": hull.ShipSymbol,
+				"waypoint": yard, "system_symbol": hull.System,
+			})
+			return false, nil
+		}
+		t.staffed[yard] = true
+		t.rep.CountersStaffed++
+		t.rep.Actions++
+		logging.LoggerFromContext(ctx).Log("INFO", fmt.Sprintf(
+			"Berthed %s at the probe counter at %s it was orbiting, so a charting seed can be bought there",
+			hull.ShipSymbol, yard), map[string]interface{}{
+			"action": "parked_sensing_counter_berth", "ship_symbol": hull.ShipSymbol,
+			"waypoint": yard, "system_symbol": hull.System,
+		})
+		return true, nil
+	}
+	return false, nil
 }
 
 // unstaffedCounterIn picks the probe-selling counter in system that a borrowed hull

@@ -909,6 +909,11 @@ func (f *fakeSeedCommander) JumpTo(context.Context, int, string, string, string)
 	return nil
 }
 
+func (f *fakeSeedCommander) Dock(context.Context, int, string) error {
+	f.calls.hit("dock")
+	return nil
+}
+
 func (f *fakeSeedCommander) NavigateTo(context.Context, int, string, string) error {
 	f.calls.hit("seed_navigate")
 	return nil

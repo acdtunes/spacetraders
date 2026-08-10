@@ -8,6 +8,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	appSensing "github.com/andrescamacho/spacetraders-go/internal/application/parkedsensing"
 	shipQueries "github.com/andrescamacho/spacetraders-go/internal/application/ship/queries"
+	shipTypes "github.com/andrescamacho/spacetraders-go/internal/application/ship/types"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
@@ -210,6 +211,22 @@ func (p *SeedCommandPort) NavigateTo(ctx context.Context, playerID int, shipSymb
 		return err
 	}
 	return dispatchHop(ctx, p.mediator, pid, shipSymbol, waypoint)
+}
+
+// Dock berths a hull where it stands, through the same command the placement mover
+// uses. Berthing an already-docked hull is a benign no-op.
+func (p *SeedCommandPort) Dock(ctx context.Context, playerID int, shipSymbol string) error {
+	pid, err := shared.NewPlayerID(playerID)
+	if err != nil {
+		return err
+	}
+	if _, err := p.mediator.Send(sensingCtx(ctx), &shipTypes.DockShipCommand{
+		ShipSymbol: shipSymbol,
+		PlayerID:   pid,
+	}); err != nil {
+		return fmt.Errorf("failed to dock %s: %w", shipSymbol, err)
+	}
+	return nil
 }
 
 // Chart publicly charts the waypoint the hull is standing on.

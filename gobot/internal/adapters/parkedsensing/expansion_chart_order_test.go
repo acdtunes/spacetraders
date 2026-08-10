@@ -81,6 +81,8 @@ func (c *tourSeedCommander) NavigateTo(_ context.Context, _ int, _, waypoint str
 	return nil
 }
 
+func (c *tourSeedCommander) Dock(_ context.Context, _ int, _ string) error { return nil }
+
 func (c *tourSeedCommander) Chart(_ context.Context, _ int, _ string) error {
 	c.charted = append(c.charted, c.ships.at)
 	return nil
