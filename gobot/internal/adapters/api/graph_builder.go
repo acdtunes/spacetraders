@@ -135,7 +135,7 @@ func waypointFromAPIData(wp system.WaypointAPIData, systemSymbol string) (*share
 	waypointObj.SystemSymbol = systemSymbol
 	waypointObj.Type = wp.Type
 	waypointObj.Traits = traits
-	waypointObj.HasFuel = shared.TraitsGrantFuel(traits)
+	waypointObj.HasFuel = shared.WaypointGrantsFuel(wp.Type, traits)
 	waypointObj.Orbitals = orbitalSymbols(wp.Orbitals)
 
 	return waypointObj, nil

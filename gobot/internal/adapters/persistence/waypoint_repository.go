@@ -333,10 +333,9 @@ func (r *GormWaypointRepository) UpsertFromDetail(ctx context.Context, detail *p
 	waypoint.Type = detail.Type
 	waypoint.Traits = detail.Traits
 	waypoint.Orbitals = detail.Orbitals
-	// Derived rather than carried: on-site fuel is a CONSEQUENCE of the traits,
-	// and the domain owns that rule. Restating it here would give the cache a
-	// second, drifting definition of which waypoints a router may refuel at.
-	waypoint.HasFuel = shared.TraitsGrantFuel(detail.Traits)
+	// Derived rather than carried: on-site fuel is a CONSEQUENCE of the type and
+	// traits, and the domain owns that rule rather than the cache restating it.
+	waypoint.HasFuel = shared.WaypointGrantsFuel(detail.Type, detail.Traits)
 
 	return r.Add(ctx, waypoint)
 }

@@ -134,6 +134,11 @@ func (m *recordingMediator) Send(_ context.Context, request mediator.Request) (m
 			return nil, err
 		}
 		m.fuel = m.capacity
+		// The real handler folds the post-refuel tank back into the SAME ship the
+		// executor holds, so every decision after a refuel sees the fuel it bought.
+		if err := cmd.Ship.UpdateFuelFromAPI(m.fuel, m.capacity); err != nil {
+			return nil, err
+		}
 		return &types.RefuelShipResponse{Status: "refueled", CurrentFuel: m.fuel, FuelCapacity: m.capacity}, nil
 	case *types.SetFlightModeCommand:
 		return &types.SetFlightModeResponse{Status: "set", Mode: cmd.Mode}, nil

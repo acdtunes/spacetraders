@@ -89,7 +89,7 @@ func (h *RefuelShipHandler) Handle(ctx context.Context, request common.Request) 
 }
 
 func (h *RefuelShipHandler) validateAtFuelStation(ship *navigation.Ship) error {
-	if !ship.CurrentLocation().HasFuel {
+	if !ship.CurrentLocation().CanRefuel() {
 		return fmt.Errorf("waypoint does not have fuel station")
 	}
 	return nil

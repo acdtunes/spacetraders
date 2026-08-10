@@ -122,7 +122,7 @@ func (s *ShipFuelService) ShouldRefuelOpportunistically(
 		return false
 	}
 
-	if !waypoint.HasFuel {
+	if !waypoint.CanRefuel() {
 		return false
 	}
 
@@ -143,7 +143,7 @@ func (s *ShipFuelService) CalculateFuelNeededToFull(currentFuel int, fuelCapacit
 // is leaving. A leg is never degraded to a slower mode to fit the tank, so fuel the
 // leg ahead needs has to be bought where fuel is actually sold.
 //
-// Returns true if the departure waypoint has fuel and either:
+// Returns true if the departure waypoint sells fuel and either:
 //   - The tank cannot cover the leg ahead at its mode, plus the safety margin
 //   - Fuel is below the strategy's safety threshold
 func (s *ShipFuelService) ShouldTopOffBeforeDeparture(
@@ -151,15 +151,15 @@ func (s *ShipFuelService) ShouldTopOffBeforeDeparture(
 	fuelCapacity int,
 	segmentFlightMode shared.FlightMode,
 	segmentDistance float64,
-	fromWaypointHasFuel bool,
+	fromWaypoint *shared.Waypoint,
 	safetyThreshold float64,
 ) bool {
 	if fuelCapacity == 0 {
 		return false
 	}
 
-	// Check if departure waypoint has fuel
-	if !fromWaypointHasFuel {
+	// The whole waypoint, not a caller-derived bit: CanRefuel reads the permanent type too.
+	if fromWaypoint == nil || !fromWaypoint.CanRefuel() {
 		return false
 	}
 

@@ -70,7 +70,7 @@ func (c *WaypointConverter) convertWaypointFromMap(
 		wp.SystemSymbol = systemSymbol
 	}
 
-	wp.HasFuel = c.extractHasFuel(wpMap)
+	wp.HasFuel = c.extractHasFuel(wp.Type, wpMap)
 
 	if orbitals, ok := wpMap["orbitals"].([]string); ok {
 		wp.Orbitals = orbitals
@@ -80,7 +80,12 @@ func (c *WaypointConverter) convertWaypointFromMap(
 }
 
 // extractHasFuel determines if a waypoint has fuel using multiple strategies
-func (c *WaypointConverter) extractHasFuel(wpMap map[string]interface{}) bool {
+func (c *WaypointConverter) extractHasFuel(waypointType string, wpMap map[string]interface{}) bool {
+	// Strategy 0: the TYPE is permanent, so it outranks a has_fuel derived while uncharted
+	if shared.WaypointGrantsFuel(waypointType, nil) {
+		return true
+	}
+
 	// Strategy 1: Check explicit has_fuel field
 	if hasFuelVal, ok := wpMap["has_fuel"].(bool); ok {
 		return hasFuelVal

@@ -98,13 +98,15 @@ func (w *Waypoint) IsJumpGate() bool {
 	return w.Type == "JUMP_GATE"
 }
 
-// Waypoint trait symbols that imply on-site fuel: a MARKETPLACE or a FUEL_STATION
-// sells fuel. This is the single source of truth for the has-fuel determination;
-// the api adapter (waypoint converter and graph builder) reads it through the
-// TraitGrantsFuel / TraitsGrantFuel predicates below rather than restating the rule.
+// The designations that imply on-site fuel. Adapters derive the has-fuel bit through
+// the predicates below rather than restating the rule.
 const (
 	traitMarketplace = "MARKETPLACE"
 	traitFuelStation = "FUEL_STATION"
+
+	// typeFuelStation is where the API actually reports a fuel station: as the
+	// waypoint TYPE, which is permanent and which no trait list repeats.
+	typeFuelStation = "FUEL_STATION"
 )
 
 // TraitGrantsFuel reports whether a single waypoint trait implies on-site fuel:
@@ -121,6 +123,18 @@ func TraitsGrantFuel(traits []string) bool {
 		}
 	}
 	return false
+}
+
+// WaypointGrantsFuel reports whether a waypoint sells fuel, reading both places the
+// API says so. A trait list is invisible until charting; the type is not.
+func WaypointGrantsFuel(waypointType string, traits []string) bool {
+	return waypointType == typeFuelStation || TraitsGrantFuel(traits)
+}
+
+// CanRefuel reports whether a hull standing here can buy fuel. It is the read-side
+// backstop over a has-fuel bit that was derived before the traits were readable.
+func (w *Waypoint) CanRefuel() bool {
+	return w.HasFuel || w.Type == typeFuelStation
 }
 
 // ExtractSystemSymbol extracts the system symbol from a waypoint symbol

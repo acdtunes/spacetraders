@@ -318,7 +318,7 @@ func (e *RouteExecutor) refuelAtAlternateStop(
 		if wp.Symbol == failedWaypoint.Symbol {
 			continue
 		}
-		if !wp.HasFuel {
+		if !wp.CanRefuel() {
 			continue
 		}
 		fuelCandidates = append(fuelCandidates, wp)

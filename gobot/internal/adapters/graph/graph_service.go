@@ -79,6 +79,13 @@ func waypointCacheKey(systemSymbol, waypointSymbol string) string {
 	return systemSymbol + ":" + waypointSymbol
 }
 
+const unchartedTrait = "UNCHARTED"
+
+// isUnchartedPlaceholder reads the pre-charting trait list; charting only adds traits, so deferring on one cannot regress.
+func isUnchartedPlaceholder(waypoint *shared.Waypoint) bool {
+	return len(waypoint.Traits) == 1 && waypoint.Traits[0] == unchartedTrait
+}
+
 // populateWaypointCache stores all waypoints from a graph into the in-memory cache
 func (s *GraphService) populateWaypointCache(systemSymbol string, graph *system.NavigationGraph) {
 	for symbol, wp := range graph.Waypoints {
@@ -91,8 +98,10 @@ func (s *GraphService) GetWaypoint(ctx context.Context, waypointSymbol, systemSy
 	cacheKey := waypointCacheKey(systemSymbol, waypointSymbol)
 
 	// TIER 1: Check in-memory cache first (infinite TTL, zero latency)
-	if cached, ok := s.waypointCache.Load(cacheKey); ok {
-		return cached.(*shared.Waypoint), nil
+	entry, _ := s.waypointCache.Load(cacheKey)
+	cached, _ := entry.(*shared.Waypoint)
+	if cached != nil && !isUnchartedPlaceholder(cached) {
+		return cached, nil
 	}
 
 	// TIER 2: Try loading from database (1-day TTL)
@@ -100,6 +109,11 @@ func (s *GraphService) GetWaypoint(ctx context.Context, waypointSymbol, systemSy
 	if err == nil && waypoint != nil {
 		s.waypointCache.Store(cacheKey, waypoint) // Populate memory cache
 		return waypoint, nil
+	}
+
+	// Nothing charted it, so the placeholder is the best answer a rebuild could give either.
+	if cached != nil {
+		return cached, nil
 	}
 
 	// TIER 3: Cache miss - need to build graph from API

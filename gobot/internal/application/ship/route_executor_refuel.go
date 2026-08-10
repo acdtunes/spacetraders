@@ -258,9 +258,9 @@ func (e *RouteExecutor) refuelShip(
 		return nil
 	}
 
-	// GRACEFUL DEGRADATION: Skip refuel if current location has no fuel station
-	// This handles stale waypoint cache data or routing service errors
-	if !ship.CurrentLocation().HasFuel {
+	// GRACEFUL DEGRADATION: Skip refuel if current location sells no fuel. CanRefuel
+	// reads the waypoint TYPE too, which stale cached traits cannot hide.
+	if !ship.CurrentLocation().CanRefuel() {
 		logger.Log("WARNING", "Ship cannot refuel - no fuel station at current location", map[string]interface{}{
 			"ship_symbol": ship.ShipSymbol(),
 			"action":      "refuel_skipped",

@@ -81,7 +81,7 @@ func (s *ConservativeRefuelStrategy) ShouldRefuelBeforeDeparture(ship *navigatio
 		ship.FuelCapacity(),
 		segment.FlightMode,
 		segment.FromWaypoint.DistanceTo(segment.ToWaypoint),
-		segment.FromWaypoint.HasFuel,
+		segment.FromWaypoint,
 		s.threshold,
 	)
 }
