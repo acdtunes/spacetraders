@@ -21,8 +21,7 @@ import (
 // sp-to2v — fabrication efficiency, driven through the real fabricateGood/ProduceGood path. These
 // pin the executor's OBSERVABLE feeding behavior (now the sole feeding path): the ample
 // input is pulled down to the scarce (limiting) input's flow rather than greedily piled on (#2), each
-// delivery is saturation-capped (#3), the scarcest input is fed FIRST (#4a), and a non-responsive
-// output is BUY-OR-SKIPed instead of fed (#4b).
+// delivery is saturation-capped (#3), and the scarcest input is fed FIRST (#4a).
 
 const (
 	fpFactoryWP = "X1-FP-FAB"
@@ -246,33 +245,7 @@ func TestFeeding_TaprootFirst_ScarcestInputFedFirst(t *testing.T) {
 	}
 }
 
-// #4b (feed-responsive only): a NON-responsive output (EQUIPMENT) does not respond to feeding, so
-// the executor BUYS-OR-SKIPs it — it does NOT haul inputs to feed the factory (zero input purchases,
-// a zero-spend result).
-func TestFeeding_NonResponsiveGood_BuyOrSkipNotFed(t *testing.T) {
-	repo := &feedingMarketRepo{
-		outputGood: "EQUIPMENT", factoryWP: fpFactoryWP, outputSupply: "MODERATE", fabAsk: 50,
-		inputs: []feedInputSpec{
-			{good: fpScarce, waypoint: fpScarceWP, supply: "MODERATE", tradeVolume: 100, ask: 10},
-			{good: fpAmple, waypoint: fpAmpleWP, supply: "ABUNDANT", tradeVolume: 100, ask: 10},
-		},
-	}
-	executor, mediator := newFeedingExecutor(t, repo)
-
-	result, err := executor.ProduceGood(feedingCtx(), balancedFeedingRepo0Ship(), twoInputChain("EQUIPMENT"), fpSystem, 1, nil, false)
-	if err != nil {
-		t.Fatalf("a non-responsive buy-or-skip must not error: %v", err)
-	}
-	if mediator.totalPurchases() != 0 {
-		t.Fatalf("a non-responsive good must NOT be fed (zero input hauls), got %d purchases", mediator.totalPurchases())
-	}
-	if result == nil || result.QuantityAcquired != 0 {
-		t.Fatalf("a skipped non-responsive good must yield a zero-spend result, got %+v", result)
-	}
-}
-
-// Positive: a responsive output (ELECTRONICS) IS fed — the inputs are actually hauled — so the
-// buy-or-skip short-circuit is scoped strictly to the non-responsive set.
+// A fabricated output's recipe inputs are actually hauled: both ELECTRONICS inputs get bought.
 func TestFeeding_ResponsiveGood_IsFed(t *testing.T) {
 	executor, mediator := newFeedingExecutor(t, balancedFeedingRepo())
 

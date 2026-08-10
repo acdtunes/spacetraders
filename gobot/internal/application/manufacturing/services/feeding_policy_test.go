@@ -7,36 +7,10 @@ import (
 )
 
 // sp-to2v — fabrication efficiency feeding policy. These pin the PURE decision core the executor's
-// delivery/feeding path consults: which goods are feed-responsive (#4), the balanced-to-limiting
-// saturation-capped tranche (#2, #3), and the taproot-first ordering (#4a). Verified analyst
-// mechanics (HIGH confidence): feeding ALL inputs balanced-to-the-scarcest is the ~4x lever; the
-// tranche saturates at ~100-200u/window and <25u does nothing; the deepest limiting input gates
-// everything above it; and EQUIPMENT/LAB_INSTRUMENTS/FOOD/MEDICINE do not respond to feeding.
-
-// isFeedResponsive keys on the node's OUTPUT good: the analyst-verified non-responsive set is
-// buy-or-skipped (feeding wastes hull-hours), everything else is fed. The default set is the sole
-// set (sp-sxyx6 removed the per-run override).
-func TestFeedingPolicy_IsFeedResponsive_DefaultSet(t *testing.T) {
-	cfg := defaultFeedingPolicy()
-	cases := []struct {
-		good string
-		want bool
-	}{
-		{"ADVANCED_CIRCUITRY", true}, // verified responder
-		{"SHIP_PLATING", true},
-		{"SHIP_PARTS", true},
-		{"ELECTRONICS", true}, // an intermediate not in the non-responsive set — must stay fed (the recursion needs it)
-		{"EQUIPMENT", false},  // verified non-responder — buy-or-skip
-		{"LAB_INSTRUMENTS", false},
-		{"FOOD", false},
-		{"MEDICINE", false},
-	}
-	for _, c := range cases {
-		if got := cfg.isFeedResponsive(c.good); got != c.want {
-			t.Errorf("isFeedResponsive(%s) = %v, want %v", c.good, got, c.want)
-		}
-	}
-}
+// delivery/feeding path consults: the balanced-to-limiting saturation-capped tranche (#2, #3), and
+// the taproot-first ordering (#4a). Verified analyst mechanics (HIGH confidence): feeding ALL inputs
+// balanced-to-the-scarcest is the ~4x lever; the tranche saturates at ~100-200u/window and <25u does
+// nothing; the deepest limiting input gates everything above it.
 
 // balancedTranche is the ~4x lever (#2) fused with the saturation cap (#3): the per-input delivery
 // this window is sized to the LIMITING (scarcest) input's sourceable flow, clamped into the

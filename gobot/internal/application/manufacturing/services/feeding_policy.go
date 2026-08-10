@@ -20,9 +20,8 @@ import (
 //	the hull to the next starved node rather than dumping one node past saturation, where extra
 //	units move activity nothing.
 //
-//	TAPROOT-FIRST + FEED-RESPONSIVE-ONLY: feed the limiting input DEEPEST in the tree first, since
-//	it gates everything above it; and only feed goods whose OUTPUT activity actually responds to
-//	feeding — the rest are BUY-OR-SKIP, because hauling their inputs buys nothing.
+//	TAPROOT-FIRST: feed the limiting input DEEPEST in the tree first, since it gates everything
+//	above it.
 //
 // This is the executor's SOLE feeding path: there is no alternative greedy mode and no per-run
 // coefficient override, so nothing here can race on ctx.
@@ -38,43 +37,21 @@ const (
 	defaultFeedSaturationMinUnits = 25
 )
 
-// defaultNonResponsiveFeedGoods is the set of OUTPUT goods whose activity does NOT respond to
-// feeding. A factory producing one of these gains nothing from being fed, so the executor
-// BUY-OR-SKIPs it instead of burning hull-hours hauling its inputs. It is an EXCLUSION set, not a
-// positive responder list: intermediates such as ELECTRONICS/MICROPROCESSORS must stay fed because
-// the recursion depends on them, so only known dead-ends are listed and everything else is fed.
-// There is no per-run operator override.
-var defaultNonResponsiveFeedGoods = map[string]bool{
-	"EQUIPMENT":       true,
-	"LAB_INSTRUMENTS": true,
-	"FOOD":            true,
-	"MEDICINE":        true,
-}
-
 type feedingPolicyConfig struct {
 	saturationMaxUnits int
 	saturationMinUnits int
-	nonResponsiveGoods map[string]bool
 }
 
 // defaultFeedingPolicy is the SOLE feeding policy the executor runs: the analyst-tuned
-// saturation window [defaultFeedSaturationMinUnits, defaultFeedSaturationMaxUnits] and the verified
-// non-responsive OUTPUT-good exclusion set. It replaces the deleted fabrication_efficiency toggle +
-// WithFeedingPolicy/feedingPolicyEngaged plumbing — balanced feeding was LIVE-on with exactly these
-// default coefficients, so unconditionally engaging them here is byte-identical to that live path.
+// saturation window [defaultFeedSaturationMinUnits, defaultFeedSaturationMaxUnits]. It replaces the
+// deleted fabrication_efficiency toggle + WithFeedingPolicy/feedingPolicyEngaged plumbing — balanced
+// feeding was LIVE-on with exactly these default coefficients, so unconditionally engaging them here
+// is byte-identical to that live path.
 func defaultFeedingPolicy() feedingPolicyConfig {
 	return feedingPolicyConfig{
 		saturationMaxUnits: defaultFeedSaturationMaxUnits,
 		saturationMinUnits: defaultFeedSaturationMinUnits,
-		nonResponsiveGoods: defaultNonResponsiveFeedGoods,
 	}
-}
-
-// isFeedResponsive reports whether feeding a factory that PRODUCES good raises its output activity
-// (#4). Keyed on the node's output good against the non-responsive exclusion set; anything not
-// listed is fed.
-func (c feedingPolicyConfig) isFeedResponsive(good string) bool {
-	return !c.nonResponsiveGoods[good]
 }
 
 // feedCandidate pairs an input child with its sourceable-this-window availability (units). A

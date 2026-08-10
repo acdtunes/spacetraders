@@ -96,19 +96,7 @@ func (e *ProductionExecutor) fabricateGood(ctx context.Context, run fabricationR
 		}, nil
 	}
 
-	// A good that does not respond to feeding (EQUIPMENT/LAB_INSTRUMENTS/FOOD/MEDICINE) makes
-	// hauling inputs to it wasted hull-hours: buy-or-skip. Step 0 already bought it if the factory
-	// was abundantly stocked, so reaching here means not-stocked.
-	feedCfg := defaultFeedingPolicy()
-	if len(node.Children) > 0 && !feedCfg.isFeedResponsive(node.Good) {
-		logger.Log("INFO", fmt.Sprintf("Feed-responsive gate: %s does not respond to feeding — buy-or-skip, not hauling inputs (sp-to2v)", node.Good), map[string]interface{}{
-			"good": node.Good, "factory": factoryMarket.WaypointSymbol,
-			"action": "feed_skipped", "reason": "non_responsive_good",
-		})
-		return &ProductionResult{QuantityAcquired: 0, TotalCost: 0, WaypointSymbol: factoryMarket.WaypointSymbol}, nil
-	}
-
-	inputCost, err := e.produceInputsForFactory(ctx, run, feedCfg)
+	inputCost, err := e.produceInputsForFactory(ctx, run, defaultFeedingPolicy())
 	if err != nil {
 		return nil, err
 	}
