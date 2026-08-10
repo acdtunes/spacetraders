@@ -2,7 +2,7 @@
 
 Reference, not doctrine — READ this by area when a task touches the automation; it is not
 primed every wake. It maps the standing coordinators (the bot's "brain") and how they
-compose across the cold-start → GATE → steady-state lifecycle. Doctrine and process rules
+compose across the COLDSTART → GATE → EXPANSION lifecycle. Doctrine and process rules
 live in `RULINGS.md`; strategy in `PLAYBOOK.md`; the CLI surface + the 3-layer knob system in
 `CLI-PRIMER.md`; engineering code-facts/traps in `ENGINEERING.md`. This book answers a
 different question than any of those: **how does the automation actually decide?**
@@ -25,29 +25,49 @@ persisted lifecycle row. The daemon is the single writer of all game + container
   loop inside one `Handle()`. It spawns short-lived **child** containers (a `parentContainerID`
   links them) for the concrete work; a child with `nil` parent is a root coordinator or a
   captain-launched one-shot.
-- **`CoordinatorOwnsIterations` vs loop-forever.** The one-shot ship ops (NAVIGATE, DOCK,
-  ROUTE, PURCHASE, WORKER_FERRY, CARGO_LIQUIDATION, …) are single-iteration
-  `CoordinatorOwnsIterations` types. The standing brains (bootstrap, siting, autosizer,
-  freshsizer, scout-post, capacity reconciler, …) are NOT that type — they loop inside one
-  `Handle()` and own their own tick cadence.
+- **`CoordinatorOwnsIterations` vs loop-forever.** The one-shot commands (`navigate_ship`,
+  `dock_ship`, `orbit_ship`, `refuel_ship`, `jettison_cargo`, `route_ship`, `warp_ship`,
+  `worker_ferry`, `cargo_liquidation`, `tour_run`, `trade_route`, `arb_run`, `stocker`,
+  `longhaul_arb`, `scout_tour`, `scout_fleet_assignment`) are single-iteration
+  `CoordinatorOwnsIterations` types — the handler owns the whole run internally and re-entering
+  it would double-loop its budget. The standing brains
+  (bootstrap, probe-sensing, construction, opportunity-relocator, fleet-growth,
+  contract-scaler, contract-fleet, trade-fleet, long-haul-arb, auto-outfit, gas) are NOT that
+  type — they loop inside one `Handle()` and own their own tick cadence, so the container-level
+  budget (`-1`) is irrelevant to them.
+- **The registry is the membership list.** `containerSpecList()`
+  (`internal/adapters/grpc/command_factory_registry.go`) declares every buildable command type
+  and the single `Duty` it owns; a type absent from it is marked FAILED at restart recovery.
+  A deliberately removed type goes in `retiredCommandTypes`
+  (`internal/adapters/grpc/daemon_server_recovery.go`) instead, which marks its persisted rows
+  terminated cleanly rather than alarming as an unexplained loss. **Reading those two lists is
+  the fastest way to answer "does this engine still exist?"**
+- **One duty, one owner.** `container_duty_registry.go` names each standing responsibility
+  (market freshness, trade-fleet hull sizing, contract-fleet hull sizing, hull outfitting,
+  contract execution, trade-tour dispatch, long-haul arb dispatch, idle-hull repositioning,
+  construction supply, gas supply, cold-start sequencing) and holds it to exactly ONE container
+  type: two engines answering one question bid against each other over one treasury and one API
+  budget, neither seeing the other's spend. `declaredDutyOverlaps` is the dated-exception escape
+  hatch and is currently empty. Most of the retirements below were duty collisions.
 - **Restart-resilience is law (RULINGS #2).** A daemon restart rebuilds every container from
   its persisted `config` JSON column via `RecoverRunningContainers` →
   `buildCommandForType(...)`. A RUNNING container is re-adopted, not double-launched. Anything
-  a coordinator needs across a restart must live in persistence (posts table, ledger, ship
-  dedication rows, the `config` column), never in memory — see the pattern-A/B/C knob taxonomy
-  in `CLI-PRIMER.md` §3. In-memory state (backoff clocks, hysteresis streaks) is always
+  a coordinator needs across a restart must live in persistence (the sensing ledger, ledger
+  rows, ship dedication rows, the `config` column), never in memory — see the pattern-A/B/C knob
+  taxonomy in `CLI-PRIMER.md` §3. In-memory state (backoff clocks, hysteresis streaks) is always
   re-derivable and fails safe on loss.
 - **Failure → restart budget → honest-pause.** `MaxRestartAttempts = 3`. A coordinator that
   hits a transient dead-end must NOT return an error the runner burns its restart budget on;
   it sets a `NoWorkReason` and backs off (self-heals on a later tick). Terminalizing as a
-  crash is reserved for genuine faults (see §6.8, the goods-factory honest-pause).
+  crash is reserved for genuine faults. A money guard refusing a spend is a CORRECT refusal and
+  is graded idle, never a stall.
 
 ## 2. The reconciler shape (observe → derive → act)
 
 Every standing coordinator is the SAME shape, stateless-per-tick:
 
-1. **OBSERVE** the live world (ships, markets, ledger, posts, containers) — a read-only
-   snapshot.
+1. **OBSERVE** the live world (ships, markets, ledger, the sensing ledger, containers) — a
+   read-only snapshot.
 2. **DERIVE** the desired state / phase FROM the observation — never from a stored cursor or
    enum. A restart at any point re-derives the true state from live signals, so it never
    double-advances or double-acts.
@@ -69,16 +89,24 @@ fresh deploy does. Source of truth for boot arming:
 
 | Arming | Coordinators | Trigger |
 |---|---|---|
-| **Boot-standing** (auto, every daemon boot, idempotent) | Bootstrap, Market-freshness sizer, Scout-post, Construction, Capacity reconciler | `ensureBootStandingCoordinators` at daemon Start(); also `ensureGateSourceFeeders` launches InputsOnly goods_factory feeders |
-| **GATE hand-off** (launched by the bootstrap at COMPLETE) | Fleet-autosizer, Siting, Worker-rebalancer | `bootstrapHandoffLauncher.LaunchAutosizer` + `LaunchStandingCoordinators` (`bootstrap_ports_gate.go:253-283`) |
-| **Captain-launched** (a CLI verb; re-adopts across restart via persisted config) | Frontier-expansion, Goods-factory, Contract-fleet, Trade-fleet, Auto-outfit, Shipyard-backfill, Gas, Stocker | `frontier start`, `goods factory/produce`, `contract start`, `workflow trade-fleet-coordinator`, `workflow auto-outfit`, `workflow shipyard-backfill`, `operations start`, `workflow stocker --standing` |
+| **Boot-standing** (auto, every daemon boot, idempotent) — exactly FOUR | Construction, Probe-sensing, Bootstrap, Opportunity-relocator | `ensureBootStandingCoordinators` at daemon `Start()` |
+| **Bootstrap-launched** (started by the bootstrap coordinator from a derived phase, not by an operator) | Contract-scaler (every COLDSTART tick), Contract-fleet (COLDSTART), Trade-fleet (every EXPANSION tick), Fleet-growth (EXPANSION hand-off) | `ensureContractScalerEarly` / `ensureBatchContract` (`run_bootstrap_reconcile.go`, `run_bootstrap_income.go`); `ensureTradeFleetCoordinator` / `launchHandoff → LaunchStandingCoordinators` (`run_bootstrap_gate.go`) |
+| **Captain-launched** (a CLI verb; re-adopts across restart via persisted config) | Contract-fleet, Trade-fleet, Fleet-growth, Long-haul-arb, Auto-outfit, Gas, Stocker, Warehouse | `contract start`, `workflow trade-fleet-coordinator`, `workflow fleet-growth`, `workflow long-haul-coordinator`, `workflow auto-outfit`, `operations start`, `workflow stocker --standing`, `workflow warehouse` |
+
+Note the middle row: four coordinators are reachable from BOTH a bootstrap phase and an operator
+verb, and the once-only guard lives inside the launch method both paths call — never in the
+caller. The opportunity relocator has **no CLI verb and no enable flag at all**; boot-standing is
+its only activation path.
 
 **"Closed ≠ armed" (RULINGS #19).** A coordinator that exists in `ContainerType` but is absent
-from `bootStandingCoordinatorTypes` and from the GATE hand-off never runs at cold start — it
-waits for a captain launch. Separately, most armable BEHAVIORS ship default-off
+from `bootStandingCoordinatorTypes` and from a bootstrap-phase launch never runs at cold start —
+it waits for a captain launch. Separately, most armable BEHAVIORS ship default-off
 (byte-identical): a merged bead is not a live feature until the knob is armed (`tune ... 1` or
 a `run.sh` export + restart). Arming is a separate, untracked step — keep the arming ledger,
 audit dormant knobs at every deploy, re-verify arms after every restart (`CLI-PRIMER.md` §3.4).
+Read "default-off" precisely: for a coordinator it usually means *no unconditional activation
+path* (a bare deploy starts nothing), not *starts disabled*. The contract scaler is the clean
+example — nothing boots it, but once the bootstrap launches it, it is live.
 
 **Boot launches are idempotent.** Each `ensure*Standing` pre-checks `containerTypeRunning`; a
 warm restart re-adopts the existing container instead of double-launching. Genesis guard: no
@@ -91,393 +119,428 @@ do not spend.** No fix may relax a guard as a side effect. The hard floors are n
 (RULINGS #5); everything above them is treasury-RELATIVE so a guard tuned for a poor treasury
 never throttles a flush one.
 
-- **`common.ImmutableReserveFloor = 50000`** — the working-capital floor.
-  `common.EffectiveReserveFloor(absolute, pct, liveTreasury) = max(50000, min(absolute,
-  round(pct% × liveTreasury)))`, `DefaultReserveTreasuryPct = 40`. Mirrored across tour,
-  factory, trade-route, outfitting, auto-outfit (`internal/application/common/reserve_floor.go`).
-- **`maxTreasuryFractionPercent = 25`** — RULINGS #6 hard per-hull ceiling: a single hull/probe
-  buy may never exceed 25% of live treasury (probebuy + frontier + autosizer per-buy).
-- **`probebuy.GuardedProbeBuyer`** — the shared probe-buy guard stack (fleet cap, per-cycle
-  spend window, cooldown, 25%-treasury, per-unit price ceiling). Used by the freshness sizer,
-  frontier, and (via its own inline stack) the bootstrap.
-- **Factory guard stack** — working-capital floor, pre-spend chain-margin + absorption guard
-  (**fail-closed**), cross-container spend cap, input price ceiling, and the chain P&L
-  kill-switch (**fail-OPEN** — a broken telemetry reader must never mass-kill live chains).
-- **Bootstrap `reserve_margin = 0.50`** — the DATA-phase probe-buy capital pacer: buy a probe
-  only if `price ≤ reserve_margin × remaining_treasury`, decrementing treasury each buy in the
-  loop (both a guardrail and the ramp pacer).
-- **Capacity reconciler capital gate** — tier-4 (capital) actions are PROPOSAL/APPROVAL-gated,
-  never auto-executed. `ReserveFloorCredits = 50000`, `SurplusFraction = 0.25`,
-  `PerDecisionCapPct = 25`, `ApprovalThresholdCredits = 0` (v1: ALL tier-4 gated). Enforced
-  STRUCTURALLY by the CONVERGE capital backstop, not just governor correctness (§6.6).
-- **`captain/DISABLED` kill switch** — present ⇒ the capacity reconciler idles every tick (zero
-  phase invocations); also the supervisor's hard halt (`CLI-PRIMER.md` §1).
+**ONE base, derived tiers** (`internal/application/common/reserve_floor.go`). Every floor is a
+const expressed relative to the same base, so the base and every tier move together and can never
+drift apart. None is live-tunable.
+
+| Const | Value | Who answers to it |
+|---|---|---|
+| `common.ImmutableReserveFloor` | `50000` | every NON-contract spender — trade, construction, arb, stocker, outfitting, probe/bootstrap capex — directly or through a tier below |
+| `common.ContractSolvencyReserve` | `12000` | the ONLY floor a CONTRACT source-buy answers to; measured in FUEL (a hull's worst-case out-and-back), because a source-buy IS the earning path |
+| `common.NonContractWorkingCapitalFloor` | `= base + 100000` (150k) | DEFAULT working-capital floor for construction gate-fill and the trading coordinators (tour / trade-route / arb / stocker). An explicitly configured launch reserve still wins; only the absent-config default resolves here |
+| `common.ContractReserveCushion` | `= base + 100000` (150k) | contract OPERATING capital; gates the bootstrap first-hauler and gate-worker buys |
+| `common.ContractScalerCushion` | `= base + 150000` (200k) | the contract scaler's CAPEX floor (a lumpy whole-hull draw needs more headroom than a per-cycle operating spend), and the long-haul money envelope's cushion fence |
+
+- **`common.EffectiveReserveFloor(...)` is a flat shim** — it ignores every argument and always
+  returns `ImmutableReserveFloor`. No caller invokes it; it exists so an unmerged lane's call
+  sites keep resolving. Reference `ImmutableReserveFloor` directly instead.
+- **`common.ReserveFloorGate`** — the one shared fail-closed treasury comparison, parametrized by
+  `Floor`. `Holds(committed, nextLegSpend)` reports whether one more spend on top of what is
+  already committed would breach the floor. INERT when no treasury reader is wired; **always
+  holds when the live read failed**. Idle-arb builds it with the flat 50k; long-haul with the
+  200k contract-scaler cushion, so long-haul capital never dips into contract working capital.
+- **`maxTreasuryFractionPercent = 25`** (`internal/application/probebuy/guarded_probe_buyer.go`)
+  — RULINGS #6 hard per-hull ceiling: a single hull/probe buy may never exceed 25% of live
+  treasury. **Caveat:** `probebuy.GuardedProbeBuyer` itself has no production constructor left —
+  `NewGuardedProbeBuyer` is called only from its own tests. The live probe buy is the sensing
+  buy queue's floor below; treat the `probebuy` package as the surviving definition of the 25%
+  rule, not as a running guard.
+- **The sensing probe-buy floor** (`internal/domain/parkedsensing/floor.go`) —
+  `floor = max(ImmutableReserveFloor, ImmutableReserveFloor + capex_reserve_credits +
+  capital_multiplier_k_milli × measured_cargo_spend_per_hour / 1000)`. Tested against the
+  **landed** cost (quote + ferry, `DefaultGateFeeCredits = 5900`), not the sticker. Every term is
+  clamped non-negative and the result re-floored at the immutable base, so a malformed
+  observation upstream can only ever make the guard STRICTER. An unreadable probe cap, treasury
+  or cargo-spend aborts the drain buying nothing — an unknowable cargo outflow is not a zero one.
+- **The heavy reserve is a named type, not an int** (`internal/application/common/heavy_reserve.go`).
+  `HeavyReserveTarget` (the full ask at the yard the purchase path would TARGET — nearest
+  reachable priced yard, not cheapest) is a DISTINCT type from the credits actually withheld, so
+  adding an aspiration to a floor term is a compile error rather than a code review. The census it
+  caps (`HeaviesOwned`) counts every owned heavy regardless of fleet tag: under-counting is the
+  direction that would authorise re-buying a hull already owned.
+- **Bootstrap's probe buy** gates on the flat additive cushion — `treasury − price ≥
+  ImmutableReserveFloor` — against a treasury DECREMENTED on each buy in the loop, so a
+  one-tick 0→target ramp still reflects real remaining credits. (The former proportional
+  `reserve_margin` pacer is deleted.)
+- **`captain/DISABLED` kill switch** — a sentinel FILE that is the captain supervisor's hard
+  halt; also written by the universe-reset detector, and cleared by the Admiral alone
+  (`CLI-PRIMER.md` §1). `captain gag` is its soft, dynamic complement and never touches it.
 
 ## 5. The lifecycle — how the coordinators compose
 
 The bootstrap coordinator is the **master switch** that sequences a cold agent to a built jump
-gate, then hands the mature economy to the steady-state brains and exits. The other
-boot-standing coordinators run alongside it from hour 0; the GATE hand-off trio starts only
-when the gate is built.
+gate, hands the mature economy to the standing brains, and exits. There are exactly **three**
+phases — `COLDSTART`, `GATE`, `EXPANSION` — and each is DERIVED from the live observation every
+tick, never from a stored cursor.
 
 ```
-COLD START ─────────────────────────► GATE ──────────────► STEADY STATE
-Bootstrap: DATA + INCOME (parallel)    Bootstrap: GATE       Bootstrap: COMPLETE → exits
-  buy 3 probes, scout-all-markets        construction start    (re-observes COMPLETE on
-  contract engine from hour 0            + gate workers         a restart, re-ensures the
-  (RULINGS #1: contracts never wait)     (repurpose-first)      autosizer, exits)
+COLDSTART ─────────────────────────► GATE ──────────────────► EXPANSION (terminal)
+Bootstrap: two workstreams together   Bootstrap: build         Bootstrap: hand off + exit
+  scanning: buy to 3 probes,            construction start       launch fleet-growth
+    start the home market tour          adopt the executor       ensure trade-fleet
+  income: contract-fleet coordinator,   buy up to 4 gate         re-tag idle gate hulls
+    frigate loop, staged hauler buys      workers (the             to `trade`, then Done
+    (RULINGS #1: contracts from hour 0)   contract fleet is
+  + ensure the contract scaler            EXCLUSIVE, never
+                                          repurposed)
 
-Boot-standing (from hour 0, always):   GATE hand-off (at COMPLETE, once):
-  Market-freshness sizer  ─┐             Fleet-autosizer    ─┐  the mature-economy brains
-  Scout-post coordinator  ─┤ scouting    Siting             ─┤  the bootstrap launches then
-  Construction coordinator ┤ + gate      Worker-rebalancer  ─┘  steps out of the way
-  Capacity reconciler     ─┘ + topology
+Boot-standing (launched at EVERY daemon boot, all phases):
+  Construction coordinator ─┐  the gate-supply drain (idle until a pipeline exists)
+  Probe-sensing coordinator ┤  INERT until EXPANSION — phase-gated first, fail-closed
+  Bootstrap coordinator    ─┤  the phase machine above
+  Opportunity relocator    ─┘  moves trade hulls; a no-op with no trade fleet
 
-Captain-launched anytime: Frontier, Goods-factory, Contract-fleet, Trade-fleet,
-  Auto-outfit, Shipyard-backfill, Gas, Stocker.
+Captain-launchable at any time: Contract-fleet, Trade-fleet, Fleet-growth, Long-haul-arb,
+  Auto-outfit, Gas, Stocker, Warehouse.
 ```
 
-**The handoff contract.** At COMPLETE the bootstrap launches the autosizer + siting +
-worker-rebalancer (each idempotent on its container type) and marks itself Done. A restart in
-a built world re-derives COMPLETE, re-ensures the autosizer is up, and exits — so re-launching
-the bootstrap every boot is a safe no-op. The construction executor the GATE phase adopts is
-the boot-standing **Construction coordinator** (not the vestigial manufacturing coordinator);
-adoption keys on that drain being RUNNING, not on the pipeline-status string.
+**Phase entry, exactly** (`derivePhase`, `run_bootstrap_reconcile.go`). Construction and funding
+signals ONLY: `ConstructionComplete → EXPANSION` (checked FIRST, terminal and sticky — a built
+home gate reads complete every tick, including after a restart when the pipeline is long gone,
+so no income dip or fleet churn can pull the arc back into a buying phase);
+`ConstructionStarted → GATE` (sticky, so repurposing haulers can never regress it); else
+`gateFunded(obs) → GATE`; else `COLDSTART`. **Neither scan coverage nor realized $/hr is
+consulted** — the code states outright that coverage is not a gate, and one contract payout can
+swing $/hr from net-negative to a false all-clear in a single tick.
+
+**`gateFunded` is two conditions, and both must hold:**
+- the FULL contract fleet (`len(Haulers) + ContractDepotHullCount`) has reached the contract
+  scaler's live achievable target (`ContractScalerTarget`) — a HARD bar that FAILS CLOSED: a
+  `0`/unread target (no scaler running) NEVER gates; and
+- `Treasury − ImmutableReserveFloor ≥ gateSurplusFloor` (`500000` ⇒ treasury ≥ 550k) — the gate
+  is EARNED from contract surplus, never raced on a thin treasury its own material spend then
+  crashes. This is a phase-entry threshold, not a spend guard.
+
+**The escape hatch** (`reDeriveUnderScaledGate`, unconditionally on). It overrides a
+STICKY-LATCHED GATE back to COLDSTART only when `len(Haulers) < gateMinHaulers (2)` **and**
+`ConstructionPercent < gateReentryConstructionPct (5.0)` hold for `gateReentryStreakTicks (3)`
+CONSECUTIVE ticks; any tick that breaks the condition resets the streak. Deliberately asymmetric
+— slow to leave GATE, immediate to resume it once the op re-scales — so the phase strongly
+prefers GATE and only releases a genuinely starved latch. The streak is in-memory per container
+and fails safe on restart (it re-accrues from 0; the re-derive is a pure phase relabel — no
+spend, no assignment).
+
+**The hand-off contract.** `actExpansion` launches the **fleet-growth coordinator and nothing
+else** — growth running IS the hand-off having happened, which is what makes it a single safe
+latch. It then ensures the trade-fleet coordinator on every EXPANSION tick, re-tags every idle
+construction-dedicated hull to `trade`, and marks itself Done. An unconfirmed hand-off is held
+and retried for 3 consecutive ticks, then exits anyway with a WARN — bootstrap is boot-standing
+and every launch is idempotent, so the next boot retries. A restart in a built world re-derives
+EXPANSION, re-ensures growth, and exits, so re-launching the bootstrap every boot is a safe
+no-op. The construction executor the GATE phase adopts is the boot-standing **construction
+coordinator**; adoption keys on that drain being RUNNING, not on a pipeline-status string.
 
 ---
 
 ## 6. The standing coordinators
 
-Each entry: **what · logic (formulas/thresholds) · armed · hands off · source.**
+Each entry: **what · logic (formulas/thresholds) · armed · hands off · source.** Paths are
+relative to `gobot/`. This section covers every type in `containerSpecList()` that loops
+forever; §6.12 lists what was retired, so a stale reference resolves to a retirement rather than
+to nothing.
 
 ### 6.1 Bootstrap coordinator — the cold-start phase machine
 
-- **What.** The master switch. Observes the live world each tick, derives its phase, drives a
-  cold agent DATA → INCOME → GATE → COMPLETE, then hands off and exits.
-- **Logic.** Phase is DERIVED from the observation every tick, never stored
-  (`derivePhase`, `run_bootstrap_reconcile.go:394`): `ConstructionComplete → COMPLETE`;
-  `ConstructionStarted → GATE` (sticky, so repurposing haulers to construction can't regress
-  it); `IncomePerHour ≥ income_bar → GATE`; else `coverage ≥ coverage_bar → INCOME` else
-  `DATA`. DATA and INCOME run in PARALLEL at cold start (contracts from hour 0, RULINGS #1).
-  Defaults (`run_bootstrap_coordinator.go:29-68`): tick 45s, `probe_target 3`,
-  `coverage_bar 0.90`, `reserve_margin 0.50`, `hauler_target 4`, `income_bar 10000 $/hr`,
-  `min_contract_earners 1`, `gate_worker_target 6`.
-  - DATA: buy to `probe_target` in ONE capital-gated pass (each buy gated
-    `price ≤ reserve_margin × remaining_treasury`); if the yard price is cold, position a hull
-    at the shipyard so next tick reads it (never weakens the price guard). Assign every probe to
-    scout-all-markets (a ONE-SHOT `SCOUT_FLEET_ASSIGNMENT` sweep).
-  - INCOME: launch the contract-fleet coordinator; stage contract haulers up to
-    `min(viable_hubs, hauler_target)`, one per tick, capital-gated; run the command frigate as
-    pre-hauler sole earner (`batch-contract -1` loop).
-  - GATE: `construction start` on the discovered jump-gate site; ensure the construction
-    executor RUNNING; repurpose surplus contract haulers to the manufacturing fleet BEFORE
-    buying gate workers (repurpose-first), size to `gate_worker_target`.
-  - A count-sync bridge (`probeBuyBridge`) folds just-bought-but-unobserved probes into the
-    count so a short tick never re-buys past target.
-- **Armed.** Boot-standing (`daemon_boot_standing.go:49`). Auto-armed (dryRun=false);
-  `[bootstrap] dry_run` forces observe-only.
-- **Hands off.** At COMPLETE launches fleet-autosizer + siting + worker-rebalancer, sets Done,
-  exits. Spawns the one-shot scout sweep + contract workers during DATA/INCOME.
-- **Source.** `internal/application/bootstrap/commands/run_bootstrap_{coordinator,reconcile,income,gate}.go`;
-  ports `internal/adapters/grpc/bootstrap_ports.go`, `bootstrap_ports_gate.go`,
-  `container_ops_bootstrap.go`.
+- **What.** The master switch. Observes the live world each tick, derives its phase (§5), drives
+  a cold agent to a built jump gate, hands the economy to fleet-growth, and exits.
+- **Logic.** The cold-start SHAPE is fixed in code, not configured — "these are the shape
+  itself, not per-run knobs" (`run_bootstrap_coordinator.go`): `probeTarget 3`,
+  `haulerTarget 4`, `gateWorkerTarget 4`, ship types `SHIP_PROBE` / `SHIP_LIGHT_HAULER`. The
+  ONLY launch-config values are `bootstrap_disabled` and the tick (default 45s).
+  - **COLDSTART** runs two workstreams TOGETHER, not in sequence (contracts from hour 0,
+    RULINGS #1). *Scanning* (`actData`): buy to `probeTarget` in ONE tick — a loop over a single
+    price check, each iteration gating `remaining − price ≥ ImmutableReserveFloor` against a
+    treasury decremented per buy; a cold/unreadable yard sends a hull there and buys nothing.
+    Then start/re-cut the home market tour — the same `ScoutMarkets` path behind
+    `workflow scout-markets`, producing `SCOUT` containers, not the retired probe-holding sweep.
+    *Income* (`actIncome`): hard-skipped entirely when the player is contract-GRADUATED; else
+    retire the command frigate from the `contract` tag, ensure the contract-fleet coordinator,
+    run the frigate's continuous contract loop (gated on `probes ≥ 3 && haulers == 0`), and
+    stage hull buys — **#1 contract, #2 TRADE, #3+ contract up to `haulerTarget`**, each gated
+    `treasury − price ≥ contractWorkingCapitalFloor (150000)`. Every COLDSTART tick also ensures
+    the contract scaler.
+  - **GATE** (`actGate`): no gate site ⇒ blocker `no_gate_site`; not started ⇒ `construction
+    start` and return for that tick; then adopt the construction executor (`EnsureRunning`, or
+    `BounceForAdoption` if it is running unadopted); then size gate workers to
+    `gateWorkerTarget`, one buy per tick, gated on the same 150k floor. **The contract fleet is
+    exclusive and is never repurposed** — the gate buys its own workers, because
+    buy→repurpose→buy churns against the scaler. Bought hulls are role-tagged in the fixed order
+    D, F, F, D.
+  - **EXPANSION** (`actExpansion`): the hand-off in §5.
+  - A count-sync bridge (`probeBuyBridge`) folds just-bought-but-unobserved probes into the count
+    so a short tick never re-buys past target.
+- **Armed.** Boot-standing (`daemon_boot_standing.go`), live by default — an absent config boots
+  LIVE, pinned by test. There is no `dry_run` config key: the `DryRun` struct field is never set
+  by `resolveBootstrapConfig` and is reachable only from in-package tests.
+- **Hands off.** Launches the contract scaler + contract-fleet coordinator in COLDSTART, starts
+  the construction pipeline in GATE, launches fleet-growth + trade-fleet in EXPANSION. Spawns
+  `CONTRACT_WORKFLOW`-bearing work indirectly through those coordinators, and `SCOUT` containers
+  through the home market tour.
+- **Knobs.** `config.yaml [bootstrap]`: `bootstrap_disabled`, `tick_seconds` (injected as the
+  container key `bootstrap_tick_secs`). Live: `tune --operation bootstrap tick_secs` — the only
+  tunable key it has.
+- **Source.** `internal/application/bootstrap/commands/run_bootstrap_{coordinator,reconcile,income,gate}.go`,
+  `bootstrap_types.go`; ports `internal/adapters/grpc/bootstrap_ports.go`,
+  `bootstrap_ports_gate.go`, `bootstrap_home_tour.go`, `container_ops_bootstrap.go`.
 
-### 6.2 Market-freshness sizer — the coverage-freshness auto-buyer
+### 6.2 Probe-sensing coordinator — the fleet's one sensing engine
 
-- **What.** Keeps every SCANNED market fresh within an SLA by auto-sizing and auto-buying probe
-  capacity per market-bearing system. DECLARES/resizes standing posts; DELEGATES all movement,
-  manning, and partitioning to the scout-post coordinator. Moves and claims nothing (RULINGS #7).
-- **Logic** (`run_market_freshness_sizer_coordinator.go`). Per system:
-  `required_probes = ceil(markets × per_market_cycle / sla)` (:16), where `per_market_cycle` is
-  MEASURED from live scan telemetry (`defaultSeedCycleSeconds = 180` until ≥3 samples), clamped
-  by `defaultWorstCycleSeconds = 1800` and dampened toward the fleet median
-  (`defaultCycleDampeningPercent = 50`). The empirical **value-weighted P90 market age**
-  (`defaultTargetPercentile = 90`) is the closed-loop ground truth: a system whose P90 breaches
-  its SLA has demand RAISED (`defaultBreachResponsePercent = 100`); a comfortably-fresh one
-  RELEASES a probe below `defaultReleaseSlackPercent = 60`% of SLA, held for
-  `defaultReleaseStableWindowSecs = 300` (hysteresis). Caps: `defaultSLASeconds = 3600`,
-  `defaultMaxProbesPerSystem = 8`, `defaultSizerMaxProbeFleet = 40`,
-  `defaultSizerMaxSpend = 500000`/`defaultSizerSpendWindow = 1h`, `defaultSizerCooldown = 1m`.
-  Aggregate demand drives ONE guarded probe buy per cycle via `probebuy.GuardedProbeBuyer`;
-  idle + in-flight + manning probes all count as supply (never over-buys). Tick 60s.
-- **Armed.** Boot-standing (`daemon_boot_standing.go:40`). All-default launch; live-tunable via
-  `tune --operation freshsizer`.
-- **Hands off.** Writes desired-state post rows (Upsert keyed by system); the scout-post
-  coordinator mans them. Its own only side-effect is the guarded probe buy.
-- **Source.** `internal/application/scouting/commands/run_market_freshness_sizer_coordinator.go`;
-  launch `internal/adapters/grpc/container_ops_market_freshness_sizer.go`.
+- **What.** The successor to the retired market-freshness sizer + frontier-expansion pair, and
+  the sole owner of the market-freshness duty. Its model is **PARKED** probes: a hull is bought
+  for a waypoint, flown there once, and then stands still forever, scanning its own market on a
+  rotation the coordinator paces against whatever API headroom the rest of the fleet leaves.
+  **Nothing tours** — steady-state sensing costs navigation nothing, and the only recurring spend
+  is the scans themselves.
+- **Logic.** It owns no algorithm of its own; it is a composition root that orders five engines
+  in `internal/application/parkedsensing` within a tick and reports what they did — *screen* (is
+  this system worth watching, and which waypoints in it), *buy queue* (can we afford a hull for
+  that placement, and buy it), *placements* (fly the bought hulls out and stand them down on
+  station), *expansion* (push the frontier outward, run charting seeds), *scanner* (the single
+  fleet-wide pacer that spends the scan budget). Stage failures are COLLECTED, not fatal.
+  Defaults (`probe_sensing_config.go`): tick **30s**, `probe_cap 3000`, `expansion_enabled 1`
+  (1=on/2=off, not 0/1, because `tune <key> 0` means revert-to-default), `target_util_pct 92`,
+  `min_scan_rate_milli 100` (0.1 req/s), `value_clamp_r 4`, `inflight_cap 3`,
+  `capital_multiplier_k_milli 2000` (2h), `capex_reserve_credits 100000`,
+  `quartermaster_cadence_secs 3600`, `surge_inflight_cap 8`, `wait_low_ms 50` /
+  `wait_high_ms 1000`. The buy floor is §4's sensing formula, tested on LANDED cost.
+- **It is INERT before EXPANSION.** The phase gate is checked FIRST and fails closed on an
+  unreadable phase: a pre-EXPANSION tick spends nothing and moves nothing — no ledger read, no
+  cutover, no buy — except a free shipyard-catalogue sweep. Past the EXPANSION edge it actively
+  STOPS every running `scout_tour` container and force-releases its hull, because past the gate
+  there is no legitimate market tour of any provenance.
+- **Armed.** Boot-standing, all-default launch. Idempotent (`ensureProbeSensingStanding`
+  pre-checks `containerTypeRunning`).
+- **Hands off.** Spawns **no child containers**. It does move and claim hulls itself: placements
+  fly probes to station, and a purchasing hull is held under an exclusive single-writer claim for
+  the length of the buy.
+- **Knobs.** `tune --operation sensing` — the 14 keys above. `value_clamp_r`, `inflight_cap` and
+  `pressure_half_life_secs` bind when the scanner is BUILT, so they persist immediately but the
+  running loop keeps its launch value until a restart; the write confirmation says which case
+  applied. The goods whitelist is a string and therefore not tunable — it lives in
+  `config.yaml [sensing]`. The retired touring core's keys (`probe_budget`,
+  `purchase_cooldown_secs`, `freshness_target_secs`, …) are retained as struct fields for restart
+  tolerance and are **read and ignored**; they are absent from the tune registry, so tuning one
+  fails as an unknown key.
+- **Operator verb.** `spacetraders sensing rescreen` re-opens every system verdict so the sweep
+  re-judges under the current whitelist. Judgement-only: it cannot reach slot state, ownership,
+  scan stamps or seed fields.
+- **Durable state.** `sensing_systems` (one screening verdict + charting seed per system) and
+  `sensing_slots` (one placement per (waypoint, slot kind), WANTED→QUEUED→BOUGHT→IN_TRANSIT→
+  PARKED). Everything is re-derived from those two tables plus `ships` each tick; the only
+  in-memory state is the scan rotation and the emergency brake, both re-derived within a few
+  ticks.
+- **Stall grading.** A money guard doing its job is a correct refusal, never a stall: probe cap
+  and buy floor grade the tick IDLE, not blocked.
+- **Source.** `internal/application/scouting/commands/run_probe_sensing_coordinator.go` (+
+  `probe_sensing_{config,heartbeat,pacer,stall,surge,tunables}.go`, `legacy_tour_sweep.go`);
+  engines `internal/application/parkedsensing/*`; domain `internal/domain/parkedsensing/*`;
+  launch `internal/adapters/grpc/container_ops_probe_sensing.go`.
 
-### 6.3 Scout-post coordinator — the MANNING engine
-
-- **What.** Mans the standing posts the freshness/frontier coordinators DECLARE: each tick it
-  assigns a probe to every unmanned slot, partitions the system's MARKETPLACE-trait waypoints
-  into N disjoint per-probe circuits, and drives the P90 rescans + idle-probe re-tasking.
-- **Logic** (`run_scout_post_coordinator.go`). Claims an idle satellite under a `scout` ClaimShip
-  OCCUPANCY (never `AssignFleet`'d — released on completion/restart; RULINGS #7 poach gate). A
-  post with `--hulls N` VRP-partitions its markets across N probes (anchor model:
-  `partitionAnchorFuelCapacity = 400`, `partitionAnchorEngineSpeed = 30`) → ~N× freshness at the
-  same API rate. Re-partition is STABLE — fires only on a hull-count change or when the
-  discovered market set drifts past `MarketDriftThreshold` (debounced by
-  `BudgetChangeDebounceCycles`). Reposition relays carry failure cooldowns
-  (`repositionRetryBackoff = 5m`, `defaultRepositionFailureCooldown`, reach bounded by
-  `defaultMaxRepositionJumps` > the strict heavy cap `gategraph.MaxJumpPath = 5`). A manning
-  watchdog (`defaultManningStallCycles`/`ManningStallCorrectionCap`) corrects a stalled post;
-  coverage-first manning order (`CoverageSpreadDisabled` reverts to depth-first).
-- **Armed.** Boot-standing (`daemon_boot_standing.go:76`). Double-launch guarded (one per
-  player). Live-tunable via `tune --operation scoutpost`.
-- **Hands off.** Spawns `SCOUT_REPOSITION` relay workers and drives per-probe tours; the posts
-  it mans are declared by the freshness sizer / frontier coordinator.
-- **Source.** `internal/application/scouting/commands/run_scout_post_coordinator.go`;
-  posts adapter `internal/adapters/grpc/container_ops_scout_posts.go`.
-
-> **Manning coupling.** The freshness sizer DECLARES posts; the scout-post coordinator MANS
-> them — two separate coordinators, both must be running for coverage to hold and for the
-> sizer's measured-cycle + P90 demand self-correction to leave its cold-start seed (a manned
-> post is what generates the telemetry it corrects on). Interaction to watch: the bootstrap's
-> one-shot `SCOUT_FLEET_ASSIGNMENT` sweep holds its probes, which can block the scout-post
-> coordinator from claiming them.
-
-### 6.4 Frontier-expansion coordinator — the coverage (discovery) auto-buyer
-
-- **What.** The COVERAGE analogue of the freshness sizer: ranks uncovered frontier, DECLARES
-  sweep-once posts for top systems, and buys probes under the money guards. Discovers NEW
-  systems/markets; freshness keeps KNOWN ones fresh. Moves/claims nothing (RULINGS #7).
-- **Logic** (`run_frontier_expansion_coordinator.go`). Ranking:
-  `score = KnownMarkets×10 − Hops×5 (+15 virgin bonus)` (`WeightKnownMarket=10`,
-  `WeightHopPenalty=5`, `WeightVirginBonus=15`); skips hop-0 anchors and scanned-marketless
-  systems. Purchase gate (cheapest-first, all fail-closed): open post slots → effective-available
-  (`availableCount − ReservedFreshnessFloor`) → fleet cap (`MaxProbeFleet = 40`) → cooldown
-  (`PurchaseCooldown = 10m`, ledger-derived) → treasury/quote readable → per-unit `MaxProbePrice`
-  ceiling (0 = off) → 25%-treasury rule → per-cycle spend cap (`MaxSpendPerCycle = 100000` over a
-  1h window); `MaxBudget = 25% of treasury`. Depth-vs-breadth: `BreadthFractionPercent = 65`
-  (⇒35% depth), `MaxDepthPathfinders = 3`, `MaxDepthHops = 8`. Declaration cap
-  `MaxFrontierPostsInFlight = 5`; tick 60s.
-- **Armed.** Captain-launched (`frontier start` → `container_ops_frontier_expansion.go`). NOT
-  boot-standing, NOT in the GATE hand-off. Live-tunable via `tune --operation frontier`.
-- **Hands off.** Writes sweep-once post rows (same seam as `scout posts add`); the scout-post
-  coordinator relays a probe and mans them. No child containers.
-- **Source.** `internal/application/expansion/commands/run_frontier_expansion_coordinator.go`;
-  launch `internal/adapters/grpc/container_ops_frontier_expansion.go`; read-only status
-  `container_ops_frontier_status.go`.
-
-### 6.5 Shipyard-backfill coordinator — the shipyard blind-spot sweep
-
-- **What.** Closes the charted-but-unscanned SHIPYARD blind spot the market-tour-only scan
-  leaves: enumerates known-shipyard systems the depth frontier reached but no market tour
-  toured, and declares deeper-first sweep-once posts the scout-post coordinator mans.
-- **Logic.** Deeper-first sweep pacing bounded by `max_dispatches_per_cycle` [1,100] and
-  `backfill_max_hops` [1,1000] (live-tunable via `tune --operation shipyardbackfill`). NOT a
-  `CoordinatorOwnsIterations` type (loops forever inside one `Handle()`).
-- **Armed.** Captain-launched (`workflow shipyard-backfill`). Not boot-standing.
-- **Hands off.** Declares sweep-once posts → scout-post coordinator mans them.
-- **Source.** `internal/application/scouting/commands/run_shipyard_backfill_coordinator.go`;
-  launch `internal/adapters/grpc/container_ops_shipyard_backfill.go`.
-
-### 6.6 Capacity reconciler — the contract-delivery topology brain
-
-- **What.** Drives the contract-delivery machine's ACTUAL topology (warehouses, stockers,
-  workers per hub) toward a computed DESIRED topology, capex-paced. One tick =
-  `SENSE → PLAN → DIFF → GOVERN → CONVERGE`, stateless per tick; IDLES when converged (empty
-  desired ⇒ zero actions, which is the cold-start state).
-- **Logic** (domain `internal/domain/capacity`, contract in `capacity/CONTRACTS.md`). SENSE
-  reads a `Signals` snapshot (demand, performance, topology, utilization, economics). PLAN
-  emits `DesiredTopology` gated by an absorption ceiling for NEW coverage
-  (`Economics.FleetPerHullCrHr`) and a universal floor for existing hubs
-  (`AddThresholdPerHullCrHr`, cold-start default 500 cr/hr); counts clamped (workers 12,
-  stockers 6). DIFF emits a cheapest-lever-first **escalation ladder**:
-  tier-1 reuse idle hull → tier-2 rebalance/reposition → tier-3 buffer adjust → tier-4 capital.
-  GOVERN sends tiers 1–3 to Approved and ALL tier-4 to Proposals. Calibration (governor.go):
-  `ReserveFloorCredits 50000`, `SurplusFraction 0.25`, `PerDecisionCapPct 25`,
-  `ROIPaybackHorizon 24h`, `TickInterval 300s`, `ApprovalThresholdCredits 0`.
-  `CapexBudget.Deployable = f × (treasury − floor)`, `PerDecisionCap = Deployable × pct/100`.
-  CONVERGE structural backstops (independent of governor correctness): the capital gate REFUSES
-  an Approved tier-4 at/over threshold; verb→tier mapping is re-checked (mislabeling can't
-  bypass the gate); `captain/DISABLED` idles every tick.
-- **Armed.** Boot-standing (`daemon_boot_standing.go:65`). Auto-armed (dryRun=false);
-  `[capacity_reconciler] dry_run` forces observe-only; a durable decommission needs
-  config disable, not a bare STOP (boot re-launches it).
-- **Hands off.** Autonomous tiers actuate via the `Actuator` port (reuse-idle-hull, rebalance,
-  adjust-buffer) — a thin wrapper over existing primitives; it also drives the worker-rebalancer
-  as a side-actuator. Capital actions become `Proposal`s on the approval channel — post-approval
-  execution is the ONLY path to `ExecuteCapital`.
-- **Source.** loop `internal/application/capacity/commands/run_capacity_reconciler_coordinator.go`;
-  domain `internal/domain/capacity/*` (+ `CONTRACTS.md`); launch/recovery
-  `internal/adapters/grpc/container_ops_capacity_reconciler.go`.
-
-### 6.7 Construction coordinator — the gate-supply drain
+### 6.3 Construction coordinator — the gate-supply drain
 
 - **What.** A standing, queue-driven supply drain: each tick it activates PENDING→READY
   `DELIVER_TO_CONSTRUCTION` tasks, polls READY tasks, claims idle in-system haulers, and sources
   + delivers on the shared `ProductionExecutor`. It is the executor the bootstrap GATE adoption
-  check looks for.
-- **Logic** (`run_construction_coordinator.go`). Tick 30s. NoWorkReasons
-  `no_ready_construction_tasks` / `no_idle_hauler_in_system`. Per-supply-task timeout 30m
-  (`constructionSupplyTaskDefaultTimeout`). Worker cap = max `MaxWorkers()` across EXECUTING
-  pipelines, fallback 5, wired to `errgroup.SetLimit`. Fan-out `planDispatchLots`:
-  `lots = ceil(remaining / hull-load)` bounded by demand and the idle pool
-  (`defaultConstructionLotUnits = 40`). Two-phase supply: PHASE 1 deliver on-hand cargo
-  unconditionally; PHASE 2 source the remainder via `ProduceGood` then deliver. An unsourceable
-  remainder is DEFERRED not failed (`ParkForResupply` → PENDING for the SupplyMonitor). No P&L
-  kill / input-pause / rest-signal (those are goods-factory-only).
-- **Armed.** Boot-standing (`daemon_boot_standing.go:34` via
-  `bootstrapManufacturingController.EnsureRunning`). Empty system ⇒ derive per-task. The
-  construction PIPELINE (separate) is created by `StartConstructionPipeline`
-  (`--depth 0..3`, `--min-supply`, per-good gate overrides).
+  check looks for, and — since the factory-ops retirement — the sole consumer of the
+  `manufacturing` dedication.
+- **Logic** (`run_construction_coordinator.go` + siblings). Tick **30s**. Three NoWorkReasons:
+  `no_ready_construction_tasks`, `no_idle_hauler_in_system`, `supply_workers_saturated`. Worker
+  cap = the LARGEST `MaxWorkers` among the distinct EXECUTING pipelines backing this tick's ready
+  tasks, re-read every tick, fallback **5**, never below 1; it bounds workers IN FLIGHT, so
+  `slots = cap − inFlight` and `slots ≤ 0` yields `supply_workers_saturated`. Per-task timeout is
+  DEPTH-SCALED: `30m × depth`, clamped to a 2h ceiling, where depth is the static recipe-graph
+  depth bounded by the pipeline's chain depth (default 3) — so the fleet default is 90m;
+  registration expiry adds a 10m reap grace. Fan-out: `desiredLots = ceil(lotDemand / lotUnits)`
+  where `lotUnits` is the first idle hull's cargo capacity (fallback
+  `defaultConstructionLotUnits = 40`), globally capped by
+  `min(idle hulls, total lot demand, free worker slots)`; per-lot fill caps slice the budget so
+  concurrent same-material lots cannot over-buy.
+- **Sourcing routes on the hull's gate role**, not on one path: `RoleFactory` → the feed leg (buy
+  a hull-load of the neediest input at its terminal factory and feed it in; one step per leg is
+  the entire spend bound); `RoleDelivery` → the delivery leg (buy at the terminal factory for the
+  construction site); an untagged or legacy `manufacturing` hull → deliver on-hand cargo →
+  withdraw from an in-system warehouse at zero cost → and only then `ProduceGood` the remainder
+  through the scarcity-gated tree. An unsourceable remainder is DEFERRED, not failed.
+- **Role reallocation and watchdogs.** Idle unheld gate hulls move between delivery and factory
+  roles at most once per tick, damped by a 10m role dwell, around a D/F/F/D baseline mix. A
+  read-only stall watch reports an ACTIVE pipeline whose unmet material has received zero
+  delivered units for 60m — it reports and acts on nothing. A per-tick site read raise-only
+  corrects the pipeline's delivered counters before any bill is consulted.
+- **Armed.** Boot-standing (via `bootstrapManufacturingController.EnsureRunning`). The
+  construction PIPELINE is a separate object created by `construction start` — flags are
+  `--system`, `--min-supply`, `--good-override`, `--overrides`. **There is no `--depth` and no
+  `--max-workers`**; both are fixed consts now (chain depth 3, worker cap deferred to the domain
+  default 5 or the live-tuned cap).
 - **Hands off.** No child containers — errgroup goroutines (one per lot) inside the drain, all
   work delegated to the shared `ProductionExecutor`.
-- **Source.** `internal/application/manufacturing/commands/run_construction_coordinator.go`;
-  launch `internal/adapters/grpc/container_ops_construction.go`.
+- **Live knobs.** `construction workers <site> --count N` and `construction override --site
+  --good [--min-supply|--price-ceiling-mult|--buy-floor|--resume-floor|--clear]`. `--strategy` is
+  launch-time only (via `--good-override`); `smart` is the sole runtime path.
+- **Source.** `internal/application/manufacturing/commands/run_construction_coordinator*.go`
+  (dispatch, supply, gate_feed, gate_delivery, gate_realloc, budget, commitment, inventory, site,
+  stall_watch, tasks, workers); shared engine
+  `internal/application/manufacturing/services/production_executor.go`; launch
+  `internal/adapters/grpc/container_ops_construction.go`.
 
-### 6.8 Goods-factory coordinator — the production fleet
+### 6.4 Opportunity relocator — the upside-chasing hull mover
 
-- **What.** Fleet coordinator for goods production: builds the supply-chain tree, splits it into
-  parallel dependency levels, discovers idle haulers, and executes bottom-up (leaves→root) with
-  a bounded worker fan-out, running a stack of pre-spend guards each pass.
-- **Logic** (`run_factory_coordinator.go` + `_input_pause.go`, `_rest_signal.go`,
-  `_chain_pnl_kill.go`). Guard stack order, each returning pre-spend with a `NoWorkReason`:
-  input-pause recovery window → export-rest window → **input-poison anti-cycle** (pauses only on
-  POSITIVE depletion — a required BUY input whose readable in-system EXPORT source is all
-  SCARCE/LIMITED; recovery half-life 194m) → **export-ask-subsidy rest** (rest when own ask
-  strictly exceeds the eligible cross-source median; window 90m) → **pre-spend chain-margin +
-  absorption guard** (fail-CLOSED) → **chain P&L kill** (`NetPerHour < 30000` over a 6h
-  window; fail-OPEN, RULINGS #4). Backoff `noWorkIterationDelay = 45s`, heartbeat re-log every
-  10m. Live worker cap via `FactoryWorkerCapProvider` (`≤0` = unbounded). Ship discovery 30s.
-- **Armed.** Captain-launched three ways, all through `StartGoodsFactory`
-  (`container_ops_goods.go`): (1) captain `goods factory`/`goods produce`; (2) the **siting
-  coordinator** launches standing profit chains (iterations=-1); (3) **gate source feeders**
-  (`ensureGateSourceFeeders`, boot-time) launch standing InputsOnly feeders to keep gate
-  export-factories fed so gate buys stay under the buy-ceiling. Under
-  `unified_gate_fill` the feeders are deleted (feeding is inherent in the gate run's recursive
-  tree).
-- **Hands off.** No separate child containers — parallel goroutine workers within the
-  coordinator, all on the shared `ProductionExecutor`. (The legacy `MANUFACTURING_COORDINATOR` /
-  `PARALLEL_MANUFACTURING` / `MANUFACTURING_TASK_WORKER` container family is vestigial for
-  construction — the drain in §6.7 replaced it.)
-- **Source.** `internal/application/manufacturing/commands/run_factory_coordinator*.go`;
-  shared engine `internal/application/manufacturing/services/production_executor.go`;
-  launch `internal/adapters/grpc/container_ops_goods.go`.
+- **What.** A standing reconciler that ranks every (trade hull, reachable region) pair by
+  relocation NPV and moves the best-valued hulls onto better-earning ground. It is the rate-floor
+  rescue's trigger INVERTED: that one rescues an under-earner, this chases upside a
+  perfectly-profitable hull would otherwise never leave for. Decisions are FLEET-WIDE by design —
+  top-NPV ranking across all pairs, under one fleet-wide concurrency cap.
+- **Logic** (`run_opportunity_relocator*.go`). Tick **120s**. `uplift = projected − current`;
+  `payback = (current × travelHours + riskMargin) / uplift`;
+  `window = min(remainingEra − travel, horizon)` floored at 0;
+  `NPV = uplift × window − current × travelHours − riskMargin`. Gates in order: unreadable inputs
+  refuse; the uplift bar (`defaultRelocatorUpliftBarPct 150`, clamped UP only — the floor is 150)
+  must be strictly beaten; the endgame guard refuses when `remaining < 2 × travel + payback`; and
+  `NPV ≤ defaultRelocatorNPVThresholdCredits (500000)` refuses. Other defaults:
+  `max_concurrent_relocations 2`, per-hull cooldown 90m, horizon 24h, risk-margin tour minutes 60,
+  region hop radius 2, rate window 240m (EWMA smoothing 0.5). Shared reposition limits apply:
+  per-system anti-herd cap 5, jump bound 12. One relocation per hull per tick.
+- **It spends nothing.** Its actuator port is documented and implemented as pure movement — it
+  never buys, sells, quotes or reads a money guard, and it explicitly REFUSES the tour's deadhead
+  look-back manifest because that would be a buy. The one credit outflow underneath is fuel,
+  bought by the shared travel primitive, not by a relocator decision.
+- **Protected hulls.** The command frigate and pinned hulls ARE observed (they are carried as
+  fields) and are filtered at SCORING by `hullProtected`, then re-checked at COMMIT through the
+  same predicate before anything is persisted. Two narrow exceptions: an `Offered` hull lifts the
+  `mid_tour` rule only, never the frigate/pinned facts; and an in-flight resume skips the
+  ownership gate so a multi-leg move is not abandoned mid-way.
+- **Armed.** Boot-standing, and **that is its only activation path** — no CLI verb, no gRPC
+  service method, no enable flag. Off-switch: the shared `reposition_disabled` container key,
+  enforced as the first statement of `Reconcile`, which halts all three relocation triggers at
+  once (margins-death, rate-floor, this).
+- **Hands off.** No child containers; movement only.
+- **Knobs.** None — it is absent from the tune registry, so tuning it by container id reports
+  that it has no live-tunable knobs.
+- **Source.** `internal/application/trading/commands/run_opportunity_relocator{,_commit,_config,_ports,_scoring,_stall}.go`;
+  NPV domain `internal/domain/trading/relocation_npv.go`; launch
+  `internal/adapters/grpc/container_ops_opportunity_relocator.go`.
 
-> **Shared resolver + the goods honest-pause.** `supply_chain_resolver.go` builds the
-> dependency tree. A recipe-good with NO in-system EXPORT factory (only IMPORT/EXCHANGE) is a
-> not-yet-built supply chain (its exporter is built later at GATE), not a hard fault. The
-> resolver returns a typed `ErrNoInSystemExporter` (`supply_chain_resolver.go:209`), which the
-> factory coordinator catches via `errors.As` (`run_factory_coordinator.go:520-532`) → sets a
-> `NoWorkReason` and honest-pauses (backoff, zero spend, no worker claimed), self-healing once
-> the exporter exists. `ErrUnknownGood` / `ErrCircularDependency` remain hard errors.
-> **Deploy caveat:** if a LIVE daemon CRASHES on this condition instead of honest-pausing, its
-> binary is stale — verify the build stamp (`spacetraders version`) and redeploy the current
-> build. Code is truth; the map follows it.
+### 6.5 Fleet-growth coordinator — the fleet's only heavy buyer
 
-### 6.9 Siting coordinator — the factory-portfolio brain
+- **What.** Owns heavy/trade hull capacity. Each tick it derives the **wave** from durable facts
+  and, on a HEAVY wave only, runs ONE heavy candidate through the fail-closed purchase-guard
+  stack. It buys exactly one class (`HullClassHeavy`, default `SHIP_HEAVY_FREIGHTER`, tagged
+  `trade`), with a substitution walk over the trade-hull preference order when the preferred type
+  cannot be priced. It never buys contract capacity — that is §6.6's.
+- **The wave** (`internal/application/common/growth_wave.go`) is the ONE definition growth and
+  the sensing drain both read, so the pair can be compared for disagreement. `WaveHeavy` pauses
+  probe buying so the treasury can climb toward a heavy's ask; `WaveProbe` lets probe buying run
+  at full speed and authorises nothing. `DeriveWave`'s clauses, in order, every "cannot" landing
+  on PROBE: growth off → lanes unreadable → no unserved lanes → saturation unreadable →
+  saturated → capacity high-water unreadable → target unreachable at that high-water → else
+  HEAVY. Reachability is judged on the treasury PEAK over a cycle, never a point read.
+- **Logic.** Tick **133s** — derived, not chosen: 4 yard reads per tick against a 25% share of
+  the 0.12 req/s yard budget. Anti-thrash is an anchor TIMESTAMP (`defaultGrowthShortfallDwell`
+  900s), advanced on demand alone outside the wave gate; an unreadable demand clears it. One
+  purchase per tick. A zero-effect alarm fires, edge-triggered, after 4 consecutive
+  unmet-demand-no-purchase ticks. `EvaluateGuards` runs in this literal order and reports the
+  FIRST failure: **demand** (shortfall > 0, waived past the dwell when the shortfall exceeds the
+  whole pool) → **per_tick_cap** (1) → **price** (ask readable — unreadable fails CLOSED — and
+  within `MaxPriceClass` if set, and ≤ cheapest + 50%) → **heavy_cap** (owned heavies,
+  tag-independent, default 5; unreadable census fails CLOSED) → **affordability** (unreadable
+  treasury fails CLOSED and is checked first; then
+  `treasury − 50000 − heavyReserve − workingCapital ≥ price + 200000`) → **api_util** (< 85%,
+  unreadable fails CLOSED). Ahead of the guards, three fail-closed rungs: unreadable demand, zero
+  shortfall, and unreadable working capital.
+- **Two deliberate exceptions to "everything fails closed."** The heavy RESERVATION fails OPEN —
+  every "cannot" answer reserves zero, releasing treasury rather than freezing it. And the master
+  switch fails OPEN: a nil live-config reader or a snapshot error leaves growth ON at its launch
+  values. Growth OFF short-circuits the whole tick before any port read and publishes PROBE.
+- **The 25%-treasury ceiling is NOT applied by default.** `TreasuryPctPerPurchase` has no default
+  and deliberately no zero-fallback, so at defaults only the absolute floor term binds. Several
+  code comments still describe a "25%-treasury rule" here; the guard is present but unset.
+- **Armed.** Two launch sites, both funnelling through `FleetGrowthCoordinator` where the
+  once-only guard lives: the bootstrap EXPANSION hand-off, and `workflow fleet-growth`. NOT
+  boot-standing. Ships ARMED once launched (`growth_enabled` defaults to 1).
+- **Hands off.** No child containers. The heavy-yard pricing errand dispatches a SHIP, not a
+  container, bounded to one in flight fleet-wide and drawn only from the parked-sensing pool; it
+  runs on PROBE waves too, because it spends nothing and makes a later tick's price readable.
+- **Knobs.** `tune --operation growth` — exactly three, all live: `growth_enabled` (1=on/2=off),
+  `heavy_cap` [1,50], `growth_runway_milli_hours` [1,10000]. Every minimum is 1 because
+  `tune <key> 0` is the revert-to-default verb fleet-wide, so 0 is not an expressible value.
+- **Source.** `internal/application/fleet/commands/run_fleet_growth_{coordinator,reconcile}.go`,
+  `fleet_growth_{act,tune,stall}.go`, `purchase_guards.go`, `heavy_pricing_errand.go`; wave
+  `internal/application/common/growth_wave.go`; launch
+  `internal/adapters/grpc/container_ops_fleet_growth.go`.
 
-- **What.** The standing factory "brain": a slow reconcile that discovers, places, and
-  capacity-plans the factory-chain portfolio — launching/retiring goods-factory chains through
-  the per-chain guard stack. Drives portfolio MEMBERSHIP, not per-chain pause.
-- **Logic** (`run_siting_coordinator*.go`). Tick 900s; SCAN → SCORE → MAINTAIN → ACT → EMIT.
-  Score: `ProjectedPL × (1 + WeightTourAlignment×tourSignal) − ProjectedPL×(WeightInputCompetition×overlap +
-  WeightStaleness×ageFraction + WeightWorkerReachability×unreachFraction)` — all four weights
-  default 1.0, all penalties fail-open. K sizing: `K = TopK` (override) else
-  `floor(workers / WorkersPerChain)` (`WorkersPerChain = 3.5`). Concentration caps:
-  `MaxChainsPerSystem = 3`, `MaxChainsPerInputMarket = 2` (a skipped candidate does not consume a
-  K slot). ACT launches desired-not-running; retires running-not-desired only after
-  `RetireHysteresisTicks = 2` consecutive out-of-K ticks (anti-thrash). EMIT sends scout-demand
-  for stale candidates. LIVE by default (`siting_disabled` negation).
-- **Armed.** GATE hand-off (`LaunchStandingCoordinators` → `SitingCoordinator`); also captain
-  `workflow siting`. Not boot-standing. Live config from `[manufacturing.siting]`.
-- **Hands off.** Launches/retires `goods_factory` child coordinators (each runs its own guard
-  stack); emits scout-demand to the captain proposal channel. Siting itself never spends — the
-  launch-guard veto is `ChainMarginGuard.Evaluate` (drops a candidate at zero cost).
-- **Source.** `internal/application/manufacturing/commands/run_siting_coordinator{,_score,_act,_emit}.go`;
-  launch `internal/adapters/grpc/container_ops_siting.go`.
+### 6.6 Contract-scaler coordinator — the contract fleet's capacity owner
 
-### 6.10 Fleet-autosizer — the hull-pool sizer
+- **What.** A standing, permanent coordinator that ramps a FIXED, EXCLUSIVE contract fleet to a
+  live-tunable ceiling behind ONE money guard. It resolves this era's waypoint roles ONCE at arm
+  (a lookup, not a solve), builds the fixed buy sequence, and each tick tops the fleet up to
+  `min(plan, ceiling)` while the treasury can spare the cushion. It drives the kept buy primitive
+  rather than rebuilding a buyer. It buys `SHIP_LIGHT_HAULER` only.
+- **Logic** (`run_contract_scaler.go`). Tick **900s** — the ramp is strategic and most ticks are
+  a no-op at the ceiling. Per tick: memoized plan → live ceiling → budgeted per-role fill in the
+  order **delivery → warehouse → stocker** → re-role surplus delivery → depot fill. Plan sizes:
+  `MaxDeliveryHulls 6` (the p-median knee), `WarehouseUnits 8`, `StockerUnits 1`. Ceiling
+  `contract_fleet_max_hulls` defaults to **3** — the same number bootstrap's GATE-entry bar reads
+  as `ContractScalerTarget`. **There is no per-tick purchase cap**: it scales as fast as treasury
+  and API allow.
+- **One money guard, and only one.** Per hull, in order: a zero-spend REUSE tier first (free, and
+  deliberately NOT cushion-gated, so it may proceed below the cushion) → price readable (fails
+  CLOSED) → treasury readable (fails CLOSED) → **`treasury − price < ContractScalerCushion
+  (200000)` ⇒ stop**. There is no reserve floor beyond the cushion, no treasury-fraction ceiling,
+  no price ceiling. The cushion is a compile-time const with no config/tune seam. The ceiling by
+  contrast fails OPEN to the default 3 — it is a throttle, not a money guard.
+- **Armed.** No CLI verb at all. `ensureContractScalerEarly` runs on **every COLDSTART tick** and
+  is unconditional within that phase — the gate is the derived phase itself, plus a wired
+  launcher; idempotency lives in the launcher's `containerTypeRunning` check. Deliberately not
+  run in GATE/EXPANSION. It is "default-off" in the sense that a bare deploy starts nothing —
+  not in the sense that it starts disabled.
+- **Hands off.** Spawns depot elements indirectly through the grower: `GrowWarehouse` →
+  `WAREHOUSE`, `GrowStocker` → a standing continuous `STOCKER`. Both are gated on
+  home-reachability; a non-viable hull is evicted rather than launched. At the default ceiling of
+  3 the budget never reaches a warehouse index, so **zero depot calls occur by default**.
+- **Knobs.** `tune --operation contractscaler contract_fleet_max_hulls` [0,16] — its only lever.
+- **Source.** `internal/application/contractscaler/commands/run_contract_scaler.go`,
+  `contract_scaler_tune.go`; plan `internal/domain/contractscaler/plan.go`; ports/launch
+  `internal/adapters/grpc/contract_scaler_{ports,depot_ports,home_ports,reclaim_ports}.go`,
+  `container_ops_contract_scaler.go`.
 
-- **What.** Sizes the hull pool to demand each tick and auto-buys the shortfall behind a
-  fail-closed guard stack: **lights to factory-worker demand, heavies to unserved-trade
-  demand** (plus opt-in warehouse/explorer/contract-delivery classes).
-- **Logic** (`run_fleet_autosizer_coordinator.go` + `fleet_autosizer_{lights,heavies,guards,act}.go`).
-  Tick 900s, ≤1 buy/tick. LIGHT demand: `ceil(DesiredChains × LightRotationSlots) + Vacancies`
-  (`LightRotationSlots = 3.5`, `Vacancies` from the worker-rebalancer). HEAVY demand:
-  `CurrentHeavies + UnservedLanes` (autosizer only grows). PER-CLASS ceilings: lights 35 /
-  heavies 15 — there is deliberately **no fleet-wide total** (an absolute cap starves every class
-  as the probe frontier grows). SEVEN guards (`EvaluateGuards`, every unreadable input BLOCKS),
-  one question each: demand (`shortfall > 0` **and** the heavy anti-thrash streak — shortfall must
-  persist 3 consecutive ticks) → class_ceiling → per_tick_cap → price (ask readable **and**
-  `≤ MaxPriceClass` **and** `≤ cheapest + 50%`) → heavy_cap (owned heavy hulls, tag-independent;
-  fail-closed on an unreadable census) → affordability (`price ≤ 25% × treasury` for
-  heavies/explorer, NOT lights, **and** `treasury − ImmutableReserveFloor − heavyReserve ≥
-  price + 200000`) → api_util (`< 85%`).
-  The autosizer forms **no opinion on whether a hull will earn**: the `era_payback` and
-  `realized_rate` income guards were deleted (the first could never read its own marginal-rate
-  input and so refused every buy; the second refused on a declining aggregate rate while its own
-  detail conceded the case did not apply), along with `explorer_exempt`, which existed only to
-  cancel them for one class. Demand shortfall — for heavies, the unserved profitable-lane count —
-  is the remaining economic input.
-- **Armed.** GATE hand-off (`LaunchAutosizer` → `FleetAutosizerCoordinator`). DELIBERATELY not
-  boot-standing (would fire prematurely during DATA/INCOME). Also captain
-  `workflow fleet-autosizer`.
-- **Hands off.** Calls `Purchaser.BuyAndDedicate` — buys ONE hull and dedicates it to its class
-  fleet in one breath (dedicate-at-purchase). No child workers.
-- **Source.** `internal/application/fleet/commands/run_fleet_autosizer_coordinator.go` (+ siblings);
-  launch `internal/adapters/grpc/container_ops_fleet_autosizer.go`.
-
-### 6.11 Worker-rebalancer — the cross-system hull ferry
-
-- **What.** Ferries idle undedicated light-haulers cross-system to worker-starved factory
-  systems. Entirely DB-derived, no purchases — it MOVES existing hulls.
-- **Logic** (`run_worker_rebalancer_coordinator.go`). Tick 60s. A system is a vacancy iff ALL:
-  ≥1 RUNNING factory container; oldest such container started ≥ `vacancy_min_minutes (15)` ago;
-  zero idle in-system light-haulers; and demand>supply (`undedicated lights < factory count`,
-  anti-hub). Source = nearest by gate-graph hops with `≥ source_min_idle (2)` idle hulls and
-  `> sourceKeepMin (1)` (never strip a system below 1). Dispatch caps:
-  `max_concurrent_ferries (2)`, per-vacancy `ferry_cooldown_secs (600)`, optional
-  `max_lights_per_system`. Time knobs clamped at 24h to guard the nanoseconds-as-minutes
-  overflow. All reads fail closed.
-- **Armed.** GATE hand-off (`LaunchStandingCoordinators` → `WorkerRebalancerCoordinator`); also
-  a side-actuator of the capacity reconciler. Not boot-standing. Off-switch
-  `worker_rebalancer_disabled` (inert-when-disabled).
-- **Hands off.** Spawns one-shot `WORKER_FERRY` children (atomic `ClaimShip(operation=worker_ferry)`
-  occupancy claim, RULINGS #7; never `AssignFleet`'d). The ferry runs ONE iteration; the
-  coordinator owns re-dispatch and reclaims ended ferries.
-- **Source.** `internal/application/trading/commands/run_worker_rebalancer_coordinator.go`;
-  launch `internal/adapters/grpc/container_ops_worker_rebalancer.go`.
-
-### 6.12 Contract-fleet coordinator — the contract earner
+### 6.7 Contract-fleet coordinator — the contract earner
 
 - **What.** Runs ONE contract at a time (game constraint): discovers idle light haulers,
   negotiates/accepts, plans cheapest HOME-system sourcing, selects the closest capable hull, and
   spawns a single `CONTRACT_WORKFLOW` worker to source + deliver + fulfill.
-- **Logic** (`run_fleet_coordinator.go` + `_depot_routing.go`). One-worker guard (refuses a
-  second `CONTRACT_WORKFLOW`). Sourcing is HOME-system only (RULINGS #14, zero-jump worker),
-  cheapest EXPORT/EXCHANGE. Sourcing-defer gate: `ProjectedNet = payout − EffectiveCost`, below
-  `-(payout × 20%)` is flagged — but RULINGS #1 governs, so it is `Overridden` (source at the
+- **Logic** (`run_fleet_coordinator.go` + siblings). One-worker guard (refuses a second
+  `CONTRACT_WORKFLOW`). Sourcing is HOME-system only (RULINGS #14, zero-jump worker), cheapest
+  EXPORT/EXCHANGE. Sourcing-defer gate: `ProjectedNet = payout − EffectiveCost`, below
+  `−(payout × 20%)` is flagged — but RULINGS #1 governs, so it is `Overridden` (source at the
   loss, log loudly), never skipped. In-flight cargo dedup (don't buy what a running worker
-  already carries). Candidate ladder: idle lights (incl. command frigate) → cargo-baseline
-  filter → EXCLUSIVE dedicated `contract` fleet if it has members → scope to contract-home
-  system → drop unrelated cargo (each parked hull is then re-read ONCE at dispatch; a hold that
-  cleared since the parking decision is re-admitted for THAT pass, not the next one) →
-  spawn-governor eligibility → `SelectClosestShip` to the source.
-  Command frigate hauls only as last resort (RULINGS #7, `ErrCommandFrigateNotLastResort`).
-  Depot routing localizes buffered contract supply. Worker timeout 30m. External hauler sizing:
-  bootstrap caps INCOME haulers at `hauler_target = 4`.
-- **Armed.** Captain `contract start`; also the bootstrap INCOME phase launches it. NOT
-  boot-standing.
-- **Hands off.** Spawns `CONTRACT_WORKFLOW` (one at a time) and `CARGO_LIQUIDATION` (parked
-  hull holding unrelated cargo, per-hull 5m cooldown); runs an in-process idle-arb dispatcher
-  during idle time; homes dedicated hulls to standby stations between legs.
-- **Source.** `internal/application/contract/commands/run_fleet_coordinator.go` (+
-  `_depot_routing.go`); launch `internal/adapters/grpc/container_ops_contract.go`; sourcing gate
+  already carries). Candidate ladder: idle lights (incl. command frigate) → cargo-baseline filter
+  → EXCLUSIVE dedicated `contract` fleet if it has members → scope to contract-home system → drop
+  unrelated cargo (each parked hull is then re-read ONCE at dispatch; a hold that cleared since
+  the parking decision is re-admitted for THAT pass, not the next one) → spawn-governor
+  eligibility → `SelectClosestShip` to the source. Command frigate hauls only as last resort
+  (RULINGS #7, `ErrCommandFrigateNotLastResort`). Depot routing localizes buffered contract
+  supply. Worker timeout 30m. A contract source-buy is EXEMPT from the immutable reserve floor
+  and answers to `common.ContractSolvencyReserve` (12000, measured in fuel) alone.
+- **Armed.** Captain `contract start`; the bootstrap COLDSTART income workstream also ensures it.
+  NOT boot-standing. `contract graduate` retires a player off the contract funding floor
+  durably (era-scoped), which hard-skips bootstrap's whole income workstream.
+- **Hands off.** Spawns `CONTRACT_WORKFLOW` (one at a time) and `CARGO_LIQUIDATION` (parked hull
+  holding unrelated cargo, per-hull 5m cooldown); runs an in-process idle-arb dispatcher during
+  idle time; homes dedicated hulls to standby stations between legs.
+- **Knobs.** `tune --operation contract min_home_contract_workers` [0,200] — its only key.
+  `config.yaml [contract]` carries the idle-arb knobs (`idle_arb.max_spend`, `leash_radius`).
+- **Source.** `internal/application/contract/commands/run_fleet_coordinator*.go`; launch
+  `internal/adapters/grpc/container_ops_contract.go`; sourcing gate
   `internal/application/contract/sourcing_optimizer.go`.
   - **`batch-contract`** (`workflow batch-contract --ship X [--loop]`) is NOT a coordinator: it
-    is the single-hull `CONTRACT_WORKFLOW` worker with an iterations selector (`1` = one contract;
-    `-1` = continuous single-hull loop). `DaemonServer.BatchContractWorkflow` →
-    `container_ops_contract.go`. Used by the captain and by the bootstrap frigate sole-earner loop.
+    is the single-hull `CONTRACT_WORKFLOW` worker with an iterations selector (`1` = one
+    contract; `-1` = continuous single-hull loop). Used by the captain and by the bootstrap
+    frigate sole-earner loop.
   - **Contract-hub coordinator** (`run_contract_hub_coordinator{,_score,_gate}.go`) is the
-    contract analogue of siting — it scores WHERE contract haulers are homed (EWMA demand ×
-    greedy max-coverage facility-location, `MaxHaulersPerHub = 3`). It is **built and unit-tested
-    but UNWIRED**: no `ContainerType`, no launch method, no CLI verb. Nothing runs it yet.
+    contract analogue of a placement brain — it scores WHERE contract haulers are homed (EWMA
+    demand × greedy max-coverage facility-location, `MaxHaulersPerHub = 3`). It is **built and
+    unit-tested but UNWIRED**: no `ContainerType`, no launch method, no CLI verb.
 
-### 6.13 Trade-fleet coordinator — the continuous-tour keeper
+### 6.8 Trade-fleet coordinator — the continuous-tour keeper
 
 - **What.** A minimal coordinator over the `trade`-dedicated fleet: each tick it relaunches a
   fresh CONTINUOUS tour on every trade hull parked by an honest tour exit. Claims nothing itself
@@ -489,16 +552,53 @@ Each entry: **what · logic (formulas/thresholds) · armed · hands off · sourc
   exit (`≥90s`) resets to base; 1st fast-fail doubles the cooldown (capped 600s); 2nd escalates
   to reposition-reach at base cooldown; 3rd+ doubles again. Mass-park exemption (≥4 hulls
   released within 120s = a restart, not thin depth) leaves cooldown/streak untouched. Tour caps
-  passed through: `min_margin`, `working_capital_reserve` (0 → tour's 40%-of-treasury default),
-  `max_hops` (0→6), `max_spend` (0→25% of live treasury).
-- **Armed.** Captain-launched only (`workflow trade-fleet-coordinator`). NOT boot-standing, NOT
-  in the GATE hand-off. Off-switch `[trade_fleet]` enabled flag.
-- **Hands off.** Spawns one `TOUR` (tour-run) container per idle hull via `LaunchTour` →
-  `StartTourRun` (the exact path `workflow tour-run` uses; atomic `operation=trade` claim).
-- **Source.** `internal/application/trading/commands/run_trade_fleet_coordinator.go`;
-  launch `internal/adapters/grpc/container_ops_trade_fleet_coordinator.go`.
+  passed through: `min_margin`, `working_capital_reserve`, `max_hops` (0→6), `max_spend`
+  (0→25% of live treasury).
+- **Armed.** `workflow trade-fleet-coordinator`, and ensured by the bootstrap on every EXPANSION
+  tick. NOT boot-standing. Off-switch `[trade_fleet]` enabled flag.
+- **Hands off.** Spawns one `TOUR_RUN` container per idle hull via `LaunchTour` → `StartTourRun`
+  (the exact path `workflow tour-run` uses; atomic `operation=trade` claim).
+- **Knobs.** `tune --operation tour market_data_max_age_minutes` — the trade path's
+  market-freshness FLOOR (see `CLI-PRIMER.md` §3.2 for why it is a floor and not a cap). The
+  alias is `tour`, not `tradefleet`, because the knob governs what a TOUR will still price off.
+- **Source.** `internal/application/trading/commands/run_trade_fleet_coordinator*.go`; launch
+  `internal/adapters/grpc/container_ops_trade_fleet_coordinator.go`.
 
-### 6.14 Auto-outfit coordinator — the module upgrader
+### 6.9 Long-haul arb coordinator — the out-of-horizon lane capturer
+
+- **What.** The fleet-manager half of the long-haul arb op, modelled on the trade-fleet
+  coordinator so the liveness watchdog and stateless recovery are SHARED rather than forked. Each
+  pass is a cheap fleet read that launches a per-hull worker on every idle
+  `dedicated_fleet="long-haul"` hull. It claims nothing itself.
+- **Logic.** Tick 30s. **Concurrency is UNCAPPED by Admiral order** — a worker for every idle
+  tagged hull each tick; no total-exposure ceiling is derived. Worker episodes are
+  discover → select+size → reposition to source → OUT leg → opportunistic backhaul or deadhead;
+  a laden hull resumes SELLING on restart and never re-buys on top of cargo. Ranking key is
+  realized credits/hour: `net = realizedSpread × q − fuel`, `perHour = net / (tripSeconds/3600)`,
+  keeping only positive `q` and `net`. Reposition reach 25 jumps; market data max age 1h; coarse
+  spread pre-filter 100 cr/unit.
+- **Money guards** (worker side; the coordinator itself never spends): per-haul cap
+  `1000000` → the reserve fence `common.ReserveFloorGate{Floor: ContractScalerCushion (200000)}`
+  → unreadable treasury refuses every buy and zeroes the spend ceiling → spend ceiling
+  `min(perHaulCap, treasury − 200000)` floored at 0 → absorption headroom, fail-closed to 0 on a
+  ledger error → routability before spend. `defaultLongHaulTotalExposureCap (2000000)` is
+  threaded for parity but is **never enforced as a ceiling**.
+- **Armed.** `workflow long-haul-coordinator`; idempotent (returns the live coordinator's id
+  rather than spawning a rival). NOT boot-standing. **There is no feature flag**: the engine is
+  naturally inert until the operator tags a hull, so `fleet add --operation long-haul --ship X`
+  and untagging ARE the arm/disarm seam.
+- **Hands off.** Spawns one `LONGHAUL_ARB` worker per idle tagged hull, claimed under
+  `operation = "long-haul"`; the container row is added BEFORE the claim (FK order) and an
+  orphan row is terminalized FAILED on claim refusal. A watchdog relaunches hung workers after
+  720s and needs BOTH the liveness reader and the stopper wired (fail-closed).
+- **Knobs.** **None live.** It is absent from the tune registry despite several code comments
+  calling its knobs "live-tunable"; the only retune path is the persisted launch-config keys
+  (`longhaul_tick_secs`, `longhaul_per_haul_cap`, `longhaul_total_exposure_cap`,
+  `longhaul_watchdog_stall_secs`) plus a restart.
+- **Source.** `internal/application/trading/commands/run_longhaul_arb_{coordinator,worker,envelope,discovery,pricing,selection,wiring}.go`;
+  launch `internal/adapters/grpc/container_ops_longhaul.go`.
+
+### 6.10 Auto-outfit coordinator — the module upgrader
 
 - **What.** Measures per-hull cargo saturation from `tour_leg_telemetry`, catalogs buyable
   modules, ranks by marginal value, and installs the highest-value (hull, module) pair behind a
@@ -506,31 +606,58 @@ Each entry: **what · logic (formulas/thresholds) · armed · hands off · sourc
 - **Logic** (`internal/application/autooutfit/coordinator.go`, scorer
   `internal/domain/outfitting/selection.go`). Tick 300s. `valuePerHour = CapacityGained ×
   saturation × throughput`; `cost = Price + InstallFee(1000) + ReachHops × HopCost(5000)`;
-  `costPerUnit = cost / CapacityGained`. Reject if `legs < min_telemetry_samples (8)`;
-  if `payback_horizon_hours > 0 && valuePerHour × horizon < cost` (absolute gate, default OFF);
-  or if buying a new hull is cheaper per unit capacity. Inline money guard (each fails closed):
-  `treasury − price − installFee < treasury_reserve (50000)` → park; `price×100 > 25% × treasury`
+  `costPerUnit = cost / CapacityGained`. Reject if `legs < min_telemetry_samples (8)`; if
+  `payback_horizon_hours > 0 && valuePerHour × horizon < cost` (absolute gate, default OFF); or if
+  buying a new hull is cheaper per unit capacity. Inline money guard, each fails closed:
+  `treasury − price − installFee < ImmutableReserveFloor` → park; `price × 100 > 25% × treasury`
   → park; `price > price_ceiling (500000)` → park; `max_installs_per_tick (1)`.
 - **Armed.** DEPLOY-INERT, captain-launched ONLY (`workflow auto-outfit`). One per player.
-  Live-tunable via `tune --operation autooutfit`.
 - **Hands off.** Calls `Outfitter.AcquireAndInstall` → the atomic guarded `InstallModuleCommand`
   (claims the hull, gates the fee on the working-capital floor, docks, installs). No child
   workers.
-- **Source.** `internal/application/autooutfit/coordinator.go`; scorer
-  `internal/domain/outfitting/selection.go`; launch `internal/adapters/grpc/container_ops_auto_outfit.go`.
+- **Knobs.** `tune --operation autooutfit`: `min_telemetry_samples`, `price_ceiling` [0,5M],
+  `max_installs_per_tick` [1,20], `payback_horizon_hours`, `max_treasury_fraction_pct` [1,100].
+- **Source.** `internal/application/autooutfit/coordinator.go`; launch
+  `internal/adapters/grpc/container_ops_auto_outfit.go`.
 
-### 6.15 Gas & stocker (captain-launched standing ops)
+### 6.11 Gas, stocker & warehouse (captain-launched standing ops)
 
 - **Gas coordinator** (`GAS_COORDINATOR`) — gas siphon extraction: `operations start --system
   --gas --siphons S1,S2 --storage ST1`. Spawns `GAS_SIPHON_WORKER` children against a storage
   hull. Captain-launched; not boot-standing.
   Source: `internal/application/gas/commands/run_gas_coordinator.go`, `container_ops_gas.go`.
-- **Stocker coordinator** — one dedicated hull fills a home warehouse
-  (`workflow stocker --standing --ship --warehouse-waypoint`). Deliberately NOT boot-standing
-  (it is pinned to a specific hull + warehouse — no launch params to boot unconditionally);
-  its "survives restart" comes from the persisted `standing` launch config +
-  `RecoverRunningContainers`. Capital ceiling ~10% of treasury per buy.
-  Source: `internal/application/trading/commands/run_stocker_coordinator.go`, `container_ops_stocker.go`.
+- **Stocker** — one dedicated hull fills a home warehouse (`workflow stocker --standing --ship
+  --warehouse-waypoint`). Deliberately NOT boot-standing: it is pinned to a specific hull +
+  warehouse, so there is nothing to unconditionally boot-launch without captain-supplied config.
+  Its "survives restart" comes from the persisted `standing` launch config +
+  `RecoverRunningContainers`. Capital ceiling ~10% of treasury per buy. Also launched
+  indirectly by the contract scaler's depot grower.
+  Source: `internal/application/trading/commands/run_stocker_coordinator*.go`,
+  `container_ops_stocker.go`.
+- **Warehouse** — parks an idle hull as a passive inventory buffer at a home waypoint
+  (`workflow warehouse --ship --waypoint --goods`). Also launched by the contract scaler's depot
+  grower. Source: `container_ops_warehouse.go`, `container_ops_depot_launch.go`.
+
+### 6.12 Retired engines
+
+These types are named in `retiredCommandTypes` (or were deleted outright). A persisted row of one
+is marked terminated at the first post-retirement boot rather than alarming as an unexplained
+loss, and the registry refuses to build one either way. **Do not reason about them as live**; the
+line after each is what absorbed the duty, taken from the retirement note in code.
+
+| Retired | Duty went to |
+|---|---|
+| `goods_factory_coordinator`, `siting_coordinator`, `worker_rebalancer_coordinator`, `manufacturing_coordinator` (the factory-ops retirement) | Gate-material sourcing is the construction coordinator's (§6.3). The `WORKER_FERRY` primitive is retained; its spawner is not. |
+| `market_freshness_sizer_coordinator`, `frontier_expansion_coordinator` | The probe-sensing coordinator (§6.2), which owns freshness sizing, discovery and the probe budget as one engine |
+| `scout_post_coordinator`, `shipyard_backfill_coordinator`, `scout_reposition` (the legacy market-freshness retirement) | A circulating second freshness engine beside parked sensing, duplicating it market-for-market and unable to fund it. Market tours survive only as operator-started, bootstrap-phase-gated verbs |
+| `probe_buyer_coordinator` | Probe supply is the sensing coordinator's. It was boot-standing, so nothing had to notice it before it had bought a fleet's worth of probes |
+| `fleet_autosizer` | Fleet-growth owns trade capacity (§6.5); the contract scaler owns contract capacity (§6.6) |
+| Capacity reconciler (deleted; no persisted type) | Contract-fleet capacity is the contract scaler's (§6.6) |
+
+The gRPC methods for several of these are deliberately KEPT and REFUSE with a message naming the
+replacement, so an operator or script reaching for the old habit gets a reason rather than a
+missing method. `scout posts list`/`remove` likewise survive so leftover rows can be seen and
+cleared. A vestigial `[worker_rebalancer]` / `[scouting]` section in `config.yaml` is inert.
 
 ---
 
@@ -539,28 +666,48 @@ Each entry: **what · logic (formulas/thresholds) · armed · hands off · sourc
 Standing coordinators do the concrete work through short-lived children (one iteration, then
 the parent re-dispatches). The parent owns re-dispatch, cooldowns, and reclaim-on-death.
 
-| Child `ContainerType` | Parent | Role |
+Note the two naming layers: the registry keys on the **command type** (`tour_run`, `stocker`,
+`arb_run`, `trade_route`), while the container row carries a coarser **`ContainerType`** — several
+trading commands all persist as `TRADING`. Match on the command type when you mean the engine.
+
+| Child (command type) | Parent | Role |
 |---|---|---|
-| `SCOUT_FLEET_ASSIGNMENT` | Bootstrap (DATA) | one-shot scout-all-markets sweep (holds its probes — see §6.3) |
-| `SCOUT_REPOSITION` | Scout-post | relay a probe to a post / across systems |
-| `WORKER_FERRY` | Worker-rebalancer | one cross-system idle-light ferry |
-| `CARGO_LIQUIDATION` | Contract-fleet | clear unrelated cargo off a parked hull |
-| `CONTRACT_WORKFLOW` | Contract-fleet / `batch-contract` | source+deliver+fulfill one contract |
-| `TOUR` (tour-run) | Trade-fleet | fly one continuous arbitrage tour |
-| `GAS_SIPHON_WORKER` | Gas coordinator | siphon gas to a storage hull |
-| `goods_factory` (iterations=-1) | Siting / gate feeders | a standing production chain |
+| `contract_workflow` (`CONTRACT_WORKFLOW`) | Contract-fleet / `batch-contract` | source+deliver+fulfill one contract |
+| `cargo_liquidation` (`CARGO_LIQUIDATION`) | Contract-fleet | clear unrelated cargo off a parked hull |
+| `tour_run` (`TRADING`) | Trade-fleet | fly one continuous multi-hop trade tour |
+| `longhaul_arb` (`LONGHAUL_ARB`) | Long-haul arb coordinator | run continuous long-haul episodes on one hull |
+| `warehouse` (`WAREHOUSE`) / `stocker` (`TRADING`) | Contract-scaler depot grower (also captain-launchable) | a depot element |
+| `gas_siphon_worker` (`GAS_SIPHON_WORKER`) | Gas coordinator | siphon gas to a storage hull |
+
+`WORKER_FERRY` (a one-shot cross-system hull move) is registered and recoverable but has **no
+parent left** — its spawner was retired with the factory ops; it survives as a generic primitive
+the daemon's persist/start dispatch still references. `SCOUT_FLEET_ASSIGNMENT` likewise has no
+live caller: the bootstrap's old probe-holding scout-all-markets sweep is gone, and the only
+remaining path to it is the `workflow scout-all-markets` verb.
 
 The one-shot ship ops (`NAVIGATE`, `DOCK`, `ORBIT`, `REFUEL`, `JETTISON`, `JUMP`, `ROUTE`,
-`PURCHASE`, `OUTFITTING`) are `CoordinatorOwnsIterations` single-iteration containers behind the
-`ship` verbs — used both directly and as building blocks inside the coordinators above.
+`WARP`, `PURCHASE`, `OUTFITTING`) are `CoordinatorOwnsIterations` single-iteration containers
+behind the `ship` verbs — used both directly and as building blocks inside the coordinators
+above.
 
 ## 8. Known interaction gaps
 
-- **Manning coupling** (§6.3): the freshness sizer's DECLARE and the scout-post coordinator's
-  MAN are two coordinators; both must be up for coverage to hold and for the sizer's demand
-  self-correction to leave the cold-start seed. The bootstrap's one-shot sweep can hold probes
-  the scout-post coordinator wants to claim.
-- **Goods honest-pause deploy caveat** (§6.8): a live crash on the no-exporter condition means
-  the running daemon is stale — the current build honest-pauses; redeploy.
-- **Contract-hub coordinator is UNWIRED** (§6.12): engine + ports exist and are tested, but
-  nothing launches it — contract-hauler homing is not yet automated by it.
+- **Sensing is inert until the gate is built** (§6.2). Pre-EXPANSION market freshness is entirely
+  the bootstrap's home market tour plus whatever the operator starts by hand
+  (`workflow scout-markets` / `scout-all-markets`). Nothing reconciles coverage during cold start,
+  and nothing will until `ConstructionComplete` reads true.
+- **The wave has two readers** (§6.5). Fleet-growth and the sensing buy queue each derive the
+  wave under their own reader label and publish it; the pair exists precisely so the two
+  DISAGREEING is catchable. A disagreement means one reader's inputs are unreadable, not that
+  the wave definition forked.
+- **Growth's 25%-treasury ceiling is unset at defaults** (§6.5) while several code comments still
+  describe it as applied. Only the absolute floor term binds.
+- **Long-haul concurrency is uncapped by order** (§6.9) and its per-hull cap is the only exposure
+  bound; the total-exposure constant exists but is not enforced.
+- **Contract-hub coordinator is UNWIRED** (§6.7): engine + ports exist and are tested, but
+  nothing launches it — contract-hauler homing is not automated by it.
+- **Unverified in this pass.** The trade-tour coordinator itself (`run_tour_coordinator*.go`, ~25
+  files: planning, rate-floor rescue, relocation offers, absorption, distress liquidation) is the
+  fleet's largest single engine and is NOT mapped here — §6.8 covers only the coordinator that
+  launches it. Treat its internals as undocumented and read the source. Likewise the trade-route
+  and arb one-shot engines.

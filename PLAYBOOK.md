@@ -18,25 +18,20 @@ Where the engine automates a behavior, the book only says how to interpret or tu
   margin; treasury is never the Phase-1 constraint — supply-state and time are. Phase 2 =
   frontier expansion + heavy trade: optimize per-hull sustained $/hr against the absorption
   ceiling. Detect the flip with `construction status <gate-waypoint>`; never assume the phase.
-- **Hour-0 duties:** start the bootstrap reconciler (`workflow bootstrap`) — it plays the
-  early game hands-off (DATA: guarded staged probe buys + scout-all-markets to the coverage
-  bar → INCOME: frigate retire, contract hubs, capital-gated hauler buys, starts the batch-
-  contract operation → GATE: starts the construction pipeline, sticky to COMPLETE). The
-  captain STARTS operations and TURNS KNOBS; hand-flying the early game is the fallback,
-  not the plan — watch the bootstrap heartbeat (phase · progress · blockers) and clear
-  blockers via knobs, not manual flying. Frontier expansion stays OFF until the gate
-  completes (it expands over gate edges — there is nothing to expand pre-gate); the
-  freshsizer boots standing and takes over the durable freshness fleet once markets are
-  scanned. Once the first contract hubs exist (INCOME), start the capacity reconciler
-  (`workflow capacity-reconciler`) — it converges the contract topology continuously up
-  the tier ladder: reuse idle hulls → reposition/rebalance workers → tune depot-warehouse
-  buffer whitelists/caps → capital moves (new depots, hull buys) filed as DEFERRED captain
-  events with full ROI evidence, approval-gated. The captain approves proposals at wake
-  and tunes; it never hand-builds topology. (`--dry-run` launches it observe-only and
-  stays dry across restarts.) Then: pin the era KPI on the strategy bead — metric basis (net credit delta over
-  closed hours) plus measurement window — before any optimization talk; economy-analyst
-  delivers the era economy map once; schedule the construction shakedown inside the first
-  ~12h, graded only on material-delivered > 0.
+- **Hour-0 duties:** the bootstrap reconciler is BOOT-STANDING — it is already running, and it
+  plays the early game hands-off through three derived phases (COLDSTART: staged probe buys, the
+  home market tour, the contract engine and the contract scaler in parallel → GATE: starts the
+  construction pipeline and buys its own gate workers → EXPANSION: hands off to fleet-growth and
+  exits). The captain STARTS operations and TURNS KNOBS; hand-flying the early game is the
+  fallback, not the plan — watch the bootstrap heartbeat (phase · progress · blockers) and clear
+  blockers via knobs, not manual flying. The parked-sensing coordinator is also boot-standing but
+  is INERT until the gate is built, so pre-gate market freshness is the bootstrap's home tour
+  plus whatever you start by hand (`workflow scout-markets`); contract capacity is the contract
+  scaler's, sized by `tune --operation contractscaler contract_fleet_max_hulls`. Then: pin the
+  era KPI on the strategy bead — metric basis (net credit delta over closed hours) plus
+  measurement window — before any optimization talk; economy-analyst delivers the era economy map
+  once; schedule the construction shakedown inside the first ~12h, graded only on
+  material-delivered > 0.
 - **Three walls bound every era:** (1) the API rate limit — per ACCOUNT, cannot be sharded
   around; (2) market absorption / sink depth; (3) the era clock — every capex must pay back
   inside remaining era-hours.
@@ -72,16 +67,18 @@ Where the engine automates a behavior, the book only says how to interpret or tu
 
 - One contract is active at a time — the engine is serial, so contract $/hr is won on
   CYCLE-TIME. Hub placement, hauler staging, closest-ship-wins sourcing, and warehouse
-  buffering are engine-automated (bootstrap seeds them; the capacity reconciler converges
-  them): **idle haulers parked at hubs are DELIBERATE staging — never "fix" them.**
+  buffering are engine-automated (bootstrap seeds them; the contract scaler ramps them):
+  **idle haulers parked at hubs are DELIBERATE staging — never "fix" them.**
 - Payouts are lumpy (accept + deliver): derive $/hr from several cycles, never one.
 - The engine never refuses a contract (RULINGS #1) and contract legs never leave the
   worker's system (RULINGS #14) — both engine-enforced. Portfolio weighting between
   contracts and trade is a captain/Admiral call, made through config — never through code
   that declines work.
-- **Scale the operation, not just its placement.** Beyond converging hub/hauler/warehouse
-  placement, the capacity reconciler GROWS contract capacity to demand — contract workers
-  (light haulers) + warehouse + stockers — to lift $/hr. Buy the first light hauler as soon as it
+- **Scale the operation, not just its placement.** The contract scaler GROWS contract capacity to
+  a live ceiling — contract workers (light haulers) first, then warehouse and stockers — to lift
+  $/hr. `tune --operation contractscaler contract_fleet_max_hulls` is the whole lever, and the
+  same number is what bootstrap's GATE-entry bar reads: raising it raises the bar the op must
+  reach before the gate sprint starts. Buy the first light hauler as soon as it
   is affordable — where **"affordable" means the buy still leaves a safe cash cushion to keep
   funding the contract operation**, NOT merely that treasury ≥ the hauler price. The command
   frigate alone cannot sustain throughput, but a hauler bought out of the contract operation's
@@ -163,13 +160,13 @@ Where the engine automates a behavior, the book only says how to interpret or tu
   sweep then skips forever. Confirm THAT before acting. The recycle
   (`construction stop <site> && construction start <site>`) is still the recovery for a
   confirmed wedge — a diagnostic fallback, never a post-deploy habit.
-- **Auto-managers re-inflate the gate fleet — they will undo a manual trim.** The capacity
-  reconciler (gate-depot, sp-3idiw) BUYS haulers and the worker-rebalancer re-provisions the
-  manufacturing fleet to meet the pipeline's worker-cap demand. To hold a manual hauler count:
-  either lower the cap (`construction workers <site> --count N` — drops the demand) OR
-  `container stop` both coordinators and then trim (= manual fleet management until they're
-  restarted). At torwind-2026-07-19 the reconciler bought ~10 idle haulers and cannibalized
-  contracts — watch capex + contract-fleet size when a gate depot is "settling".
+- **The gate buys its own workers — a manual trim will be undone.** Bootstrap's GATE phase sizes
+  the construction workforce to a fixed target, one buy per tick, and the contract fleet is
+  EXCLUSIVE — it is never repurposed to construction, precisely because buy→repurpose→buy churns
+  against the contract scaler. To hold a manual hauler count, lower the demand
+  (`construction workers <site> --count N`) rather than trimming hulls; a trim without a demand
+  change is re-bought. Watch capex against contract-fleet size while a gate fill is ramping — the
+  historical failure was a second buyer cannibalizing contracts.
 
 ## 5. Fleet & scaling
 
@@ -189,10 +186,12 @@ Where the engine automates a behavior, the book only says how to interpret or tu
 - **Probes and coverage:** charting a system is NOT scanning its markets — verify markets
   are actually read. The tour planner only sees markets fresher than its age cap: a stale
   system is INVISIBLE to the money engine (stale → no tours → no revenue → looks
-  unimportant — a self-reinforcing blind spot). Freshness equals probe circuit time — raise
-  coverage through the freshsizer/scout-post knobs (more probes, partitioned posts), never
-  by "scanning faster." Pre-gate probe count is bootstrap's `probe_target`; extraction and
-  gas hulls stay refuted without a proven delivery path.
+  unimportant — a self-reinforcing blind spot). Post-gate, freshness is the PARKED-probe model:
+  one hull stands on a market forever and the fleet-wide scanner paces the scans, so coverage is
+  raised through `tune --operation sensing` (`probe_cap`, `target_util_pct`,
+  `min_scan_rate_milli`), never by "scanning faster." Pre-gate the sensing engine is inert and
+  the probe count is bootstrap's fixed cold-start seed — not a knob. Extraction and gas hulls
+  stay refuted without a proven delivery path.
 
 ## 6. API budget
 

@@ -23,7 +23,7 @@ npm run dev            # Watch mode: recompile on changes + auto-restart
 ```bash
 cd web
 npm install            # Install dependencies
-npm run dev            # Start Vite dev server on port 3000 with HMR
+npm run dev            # Start Vite dev server on port 5173 with HMR (FRONTEND_PORT env var)
 npm run build          # Type-check with tsc and build for production
 npm run preview        # Preview production build
 ```
@@ -32,7 +32,8 @@ npm run preview        # Preview production build
 
 1. Start backend in one terminal: `cd server && npm run dev`
 2. Start frontend in another terminal: `cd web && npm run dev`
-3. Backend runs on http://localhost:4000, frontend on http://localhost:3000
+3. Backend runs on http://localhost:4000, frontend on http://localhost:5173
+   (port 3000 is Grafana — do not point the dev server at it)
 
 ## Architecture
 
