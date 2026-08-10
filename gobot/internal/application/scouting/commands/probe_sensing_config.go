@@ -46,13 +46,13 @@ const (
 	defaultInflightCap = 3
 	// defaultCapitalMultiplierKMilli is how many MILLI-hours of the trading
 	// fleet's cargo runway the probe buy floor holds back on top of the
-	// immutable reserve. 400 = 0.4h. Same convention as defaultMinScanRateMilli.
+	// immutable reserve. 200 = 0.2h. Same convention as defaultMinScanRateMilli.
 	//
-	// 2h priced expansion out of its own era: a fleet trading hard enough to be
-	// worth expanding is exactly the one whose cargo runway lifts the floor past
-	// its treasury, so the drain held every probe at a floor that grew with the
-	// success that was meant to fund it.
-	defaultCapitalMultiplierKMilli = 400
+	// A long runway prices expansion out of its own era: a fleet trading hard
+	// enough to be worth expanding is the one whose cargo term lifts the floor
+	// past its treasury, so the drain holds every probe behind the success that
+	// was meant to fund it.
+	defaultCapitalMultiplierKMilli = 200
 	// defaultCapexReserveCredits is the credits held back for ship capex the
 	// operation has already committed to elsewhere.
 	defaultCapexReserveCredits = 100_000
