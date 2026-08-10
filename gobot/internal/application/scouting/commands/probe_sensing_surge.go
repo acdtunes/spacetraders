@@ -313,35 +313,17 @@ func inFlightSurge(pool []UnpricedSystem, holds ledgerHolds) int {
 // The base filter IS the orphan dispatch's, invoked directly rather than copied:
 // probe frame, a fleet tag that makes it nobody's (RULINGS #7), not driven by a
 // live container (RULINGS #3), not manning a surviving scout post, not named by a
-// slot row, and standing somewhere we can read.
+// slot row, on no charting errand, and standing somewhere we can read.
 //
-// ONE GUARD IS ADDED HERE, and it closes a hole holds.hulls structurally cannot
-// see: a hull on a CHARTING ERRAND. claimSpares DELETES the spare's placement row
-// when it hands the hull to a seed and records the errand in
-// sensing_systems.seed_ship instead, so a seed hull is named by NO slot row and is
-// idle between steps — indistinguishable from surplus to every check above. The
-// errand predicate is expansion's own (SeedShip set, SeedState DISPATCHED or
-// CHARTING, mirroring hasActiveSeed), so the two engines cannot disagree about who
-// owns a hull mid-tour. DONE is not an errand: a stood-down seed is named by a
-// placement row again, which holds.hulls already covers.
+// The errand half of that filter closes a hole holds.hulls cannot see: claimSpares
+// deletes a seed hull's placement row, so it is named by no slot row at all.
 func surplusProbes(
 	ships []*navigation.Ship,
 	manned map[string]bool,
 	holds ledgerHolds,
 	systems []parkedsensing.ExpandSystem,
 ) []idleOrphanHull {
-	candidates, _ := idleOrphans(ships, manned, holds)
-	onErrand := hullsOnChartingErrand(systems)
-	if len(onErrand) == 0 {
-		return candidates
-	}
-	surplus := make([]idleOrphanHull, 0, len(candidates))
-	for _, candidate := range candidates {
-		if onErrand[candidate.ship.ShipSymbol()] {
-			continue
-		}
-		surplus = append(surplus, candidate)
-	}
+	surplus, _ := idleOrphans(ships, manned, holds, hullsOnChartingErrand(systems))
 	return surplus
 }
 

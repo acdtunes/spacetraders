@@ -145,7 +145,8 @@ func TestSensingLedger_ResetVerdicts_LeavesEverySlotColumnAlone(t *testing.T) {
 
 	owned, err := repo.CountOwnedProbes(ctx, 1)
 	require.NoError(t, err)
-	require.Equal(t, int64(1), owned, "a hull is on the books before the rescreen")
+	require.Equal(t, int64(2), owned,
+		"two hulls are on the books before the rescreen: the parked slot's, and the system row's charting errand")
 
 	_, err = repo.ResetVerdictsToPending(ctx, 1)
 	require.NoError(t, err)

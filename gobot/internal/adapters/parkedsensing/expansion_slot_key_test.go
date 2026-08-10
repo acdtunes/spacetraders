@@ -307,9 +307,75 @@ func TestExpansion_ClaimingASpareLeavesTheMarketPlacementSharingItsWaypoint(t *t
 	require.Equal(t, "PROBE-SCANNING", *rows[0].AssignedShip,
 		"the scanning probe must still be named by a row — a waypoint-wide delete drops it out of the probe cap and authorises re-buying a hull we own")
 
-	// Exactly one hull left the ledger for the errand. The other is still counted.
+	// Neither hull leaves the count: the scanner by its MARKET row, the claimed
+	// spare by the errand the count now unions in.
 	owned, err = repo.CountOwnedProbes(ctx, testPlayerID)
 	require.NoError(t, err)
-	require.Equal(t, int64(1), owned,
-		"only the claimed spare leaves the count; losing the scanning probe too would be the money-unsafe direction")
+	require.Equal(t, int64(2), owned,
+		"losing either would be the money-unsafe direction — an under-count authorises re-buying a hull we own")
+}
+
+// THE GHOST ROW'S RELEASE, against the real table and the real probe cap.
+//
+// A SPARE row naming a hull a system row already has out charting is the invariant
+// in states.go broken. Expansion must delete it — nothing else can, and while it
+// stands the yard is unstageable — and the fleet size must not move when it does:
+// the hull is accounted for by its errand either side of the write.
+func TestExpansion_ReleasingAGhostSpareLeavesTheProbeCapWhereItWas(t *testing.T) {
+	db := newShipPortsDB(t)
+	repo := persistence.NewSensingLedgerRepository(db)
+	ctx := context.Background()
+
+	require.NoError(t, repo.UpsertSystem(ctx, persistence.SensingSystemModel{
+		PlayerID: testPlayerID, SystemSymbol: "X1-A", Verdict: appSensing.VerdictInScope,
+	}))
+	require.NoError(t, repo.UpsertSystem(ctx, persistence.SensingSystemModel{
+		PlayerID: testPlayerID, SystemSymbol: "X1-B", Verdict: appSensing.VerdictPending,
+		UnchartedCount: 3,
+	}))
+	require.NoError(t, repo.UpsertSystem(ctx, persistence.SensingSystemModel{
+		PlayerID: testPlayerID, SystemSymbol: "X1-C", Verdict: appSensing.VerdictPending,
+		UnchartedCount: 5,
+	}))
+	require.NoError(t, repo.SetSeed(ctx, testPlayerID, "X1-C", "PROBE-SPARE", appSensing.SeedStateCharting))
+
+	// The yard: a probe scanning it, and the ghost row for a hull that is not there.
+	require.NoError(t, repo.UpsertSpareSlot(ctx, persistence.SensingSlotModel{
+		PlayerID: testPlayerID, WaypointSymbol: "X1-A-YARD", SystemSymbol: "X1-A",
+		SlotKind: appSensing.SlotKindMarket, State: appSensing.SlotStateParked,
+		AssignedShip: strPtr("PROBE-SCANNING"), WhitelistGoods: `["FUEL"]`,
+	}))
+	require.NoError(t, repo.UpsertSpareSlot(ctx, persistence.SensingSlotModel{
+		PlayerID: testPlayerID, WaypointSymbol: "X1-A-YARD", SystemSymbol: "X1-A",
+		SlotKind: appSensing.SlotKindSpare, State: appSensing.SlotStateParked,
+		AssignedShip: strPtr("PROBE-SPARE"), WhitelistGoods: "[]",
+	}))
+
+	before, err := repo.CountOwnedProbes(ctx, testPlayerID)
+	require.NoError(t, err)
+	require.Equal(t, int64(2), before, "two hulls: one scanning, one charting X1-C")
+
+	ports := realLedgerPorts(db,
+		map[string][]string{"X1-A": {"X1-B"}},
+		map[string][]string{"X1-A": {"X1-A-YARD"}})
+
+	rep, err := appSensing.AdvanceExpansion(ctx, ports, testPlayerID, appSensing.ExpandKnobs{
+		SpendEnabled: true, MinBudgetRate: 0.05, Whitelist: map[string]bool{"FUEL": true},
+	}, 1.0)
+	require.NoError(t, err)
+	require.Equal(t, 1, rep.SpareGhostsReleased)
+	require.Equal(t, 0, rep.SeedsClaimed, "a hull already charting X1-C must not be stamped onto X1-B as well")
+
+	rows := slotRows(t, db, "X1-A-YARD")
+	require.Len(t, rows, 2, "the ghost is gone and the freed yard now carries the SPARE want it could not stage before")
+	require.Equal(t, appSensing.SlotKindMarket, rows[0].SlotKind)
+	require.Equal(t, "PROBE-SCANNING", *rows[0].AssignedShip, "the scanning probe's placement is not the release's to take")
+	require.Equal(t, appSensing.SlotKindSpare, rows[1].SlotKind)
+	require.Equal(t, appSensing.SlotStateWanted, rows[1].State)
+	require.Nil(t, rows[1].AssignedShip, "the ghost's hull is not carried into the want")
+
+	after, err := repo.CountOwnedProbes(ctx, testPlayerID)
+	require.NoError(t, err)
+	require.Equal(t, before, after,
+		"the fleet did not shrink: the errand accounts for the released hull, and a shrinking cap is what buys a probe we own")
 }

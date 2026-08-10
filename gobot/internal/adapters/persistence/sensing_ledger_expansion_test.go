@@ -240,11 +240,75 @@ func TestSensingLedger_DeleteSlot_RemovesTheRowAndTheProbeItCounted(t *testing.T
 	require.NoError(t, err)
 	require.Empty(t, found)
 
-	// The hull is now named by its mission rather than by the ledger — an
-	// accepted, bounded under-count that heals when the seed parks again.
+	// No system row names this hull, so the released row was its only record.
 	owned, err = repo.CountOwnedProbes(ctx, 1)
 	require.NoError(t, err)
 	require.Equal(t, int64(0), owned)
+}
+
+// THE PROBE CAP READS TWO TABLES, and it has to. claimSpares deletes an errand
+// hull's placement row and records the mission in sensing_systems instead, so a
+// row-only count loses one paid-for probe per live seed — the under-count that
+// authorises re-buying hulls we already own (RULINGS #4).
+//
+// DONE is deliberately absent, mirroring hasActiveSeed: a stood-down seed is named
+// by a placement row again, and counting it here would be counting the same hull's
+// history rather than the hull.
+func TestSensingLedger_CountOwnedProbes_CountsLiveErrandHullsWithNoSlotRow(t *testing.T) {
+	db := newSensingLedgerDB(t)
+	repo := persistence.NewSensingLedgerRepository(db)
+	ctx := context.Background()
+
+	for system, errand := range map[string][2]string{
+		"X1-DD": {"PROBE-FLYING", "DISPATCHED"},
+		"X1-EE": {"PROBE-CHARTING", "CHARTING"},
+		"X1-FF": {"PROBE-STOOD-DOWN", "DONE"},
+	} {
+		require.NoError(t, repo.UpsertSystem(ctx, systemRow(system, "PENDING", 3)))
+		require.NoError(t, repo.SetSeed(ctx, 1, system, errand[0], errand[1]))
+	}
+	require.NoError(t, repo.UpsertSystem(ctx, systemRow("X1-GG", "PENDING", 3)))
+
+	// Another player's errand is never this player's fleet.
+	theirs := systemRow("X1-HH", "PENDING", 3)
+	theirs.PlayerID = 2
+	require.NoError(t, repo.UpsertSystem(ctx, theirs))
+	require.NoError(t, repo.SetSeed(ctx, 2, "X1-HH", "RIGEL-SEED", "CHARTING"))
+
+	owned, err := repo.CountOwnedProbes(ctx, 1)
+	require.NoError(t, err)
+	require.Equal(t, int64(2), owned,
+		"a hull is owned while its errand is live — DISPATCHED and CHARTING, and neither DONE nor another player's")
+}
+
+// THE GHOST ROW, COUNTED ONCE — and releasing it must not change the total.
+//
+// A SPARE row naming a hull the system row already has out charting names one
+// probe twice. Counted twice the cap reads HIGH (money-safe but wrong); and the
+// release that repairs the row must leave the count where it was, or the repair
+// itself becomes the under-count.
+func TestSensingLedger_CountOwnedProbes_GhostRowAndItsErrandAreOneHull(t *testing.T) {
+	db := newSensingLedgerDB(t)
+	repo := persistence.NewSensingLedgerRepository(db)
+	ctx := context.Background()
+
+	require.NoError(t, repo.UpsertSystem(ctx, systemRow("X1-BB", "PENDING", 3)))
+	require.NoError(t, repo.SetSeed(ctx, 1, "X1-BB", "PROBE-7", "CHARTING"))
+	ghost := slot("X1-AA-Y1", "PARKED")
+	ghost.SlotKind = "SPARE"
+	ghost.AssignedShip = strptr("PROBE-7")
+	require.NoError(t, repo.UpsertSpareSlot(ctx, ghost))
+
+	owned, err := repo.CountOwnedProbes(ctx, 1)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), owned, "one hull, named twice, is one hull")
+
+	require.NoError(t, repo.DeleteSlot(ctx, 1, "X1-AA-Y1", "SPARE"))
+
+	owned, err = repo.CountOwnedProbes(ctx, 1)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), owned,
+		"releasing the ghost must not drop the hull out of the cap — the errand is what still accounts for it")
 }
 
 func TestSensingLedger_DeleteSlot_IsIdempotentAndPlayerScoped(t *testing.T) {

@@ -69,6 +69,7 @@ type idleOrphanHull struct {
 func (h *RunProbeSensingCoordinatorHandler) dispatchIdleOrphans(
 	ctx context.Context,
 	cyc sensingCycle,
+	systems []parkedsensing.ExpandSystem,
 	failures *[]error,
 ) int {
 	logger := common.LoggerFromContext(ctx)
@@ -97,7 +98,7 @@ func (h *RunProbeSensingCoordinatorHandler) dispatchIdleOrphans(
 
 	manned := primaryMannedHulls(posts)
 
-	orphans, standing := idleOrphans(ships, manned, holds)
+	orphans, standing := idleOrphans(ships, manned, holds, hullsOnChartingErrand(systems))
 	if len(orphans) == 0 {
 		return 0
 	}
@@ -232,7 +233,12 @@ func claimOpenPlacement(ctx context.Context, ports SensingEnginePorts, playerID 
 // flight at all. Flying a different hull to that waypoint would burn a hop to do what adoption does
 // for nothing AND leave the placement under the standing hull's feet still unfilled, so those
 // waypoints are struck out of the target pool below.
-func idleOrphans(ships []*navigation.Ship, manned map[string]bool, holds ledgerHolds) ([]idleOrphanHull, map[string]bool) {
+func idleOrphans(
+	ships []*navigation.Ship,
+	manned map[string]bool,
+	holds ledgerHolds,
+	onErrand map[string]bool,
+) ([]idleOrphanHull, map[string]bool) {
 	orphans := make([]idleOrphanHull, 0, len(ships))
 	standing := make(map[string]bool, len(ships))
 
@@ -260,6 +266,11 @@ func idleOrphans(ships []*navigation.Ship, manned map[string]bool, holds ledgerH
 			// Already named by a row somewhere, so it is not an orphan and not idle CAPACITY: it is
 			// a hull with a placement. Re-pointing it would hand that placement away and, for the
 			// instant between the writes, leave one hull answering two rows.
+			continue
+		}
+		if onErrand[ship.ShipSymbol()] {
+			// SPOKEN FOR BY A SYSTEM ROW, which holds.hulls structurally cannot see: claimSpares
+			// deleted the placement. Flying it here takes a hull off a mission mid-tour (RULINGS #3).
 			continue
 		}
 		location := ship.CurrentLocation()

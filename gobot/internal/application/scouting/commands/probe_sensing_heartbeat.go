@@ -274,10 +274,13 @@ func (h *RunProbeSensingCoordinatorHandler) heartbeat(ctx context.Context, cmd *
 			// running (counterstaff.go).
 			"seeds_unstaged":   hb.expand.SeedsUnstaged,
 			"counters_staffed": hb.expand.CountersStaffed,
-			"seeds_claimed":    hb.expand.SeedsClaimed,
-			"charted":          hb.expand.Charted,
-			"markets_found":    hb.expand.MarketsFound,
-			"retargeted":       hb.expand.Retargeted,
+			// SPARE rows released because the hull they named was already charting. A
+			// standing non-zero value is that invariant being re-broken every tick.
+			"spare_ghosts_released": hb.expand.SpareGhostsReleased,
+			"seeds_claimed":         hb.expand.SeedsClaimed,
+			"charted":               hb.expand.Charted,
+			"markets_found":         hb.expand.MarketsFound,
+			"retargeted":            hb.expand.Retargeted,
 		})
 }
 
@@ -465,6 +468,11 @@ func expansionSummary(rep parkedsensing.ExpandReport) string {
 	if rep.SeedsUnstaged > 0 {
 		summary += fmt.Sprintf(" (%d target(s) have no staffed probe counter in reach; %d hull(s) lent to one)",
 			rep.SeedsUnstaged, rep.CountersStaffed)
+	}
+	// Appended only when it binds, for the same reason: a yard held by a row for a
+	// hull that is not there reads exactly like a fleet with nowhere left to stage.
+	if rep.SpareGhostsReleased > 0 {
+		summary += fmt.Sprintf(", %d ghost spare row(s) released", rep.SpareGhostsReleased)
 	}
 	if rep.SpendingPaused {
 		return summary + " (spending paused: no seed purchase)"

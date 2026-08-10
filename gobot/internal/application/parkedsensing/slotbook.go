@@ -38,6 +38,9 @@ type slotBook struct {
 	// which keeps a hull already out on a mission out of parkedSpares entirely.
 	spares       []QueuedSlot
 	parkedSpares []QueuedSlot
+	// errandSpares are the rows the parkedSpares filter declines: a placement naming
+	// a hull already out charting. releaseErrandSpares is the only reader.
+	errandSpares []QueuedSlot
 	// staffed names every waypoint where a hull of ours is STANDING — a PARKED
 	// placement naming a ship. It is what lets seed staging tell a system we have
 	// merely SCREENED from one we actually HOLD.
@@ -88,9 +91,16 @@ func newSlotBook(rows []QueuedSlot, onErrand map[string]bool) *slotBook {
 		// is re-parked every tick until it departs. Without this filter that is a
 		// loop: re-park, re-claim, one hull stamped onto system after system while
 		// the errands it holds mark those systems covered.
-		if row.State == SlotStateParked && row.AssignedShip != "" && !onErrand[row.AssignedShip] {
-			b.parkedSpares = append(b.parkedSpares, row)
+		if row.State != SlotStateParked || row.AssignedShip == "" {
+			continue
 		}
+		if !onErrand[row.AssignedShip] {
+			b.parkedSpares = append(b.parkedSpares, row)
+			continue
+		}
+		// Declining the claim is only half of it: the row still HOLDS its yard against
+		// staging, and the loop above is the only thing that can hand it to a deleter.
+		b.errandSpares = append(b.errandSpares, row)
 	}
 	return b
 }

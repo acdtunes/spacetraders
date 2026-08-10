@@ -94,6 +94,7 @@ func adoptableFleetTag(fleet string) bool {
 func (h *RunProbeSensingCoordinatorHandler) adoptStrandedProbes(
 	ctx context.Context,
 	cyc sensingCycle,
+	systems []parkedsensing.ExpandSystem,
 	failures *[]error,
 ) int {
 	logger := common.LoggerFromContext(ctx)
@@ -103,6 +104,7 @@ func (h *RunProbeSensingCoordinatorHandler) adoptStrandedProbes(
 	if !ok {
 		return 0
 	}
+	onErrand := hullsOnChartingErrand(systems)
 
 	adopted, writes := 0, 0
 	for _, ship := range ships {
@@ -137,6 +139,11 @@ func (h *RunProbeSensingCoordinatorHandler) adoptStrandedProbes(
 		}
 		if manned[hull] {
 			continue // still manning a surviving post — that post's hull, not ours to take
+		}
+		if onErrand[hull] {
+			// OUT ON A CHARTING SEED, and named by its system row alone: claimSpares
+			// deleted its placement, so re-parking it writes the row that blocks a yard.
+			continue
 		}
 		if holds.hulls[hull] {
 			// Recorded but still scout-tagged: the safe half-done shape a failed

@@ -145,6 +145,25 @@ func (t *expandTick) staffedAt(ctx context.Context, waypoint string) (bool, erro
 	return staffed, nil
 }
 
+// releaseErrandSpares deletes the SPARE rows naming hulls already out charting: the
+// yard blockage nothing reaches, since claimSpares only ever walks parkedSpares.
+func (t *expandTick) releaseErrandSpares(ctx context.Context) error {
+	for _, ghost := range t.book.errandSpares {
+		if t.rep.SpareGhostsReleased >= MaxSpareGhostReleases {
+			return nil
+		}
+		if err := t.p.Ledger.DeleteSlot(ctx, t.playerID, ghost.Waypoint, SlotKindSpare); err != nil {
+			return fmt.Errorf("failed to release placement %s, held for %s which is already on an errand: %w",
+				ghost.Waypoint, ghost.AssignedShip, err)
+		}
+		// Count-neutral, and that is the money guard: the hull stays named by its
+		// system row, which CountOwnedProbes unions in (RULINGS #4).
+		t.book.dropSpare(ghost.Waypoint)
+		t.rep.SpareGhostsReleased++
+	}
+	return nil
+}
+
 // claimSpares turns parked spare hulls into charting errands.
 //
 // A spare is only usable for a target it can actually REACH: a seed walks to its

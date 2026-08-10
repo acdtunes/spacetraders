@@ -661,11 +661,11 @@ func (h *RunProbeSensingCoordinatorHandler) reclaimIdleProbes(ctx context.Contex
 	if cutoverPending {
 		return 0, 0, 0
 	}
-	adopted = h.adoptStrandedProbes(ctx, cyc, failures)
+	adopted = h.adoptStrandedProbes(ctx, cyc, systems, failures)
 	// AFTER ADOPTION: adoption's in-place fill costs a row write and no movement, so a hull it
 	// can absorb WHERE IT STANDS is absorbed there rather than flown somewhere. The dispatch
 	// re-reads the ledger, so everything adoption just did is visible to it.
-	dispatched = h.dispatchIdleOrphans(ctx, cyc, failures)
+	dispatched = h.dispatchIdleOrphans(ctx, cyc, systems, failures)
 	// THE SENSING SURGE (sp-zvywu), and its position is three separate arguments.
 	//
 	// AFTER THE ORPHAN DISPATCH, because that pass fills placements THE SCREEN ALREADY DECLARED

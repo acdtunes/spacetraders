@@ -29,6 +29,10 @@ import (
 // and both are already bounded by the frontier and by the spare fleet.
 const MaxExpansionActions = 6
 
+// MaxSpareGhostReleases bounds the ghost SPARE rows one tick may release: a burst
+// of ledger writes paced like DefaultMaxReaps, never an economic choice.
+const MaxSpareGhostReleases = 20
+
 // allSlotStates is every state a placement row can be in. The tick reads the whole
 // ledger once and derives from it which waypoints are occupied, which placements
 // are still wanted, and which spare hulls are available.
@@ -276,6 +280,9 @@ type ExpandReport struct {
 	CountersStaffed int
 	// SeedsClaimed counts parked spares turned into charting errands.
 	SeedsClaimed int
+	// SpareGhostsReleased counts SPARE rows deleted because the hull they named was
+	// already on an errand. A standing non-zero value is that invariant re-breaking.
+	SpareGhostsReleased int
 	// Jumped, Navigated and Charted count the seed steps actually commanded. Jumped
 	// counts GATE-CROSSING STEPS, not gates crossed: a hop is the move to the gate
 	// and then the jump off it, one per tick, so one crossing normally counts two.
@@ -429,6 +436,11 @@ func AdvanceExpansion(
 	// Seeds move BEFORE spares are claimed, so an errand stamped this tick is not
 	// also flown by it: the ship row has not caught up, and the next tick reads it.
 	if err := t.advanceSeeds(ctx, systems); err != nil {
+		return rep, err
+	}
+	// BEFORE the claim, so the yards it frees are stageable on THIS tick rather than
+	// the next, and the freed rows cannot be mistaken for supply by requestSeeds.
+	if err := t.releaseErrandSpares(ctx); err != nil {
 		return rep, err
 	}
 	if err := t.claimSpares(ctx); err != nil {

@@ -3,6 +3,7 @@ package parkedsensing
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -1274,8 +1275,15 @@ func TestAdvanceExpansion_AReParkedHullOnAnErrandIsNotClaimedAgainNextTick(t *te
 	if rep.SeedsClaimed != 1 {
 		t.Fatalf("tick 2: SeedsClaimed = %d, want 1 — one target left, one free hull", rep.SeedsClaimed)
 	}
-	if len(h.ledger.deleted) != 1 || h.ledger.deleted[0] != "X1-HOME-J55" {
-		t.Fatalf("tick 2: deleted = %v, want only the FREE hull's row released", h.ledger.deleted)
+	// BOTH rows go, by two different routes, and the routes are the whole point:
+	// J55 is CLAIMED (one seed stamped) and I53 is RELEASED (no seed stamped).
+	if len(h.ledger.deleted) != 2 {
+		t.Fatalf("tick 2: deleted = %v, want the free hull's row claimed and the resurrected ghost released",
+			h.ledger.deleted)
+	}
+	if rep.SpareGhostsReleased != 1 {
+		t.Fatalf("tick 2: SpareGhostsReleased = %d, want 1 — the resurrected row must be released, not left to hold its waypoint",
+			rep.SpareGhostsReleased)
 	}
 }
 
@@ -1319,6 +1327,91 @@ func TestAdvanceExpansion_AClaimStrandedByAFailedReleaseIsNotRepeatedNextTick(t 
 	}
 	if rep.SeedsClaimed != 0 {
 		t.Fatalf("tick 2: SeedsClaimed = %d, want 0 — the only hull in the book is already flying", rep.SeedsClaimed)
+	}
+}
+
+// THE GHOST ROW, and why declining to claim it is only half the answer.
+//
+// A SPARE placement naming a hull a system row already has out charting breaks
+// states.go's invariant: an errand hull is named by its system row and by NO slot
+// row. newSlotBook keeps it out of parkedSpares, so it is never re-claimed — but
+// the row still OCCUPIES its yard, so stagingYardPass finds nowhere free and
+// every target in the neighbourhood reports no counter in reach. It never heals:
+// the only DeleteSlot caller is claimSpares, which walks parkedSpares — exactly
+// the set these rows are excluded from. The only deleter cannot reach the only
+// rows needing deletion.
+func TestAdvanceExpansion_ASpareRowNamingAnOnErrandHullDoesNotBlockItsYardForever(t *testing.T) {
+	h := newExpandHarness()
+	h.ledger.systems = []ExpandSystem{
+		{System: "X1-A", Verdict: VerdictInScope},
+		{System: "X1-B", Verdict: VerdictPending, UnchartedCount: 3},
+		{System: "X1-C", Verdict: VerdictPending, UnchartedCount: 5,
+			SeedShip: "PROBE-7", SeedState: SeedStateCharting},
+	}
+	h.gates.adjacency = map[string][]string{"X1-A": {"X1-B"}}
+	h.yards.bySystem = map[string][]string{"X1-A": {"X1-A-YARD"}}
+	h.ledger.slots = []QueuedSlot{
+		// The ghost: PROBE-7 is charting X1-C and this row says it is parked here.
+		{Waypoint: "X1-A-YARD", System: "X1-A", Kind: SlotKindSpare,
+			State: SlotStateParked, AssignedShip: "PROBE-7"},
+		staffedYardRow("X1-A", "X1-A-YARD"),
+	}
+
+	rep, err := h.run(t, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if rep.SeedsUnstaged != 0 {
+		t.Fatalf("SeedsUnstaged = %d, want 0 — the yard is held by a row for a hull that is not there", rep.SeedsUnstaged)
+	}
+	if rep.SeedsRequested != 1 {
+		t.Fatalf("SeedsRequested = %d, want 1 — X1-B has no seed, and the released yard is staffed and free to stage one",
+			rep.SeedsRequested)
+	}
+	if len(h.ledger.deleted) != 1 || h.ledger.deleted[0] != "X1-A-YARD" {
+		t.Fatalf("deleted = %v, want the ghost SPARE row released", h.ledger.deleted)
+	}
+	if rep.SpareGhostsReleased != 1 {
+		t.Fatalf("SpareGhostsReleased = %d, want 1 — an invariant repaired silently is one nobody can see recurring",
+			rep.SpareGhostsReleased)
+	}
+	// THE GUARD ON THE FIX. Releasing the row must not become "claim it anyway":
+	// PROBE-7 can only fly one mission, and it is already flying X1-C's.
+	if len(h.ledger.setSeeds) != 0 {
+		t.Fatalf("seed writes = %v, want none — a hull already charting X1-C must not be stamped onto X1-B", h.ledger.setSeeds)
+	}
+}
+
+// The release is a burst of ledger writes, so it is paced like every other burst
+// in this engine. A backlog is not lost: the rows left over are still ghosts and
+// still first in line next tick.
+func TestAdvanceExpansion_GhostSpareReleasesAreBoundedPerTick(t *testing.T) {
+	h := newExpandHarness()
+	h.ledger.systems = []ExpandSystem{{System: "X1-A", Verdict: VerdictInScope}}
+	for i := 0; i < MaxSpareGhostReleases+3; i++ {
+		hull := fmt.Sprintf("PROBE-%02d", i)
+		h.ledger.systems = append(h.ledger.systems, ExpandSystem{
+			System: fmt.Sprintf("X1-T%02d", i), Verdict: VerdictPending, UnchartedCount: 4,
+			SeedShip: hull, SeedState: SeedStateCharting,
+		})
+		h.ledger.slots = append(h.ledger.slots, QueuedSlot{
+			Waypoint: fmt.Sprintf("X1-A-Y%02d", i), System: "X1-A", Kind: SlotKindSpare,
+			State: SlotStateParked, AssignedShip: hull,
+		})
+	}
+
+	rep, err := h.run(t, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if rep.SpareGhostsReleased != MaxSpareGhostReleases {
+		t.Fatalf("SpareGhostsReleased = %d, want the per-tick bound %d", rep.SpareGhostsReleased, MaxSpareGhostReleases)
+	}
+	if len(h.ledger.deleted) != MaxSpareGhostReleases {
+		t.Fatalf("deleted %d rows, want the bound %d — an unbounded release is a write burst nothing paces",
+			len(h.ledger.deleted), MaxSpareGhostReleases)
 	}
 }
 
