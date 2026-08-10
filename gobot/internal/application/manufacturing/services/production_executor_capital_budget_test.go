@@ -63,17 +63,17 @@ func TestBuyGood_CapitalBudget_ReservesTradesShareAboveTheFlatFloor(t *testing.T
 		{
 			// THE BUG: pre-budget this buy proceeds (150,100 − 100 = 150,000 ≥ 150,000).
 			name:      "parks a buy the flat floor allows once trade's share is reserved",
-			credits:   150_100,
+			credits:   effectiveReserveFloor()+100,
 			sensor:    &fakeCapitalWorkSensor{tradeWork: true},
 			wantBuys:  0,
-			wantFloor: 150_040, // 150,000 + 40% of the 100 deployable
+			wantFloor: effectiveReserveFloor()+40, // 150,000 + 40% of the 100 deployable
 		},
 		{
 			// GRACEFUL DEGRADATION: the identical treasury, trade idle -> construction holds
 			// the whole pool and the enforced floor is the flat 150k again. No capital idles
 			// because the other side is stopped.
 			name:     "hands construction the whole pool when trade is idle",
-			credits:  150_100,
+			credits:  effectiveReserveFloor()+100,
 			sensor:   &fakeCapitalWorkSensor{tradeWork: false},
 			wantBuys: 1,
 		},
@@ -81,7 +81,7 @@ func TestBuyGood_CapitalBudget_ReservesTradesShareAboveTheFlatFloor(t *testing.T
 			// 150,166 − 100 = 150,066; floor = 150,000 + round(0.4 x 166) = 150,066. Exact
 			// boundary -> PROCEED.
 			name:     "proceeds when the budget covers the buy exactly",
-			credits:  150_166,
+			credits:  effectiveReserveFloor()+166,
 			sensor:   &fakeCapitalWorkSensor{tradeWork: true},
 			wantBuys: 1,
 		},
@@ -89,19 +89,19 @@ func TestBuyGood_CapitalBudget_ReservesTradesShareAboveTheFlatFloor(t *testing.T
 			// One credit under that boundary: 150,065 < 150,066 -> PARK. Pre-budget this buy
 			// proceeds too (150,165 ≥ 150,000), so it is a second independent witness.
 			name:      "parks one credit below the budget boundary",
-			credits:   150_165,
+			credits:   effectiveReserveFloor()+165,
 			sensor:    &fakeCapitalWorkSensor{tradeWork: true},
 			wantBuys:  0,
-			wantFloor: 150_066,
+			wantFloor: effectiveReserveFloor()+66,
 		},
 		{
 			// FAIL CONSERVATIVE: a blind sensor read must not be read as "trade is idle" and
 			// hand construction 100% — that is the exact failure this bead removes.
 			name:      "fails conservative when the sensor cannot be read",
-			credits:   150_100,
+			credits:   effectiveReserveFloor()+100,
 			sensor:    &fakeCapitalWorkSensor{err: errors.New("container registry unreadable")},
 			wantBuys:  0,
-			wantFloor: 150_040,
+			wantFloor: effectiveReserveFloor()+40,
 		},
 	}
 
@@ -148,11 +148,11 @@ func TestPurchaseFabricatedOutput_CapitalBudget_ReservesTradesShareAboveTheFlatF
 	}{
 		// 150,430 − 430 = 150,000: clears the flat floor exactly, so pre-budget it harvests.
 		// Trade live -> floor rises to 150,000 + round(0.4 x 430) = 150,172 -> PARK.
-		{name: "parks a harvest the flat floor allows once trade's share is reserved", credits: 150_430, tradeWork: true, wantUnits: 0},
+		{name: "parks a harvest the flat floor allows once trade's share is reserved", credits: effectiveReserveFloor()+430, tradeWork: true, wantUnits: 0},
 		// Same treasury, trade idle -> the whole pool is construction's -> the flat floor -> harvest.
-		{name: "hands construction the whole pool when trade is idle", credits: 150_430, tradeWork: false, wantUnits: outputFloorTradeVolume},
+		{name: "hands construction the whole pool when trade is idle", credits: effectiveReserveFloor()+430, tradeWork: false, wantUnits: outputFloorTradeVolume},
 		// deployable 716: round(0.4 x 716) = 286, floor 150,286; 150,716 − 430 = 150,286 -> PROCEED.
-		{name: "proceeds when the budget covers the harvest exactly", credits: 150_716, tradeWork: true, wantUnits: outputFloorTradeVolume},
+		{name: "proceeds when the budget covers the harvest exactly", credits: effectiveReserveFloor()+716, tradeWork: true, wantUnits: outputFloorTradeVolume},
 	}
 
 	for _, tc := range cases {
@@ -187,7 +187,7 @@ func TestPurchaseFabricatedOutput_CapitalBudget_ReservesTradesShareAboveTheFlatF
 // relies on (they wire no sensor), and it is what makes the budget purely additive.
 func TestBuyGood_CapitalBudget_UnwiredSensorKeepsTheFlatFloor(t *testing.T) {
 	// 150,100 − 100 = 150,000: parks under the budget with trade live (above), buys without it.
-	executor, repo, mediator := newSpendFloorExecutor(t, &spendFloorFakeAPIClient{credits: 150_100})
+	executor, repo, mediator := newSpendFloorExecutor(t, &spendFloorFakeAPIClient{credits: effectiveReserveFloor()+100})
 	logger := &dwellCapturingLogger{}
 	ctx := common.WithLogger(common.WithPlayerToken(context.Background(), "TOKEN-FTQGP"), logger)
 

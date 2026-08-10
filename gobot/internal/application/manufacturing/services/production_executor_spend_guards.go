@@ -18,7 +18,7 @@ import (
 // It is the NON-CONTRACT floor, deliberately above the contract one. The band between the two is
 // contract-exclusive — margin-blind gate-fill buys otherwise spend the treasury down to the
 // contract engine's own floor and park the sole earner, a full-economy deadlock.
-const defaultWorkingCapitalReserve = common.NonContractWorkingCapitalFloor
+const defaultWorkingCapitalReserve = common.GateFillWorkingCapitalFloor
 
 // effectiveReserveFloor is the working-capital floor enforced at a factory input buy: the
 // flat, immutable defaultWorkingCapitalReserve. It takes no inputs deliberately — there is

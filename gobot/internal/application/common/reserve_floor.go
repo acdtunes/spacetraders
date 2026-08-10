@@ -26,6 +26,10 @@ const ContractSolvencyReserve = 12_000
 // resolves here.
 const NonContractWorkingCapitalFloor = ImmutableReserveFloor + 100_000
 
+// GateFillWorkingCapitalFloor is the gate fill's own floor, above the non-contract tier so a
+// margin-blind fill cannot spend the treasury down to where trade has nothing to deploy.
+const GateFillWorkingCapitalFloor = ImmutableReserveFloor + 350_000
+
 // ContractReserveCushion is the contract OPERATING-capital floor: the working capital a
 // light-hauler contract op holds so several concurrent contract cycles stay funded through a
 // treasury dip. Immutable base plus a contract-operating headroom — ONE base, a derived tier

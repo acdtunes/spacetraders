@@ -35,14 +35,14 @@ import (
 //
 // Numbers are the incident's, against the real enforced floor:
 //
-//	treasury 412,000 · reserve 150,000 (effectiveReserveFloor) · 3 buyers × 99,000
-//	one buy   → 412,000−99,000  = 313,000 ≥ 150,000   every buy is individually correct
-//	three     → 412,000−297,000 = 115,000 < 150,000   only the aggregate breaches
+//	treasury = reserve + 262,000 · 3 buyers × 99,000: each buy clears the reserve alone,
+//	only their sum breaches it.
 const (
-	aggTreasury = 412_000
-	aggBuyCost  = 99_000
-	aggBuyers   = 3
+	aggBuyCost = 99_000
+	aggBuyers  = 3
 )
+
+var aggTreasury = effectiveReserveFloor() + 262_000
 
 // racingTreasury models the treasury the money guards read, with the incident's timing.
 //

@@ -13,7 +13,7 @@ import (
 // stalling"): gate-fill margin-blind buys dragged the treasury 638k→142k, and the contract
 // engine — the sole earner — parked its next 106,400 source-buy against the 50k floor: a
 // full-economy deadlock. The fix raises the construction engine's working-capital reserve
-// default to common.NonContractWorkingCapitalFloor (150k) so the 50k–150k band stays
+// default to effectiveReserveFloor() (150k) so the 50k–150k band stays
 // contract-exclusive. This suite pins BOTH construction buy paths — the factory INPUT buy
 // (buyGood via ProduceGood) and the fabricated-OUTPUT harvest (purchaseFabricatedOutput) —
 // at the raised floor, reusing the spend_floor / output_spend_floor harnesses unchanged
@@ -30,12 +30,12 @@ func TestBuyGood_NonContractFloor_ParksInContractBandProceedsAbove(t *testing.T)
 		wantBuys    int
 		wantParkLog bool
 	}{
-		// 100,000 − 100 = 99,900: clears the old 50k floor, breaches the 150k one → PARK.
-		{name: "parks inside the 50k–150k contract band", credits: 100_000, wantBuys: 0, wantParkLog: true},
-		// 150,099 − 100 = 149,999 < 150,000 → PARK (boundary − 1).
-		{name: "parks one credit below the floor boundary", credits: 150_099, wantBuys: 0, wantParkLog: true},
-		// 150,100 − 100 = 150,000 ≥ 150,000 → PROCEED (exact boundary).
-		{name: "proceeds when the post-buy treasury meets the floor exactly", credits: 150_100, wantBuys: 1, wantParkLog: false},
+		// Below the contract cushion: clears the immutable base, breaches this floor → PARK.
+		{name: "parks inside the contract-exclusive band", credits: common.ContractReserveCushion - 50_000, wantBuys: 0, wantParkLog: true},
+		// One credit under the boundary → PARK.
+		{name: "parks one credit below the floor boundary", credits: effectiveReserveFloor() + 99, wantBuys: 0, wantParkLog: true},
+		// Exactly the boundary → PROCEED.
+		{name: "proceeds when the post-buy treasury meets the floor exactly", credits: effectiveReserveFloor() + 100, wantBuys: 1, wantParkLog: false},
 	}
 
 	for _, tc := range cases {
@@ -50,14 +50,14 @@ func TestBuyGood_NonContractFloor_ParksInContractBandProceedsAbove(t *testing.T)
 				t.Fatalf("a floor decision must never surface as an error: %v", err)
 			}
 			if mediator.purchaseAttempts() != tc.wantBuys {
-				t.Fatalf("credits %d: want %d purchase dispatches, got %d — the non-contract input-buy floor is %d (sp-q8bon)", tc.credits, tc.wantBuys, mediator.purchaseAttempts(), common.NonContractWorkingCapitalFloor)
+				t.Fatalf("credits %d: want %d purchase dispatches, got %d — the non-contract input-buy floor is %d (sp-q8bon)", tc.credits, tc.wantBuys, mediator.purchaseAttempts(), effectiveReserveFloor())
 			}
 			if tc.wantBuys == 0 && (result == nil || result.QuantityAcquired != 0 || result.TotalCost != 0) {
 				t.Fatalf("a parked buy must yield a zero-spend result, got %+v", result)
 			}
-			gotParkLog := spendFloorWarnContains(logger.entriesWithLevel("WARNING"), fmt.Sprintf("reserve %d", common.NonContractWorkingCapitalFloor))
+			gotParkLog := spendFloorWarnContains(logger.entriesWithLevel("WARNING"), fmt.Sprintf("reserve %d", effectiveReserveFloor()))
 			if gotParkLog != tc.wantParkLog {
-				t.Fatalf("credits %d: park WARNING naming reserve %d present=%v, want %v; warnings: %+v", tc.credits, common.NonContractWorkingCapitalFloor, gotParkLog, tc.wantParkLog, logger.entriesWithLevel("WARNING"))
+				t.Fatalf("credits %d: park WARNING naming reserve %d present=%v, want %v; warnings: %+v", tc.credits, effectiveReserveFloor(), gotParkLog, tc.wantParkLog, logger.entriesWithLevel("WARNING"))
 			}
 		})
 	}
@@ -75,9 +75,9 @@ func TestPurchaseFabricatedOutput_NonContractFloor_ParksInContractBandProceedsAb
 		wantBuys  int
 	}{
 		// 100,000 − 430 = 99,570: clears the old 50k floor, breaches the 150k one → PARK.
-		{name: "parks inside the 50k–150k contract band", credits: 100_000, wantUnits: 0, wantBuys: 0},
+		{name: "parks inside the contract-exclusive band", credits: common.ContractReserveCushion - 50_000, wantUnits: 0, wantBuys: 0},
 		// 150,430 − 430 = 150,000 ≥ 150,000 → PROCEED (exact boundary), full tranche.
-		{name: "proceeds when the post-buy treasury meets the floor exactly", credits: 150_430, wantUnits: outputFloorTradeVolume, wantBuys: 1},
+		{name: "proceeds when the post-buy treasury meets the floor exactly", credits: effectiveReserveFloor()+430, wantUnits: outputFloorTradeVolume, wantBuys: 1},
 	}
 
 	for _, tc := range cases {
@@ -91,7 +91,7 @@ func TestPurchaseFabricatedOutput_NonContractFloor_ParksInContractBandProceedsAb
 				t.Fatalf("a floor decision must never surface as an error: %v", err)
 			}
 			if units != tc.wantUnits {
-				t.Fatalf("credits %d: want %d harvested units, got %d — the non-contract harvest floor is %d (sp-q8bon)", tc.credits, tc.wantUnits, units, common.NonContractWorkingCapitalFloor)
+				t.Fatalf("credits %d: want %d harvested units, got %d — the non-contract harvest floor is %d (sp-q8bon)", tc.credits, tc.wantUnits, units, effectiveReserveFloor())
 			}
 			if tc.wantBuys == 0 && cost != 0 {
 				t.Fatalf("a parked harvest must spend nothing, got cost %d", cost)
