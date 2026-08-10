@@ -558,7 +558,7 @@ func buildArbCoordinatorCommand(cfg *configReader, playerID int, containerID str
 // ContainerID comes from the recovery-supplied containerID (the persisted row's ID),
 // mirroring arb_run/trade_route so the operation context and the runner's ship claim stay
 // pinned across a restart. ship_symbol is required; the guard knobs default to 0 (the
-// coordinator's own "0 → default" semantics: max_hops→6, max_spend→25% of treasury,
+// coordinator's own "0 → default" semantics: max_hops→6, max_spend→the capital budget,
 // replan_limit→2, working_capital_reserve→150k, the non-contract floor per sp-q8bon).
 // iterations drives the CONTINUOUS-tour
 // loop: -1 = tour until margins die, N>0 = N tours, 0/absent → the one-tour

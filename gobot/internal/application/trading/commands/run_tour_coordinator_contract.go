@@ -32,7 +32,7 @@ type RunTourCoordinatorCommand struct {
 	// yet — arming is governance-owned.
 	ClosedTours       bool
 	AnchorSystem      string
-	MaxSpend          int64 // 0 → 25% of live treasury (re-resolved per tour when Iterations != 0/1)
+	MaxSpend          int64 // 0 → the capital budget (re-resolved per tour when Iterations != 0/1)
 	MinMargin         int
 	LookbackMinMargin int // the look-back manifest's own floor; 0 → lookbackMinMarginDefault
 	ReplanLimit       int // 0 → tourMaxReplansDefault (PER TOUR)

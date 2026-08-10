@@ -70,11 +70,11 @@ type TourMetricsCollector struct {
 	durationSeconds *prometheus.HistogramVec
 
 	// resolvedMaxSpend records the dynamic per-tour spend cap each time defaultMaxSpend
-	// resolves it (25% of live treasury) — the exact value nj2b P13's Guards
-	// panel proxies with a treasury x 0.25 line. A gauge (last-write-wins per player):
-	// concurrent hulls resolve ~the same 25%-of-treasury figure, so the series tracks the
-	// current cap. Not set on the explicit --max-spend constant path (nothing dynamic to
-	// track there).
+	// resolves it — trade's share of the capital deployable above the run's working-capital
+	// reserve, the series nj2b P13's Guards panel reads. A gauge (last-write-wins per
+	// player): concurrent hulls resolve ~the same figure, so the series tracks the current
+	// cap. Not set on the explicit --max-spend constant path (nothing dynamic to track
+	// there).
 	resolvedMaxSpend *prometheus.GaugeVec
 
 	// jumpLoadedTotal increments once per COMMITTED margins-death reposition jump,
@@ -209,7 +209,7 @@ func NewTourMetricsCollector() *TourMetricsCollector {
 
 		resolvedMaxSpend: newGaugeVec(
 			"tour_resolved_max_spend",
-			"The dynamic per-tour spend cap (25% of live treasury) as most recently resolved by defaultMaxSpend, in credits",
+			"The dynamic per-tour spend cap (trade's share of deployable capital) as most recently resolved by defaultMaxSpend, in credits",
 			"player_id",
 		),
 

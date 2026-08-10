@@ -11,11 +11,11 @@ import (
 // sp-4hl5 (P0 regression): the Python solver's money guard is
 // spend_cap = max(0, max_spend − working_capital_reserve) — max_spend as "cash you
 // may touch" with the reserve kept back, the original sp-1ek0 CLI contract. The
-// DYNAMIC budget path (--max-spend 0 → 25% of live treasury, re-resolved per tour)
-// broke that pairing: its maxSpend is already a spend BUDGET (the capital guard is
-// the 25% sizing plus the per-buy live-balance floor), so forwarding the ABSOLUTE
-// fleet reserve zeroed the planner's budget for any treasury below 4×reserve
-// (25%×T ≤ reserve) — every candidate scored "no profitable allocation under
+// DYNAMIC budget path (--max-spend 0 → the capital budget, re-resolved per tour)
+// breaks that pairing: its maxSpend is ALREADY a spend budget, measured as trade's share
+// of what sits ABOVE that same reserve, so forwarding the ABSOLUTE fleet reserve
+// subtracts the identical guard twice and zeroes the planner's budget — every candidate
+// scored "no profitable allocation under
 // tranche decay/guards" and the whole heavy fleet relaunch-looped earning zero.
 // The defect was unmasked by sp-ggk2 finally delivering the [trade_fleet] 1M
 // reserve to live launches (before it, the reserve silently collapsed to the 50k
@@ -23,20 +23,20 @@ import (
 // planner RECEIVES on each path; the buy-time floor (spendfloor suite) is
 // untouched and still guards every actual spend.
 
-// Dynamic budget (--max-spend 0), the field values of 2026-07-11: treasury 456,270
-// → budget 114,067 (25%), launch-config reserve 1,000,000. The planner must receive
-// the resolved budget with a reserve of 0 — forwarding the 1M made
-// spend_cap = max(0, 114,067 − 1,000,000) = 0 and no tour could ever buy.
+// Dynamic budget (--max-spend 0) against the launch-config 1,000,000 [trade_fleet] reserve:
+// treasury 1,456,270 leaves 456,270 deployable, of which trade's 60% share is 273,762. The
+// planner must receive that budget with a reserve of 0 — forwarding the 1M makes
+// spend_cap = max(0, 273,762 − 1,000,000) = 0 and no tour could ever buy.
 func TestTour_DynamicBudget_PlannerReceivesZeroReserve(t *testing.T) {
 	fx := dynamicCapFixture()
-	api := &tourStubAPIClient{credits: 456_270}
+	api := &tourStubAPIClient{credits: 1_456_270}
 	planner := &tourFakeRoutingClient{plans: []*routing.TourPlan{roundTripPlan()}}
 	h := newTourHandlerWithAPI(t, fx, planner, &tourFakeTelemetry{}, api)
 
 	ctx := auth.WithPlayerToken(context.Background(), "TOUR-DYNRES")
 	_, err := h.Handle(ctx, &RunTourCoordinatorCommand{
 		ShipSymbol: "TOUR-DYNRES", PlayerID: 1, ContainerID: "ctr-dynres",
-		MaxSpend:              0, // dynamic: 25% of live treasury
+		MaxSpend:              0, // dynamic: the capital budget
 		WorkingCapitalReserve: 1_000_000,
 		ModelArtifactPath:     writeTourArtifact(t),
 	})
@@ -44,12 +44,12 @@ func TestTour_DynamicBudget_PlannerReceivesZeroReserve(t *testing.T) {
 		t.Fatalf("dynamic-budget tour returned error: %v", err)
 	}
 
-	if len(planner.maxSpends) == 0 || planner.maxSpends[0] != 114_067 {
-		t.Fatalf("planner max-spends = %v, want first = 114,067 (25%% of the 456,270 live treasury)", planner.maxSpends)
+	if len(planner.maxSpends) == 0 || planner.maxSpends[0] != 273_762 {
+		t.Fatalf("planner max-spends = %v, want first = 273,762 (trade's 60%% share of the 456,270 deployable above the reserve)", planner.maxSpends)
 	}
 	for i, reserve := range planner.reserves {
 		if reserve != 0 {
-			t.Fatalf("planner call %d received working_capital_reserve %d, want 0 — under the dynamic budget the solver's spend_cap = max(0, budget − reserve) would be max(0, 114,067 − %d) = 0: no buy is ever allocatable and every tour is 'no profitable allocation under tranche decay/guards' (the sp-4hl5 fleet-wide zero-earning loop)", i+1, reserve, reserve)
+			t.Fatalf("planner call %d received working_capital_reserve %d, want 0 — under the dynamic budget the solver's spend_cap = max(0, budget − reserve) would be max(0, 273,762 − %d) = 0: no buy is ever allocatable and every tour is 'no profitable allocation under tranche decay/guards' (the sp-4hl5 fleet-wide zero-earning loop)", i+1, reserve, reserve)
 		}
 	}
 }

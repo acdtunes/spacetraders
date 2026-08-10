@@ -55,7 +55,8 @@ needing a manual rescue. --iterations N flies exactly N tours; 0 (default) flies
 
 Guards (each fails CLOSED):
   - every buy is live-checked against the working-capital floor and the per-tour spend
-    cap (default 25% of live treasury, re-resolved each tour in continuous mode);
+    cap (default: trade's share of the capital deployable above that floor, re-resolved
+    each tour in continuous mode);
   - a leg whose live price has moved past tolerance is skipped and re-planned (bounded);
   - a run that ends holding cargo it bought reports FAILED, never a false success.
 
@@ -89,7 +90,7 @@ Examples:
 			defer cancel()
 
 			// Optional knobs: 0 (flag unset) → nil, letting the coordinator apply its own
-			// default per knob (max_hops→6, max_spend→25% of treasury, replan_limit→2,
+			// default per knob (max_hops→6, max_spend→the capital budget, replan_limit→2,
 			// iterations→one tour). --iterations -1 (continuous) is non-zero, so it maps
 			// through to &(-1) and is honored.
 			result, err := client.StartTourRun(ctx, shipSymbol, playerIdent.PlayerID, &playerIdent.AgentSymbol,
@@ -113,7 +114,7 @@ Examples:
 
 	cmd.Flags().StringVar(&shipSymbol, "ship", "", "Idle hull to fly the tour (required)")
 	cmd.Flags().IntVar(&maxHops, "max-hops", 0, "Cap the tour to this many hops (0 = planner default, 6)")
-	cmd.Flags().Int64Var(&maxSpend, "max-spend", 0, "Per-tour spend cap in credits (0 = 25% of live treasury, re-resolved each tour when --iterations != 0/1)")
+	cmd.Flags().Int64Var(&maxSpend, "max-spend", 0, "Per-tour spend cap in credits (0 = the capital budget — trade's share of the capital deployable above the working-capital reserve, re-resolved each tour when --iterations != 0/1)")
 	cmd.Flags().IntVar(&minMargin, "min-margin", 0, "Per-unit margin floor passed to the planner (0 = planner default)")
 	cmd.Flags().IntVar(&replanLimit, "replan-limit", 0, "Max live re-plans on price drift, per tour (0 = coordinator default, 2)")
 	cmd.Flags().Int64Var(&reserve, "working-capital-reserve", 0, "Hard spend floor: never drop live treasury below this (0 = coordinator default)")

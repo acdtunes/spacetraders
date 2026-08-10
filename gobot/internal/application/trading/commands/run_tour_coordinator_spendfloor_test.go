@@ -196,7 +196,7 @@ func TestTour_BuyFloor_UnreadableBalanceFailsClosedNoSpendNoDeath(t *testing.T) 
 }
 
 // Concurrency shape: the tour is PLANNED against a high
-// plan-time treasury (8,000,000 → a 2,000,000 dynamic cap that comfortably admits the
+// plan-time treasury (8,000,000 → a 4,200,000 dynamic cap that comfortably admits the
 // 100-unit buy), but by execution the live balance has DROPPED to 1,090,000 (a sibling
 // hull drained the shared treasury). The floor binds at EXECUTION against the live
 // balance — the tranche shrinks to the 90 units that 90,000 of headroom allows — proving
@@ -211,7 +211,7 @@ func TestTour_BuyFloor_HoldsAtExecutionWhenTreasuryDropsAfterPlanning(t *testing
 	ctx := auth.WithPlayerToken(context.Background(), "TOUR-RACE")
 	resp, err := h.Handle(ctx, &RunTourCoordinatorCommand{
 		ShipSymbol: "TOUR-RACE", PlayerID: 1, ContainerID: "ctr-race",
-		MaxSpend: 0, WorkingCapitalReserve: 1_000_000, // dynamic cap: 25% of the 8M plan-time treasury = 2M
+		MaxSpend: 0, WorkingCapitalReserve: 1_000_000, // dynamic cap: trade's 60% of the 7M deployable over the reserve
 		ModelArtifactPath: writeTourArtifact(t),
 	})
 	if err != nil {
@@ -219,8 +219,8 @@ func TestTour_BuyFloor_HoldsAtExecutionWhenTreasuryDropsAfterPlanning(t *testing
 	}
 	r := tourResponse(t, resp)
 
-	if len(planner.maxSpends) == 0 || planner.maxSpends[0] != 2_000_000 {
-		t.Fatalf("the plan must be sized against the HIGH plan-time treasury (cap 2,000,000), got %v", planner.maxSpends)
+	if len(planner.maxSpends) == 0 || planner.maxSpends[0] != 4_200_000 {
+		t.Fatalf("the plan must be sized against the HIGH plan-time treasury (cap 4,200,000), got %v", planner.maxSpends)
 	}
 	if fx.buys != 1 {
 		t.Fatalf("expected one shrunk buy, got %d", fx.buys)

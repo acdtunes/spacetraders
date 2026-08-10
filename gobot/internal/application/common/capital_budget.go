@@ -9,9 +9,9 @@ import (
 // This file holds the PER-OPERATION CAPITAL BUDGET. A shared POOL guarded only by
 // floors cannot allocate: a floor says "do not spend below X", never
 // "this much is yours". So the engine with the LOWEST floor structurally outranks every engine
-// above it, and the asymmetry between the two non-contract spenders decided who ate — trade caps
-// ITSELF at 25% of live treasury (tourDefaultMaxSpendTreasuryPct, RULINGS #6) while construction
-// had no proportional cap at all, so gate-fill consumed 100% of capital above its floor including
+// above it, and the asymmetry between the two non-contract spenders decided who ate — trade held
+// itself to a flat fraction of live treasury while construction had no proportional cap at all,
+// so gate-fill consumed 100% of capital above its floor including
 // the whole band trade needs to function. Measured live (era 5): the gate pipeline drove treasury
 // 1.18M -> 193k, after which the tour engine planned +50,890 across five legs and the floor shrank
 // leg 0 from 25 CLOTHING to 12 and a FOOD tranche to ONE unit. Trade is polite, construction is

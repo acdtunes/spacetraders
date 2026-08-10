@@ -61,11 +61,6 @@ const (
 	// an unreadable artifact fails OPEN to single-lane (RULINGS #4: never guess a
 	// version), never a phantom trade.
 	defaultModelArtifactPath = "gobot/services/routing-service/model_artifacts/market_model.json"
-	// tourDefaultMaxSpendTreasuryPct sizes the default cumulative spend cap when the
-	// captain leaves --max-spend at 0: 25% of live treasury (RULINGS #6). With
-	// --iterations -1 this is re-resolved against LIVE treasury at EACH tour's plan
-	// (an explicit --max-spend stays constant per tour); see execute's loop.
-	tourDefaultMaxSpendTreasuryPct = 25
 	// tourStarvationLimit bounds how many CONSECUTIVE no-progress tours (planner
 	// returns no profitable tour, or a feasible plan executes zero trades) a
 	// continuous run (--iterations -1) tolerates before it calls margins dead and
@@ -142,11 +137,11 @@ type RunTourCoordinatorHandler struct {
 	telemetry    trading.TourTelemetryRepository
 	planner      routing.RoutingClient
 	clock        shared.Clock
-	// apiClient live-reads treasury for the default 25% max-spend; nil → no default
-	// cap (the per-buy working-capital floor still guards).
+	// apiClient live-reads treasury for the default (--max-spend 0) capital budget; nil →
+	// no default cap (the per-buy working-capital floor still guards).
 	apiClient domainPorts.APIClient
 	// treasury is the LEDGER-backed treasury reader (sp-muq66) the tour's money reads —
-	// the dynamic 25%-of-treasury max-spend and the pre-positioning capital ceiling — go
+	// the dynamic max-spend budget and the pre-positioning capital ceiling — go
 	// through instead of calling Get Agent every time. nil (every existing test) keeps the
 	// direct apiClient read, byte-identical; the daemon injects the shared reader via
 	// SetTreasuryReader at boot with no config gate. An unreadable treasury still fails
@@ -196,13 +191,13 @@ type RunTourCoordinatorHandler struct {
 	// byte-identical. The daemon injects it via SetMarketFreshness at boot.
 	freshness *MarketFreshness
 
-	// workSensor backs the per-operation capital budget (sp-ftqgp): it answers whether the
-	// CONSTRUCTION side is live, which is what sizes trade's share of deployable capital. nil
-	// disables the budget and leaves the 25%-of-treasury cap and the reserve floor guarding
-	// alone — the SAME optional-port fail-OPEN contract as apiClient/repositionPersister (every
-	// existing test wires nothing; the daemon wires the container-backed sensor unconditionally
-	// via SetCapitalWorkSensor, with no config gate between). A wired-but-erroring sensor does
-	// NOT fail open: see tradeCapitalBudget.
+	// workSensor backs the per-operation capital budget: it answers whether the CONSTRUCTION
+	// side is live, which is what sizes trade's share of deployable capital. It feeds the
+	// budget's GRACEFUL DEGRADATION only — the budget itself always binds. Neither a nil
+	// sensor nor a read error may fail OPEN: both are answered conservatively (construction
+	// assumed live, trade takes only its proportional share). The daemon wires the
+	// container-backed sensor unconditionally via SetCapitalWorkSensor, with no config gate
+	// between. See tradeCapitalBudget.
 	workSensor common.CapitalWorkSensor
 
 	// repositionPersister durably records an in-flight margins-death reposition (its

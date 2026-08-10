@@ -81,10 +81,10 @@ func resolveTourHopBudget(cmd *RunTourCoordinatorCommand) (maxHops, replanLimit 
 // resolveTourSpendCap returns unresolved=true when the caller must skip this tour and
 // re-resolve on the next pass; a non-nil error is a resumable ctx cancel during the backoff.
 func (h *RunTourCoordinatorHandler) resolveTourSpendCap(ctx context.Context, cmd *RunTourCoordinatorCommand, response *RunTourCoordinatorResponse, budgetMon *health.Monitor, reserve int64, logger common.ContainerLogger) (spend int64, unresolved bool, err error) {
-	// RULINGS #6: an explicit --max-spend is a constant per-tour cap; --max-spend
-	// 0/omitted re-resolves 25% of LIVE treasury at EACH tour's plan, so a
-	// continuous run sizes each tour to the treasury it has grown into. The per-buy
-	// working-capital floor guards every spend regardless.
+	// An explicit --max-spend is a captain override: a constant per-tour cap, never
+	// re-resolved. --max-spend 0/omitted re-resolves the CAPITAL BUDGET against LIVE
+	// treasury at EACH tour's plan, so a continuous run sizes each tour to the treasury
+	// it has grown into. The per-buy working-capital floor guards every spend regardless.
 	if cmd.MaxSpend != 0 {
 		return cmd.MaxSpend, false, nil
 	}
@@ -114,23 +114,24 @@ func (h *RunTourCoordinatorHandler) resolveTourSpendCap(ctx context.Context, cmd
 		return 0, true, nil
 	}
 	h.noteTourBudget(ctx, cmd, budgetMon, false) // readable resolve resets the streak
-	// Record the RESOLVED dynamic cap (25% of live treasury) — the same value the
-	// Guards dashboard panel proxies with a treasury x 0.25 line. Only on the
-	// dynamic path — an explicit --max-spend constant has nothing dynamic to track.
+	// Record the RESOLVED dynamic cap for the Guards dashboard. Only on the dynamic
+	// path — an explicit --max-spend constant has nothing dynamic to track.
 	metrics.SetTourResolvedMaxSpend(cmd.PlayerID, resolved)
 	return resolved, false, nil
 }
 
-// defaultMaxSpend resolves the 25%-of-treasury cap (RULINGS #6) when --max-spend is 0.
-// It returns (cap, unreadable) so the caller can tell "no treasury source, plan
-// uncapped" apart from "have a source but the read FAILED, fail closed" — a single
-// int64(0) would conflate the two, letting a transient read failure masquerade as a
-// 0 budget:
+// defaultMaxSpend resolves the CAPITAL BUDGET — trade's share of the capital deployable
+// above the run's own working-capital reserve — when --max-spend is 0. It returns (cap,
+// unreadable) so the caller can tell "no treasury source, plan uncapped" apart from "have
+// a source but the read FAILED, fail closed" — a single int64(0) would conflate the two,
+// letting a transient read failure masquerade as a 0 budget:
 //
-//   - unreadable=false, cap>0  → treasury read; size the tour to 25% of it.
-//   - unreadable=false, cap=0  → NO apiClient wired at all (structural; the daemon
-//     always wires one, so this is the test-harness / pure-env path). 0 is "no explicit
-//     cumulative cap" — the per-buy working-capital floor still guards every spend.
+//   - unreadable=false, cap>0  → treasury read; size the tour to trade's share of it.
+//   - unreadable=false, cap=0  → EITHER no apiClient wired at all (structural; the daemon
+//     always wires one, so this is the test-harness / pure-env path, where 0 is "no explicit
+//     cumulative cap" and the per-buy working-capital floor is the only guard), OR a live
+//     treasury at or below the reserve, which deploys nothing and denies every spend.
+//     hasTreasurySource is what tells the two apart.
 //   - unreadable=true,  cap=0  → a treasury SOURCE is wired but the read FAILED
 //     (no player token, GetAgent errored, or a stale ledger with the live fallback also
 //     down). The caller MUST fail closed: never spend
@@ -149,67 +150,53 @@ func (h *RunTourCoordinatorHandler) defaultMaxSpend(ctx context.Context, playerI
 		})
 		return 0, true // source exists but UNREADABLE — fail closed
 	}
-	spendCap := credits * tourDefaultMaxSpendTreasuryPct / 100
-	logger.Log("INFO", fmt.Sprintf("Default tour max-spend = %d (25%% of treasury %d)", spendCap, credits), map[string]interface{}{
-		"max_spend": spendCap, "treasury": credits,
-	})
-	return h.applyCapitalBudget(ctx, playerID, reserve, credits, spendCap), false
+	return h.tradeCapitalBudget(ctx, playerID, reserve, credits), false
 }
 
-// applyCapitalBudget clamps this tour's cumulative spend cap to TRADE's share of deployable
-// capital (sp-ftqgp) — the other half of the per-operation budget whose construction half lives in
-// the production executor's budgetedReserveFloor. It only ever LOWERS the cap (RULINGS #4: this
-// bead adds a constraint and weakens none), and it derives the deployable pool from the tour's own
-// resolved reserve rather than a second floor constant (RULINGS #5).
+// tradeCapitalBudget is the cumulative spend cap a dynamic (--max-spend 0) tour plans under:
+// TRADE's share of the capital deployable above the run's own working-capital reserve. It is the
+// trade half of the per-operation budget whose construction half lives in the production
+// executor's budgetedReserveFloor, and it is the ONLY thing sizing this cap — a flat fraction of
+// treasury in front of it bound BELOW the allocator and throttled the engine the allocator had
+// already sized. The pool is derived from the reserve the run itself enforces rather than a second
+// floor constant (RULINGS #5), so the cumulative cap can never authorise a spend the per-buy floor
+// would refuse.
 //
-// It is applied on the DYNAMIC path only (--max-spend 0 → the 25%-of-treasury default, which is
-// what the trade fleet runs). An explicit --max-spend is a captain override that already bypasses
-// the 25% cap by design; leaving it untouched keeps that path byte-identical rather than adding a
-// fail-closed live-treasury read to a path that has never had one.
+// DYNAMIC path only. An explicit --max-spend is a captain override that never reaches here, so
+// that path keeps its constant cap and its lack of a live-treasury read.
 //
 // Three resolutions, deliberately different, mirroring the construction side:
 //
-//   - No sensor wired -> the 25% cap, unchanged (the optional-port contract; the daemon always
-//     wires one).
 //   - Sensor says construction is idle -> graceful degradation hands trade the WHOLE deployable
-//     pool, which is far above 25% of treasury, so the cap is untouched and NO capital idles.
-//     This is the live acceptance case: with the gate pipeline stopped, trade gets 100%.
+//     pool, so NO capital idles behind a stopped gate.
 //   - Sensor errors -> fail CONSERVATIVE, not open: assume construction IS working and take only
 //     the proportional share.
+//   - No sensor wired -> the same conservative answer. A budget that cannot sense the other side
+//     reserves for it (RULINGS #4); the daemon always wires one.
 //
 // Trade passes `true` for its OWN side unconditionally — a tour asking this question is a tour
 // about to buy — so a sensor miss can never budget trade to zero and park the fleet.
-func (h *RunTourCoordinatorHandler) applyCapitalBudget(ctx context.Context, playerID int, reserve, treasury, spendCap int64) int64 {
-	if h.workSensor == nil {
-		return spendCap
-	}
+func (h *RunTourCoordinatorHandler) tradeCapitalBudget(ctx context.Context, playerID int, reserve, treasury int64) int64 {
 	logger := common.LoggerFromContext(ctx)
 
 	constructionHasWork := true
-	if has, err := h.workSensor.ConstructionHasWork(ctx, playerID); err != nil {
-		logger.Log("WARNING", fmt.Sprintf("Could not sense whether construction is live for the capital budget — assuming it is and taking only trade's %d%% share (fail-conservative): %v", common.TradeCapitalSharePct, err), map[string]interface{}{
-			"error": err.Error(),
-		})
-	} else {
-		constructionHasWork = has
+	if h.workSensor != nil {
+		if has, err := h.workSensor.ConstructionHasWork(ctx, playerID); err != nil {
+			logger.Log("WARNING", fmt.Sprintf("Could not sense whether construction is live for the capital budget — assuming it is and taking only trade's %d%% share (fail-conservative): %v", common.TradeCapitalSharePct, err), map[string]interface{}{
+				"error": err.Error(),
+			})
+		} else {
+			constructionHasWork = has
+		}
 	}
 
 	deployable := common.CapitalDeployable(treasury, reserve)
 	tradeBudget, _ := common.CapitalSplit(common.TradeCapitalSharePct, deployable, true, constructionHasWork)
-	if tradeBudget >= spendCap {
-		// The budget is not the binding constraint this tour — either construction is idle and
-		// trade holds the whole pool, or the 25% cap is simply tighter. Logged at INFO so the
-		// "trade got 100%" acceptance case is directly observable in the container log.
-		logger.Log("INFO", fmt.Sprintf("Capital budget: trade's share is %d of %d deployable (construction live=%v, share %d%%) — above the %d max-spend, so the dynamic cap binds", tradeBudget, deployable, constructionHasWork, common.TradeCapitalSharePct, spendCap), map[string]interface{}{
-			"trade_budget": tradeBudget, "deployable": deployable, "construction_has_work": constructionHasWork,
-			"max_spend": spendCap, "treasury": treasury, "reserve": reserve,
-		})
-		return spendCap
-	}
-
-	logger.Log("INFO", fmt.Sprintf("Capital budget: tour max-spend cut from %d to %d — trade's %d%% share of %d deployable (treasury %d, reserve %d), construction live=%v", spendCap, tradeBudget, common.TradeCapitalSharePct, deployable, treasury, reserve, constructionHasWork), map[string]interface{}{
-		"trade_budget": tradeBudget, "deployable": deployable, "construction_has_work": constructionHasWork,
-		"max_spend_before": spendCap, "treasury": treasury, "reserve": reserve,
+	// Logged at INFO so the resolved cap and the split that produced it are directly readable
+	// in the container log — including the "construction idle, trade got 100%" case.
+	logger.Log("INFO", fmt.Sprintf("Tour max-spend = %d of %d deployable (treasury %d, reserve %d, construction live=%v, trade share %d%%)", tradeBudget, deployable, treasury, reserve, constructionHasWork, common.TradeCapitalSharePct), map[string]interface{}{
+		"max_spend": tradeBudget, "deployable": deployable, "construction_has_work": constructionHasWork,
+		"treasury": treasury, "reserve": reserve,
 	})
 	return tradeBudget
 }
@@ -217,9 +204,9 @@ func (h *RunTourCoordinatorHandler) applyCapitalBudget(ctx context.Context, play
 // plannerReserveFor is the keep-back the SOLVER is handed for a plan priced under this budget.
 // The solver's own money guard is spend_cap = max(0, max_spend − working_capital_reserve), a CASH
 // contract that only holds on the EXPLICIT --max-spend path: under the dynamic budget max_spend is
-// already a spend BUDGET (25% of live treasury, clamped to trade's share of deployable capital), so
+// already a spend BUDGET (trade's share of the capital deployable ABOVE that same reserve), so
 // forwarding the absolute fleet reserve would subtract the same capital guard twice and zero the
-// planner for any treasury below 4x the reserve. One function so the rule the request is BUILT with
+// planner for any treasury the budget had already sized. One function so the rule the request is BUILT with
 // and the rule callers PREDICT the solver's verdict with can never drift apart.
 func plannerReserveFor(cmd *RunTourCoordinatorCommand, reserve int64) int64 {
 	if cmd.MaxSpend == 0 {

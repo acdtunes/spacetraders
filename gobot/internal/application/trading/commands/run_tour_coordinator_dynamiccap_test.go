@@ -17,7 +17,7 @@ import (
 // re-resolution path (sp-7z7j). It embeds domainPorts.APIClient (nil) so only GetAgent
 // is overridden. failFirst makes the first N GetAgent calls ERROR (a transient treasury
 // read failure — the exact global blip that fails every hull's read at once), after
-// which it returns credits. It counts calls so a test can prove the 25%-of-treasury cap
+// which it returns credits. It counts calls so a test can prove the dynamic budget
 // is RE-RESOLVED per iteration and that an unreadable read is RETRIED rather than
 // swallowed into a loop-ending "tour unavailable".
 type tourStubAPIClient struct {
@@ -46,7 +46,7 @@ func (c *tourStubAPIClient) callCount() int {
 
 // newTourHandlerWithAPI mirrors newTourHandler but wires a REAL (fake) apiClient so the
 // dynamic-cap re-resolution path (defaultMaxSpend → GetAgent) is exercised, unlike the
-// base helper which passes nil (leaving the 25%-of-treasury resolution disabled).
+// base helper which passes nil (leaving the dynamic budget resolution disabled).
 func newTourHandlerWithAPI(t *testing.T, fx *tourFixture, planner routing.RoutingClient, tel trading.TourTelemetryRepository, apiClient domainPorts.APIClient) *RunTourCoordinatorHandler {
 	return NewRunTourCoordinatorHandler(
 		&tourFakeMediator{fx: fx},
@@ -79,11 +79,11 @@ func roundTripPlan() *routing.TourPlan {
 }
 
 // sp-7z7j regression (the bead's named assertion): a dynamic-cap (--max-spend 0)
-// continuous (--iterations -1) tour RE-RESOLVES 25% of LIVE treasury at each iteration
-// and REACHES ITERATION 2. Treasury reads healthy at 8,000,000 → each tour is sized to
-// 2,000,000 (25%), the SAME live re-resolution the fixed-cap control never needs. The
-// budget must be re-read per iteration (not resolved once and cached), and both tours
-// must fly before margins die.
+// continuous (--iterations -1) tour RE-RESOLVES its budget from LIVE treasury at each
+// iteration and REACHES ITERATION 2. Treasury reads healthy at 8,000,000 → each tour is
+// sized to trade's 60% of the 7,850,000 deployable over the 150,000 floor = 4,710,000, the
+// SAME live re-resolution the fixed-cap control never needs. The budget must be re-read per
+// iteration (not resolved once and cached), and both tours must fly before margins die.
 func TestTour_ContinuousDynamicCapReResolvesEachIterationAndReachesIteration2(t *testing.T) {
 	fx := dynamicCapFixture()
 	api := &tourStubAPIClient{credits: 8_000_000}
@@ -97,7 +97,7 @@ func TestTour_ContinuousDynamicCapReResolvesEachIterationAndReachesIteration2(t 
 	ctx := auth.WithPlayerToken(context.Background(), "TOUR-DYN-TOKEN")
 	resp, err := h.Handle(ctx, &RunTourCoordinatorCommand{
 		ShipSymbol: "TOUR-DYN", PlayerID: 1, ContainerID: "ctr-dyn", Iterations: -1,
-		MaxSpend:          0, // dynamic: 25% of live treasury, re-resolved each tour
+		MaxSpend:          0, // dynamic: the capital budget, re-resolved each tour
 		ModelArtifactPath: writeTourArtifact(t),
 	})
 	if err != nil {
@@ -115,9 +115,10 @@ func TestTour_ContinuousDynamicCapReResolvesEachIterationAndReachesIteration2(t 
 		t.Fatalf("exit reason = %q, want %q (margins died after two productive tours)", r.ExitReason, tourExitStarvation)
 	}
 	// The budget was RE-RESOLVED from live treasury on each of the two productive
-	// tours: 25% of 8,000,000 = 2,000,000, a fresh positive value each pass.
-	if len(planner.maxSpends) < 2 || planner.maxSpends[0] != 2_000_000 || planner.maxSpends[1] != 2_000_000 {
-		t.Fatalf("planner max-spends = %v, want the first two = 2,000,000 (25%% of live treasury, re-resolved per iteration)", planner.maxSpends)
+	// tours: trade's 60% of the 7,850,000 deployable = 4,710,000, a fresh positive value
+	// each pass.
+	if len(planner.maxSpends) < 2 || planner.maxSpends[0] != 4_710_000 || planner.maxSpends[1] != 4_710_000 {
+		t.Fatalf("planner max-spends = %v, want the first two = 4,710,000 (the capital budget, re-resolved per iteration)", planner.maxSpends)
 	}
 	// Re-resolution means one live treasury read per loop pass, not a single cached read.
 	if api.callCount() < 2 {
@@ -215,7 +216,7 @@ func TestTour_FixedCapContinuousUsesConstantCapNeverReResolves(t *testing.T) {
 	if r.ExitReason != tourExitStarvation {
 		t.Fatalf("exit reason = %q, want %q", r.ExitReason, tourExitStarvation)
 	}
-	// Every plan saw the constant fixed cap, never a re-resolved (25%-of-treasury) value.
+	// Every plan saw the constant fixed cap, never a re-resolved capital budget.
 	if len(planner.maxSpends) == 0 {
 		t.Fatalf("expected the planner to be called at least once")
 	}
@@ -257,8 +258,8 @@ func TestTour_DynamicCapSingleTourStillExitsAfterOne(t *testing.T) {
 	if r.ExitReason != tourExitIterations {
 		t.Fatalf("exit reason = %q, want %q", r.ExitReason, tourExitIterations)
 	}
-	// The single tour was still sized to 25% of live treasury (2,000,000), not 0.
-	if len(planner.maxSpends) != 1 || planner.maxSpends[0] != 2_000_000 {
-		t.Fatalf("planner max-spends = %v, want [2000000] (25%% of live treasury)", planner.maxSpends)
+	// The single tour was still sized to the capital budget (4,710,000), not 0.
+	if len(planner.maxSpends) != 1 || planner.maxSpends[0] != 4_710_000 {
+		t.Fatalf("planner max-spends = %v, want [4710000] (the capital budget over the 150,000 floor)", planner.maxSpends)
 	}
 }

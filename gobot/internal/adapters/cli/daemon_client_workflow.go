@@ -139,7 +139,7 @@ type StartTourRunResult struct {
 // StartTourRun asks the daemon to launch a captain-directed, guarded multi-hop trade
 // tour as a recovery-safe container (sp-1ek0). maxHops/maxSpend/minMargin/replanLimit/
 // workingCapitalReserve/iterations are optional: pass nil to leave each unset (the
-// coordinator's own default semantics apply — max_hops→6, max_spend→25% of treasury,
+// coordinator's own default semantics apply — max_hops→6, max_spend→the capital budget,
 // replan_limit→2, iterations→one tour). iterations=-1 makes it CONTINUOUS:
 // tour, re-plan from the new position, tour again until margins die.
 func (c *DaemonClient) StartTourRun(
