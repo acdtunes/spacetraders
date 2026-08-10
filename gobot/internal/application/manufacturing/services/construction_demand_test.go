@@ -92,7 +92,7 @@ func TestConstructionDemandReaderReleasesOnAFilledBill(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if has {
-		t.Fatal("a fully delivered 1600/1600 bill still reported demand — trade stays capped at 60% funding nothing")
+		t.Fatal("a fully delivered 1600/1600 bill still reported demand — trade stays capped at its share, funding nothing")
 	}
 }
 

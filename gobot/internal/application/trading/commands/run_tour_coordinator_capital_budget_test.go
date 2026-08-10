@@ -35,7 +35,7 @@ func (s *tourFakeCapitalWorkSensor) ConstructionHasWork(_ context.Context, _ int
 
 // The budget can never exceed the deployable pool above the run's own reserve (RULINGS #4). The
 // construction-idle rows are the LIVE ACCEPTANCE CASE: with the gate pipeline stopped the split
-// must hand trade 100% rather than 60% with the other 40% idling.
+// must hand trade 100% rather than 40% with the other 60% idling.
 func TestTradeCapitalBudget(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -53,13 +53,13 @@ func TestTradeCapitalBudget(t *testing.T) {
 			want: 140_000,
 		},
 		{
-			// Same treasury with the gate running: trade takes its 60% of 140,000 = 84,000.
-			// Construction's 56,000 is now genuinely reserved instead of being a floor it can
+			// Same treasury with the gate running: trade takes its 40% of 140,000 = 56,000.
+			// Construction's 84,000 is now genuinely reserved instead of being a floor it can
 			// spend straight through.
 			name:    "construction live clamps the cap to trade's share",
 			sensor:  &tourFakeCapitalWorkSensor{constructionWork: true},
 			reserve: 300_000, treasury: 440_000,
-			want: 84_000,
+			want: 56_000,
 		},
 		{
 			// The measured era-5 dip, live numbers: treasury 343,093 against a 300,000
@@ -73,10 +73,10 @@ func TestTradeCapitalBudget(t *testing.T) {
 			want: 43_093,
 		},
 		{
-			name:    "the same dip with the gate running splits 60/40",
+			name:    "the same dip with the gate running splits 40/60",
 			sensor:  &tourFakeCapitalWorkSensor{constructionWork: true},
 			reserve: 300_000, treasury: 343_093,
-			want: 25_856, // round(0.6 x 43,093)
+			want: 17_237, // round(0.4 x 43,093)
 		},
 		{
 			// FAIL CONSERVATIVE: a blind sensor read must not be read as "construction is
@@ -84,7 +84,7 @@ func TestTradeCapitalBudget(t *testing.T) {
 			name:    "an unreadable sensor takes only trade's share",
 			sensor:  &tourFakeCapitalWorkSensor{err: errors.New("container registry unreadable")},
 			reserve: 300_000, treasury: 440_000,
-			want: 84_000,
+			want: 56_000,
 		},
 		{
 			// A treasury at or under the run's reserve deploys nothing. The cap collapses to
@@ -124,8 +124,8 @@ func TestTradeCapitalBudget(t *testing.T) {
 func TestTradeCapitalBudget_UnwiredSensorTakesTradesShare(t *testing.T) {
 	h := &RunTourCoordinatorHandler{}
 	ctx := common.WithLogger(context.Background(), &laneLogCapturingLogger{})
-	if got := h.tradeCapitalBudget(ctx, 1, 300_000, 343_093); got != 25_856 {
-		t.Fatalf("an unwired sensor must take only trade's %d%% share (25,856 of the 43,093 deployable), got %d", common.TradeCapitalSharePct, got)
+	if got := h.tradeCapitalBudget(ctx, 1, 300_000, 343_093); got != 17_237 {
+		t.Fatalf("an unwired sensor must take only trade's %d%% share (17,237 of the 43,093 deployable), got %d", common.TradeCapitalSharePct, got)
 	}
 }
 
@@ -139,7 +139,7 @@ func TestDefaultMaxSpend_IsTheCapitalBudget(t *testing.T) {
 	}{
 		// Deployable over the 300,000 reserve = 140,000.
 		{name: "gate stopped hands trade the whole pool", constructionWork: false, want: 140_000},
-		{name: "gate running clamps to trade's 60% share", constructionWork: true, want: 84_000},
+		{name: "gate running clamps to trade's 40% share", constructionWork: true, want: 56_000},
 	}
 
 	for _, tc := range cases {

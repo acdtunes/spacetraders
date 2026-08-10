@@ -211,7 +211,7 @@ func TestTour_BuyFloor_HoldsAtExecutionWhenTreasuryDropsAfterPlanning(t *testing
 	ctx := auth.WithPlayerToken(context.Background(), "TOUR-RACE")
 	resp, err := h.Handle(ctx, &RunTourCoordinatorCommand{
 		ShipSymbol: "TOUR-RACE", PlayerID: 1, ContainerID: "ctr-race",
-		MaxSpend: 0, WorkingCapitalReserve: 1_000_000, // dynamic cap: trade's 60% of the 7M deployable over the reserve
+		MaxSpend: 0, WorkingCapitalReserve: 1_000_000, // dynamic cap: trade's 40% of the 7M deployable over the reserve
 		ModelArtifactPath: writeTourArtifact(t),
 	})
 	if err != nil {
@@ -219,8 +219,8 @@ func TestTour_BuyFloor_HoldsAtExecutionWhenTreasuryDropsAfterPlanning(t *testing
 	}
 	r := tourResponse(t, resp)
 
-	if len(planner.maxSpends) == 0 || planner.maxSpends[0] != 4_200_000 {
-		t.Fatalf("the plan must be sized against the HIGH plan-time treasury (cap 4,200,000), got %v", planner.maxSpends)
+	if len(planner.maxSpends) == 0 || planner.maxSpends[0] != 2_800_000 {
+		t.Fatalf("the plan must be sized against the HIGH plan-time treasury (cap 2,800,000), got %v", planner.maxSpends)
 	}
 	if fx.buys != 1 {
 		t.Fatalf("expected one shrunk buy, got %d", fx.buys)

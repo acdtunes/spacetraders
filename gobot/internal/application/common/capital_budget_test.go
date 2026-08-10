@@ -20,9 +20,9 @@ func TestCapitalSplit(t *testing.T) {
 		wantTrade        int64
 		wantConstruction int64
 	}{
-		// PROPORTIONAL: the Admiral-approved 60/40 on a representative deployable pool.
-		// 40% of ~290k still puts ~116k per cycle into gate materials.
-		{"both working splits 60/40", TradeCapitalSharePct, 290_000, true, true, 174_000, 116_000},
+		// PROPORTIONAL: the 40/60 split on a representative deployable pool. 60% of
+		// ~290k still puts ~174k per cycle into gate materials.
+		{"both working splits 40/60", TradeCapitalSharePct, 290_000, true, true, 116_000, 174_000},
 
 		// GRACEFUL DEGRADATION — the property this bead exists for. Idle capital is the
 		// failure mode; a stopped gate must not leave 40% of the treasury unspent.
@@ -48,10 +48,11 @@ func TestCapitalSplit(t *testing.T) {
 		{"negative deployable floors at zero", TradeCapitalSharePct, -500_000, true, true, 0, 0},
 		{"negative deployable floors at zero under degradation too", TradeCapitalSharePct, -500_000, true, false, 0, 0},
 
-		// Rounding: 60% of 5 is 3.0 and of 7 is 4.2 -> 4 (round to nearest), with
-		// construction taking the exact remainder so the two always sum to deployable.
-		{"rounds to nearest and conserves the total", TradeCapitalSharePct, 7, true, true, 4, 3},
-		{"one credit is not lost to rounding", TradeCapitalSharePct, 1, true, true, 1, 0},
+		// Rounding: 40% of 7 is 2.8 -> 3 (round to nearest), with construction taking the
+		// exact remainder so the two always sum to deployable. 40% of 1 is 0.4 -> 0, so
+		// the single credit lands with construction rather than being lost to truncation.
+		{"rounds to nearest and conserves the total", TradeCapitalSharePct, 7, true, true, 3, 4},
+		{"one credit is not lost to rounding", TradeCapitalSharePct, 1, true, true, 0, 1},
 	}
 
 	for _, tc := range cases {
@@ -76,6 +77,24 @@ func TestCapitalSplit(t *testing.T) {
 				t.Fatalf("a budget may never be negative, got (%d, %d)", trade, construction)
 			}
 		})
+	}
+}
+
+// TestCapitalSplit_ClearsTheLiveMinimumGateFeedTranche is the acceptance shape for sp-sz9fq: on an
+// 89,047 deployable pool, a 40% construction share (35,619) falls 7,101 short of the 42,720
+// minimum ELECTRONICS tranche the gate feed needs, so every step of that size is refused
+// outright — a lockout, not a throttle. A 60% construction share (53,428) clears it.
+func TestCapitalSplit_ClearsTheLiveMinimumGateFeedTranche(t *testing.T) {
+	const liveDeployable = 89_047
+	const minimumTranche = 42_720
+
+	trade, construction := CapitalSplit(TradeCapitalSharePct, liveDeployable, true, true)
+	if trade != 35_619 || construction != 53_428 {
+		t.Fatalf("CapitalSplit(%d, %d, ...) = (trade %d, construction %d), want (trade 35,619, construction 53,428)",
+			TradeCapitalSharePct, liveDeployable, trade, construction)
+	}
+	if construction < minimumTranche {
+		t.Fatalf("construction's %d share cannot afford the %d minimum gate-feed tranche — the lockout this split exists to clear", construction, minimumTranche)
 	}
 }
 
@@ -281,7 +300,7 @@ func (f *fakeConstructionDemand) HasOutstandingConstructionDemand(_ context.Cont
 // through the real CapitalSplit so what is asserted is the credits each engine actually gets.
 //
 // The second case is the one that stops the naive fix: construction is live and holds an
-// outstanding bill, and trade must STAY held to its 60% share. A fix keyed on "tasks promoted
+// outstanding bill, and trade must STAY held to its 40% share. A fix keyed on "tasks promoted
 // last tick" would report idle in exactly that state — the coordinator is between ticks — and
 // hand trade the whole treasury while construction still owes material.
 func TestConstructionHasWorkIsDemandNotLiveness(t *testing.T) {
@@ -304,7 +323,7 @@ func TestConstructionHasWorkIsDemandNotLiveness(t *testing.T) {
 		{
 			name:      "live drain with an OUTSTANDING bill holds trade to its share even with zero promotions",
 			drainLive: true, demand: true, wantHasWork: true,
-			wantTradeBudget: 679631, wantConstruction: deployable - 679631,
+			wantTradeBudget: 453088, wantConstruction: deployable - 453088,
 		},
 		{
 			name:      "a STOPPED drain has no work whatever its bill says — it cannot spend a credit",

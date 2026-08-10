@@ -41,14 +41,14 @@ import (
 
 const (
 	// TradeCapitalSharePct is TRADE's share of deployable capital when both sides have work;
-	// construction takes the remainder (Admiral-approved 60/40). Trade is the compounding
-	// earner that FUNDS the gate, so it takes the larger share — the measured counterfactual
-	// is a single manual FOOD leg that bought 60 units for 89,520 and returned 153,840
-	// (+64,320 on one round trip), more capital deployed on one good than the whole tour
-	// engine was permitted. 40% of a ~290k deployable still puts ~116k per cycle into
-	// FAB_MATS, so the gate keeps filling. ONE clamped integer, retunable by edit — not a
-	// config knob, not an arm seam.
-	TradeCapitalSharePct = 60
+	// construction takes the remainder — deliberately the LARGER share, because construction's
+	// minimum spend is LUMPY where trade's is not. A single gate-feed tranche can cost
+	// 40,000-50,000 credits, so on an 89,047 deployable pool a 60% construction share (53,428)
+	// clears the 42,720 minimum tranche while 40% (35,619) falls short by ~7,100 and locks the
+	// feed out entirely rather than merely throttling it. Trade has no such minimum, so 40% of
+	// a ~290k deployable still puts ~116k per cycle into its buys. ONE clamped integer,
+	// retunable by edit — not a config knob, not an arm seam.
+	TradeCapitalSharePct = 40
 
 	// capitalShareMax / capitalShareMin bound the ratio so it can never be edited into total
 	// starvation of either side: 100 = pure trade, 0 = pure construction. CapitalSplit clamps

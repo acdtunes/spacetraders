@@ -24,9 +24,9 @@ import (
 // untouched and still guards every actual spend.
 
 // Dynamic budget (--max-spend 0) against the launch-config 1,000,000 [trade_fleet] reserve:
-// treasury 1,456,270 leaves 456,270 deployable, of which trade's 60% share is 273,762. The
+// treasury 1,456,270 leaves 456,270 deployable, of which trade's 40% share is 182,508. The
 // planner must receive that budget with a reserve of 0 — forwarding the 1M makes
-// spend_cap = max(0, 273,762 − 1,000,000) = 0 and no tour could ever buy.
+// spend_cap = max(0, 182,508 − 1,000,000) = 0 and no tour could ever buy.
 func TestTour_DynamicBudget_PlannerReceivesZeroReserve(t *testing.T) {
 	fx := dynamicCapFixture()
 	api := &tourStubAPIClient{credits: 1_456_270}
@@ -44,12 +44,12 @@ func TestTour_DynamicBudget_PlannerReceivesZeroReserve(t *testing.T) {
 		t.Fatalf("dynamic-budget tour returned error: %v", err)
 	}
 
-	if len(planner.maxSpends) == 0 || planner.maxSpends[0] != 273_762 {
-		t.Fatalf("planner max-spends = %v, want first = 273,762 (trade's 60%% share of the 456,270 deployable above the reserve)", planner.maxSpends)
+	if len(planner.maxSpends) == 0 || planner.maxSpends[0] != 182_508 {
+		t.Fatalf("planner max-spends = %v, want first = 182,508 (trade's 40%% share of the 456,270 deployable above the reserve)", planner.maxSpends)
 	}
 	for i, reserve := range planner.reserves {
 		if reserve != 0 {
-			t.Fatalf("planner call %d received working_capital_reserve %d, want 0 — under the dynamic budget the solver's spend_cap = max(0, budget − reserve) would be max(0, 273,762 − %d) = 0: no buy is ever allocatable and every tour is 'no profitable allocation under tranche decay/guards' (the sp-4hl5 fleet-wide zero-earning loop)", i+1, reserve, reserve)
+			t.Fatalf("planner call %d received working_capital_reserve %d, want 0 — under the dynamic budget the solver's spend_cap = max(0, budget − reserve) would be max(0, 182,508 − %d) = 0: no buy is ever allocatable and every tour is 'no profitable allocation under tranche decay/guards' (the sp-4hl5 fleet-wide zero-earning loop)", i+1, reserve, reserve)
 		}
 	}
 }

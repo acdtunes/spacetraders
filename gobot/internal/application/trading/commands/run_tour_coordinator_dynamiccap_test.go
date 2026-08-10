@@ -81,7 +81,7 @@ func roundTripPlan() *routing.TourPlan {
 // sp-7z7j regression (the bead's named assertion): a dynamic-cap (--max-spend 0)
 // continuous (--iterations -1) tour RE-RESOLVES its budget from LIVE treasury at each
 // iteration and REACHES ITERATION 2. Treasury reads healthy at 8,000,000 → each tour is
-// sized to trade's 60% of the 7,850,000 deployable over the 150,000 floor = 4,710,000, the
+// sized to trade's 40% of the 7,850,000 deployable over the 150,000 floor = 3,140,000, the
 // SAME live re-resolution the fixed-cap control never needs. The budget must be re-read per
 // iteration (not resolved once and cached), and both tours must fly before margins die.
 func TestTour_ContinuousDynamicCapReResolvesEachIterationAndReachesIteration2(t *testing.T) {
@@ -115,10 +115,10 @@ func TestTour_ContinuousDynamicCapReResolvesEachIterationAndReachesIteration2(t 
 		t.Fatalf("exit reason = %q, want %q (margins died after two productive tours)", r.ExitReason, tourExitStarvation)
 	}
 	// The budget was RE-RESOLVED from live treasury on each of the two productive
-	// tours: trade's 60% of the 7,850,000 deployable = 4,710,000, a fresh positive value
+	// tours: trade's 40% of the 7,850,000 deployable = 3,140,000, a fresh positive value
 	// each pass.
-	if len(planner.maxSpends) < 2 || planner.maxSpends[0] != 4_710_000 || planner.maxSpends[1] != 4_710_000 {
-		t.Fatalf("planner max-spends = %v, want the first two = 4,710,000 (the capital budget, re-resolved per iteration)", planner.maxSpends)
+	if len(planner.maxSpends) < 2 || planner.maxSpends[0] != 3_140_000 || planner.maxSpends[1] != 3_140_000 {
+		t.Fatalf("planner max-spends = %v, want the first two = 3,140,000 (the capital budget, re-resolved per iteration)", planner.maxSpends)
 	}
 	// Re-resolution means one live treasury read per loop pass, not a single cached read.
 	if api.callCount() < 2 {
@@ -258,8 +258,8 @@ func TestTour_DynamicCapSingleTourStillExitsAfterOne(t *testing.T) {
 	if r.ExitReason != tourExitIterations {
 		t.Fatalf("exit reason = %q, want %q", r.ExitReason, tourExitIterations)
 	}
-	// The single tour was still sized to the capital budget (4,710,000), not 0.
-	if len(planner.maxSpends) != 1 || planner.maxSpends[0] != 4_710_000 {
-		t.Fatalf("planner max-spends = %v, want [4710000] (the capital budget over the 150,000 floor)", planner.maxSpends)
+	// The single tour was still sized to the capital budget (3,140,000), not 0.
+	if len(planner.maxSpends) != 1 || planner.maxSpends[0] != 3_140_000 {
+		t.Fatalf("planner max-spends = %v, want [3140000] (the capital budget over the 150,000 floor)", planner.maxSpends)
 	}
 }

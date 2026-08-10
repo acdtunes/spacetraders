@@ -48,10 +48,10 @@ func (s *fakeCapitalWorkSensor) ConstructionHasWork(_ context.Context, _ int) (b
 // are the band trade needs. With trade live, construction's budget is 40% of the 100 deployable,
 // so its enforced floor rises to 150,060 and the buy PARKS.
 //
-// The other rows walk the new boundary (deployable 249 is the first pool where 40% covers the
-// 100-credit buy) and pin the two non-proportional resolutions: an idle trade side degrades to the
-// flat floor byte-for-byte, and an unreadable sensor fails CONSERVATIVE (assume trade is working)
-// rather than handing construction the whole treasury.
+// The other rows walk the new boundary (deployable 166 is the first pool where construction's 60%
+// covers the 100-credit buy) and pin the two non-proportional resolutions: an idle trade side
+// degrades to the flat floor byte-for-byte, and an unreadable sensor fails CONSERVATIVE (assume
+// trade is working) rather than handing construction the whole treasury.
 func TestBuyGood_CapitalBudget_ReservesTradesShareAboveTheFlatFloor(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -66,7 +66,7 @@ func TestBuyGood_CapitalBudget_ReservesTradesShareAboveTheFlatFloor(t *testing.T
 			credits:   150_100,
 			sensor:    &fakeCapitalWorkSensor{tradeWork: true},
 			wantBuys:  0,
-			wantFloor: 150_060, // 150,000 + 60% of the 100 deployable
+			wantFloor: 150_040, // 150,000 + 40% of the 100 deployable
 		},
 		{
 			// GRACEFUL DEGRADATION: the identical treasury, trade idle -> construction holds
@@ -78,21 +78,21 @@ func TestBuyGood_CapitalBudget_ReservesTradesShareAboveTheFlatFloor(t *testing.T
 			wantBuys: 1,
 		},
 		{
-			// 150,249 − 100 = 150,149; floor = 150,000 + round(0.6 x 249) = 150,149. Exact
+			// 150,166 − 100 = 150,066; floor = 150,000 + round(0.4 x 166) = 150,066. Exact
 			// boundary -> PROCEED.
 			name:     "proceeds when the budget covers the buy exactly",
-			credits:  150_249,
+			credits:  150_166,
 			sensor:   &fakeCapitalWorkSensor{tradeWork: true},
 			wantBuys: 1,
 		},
 		{
-			// One credit under that boundary: 150,148 < 150,149 -> PARK. Pre-budget this buy
-			// proceeds too (150,148 ≥ 150,000), so it is a second independent witness.
+			// One credit under that boundary: 150,065 < 150,066 -> PARK. Pre-budget this buy
+			// proceeds too (150,165 ≥ 150,000), so it is a second independent witness.
 			name:      "parks one credit below the budget boundary",
-			credits:   150_248,
+			credits:   150_165,
 			sensor:    &fakeCapitalWorkSensor{tradeWork: true},
 			wantBuys:  0,
-			wantFloor: 150_149,
+			wantFloor: 150_066,
 		},
 		{
 			// FAIL CONSERVATIVE: a blind sensor read must not be read as "trade is idle" and
@@ -101,7 +101,7 @@ func TestBuyGood_CapitalBudget_ReservesTradesShareAboveTheFlatFloor(t *testing.T
 			credits:   150_100,
 			sensor:    &fakeCapitalWorkSensor{err: errors.New("container registry unreadable")},
 			wantBuys:  0,
-			wantFloor: 150_060,
+			wantFloor: 150_040,
 		},
 	}
 
@@ -147,12 +147,12 @@ func TestPurchaseFabricatedOutput_CapitalBudget_ReservesTradesShareAboveTheFlatF
 		wantUnits int
 	}{
 		// 150,430 − 430 = 150,000: clears the flat floor exactly, so pre-budget it harvests.
-		// Trade live -> floor rises to 150,000 + round(0.6 x 430) = 150,258 -> PARK.
+		// Trade live -> floor rises to 150,000 + round(0.4 x 430) = 150,172 -> PARK.
 		{name: "parks a harvest the flat floor allows once trade's share is reserved", credits: 150_430, tradeWork: true, wantUnits: 0},
 		// Same treasury, trade idle -> the whole pool is construction's -> the flat floor -> harvest.
 		{name: "hands construction the whole pool when trade is idle", credits: 150_430, tradeWork: false, wantUnits: outputFloorTradeVolume},
-		// deployable 1075: round(0.6 x 1075) = 645, floor 150,645; 151,075 − 430 = 150,645 -> PROCEED.
-		{name: "proceeds when the budget covers the harvest exactly", credits: 151_075, tradeWork: true, wantUnits: outputFloorTradeVolume},
+		// deployable 716: round(0.4 x 716) = 286, floor 150,286; 150,716 − 430 = 150,286 -> PROCEED.
+		{name: "proceeds when the budget covers the harvest exactly", credits: 150_716, tradeWork: true, wantUnits: outputFloorTradeVolume},
 	}
 
 	for _, tc := range cases {

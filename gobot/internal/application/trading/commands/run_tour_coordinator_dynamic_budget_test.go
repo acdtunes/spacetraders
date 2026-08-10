@@ -14,13 +14,13 @@ import (
 // bound BELOW the budget and throttled the engine the budget had already sized.
 //
 // Measured live 2026-08-10 02:37Z: treasury 350,682 over the 150,000 non-contract floor leaves
-// 200,682 deployable, of which trade's 60% is 120,409 — against a flat-fraction cap of 87,670
+// 200,682 deployable, of which trade's 40% is 80,273 — against a flat-fraction cap of 87,670
 // that was the binding constraint.
 func TestDefaultMaxSpend_ZeroResolvesToTheCapitalBudget(t *testing.T) {
 	const (
 		liveTreasury   = int64(350_682)
-		wantTradeShare = int64(120_409) // 60% of (350,682 - 150,000)
-		flatFraction   = int64(87_670)  // 25% of 350,682 — the cap that used to bind
+		wantTradeShare = int64(80_273) // 40% of (350,682 - 150,000)
+		flatFraction   = int64(87_670) // 25% of 350,682 — the cap that used to bind
 	)
 
 	sensor := &tourFakeCapitalWorkSensor{constructionWork: true}
@@ -82,10 +82,10 @@ func TestDefaultMaxSpend_ReserveFloorStillBindsAtLowTreasury(t *testing.T) {
 		{name: "treasury at the floor deploys nothing", treasury: reserve, want: 0},
 		// Below the floor is not negative capital — it is still nothing.
 		{name: "treasury under the floor deploys nothing", treasury: reserve - 40_000, want: 0},
-		// Only the 10,000 above the floor is deployable; trade's share of it is 6,000.
+		// Only the 10,000 above the floor is deployable; trade's share of it is 4,000.
 		// A flat 25% of this treasury would have authorised 40,000 — four times the
 		// capital that exists above the floor.
-		{name: "only the band above the floor is deployable", treasury: reserve + 10_000, want: 6_000},
+		{name: "only the band above the floor is deployable", treasury: reserve + 10_000, want: 4_000},
 	}
 
 	for _, tc := range cases {

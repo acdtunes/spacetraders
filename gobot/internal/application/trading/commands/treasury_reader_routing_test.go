@@ -135,8 +135,8 @@ func TestDefaultMaxSpend_ReadsTheInjectedTreasuryAndMakesNoAPICall(t *testing.T)
 	if unreadable {
 		t.Fatal("a readable treasury must not report unreadable")
 	}
-	if got != 84_000 {
-		t.Fatalf("max-spend = %d, want trade's 60%% share of the 140000 the reader's 440000 leaves above the 300000 reserve = 84000", got)
+	if got != 56_000 {
+		t.Fatalf("max-spend = %d, want trade's 40%% share of the 140000 the reader's 440000 leaves above the 300000 reserve = 56000", got)
 	}
 	if api.calls != 0 {
 		t.Fatalf("the common path must make NO API call, got %d GetAgent calls", api.calls)
