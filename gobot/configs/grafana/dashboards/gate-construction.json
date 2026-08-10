@@ -535,98 +535,6 @@
     },
     {
       "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "description": "Ships assigned to manufacturing tasks (gate workers).",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "Ships",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 20,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "lineInterpolation": "stepAfter",
-            "lineWidth": 2,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "min": 0,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 9,
-        "x": 0,
-        "y": 13
-      },
-      "id": 8,
-      "options": {
-        "legend": {
-          "calcs": [
-            "last"
-          ],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "none"
-        }
-      },
-      "pluginVersion": "10.0.0",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "sum(spacetraders_daemon_manufacturing_ships_assigned_total)",
-          "legendFormat": "ships assigned",
-          "refId": "A"
-        }
-      ],
-      "title": "Gate Workers (Ships Assigned)",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
       },
@@ -643,7 +551,7 @@
       "gridPos": {
         "h": 8,
         "w": 6,
-        "x": 9,
+        "x": 0,
         "y": 13
       },
       "id": 9,
@@ -671,211 +579,136 @@
       "type": "table"
     },
     {
+      "type": "table",
+      "title": "Gate Supply Chain \u2014 supply & activity at each link's cheapest source",
+      "description": "Tier 0 is the gate bill; deeper tiers are its recursive inputs. Source is the cheapest market per good, preferring EXPORT.",
+      "id": 10,
       "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "description": "Manufacturing pipeline health: running pipelines, tasks ready to execute, factories ready for collection.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "lineInterpolation": "stepAfter",
-            "lineWidth": 2,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "min": 0,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "short"
-        },
-        "overrides": []
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
       },
       "gridPos": {
-        "h": 8,
-        "w": 9,
-        "x": 15,
+        "h": 12,
+        "w": 18,
+        "x": 6,
         "y": 13
       },
-      "id": 10,
       "options": {
-        "legend": {
-          "calcs": [
-            "last"
-          ],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "none"
+        "cellHeight": "sm",
+        "showHeader": true,
+        "footer": {
+          "show": false
         }
       },
-      "pluginVersion": "10.0.0",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "sum(spacetraders_daemon_manufacturing_pipeline_running_total)",
-          "legendFormat": "pipelines running",
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "sum(spacetraders_daemon_manufacturing_tasks_ready_total)",
-          "legendFormat": "tasks ready",
-          "refId": "B"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "sum(spacetraders_daemon_manufacturing_factory_ready_total)",
-          "legendFormat": "factories ready",
-          "refId": "C"
-        }
-      ],
-      "title": "Pipeline Health",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "description": "Minutes since last task assignment by task type \u2014 alert if > 15 (dashed threshold line).",
       "fieldConfig": {
         "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
           "custom": {
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "minutes",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 5,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "lineInterpolation": "linear",
-            "lineWidth": 2,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "dashed"
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
             }
-          },
-          "mappings": [],
-          "min": 0,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Supply"
+            },
+            "properties": [
               {
-                "color": "green",
-                "value": null
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background",
+                  "mode": "basic"
+                }
               },
               {
-                "color": "red",
-                "value": 15
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "SCARCE": {
+                        "color": "red",
+                        "index": 0
+                      },
+                      "LIMITED": {
+                        "color": "orange",
+                        "index": 1
+                      },
+                      "MODERATE": {
+                        "color": "yellow",
+                        "index": 2
+                      },
+                      "HIGH": {
+                        "color": "green",
+                        "index": 3
+                      },
+                      "ABUNDANT": {
+                        "color": "blue",
+                        "index": 4
+                      }
+                    }
+                  }
+                ]
               }
             ]
           },
-          "unit": "m"
-        },
-        "overrides": []
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Activity"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "RESTRICTED": {
+                        "color": "red",
+                        "index": 0
+                      },
+                      "WEAK": {
+                        "color": "orange",
+                        "index": 1
+                      },
+                      "GROWING": {
+                        "color": "green",
+                        "index": 2
+                      },
+                      "STRONG": {
+                        "color": "blue",
+                        "index": 3
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              }
+            ]
+          }
+        ]
       },
-      "gridPos": {
-        "h": 7,
-        "w": 24,
-        "x": 0,
-        "y": 21
-      },
-      "id": 11,
-      "options": {
-        "legend": {
-          "calcs": [
-            "last",
-            "max"
-          ],
-          "displayMode": "table",
-          "placement": "right",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "pluginVersion": "10.0.0",
       "targets": [
         {
           "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
           },
-          "expr": "max by (task_type) (spacetraders_daemon_manufacturing_task_starvation_minutes)",
-          "legendFormat": "{{task_type}}",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH chain(good, tier) AS (VALUES\n  ('FAB_MATS',0),('ADVANCED_CIRCUITRY',0),('QUANTUM_STABILIZERS',0),\n  ('IRON',1),('QUARTZ_SAND',1),('ELECTRONICS',1),('MICROPROCESSORS',1),('PLATINUM',1),\n  ('IRON_ORE',2),('SILICON_CRYSTALS',2),('COPPER',2),('PLATINUM_ORE',2),\n  ('EXPLOSIVES',3),('COPPER_ORE',3),\n  ('LIQUID_HYDROGEN',4),('LIQUID_NITROGEN',4),('MACHINERY',5)),\nbest AS (\n  SELECT DISTINCT ON (c.good) c.tier, c.good, m.waypoint_symbol, m.trade_type,\n         m.supply, m.activity, m.purchase_price, m.trade_volume, m.last_updated\n  FROM chain c\n  LEFT JOIN market_data m ON m.good_symbol = c.good\n       AND m.player_id = (SELECT MAX(id) FROM players)\n  ORDER BY c.good,\n           CASE m.trade_type WHEN 'EXPORT' THEN 1 WHEN 'EXCHANGE' THEN 2 ELSE 3 END,\n           m.purchase_price ASC NULLS LAST)\nSELECT tier AS \"Tier\", good AS \"Good\",\n       COALESCE(waypoint_symbol,'(no market)') AS \"Source\",\n       COALESCE(trade_type,'-') AS \"Type\",\n       COALESCE(supply,'-') AS \"Supply\",\n       COALESCE(NULLIF(activity,''),'-') AS \"Activity\",\n       COALESCE(purchase_price,0) AS \"Ask\",\n       COALESCE(trade_volume,0) AS \"Vol\",\n       ROUND(EXTRACT(EPOCH FROM (NOW() - last_updated))/60) AS \"Age (min)\"\nFROM best ORDER BY tier, good;",
           "refId": "A"
         }
-      ],
-      "title": "Task Starvation (min since last assignment)",
-      "type": "timeseries"
+      ]
     }
   ],
   "refresh": "30s",
