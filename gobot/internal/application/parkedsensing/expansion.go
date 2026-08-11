@@ -28,7 +28,7 @@ import (
 // command bursts, not economics. Ledger-only work is free and uncounted: marking a
 // neighbour PENDING and claiming a parked spare cost a row write and no API call,
 // and both are already bounded by the frontier and by the spare fleet.
-const MaxExpansionActions = 6
+const MaxExpansionActions = 20
 
 // MaxSpareGhostReleases bounds the ghost SPARE rows one tick may release: a burst
 // of ledger writes paced like DefaultMaxReaps, never an economic choice.

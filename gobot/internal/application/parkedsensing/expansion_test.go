@@ -1843,7 +1843,12 @@ func TestAdvanceExpansion_SeedTakesOneStepPerTick(t *testing.T) {
 func TestAdvanceExpansion_ActionsAreCappedPerTick(t *testing.T) {
 	h := newExpandHarness()
 	uncharted := map[string][]string{}
-	for _, sys := range []string{"X1-B1", "X1-B2", "X1-B3", "X1-B4", "X1-B5", "X1-B6", "X1-B7", "X1-B8"} {
+	// Derived from the cap, so raising the budget cannot quietly stop this binding.
+	ready := make([]string, 0, MaxExpansionActions+2)
+	for i := 0; i < MaxExpansionActions+2; i++ {
+		ready = append(ready, fmt.Sprintf("X1-B%02d", i))
+	}
+	for _, sys := range ready {
 		h.ledger.systems = append(h.ledger.systems, ExpandSystem{
 			System: sys, Verdict: VerdictPending, UnchartedCount: 2,
 			SeedShip: "PROBE-" + sys, SeedState: SeedStateCharting,
