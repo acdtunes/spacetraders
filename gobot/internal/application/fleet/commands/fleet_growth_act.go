@@ -215,6 +215,12 @@ func (h *RunFleetGrowthCoordinatorHandler) buyHeavy(
 		return heavyBuyOutcome{UnmetNoBuy: true}
 	}
 
+	// The api_util rung, ahead of the request: the yard walk that prices the hull spends the very
+	// budget this ceiling refuses, and the guard discards its answer anyway.
+	if v := apiUtilRung(cfg, in); !v.Passed {
+		return h.refuseBeforeTheWalk(ctx, cmd, v)
+	}
+
 	req, yard := h.buildPurchaseRequest(ctx, cmd, cfg, d, in, st)
 	decision := EvaluateGuards(req)
 
@@ -264,6 +270,30 @@ func (h *RunFleetGrowthCoordinatorHandler) buyHeavy(
 		"ship_symbol": res.ShipSymbol, "price": res.Price, "dedicated": res.Dedicated,
 	})
 	return heavyBuyOutcome{Bought: true}
+}
+
+// apiUtilRung judges the utilization ceiling alone, from inputs the tick already holds. It calls
+// the SAME guard the stack does, so the early answer and the late one can never disagree.
+func apiUtilRung(cfg growthRunConfig, in growthTickInputs) GuardVerdict {
+	return guardAPIUtil(PurchaseRequest{
+		APIUtilPct:      in.apiUtil,
+		APIUtilReadable: in.apiOK,
+		APIUtilCeiling:  cfg.APIUtilizationCeilingPct,
+	})
+}
+
+// refuseBeforeTheWalk publishes a refusal reached without pricing a hull, rendering the SAME
+// decision line the full stack does over the one rung that was asked.
+func (h *RunFleetGrowthCoordinatorHandler) refuseBeforeTheWalk(ctx context.Context, cmd *RunFleetGrowthCoordinatorCommand, v GuardVerdict) heavyBuyOutcome {
+	decision := PurchaseDecision{BlockedBy: v.Guard, Verdicts: []GuardVerdict{v}}
+	common.LoggerFromContext(ctx).Log("INFO", fmt.Sprintf("Fleet growth heavy buy-decision (%s): %s — refused ahead of the yard walk, so the rungs that need a price were not asked", decisionWord(decision), decision.Arithmetic()), map[string]interface{}{
+		"action": "growth_decision", "container_id": cmd.ContainerID,
+		"approved": false, "blocked_by": string(v.Guard),
+	})
+	if h.metrics != nil {
+		h.metrics.RecordBlocked(HullClassHeavy, v.Guard)
+	}
+	return heavyBuyOutcome{UnmetNoBuy: true, Blocked: v.Guard, BlockedKnown: true}
 }
 
 // buildPurchaseRequest resolves the tick's candidate heavy purchase from the demand, the run config
