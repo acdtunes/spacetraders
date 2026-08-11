@@ -28,6 +28,7 @@ import (
 	adapterSensing "github.com/andrescamacho/spacetraders-go/internal/adapters/parkedsensing"
 	"github.com/andrescamacho/spacetraders-go/internal/application/logging"
 	"github.com/andrescamacho/spacetraders-go/internal/application/mediator"
+	appSensing "github.com/andrescamacho/spacetraders-go/internal/application/parkedsensing"
 	shipNav "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
 	shipQueries "github.com/andrescamacho/spacetraders-go/internal/application/ship/queries"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
@@ -253,4 +254,35 @@ func TestSeedJumpTo_HoldsTheGateStepWhileTheHullIsOnCooldown(t *testing.T) {
 	require.Zero(t, world.jumpCount(), "the charting seed shares stepThroughGate and must share its cooldown hold")
 	require.Error(t, err, "a held seed hop must still be reported, so the errand holds and the next tick retries")
 	require.Len(t, logger.withAction("parked_sensing_gate_step_cooldown_hold"), 1)
+}
+
+// A discrimination this port makes privately is worth nothing to the seed engine, which
+// sees an `error` and charges the no-op step against the tick's action budget.
+func TestSeedJumpTo_ACooldownHoldIsMatchableByTheApplicationSentinel(t *testing.T) {
+	ctx := logging.WithLogger(context.Background(), &recordingLogger{})
+
+	expiry := time.Now().Add(201 * time.Second)
+	world := &cooldownWorld{gate: "X1-AA-G1", ship: probeWithCooldown(t, "SEED-1", &expiry)}
+	seed := adapterSensing.NewSeedCommandPort(world, nil, nil, nil, nil, oneGateApart())
+
+	err := seed.JumpTo(ctx, testPlayerID, "SEED-1", "X1-AA-G1", "X1-BB")
+
+	require.ErrorIs(t, err, appSensing.ErrSeedStepHeld,
+		"a cooldown hold must satisfy errors.Is against the port's own sentinel, or the application layer "+
+			"cannot tell a step that was never attempted from one the API refused")
+}
+
+// NON-VACUITY for the match above: a step the API genuinely REFUSED must NOT wear the
+// sentinel, or every failure becomes a free retry and the budget stops pacing anything.
+func TestSeedJumpTo_AnUnroutableStepIsNotAHold(t *testing.T) {
+	ctx := logging.WithLogger(context.Background(), &recordingLogger{})
+
+	world := &cooldownWorld{gate: "X1-AA-G1", ship: probeWithCooldown(t, "SEED-1", nil)}
+	seed := adapterSensing.NewSeedCommandPort(world, nil, nil, nil, nil, stubGateNeighbours{})
+
+	err := seed.JumpTo(ctx, testPlayerID, "SEED-1", "X1-AA-G1", "X1-ZZ")
+
+	require.Error(t, err)
+	require.NotErrorIs(t, err, appSensing.ErrSeedStepHeld,
+		"an unroutable errand is a refusal, not a hold: reported as held it would retry for free forever")
 }

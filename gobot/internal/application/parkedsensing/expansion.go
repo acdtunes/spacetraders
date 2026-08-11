@@ -2,6 +2,7 @@ package parkedsensing
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 )
@@ -102,6 +103,10 @@ type UnchartedCatalog interface {
 // verdict. It closes over ScreenSystem's ports, the player and the goods whitelist,
 // so this engine can price a system without acquiring the screen's dependencies.
 type SystemScreener func(ctx context.Context, system string) (ScreenResult, error)
+
+// ErrSeedStepHeld reports a seed step HELD rather than attempted: the hull is waiting
+// out a game timer, no request was spent, and the step must not be charged an action.
+var ErrSeedStepHeld = errors.New("charting seed step was held, not attempted")
 
 // SeedCommander drives one charting seed. Every method is a single command with no
 // retry and no waiting: the tick issues one and returns, and the next tick reads

@@ -43,11 +43,23 @@ func hasActiveSeed(s ExpandSystem) bool {
 	return s.SeedShip != "" && (s.SeedState == SeedStateDispatched || s.SeedState == SeedStateCharting)
 }
 
+// seedServiceRank orders an errand by what its turn can accomplish. A seed already
+// standing in its target system charts on its turn; one still walking only moves.
+func seedServiceRank(s ExpandSystem) int {
+	if s.SeedState == SeedStateCharting {
+		return 0
+	}
+	return 1
+}
+
 // advanceSeeds moves every running errand one step, up to the tick's budget.
 //
 // One step per seed per tick, and a step is a step whether it commands a ship or
 // merely advances the record: both end the seed's turn. That is what keeps the
 // engine from reading a position its own command has just invalidated.
+//
+// The queue is ranked before it is truncated, or a budget smaller than the fleet
+// serves one alphabetical prefix forever and the rest of the errands never move.
 func (t *expandTick) advanceSeeds(ctx context.Context, systems []ExpandSystem) error {
 	active := make([]ExpandSystem, 0, len(systems))
 	for _, s := range systems {
@@ -55,7 +67,12 @@ func (t *expandTick) advanceSeeds(ctx context.Context, systems []ExpandSystem) e
 			active = append(active, s)
 		}
 	}
-	sort.SliceStable(active, func(i, j int) bool { return active[i].System < active[j].System })
+	sort.SliceStable(active, func(i, j int) bool {
+		if ri, rj := seedServiceRank(active[i]), seedServiceRank(active[j]); ri != rj {
+			return ri < rj
+		}
+		return active[i].System < active[j].System
+	})
 
 	for _, s := range active {
 		if t.rep.Actions >= MaxExpansionActions {
@@ -137,9 +154,9 @@ func (t *expandTick) dispatchSeed(ctx context.Context, s ExpandSystem, pos ShipP
 	// than re-derived. A hull mid-move is never here at all: advanceSeed has already
 	// returned on the IN_TRANSIT reading, so the step issued is the next available.
 	if err := t.p.SeedShip.JumpTo(ctx, t.playerID, s.SeedShip, pos.Waypoint, s.System); err != nil {
-		// The hull did not leave. Holding the errand at DISPATCHED makes the retry
-		// free: the next tick re-reads the position and re-issues.
-		return true, nil
+		// The hull did not leave, and the errand holds at DISPATCHED either way. A HELD
+		// step made no API call and costs nothing; a REFUSED one reached the API and pays.
+		return !errors.Is(err, ErrSeedStepHeld), nil
 	}
 	t.rep.Jumped++
 	return true, nil

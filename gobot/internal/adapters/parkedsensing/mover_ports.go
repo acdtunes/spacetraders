@@ -304,6 +304,12 @@ func (e *jumpCooldownHold) Error() string {
 		e.shipSymbol, e.nextSystem, e.until.UTC().Format(time.RFC3339))
 }
 
+// Unwrap publishes the hold through the port's own sentinel, so the application layer
+// can tell an unattempted step from a refused one without importing this package.
+func (e *jumpCooldownHold) Unwrap() error {
+	return appSensing.ErrSeedStepHeld
+}
+
 // heldForCooldown reports whether err is a held step rather than a refused one.
 func heldForCooldown(err error) bool {
 	var held *jumpCooldownHold
