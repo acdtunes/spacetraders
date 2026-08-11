@@ -4,10 +4,13 @@ package shipyard
 // A ship listing contains all the information about a ship type available
 // for purchase, including its specifications and price.
 type ShipListing struct {
-	ShipType      string
-	Name          string
-	Description   string
+	ShipType    string
+	Name        string
+	Description string
+	// PurchasePrice and Supply arrive together or not at all: a shipyard quotes both under presence
+	// and neither without it, which is what lets a stored row say how it was read.
 	PurchasePrice int
+	Supply        string
 	// Optional specifications
 	Frame   map[string]interface{}
 	Reactor map[string]interface{}

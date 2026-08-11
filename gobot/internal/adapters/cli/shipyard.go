@@ -34,6 +34,7 @@ Examples:
 	cmd.AddCommand(newShipyardListCommand())
 	cmd.AddCommand(newShipyardPurchaseCommand())
 	cmd.AddCommand(newShipyardYardsCommand())
+	cmd.AddCommand(newShipyardInvariantCommand())
 
 	return cmd
 }
@@ -283,6 +284,65 @@ Examples:
 	cmd.Flags().StringSliceVar(&shipTypes, "type", nil, "Ship type(s) to filter by (repeatable or comma-list; omit for every saved type)")
 
 	return cmd
+}
+
+// shipyardInvariantProvider is the store-wide read-mode probe. Satisfied by
+// *persistence.ShipyardInventoryRepositoryGORM.
+type shipyardInvariantProvider interface {
+	PriceSupplyMismatches(ctx context.Context, playerID int) ([]shipyard.ShipTypeAvailability, error)
+}
+
+// newShipyardInvariantCommand creates the shipyard invariant subcommand: a read-only probe that FAILS
+// when a saved row's price and supply disagree about how it was read.
+func newShipyardInvariantCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "invariant",
+		Short: "Check the saved shipyard rows for price/supply disagreement (read-only; non-zero exit on a violation)",
+		Long: `A shipyard quotes an ask and its supply TOGETHER, and only where a hull of ours stands.
+A saved row carrying one without the other is therefore a row nobody can attribute
+to a presence read — and the hull-buy price walk reads only occupied yards on
+exactly that rule. This probes shipyard_inventory for such rows and exits non-zero
+if it finds any.
+
+It is the store-side half of a check the shipyard scanner also makes before it
+writes, so a writer that bypasses one is caught by the other.
+
+Examples:
+  spacetraders shipyard invariant --player-id 1`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			playerIdent, err := resolvePlayerIdentifier()
+			if err != nil {
+				return err
+			}
+			db, err := openDatabase()
+			if err != nil {
+				return err
+			}
+			repo := persistence.NewShipyardInventoryRepository(db)
+			return runShipyardInvariant(context.Background(), repo, os.Stdout, playerIdent.PlayerID)
+		},
+	}
+}
+
+func runShipyardInvariant(ctx context.Context, p shipyardInvariantProvider, out io.Writer, playerID int) error {
+	rows, err := p.PriceSupplyMismatches(ctx, playerID)
+	if err != nil {
+		return fmt.Errorf("failed to probe shipyard inventory: %w", err)
+	}
+	if len(rows) == 0 {
+		fmt.Fprintln(out, "OK: every saved shipyard row pairs a price with a supply, or neither.")
+		return nil
+	}
+
+	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "SYSTEM\tWAYPOINT\tTYPE\tPRICE\tSUPPLY\tLAST SCANNED")
+	for _, r := range rows {
+		fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%q\t%s\n",
+			r.SystemSymbol, r.WaypointSymbol, r.ShipType, r.PurchasePrice, r.Supply,
+			r.LastScanned.Format("2006-01-02 15:04:05"))
+	}
+	w.Flush()
+	return fmt.Errorf("%d shipyard row(s) disagree about price and supply; the buy path's presence rule rests on that pairing", len(rows))
 }
 
 func runShipyardYards(ctx context.Context, p shipyardYardsProvider, out io.Writer, playerID int, shipTypes []string) error {

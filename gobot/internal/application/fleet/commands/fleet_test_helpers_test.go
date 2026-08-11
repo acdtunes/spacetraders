@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 	"sync"
+
+	"github.com/andrescamacho/spacetraders-go/internal/domain/hullbuy"
 )
 
 // Shared test helpers for the fleet package. They were declared inside the fleet autosizer's test
@@ -76,8 +78,12 @@ type fakeYardPrice struct {
 	err      error
 }
 
-func (f *fakeYardPrice) PriceFor(ctx context.Context, playerID int, class HullClass, shipType string, preferProximal bool) (int64, int64, string, bool, error) {
-	return f.price, f.cheapest, f.yard, f.ok, f.err
+func (f *fakeYardPrice) PriceFor(_ context.Context, _ int, _ HullClass, shipTypes []string, _ bool) (map[string]hullbuy.YardAsk, error) {
+	out := make(map[string]hullbuy.YardAsk, len(shipTypes))
+	for _, shipType := range shipTypes {
+		out[shipType] = hullbuy.YardAsk{Price: f.price, Cheapest: f.cheapest, Yard: f.yard, Readable: f.ok}
+	}
+	return out, f.err
 }
 
 // fakeHeavyCensus is the tag-independent owned-heavy census. err ⇒ unreadable ⇒ the heavy cap
@@ -98,15 +104,24 @@ func (f *fakeHeavyCensus) HeaviesOwned(_ context.Context, _ int) (int, error) {
 type fakeTypedYardPrice struct {
 	byType map[string]int64
 	asked  []string
+	// calls counts trips to the port itself, which is the yard WALK; asked counts the types those
+	// trips covered. One walk answering three types is the whole distinction.
+	calls int
 }
 
-func (f *fakeTypedYardPrice) PriceFor(_ context.Context, _ int, _ HullClass, shipType string, _ bool) (int64, int64, string, bool, error) {
-	f.asked = append(f.asked, shipType)
-	price, priced := f.byType[shipType]
-	if !priced {
-		return 0, 0, "", false, nil // unpriceable at every reachable yard
+func (f *fakeTypedYardPrice) PriceFor(_ context.Context, _ int, _ HullClass, shipTypes []string, _ bool) (map[string]hullbuy.YardAsk, error) {
+	f.calls++
+	out := make(map[string]hullbuy.YardAsk, len(shipTypes))
+	for _, shipType := range shipTypes {
+		f.asked = append(f.asked, shipType)
+		price, priced := f.byType[shipType]
+		if !priced {
+			out[shipType] = hullbuy.YardAsk{} // unpriceable at every reachable yard
+			continue
+		}
+		out[shipType] = hullbuy.YardAsk{Price: price, Cheapest: price, Yard: shipType + "-YARD", Readable: true}
 	}
-	return price, price, shipType + "-YARD", true, nil
+	return out, nil
 }
 
 // fakeHeavyYard is the SHARED heavy-target read behind the reservation: the yard the purchase

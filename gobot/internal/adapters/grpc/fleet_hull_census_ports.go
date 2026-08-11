@@ -31,6 +31,26 @@ func distinctShipSystems(ships []*navigation.Ship) []string {
 	return out
 }
 
+// presentHullWaypoints is the set of waypoints a hull of ours occupies — the yards that can answer a
+// live shipyard read with a price at all.
+//
+// INBOUND HULLS COUNT. A flying hull's location row is its DESTINATION, so an arrival not yet synced
+// is indistinguishable from one in flight; admitting both costs a wasted read where excluding them
+// would silently drop an ask out of the premium denominator. Deliberately CLOCKLESS — refining this
+// with an arrival time would put a clock behind a money guard's input.
+func presentHullWaypoints(ships []*navigation.Ship) map[string]bool {
+	out := make(map[string]bool, len(ships))
+	for _, sh := range ships {
+		if sh == nil {
+			continue
+		}
+		if loc := sh.CurrentLocation(); loc != nil {
+			out[loc.Symbol] = true
+		}
+	}
+	return out
+}
+
 func countShips(ctx context.Context, shipRepo navigation.ShipRepository, playerID int, pred func(*navigation.Ship) bool) (int, error) {
 	pid, err := shared.NewPlayerID(playerID)
 	if err != nil {

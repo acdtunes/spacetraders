@@ -11,6 +11,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/liveconfig"
 	"github.com/andrescamacho/spacetraders-go/internal/application/logging"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/fleetgrowth"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/hullbuy"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
@@ -112,12 +113,17 @@ type growthYardPriceCounter struct {
 	calls int
 }
 
-func (c *growthYardPriceCounter) PriceFor(ctx context.Context, playerID int, class HullClass, shipType string, preferProximal bool) (int64, int64, string, bool, error) {
+func (c *growthYardPriceCounter) PriceFor(_ context.Context, _ int, _ HullClass, shipTypes []string, _ bool) (map[string]hullbuy.YardAsk, error) {
 	c.calls++
-	if c.ask <= 0 {
-		return 0, 0, "", false, nil
+	out := make(map[string]hullbuy.YardAsk, len(shipTypes))
+	for _, shipType := range shipTypes {
+		if c.ask <= 0 {
+			out[shipType] = hullbuy.YardAsk{}
+			continue
+		}
+		out[shipType] = hullbuy.YardAsk{Price: c.ask, Cheapest: c.ask, Yard: "X1-AA-YARD", Readable: true}
 	}
-	return c.ask, c.ask, "X1-AA-YARD", true, nil
+	return out, nil
 }
 
 type growthPurchaseRecorder struct {

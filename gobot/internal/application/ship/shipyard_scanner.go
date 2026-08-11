@@ -215,6 +215,15 @@ func (s *ShipyardScanner) ReadShipyard(ctx context.Context, playerID uint, waypo
 	// it carried while unseen.
 	s.budget.Observe(waypointSymbol, availabilities)
 
+	// A reading whose price and supply disagree says the API no longer pairs them, which is the
+	// evidence the buy path's presence gate rests on. Refused rather than cached; data still returns.
+	if offenders := shipyard.DisagreeingRows(availabilities); len(offenders) > 0 {
+		logger.Log("ERROR", fmt.Sprintf("[ShipyardScanner] %s returned %d listing(s) whose price and supply disagree; refusing to cache the reading", waypointSymbol, len(offenders)), map[string]interface{}{
+			"action": "shipyard_scan_discriminator_violation", "waypoint": waypointSymbol, "rows": len(offenders),
+		})
+		return data, fmt.Errorf("shipyard reading for %s breaks the price/supply discriminator on %d row(s)", waypointSymbol, len(offenders))
+	}
+
 	// The milestone predicate must be read BEFORE the scan is persisted, or the
 	// freshly written rows would make every first discovery look already-known.
 	firstHeavy, heavyFound := s.isFirstHeavyDiscovery(ctx, int(playerID), availabilities)

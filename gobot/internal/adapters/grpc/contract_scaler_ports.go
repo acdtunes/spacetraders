@@ -127,8 +127,9 @@ func wireContractScalerDepotActuation(h *contractScalerCmd.RunContractScalerHand
 type contractScalerPriceReader struct{ reader hullbuy.YardPriceReader }
 
 func (p *contractScalerPriceReader) NextHullPrice(ctx context.Context, playerID int, shipType string) (int64, string, bool, error) {
-	price, _, yard, readable, err := p.reader.PriceFor(ctx, playerID, hullbuy.HullClassContractDelivery, shipType, false)
-	return price, yard, readable, err
+	asks, err := p.reader.PriceFor(ctx, playerID, hullbuy.HullClassContractDelivery, []string{shipType}, false)
+	ask := asks[shipType]
+	return ask.Price, ask.Yard, ask.Readable, err
 }
 
 // contractScalerFleetCounter counts the exclusive "contract"-dedicated pool — the ramp's Current.

@@ -67,6 +67,19 @@ func (r *ShipyardInventoryRepositoryGORM) ReplaceScan(
 	})
 }
 
+// PriceSupplyMismatches is the SQL half of shipyard.PriceSupplyDisagree, era-agnostic and all writers.
+func (r *ShipyardInventoryRepositoryGORM) PriceSupplyMismatches(ctx context.Context, playerID int) ([]shipyard.ShipTypeAvailability, error) {
+	var models []ShipyardInventoryModel
+	if err := r.db.WithContext(ctx).
+		Where("player_id = ?", playerID).
+		Where("(purchase_price > 0 AND (supply IS NULL OR TRIM(supply) = '')) OR (purchase_price <= 0 AND supply IS NOT NULL AND TRIM(supply) <> '')").
+		Order("waypoint_symbol, ship_type").
+		Find(&models).Error; err != nil {
+		return nil, fmt.Errorf("failed to probe shipyard inventory for price/supply mismatches: %w", err)
+	}
+	return availabilitiesFromModels(models), nil
+}
+
 // HasAnyOfTypes reports whether ANY era-scoped row for the player carries one
 // of shipTypes — the "first heavy yard this era" milestone predicate.
 func (r *ShipyardInventoryRepositoryGORM) HasAnyOfTypes(ctx context.Context, playerID int, shipTypes []string) (bool, error) {
@@ -100,18 +113,7 @@ func (r *ShipyardInventoryRepositoryGORM) ListByTypes(ctx context.Context, playe
 		Find(&models).Error; err != nil {
 		return nil, fmt.Errorf("failed to list shipyard inventory by types: %w", err)
 	}
-	out := make([]shipyard.ShipTypeAvailability, 0, len(models))
-	for _, m := range models {
-		out = append(out, shipyard.ShipTypeAvailability{
-			SystemSymbol:   m.SystemSymbol,
-			WaypointSymbol: m.WaypointSymbol,
-			ShipType:       m.ShipType,
-			PurchasePrice:  m.PurchasePrice,
-			Supply:         m.Supply,
-			LastScanned:    m.LastScanned,
-		})
-	}
-	return out, nil
+	return availabilitiesFromModels(models), nil
 }
 
 // LastScannedAt returns the newest last_scanned stamp across the waypoint's
@@ -175,18 +177,7 @@ func (r *ShipyardInventoryRepositoryGORM) ListSavedYards(ctx context.Context, pl
 	if err := query.Order("purchase_price ASC").Find(&models).Error; err != nil {
 		return nil, fmt.Errorf("failed to list saved yards: %w", err)
 	}
-	out := make([]shipyard.ShipTypeAvailability, 0, len(models))
-	for _, m := range models {
-		out = append(out, shipyard.ShipTypeAvailability{
-			SystemSymbol:   m.SystemSymbol,
-			WaypointSymbol: m.WaypointSymbol,
-			ShipType:       m.ShipType,
-			PurchasePrice:  m.PurchasePrice,
-			Supply:         m.Supply,
-			LastScanned:    m.LastScanned,
-		})
-	}
-	return out, nil
+	return availabilitiesFromModels(models), nil
 }
 
 // CheapestPricedYard returns the era-scoped row with the LOWEST POSITIVE
@@ -246,4 +237,19 @@ func (r *ShipyardInventoryRepositoryGORM) openEraID(ctx context.Context) *int {
 	}
 	id := era.EraID
 	return &id
+}
+
+func availabilitiesFromModels(models []ShipyardInventoryModel) []shipyard.ShipTypeAvailability {
+	out := make([]shipyard.ShipTypeAvailability, 0, len(models))
+	for _, m := range models {
+		out = append(out, shipyard.ShipTypeAvailability{
+			SystemSymbol:   m.SystemSymbol,
+			WaypointSymbol: m.WaypointSymbol,
+			ShipType:       m.ShipType,
+			PurchasePrice:  m.PurchasePrice,
+			Supply:         m.Supply,
+			LastScanned:    m.LastScanned,
+		})
+	}
+	return out
 }

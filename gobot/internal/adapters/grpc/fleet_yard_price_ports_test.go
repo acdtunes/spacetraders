@@ -63,7 +63,7 @@ func TestYardPriceReader_HeavyFallsBackToScannedYards_WhenLiveWalkEmpty(t *testi
 		scannedYards: scanned,
 	}
 
-	price, cheapest, yard, readable, err := r.PriceFor(context.Background(), 1, hullbuy.HullClassHeavy, "SHIP_HEAVY_FREIGHTER", true)
+	price, cheapest, yard, readable, err := priceOne(context.Background(), r, 1, hullbuy.HullClassHeavy, "SHIP_HEAVY_FREIGHTER", true)
 	require.NoError(t, err)
 	require.True(t, readable, "a known scanned yard we stand on must open the heavy price signal")
 	require.Equal(t, int64(1_300_000), price, "price = the ask where a buyer already stands")
@@ -82,13 +82,13 @@ func TestYardPriceReader_Heavy_EmptyScanStore_StaysFailClosed(t *testing.T) {
 		scannedYards: &fakeScannedYards{}, // wired but empty — the pre-scan universe
 	}
 
-	_, _, _, readable, err := r.PriceFor(context.Background(), 1, hullbuy.HullClassHeavy, "SHIP_HEAVY_FREIGHTER", true)
+	_, _, _, readable, err := priceOne(context.Background(), r, 1, hullbuy.HullClassHeavy, "SHIP_HEAVY_FREIGHTER", true)
 	require.NoError(t, err)
 	require.False(t, readable, "no scan data ⇒ the heavy price guard must stay closed")
 
 	// An unwired ranker (nil) is equally fail-closed — the pre-42ow wiring.
 	r.scannedYards = nil
-	_, _, _, readable, err = r.PriceFor(context.Background(), 1, hullbuy.HullClassHeavy, "SHIP_HEAVY_FREIGHTER", true)
+	_, _, _, readable, err = priceOne(context.Background(), r, 1, hullbuy.HullClassHeavy, "SHIP_HEAVY_FREIGHTER", true)
 	require.NoError(t, err)
 	require.False(t, readable)
 }
@@ -103,7 +103,7 @@ func TestYardPriceReader_Heavy_StoreReadFailure_IsNotReportedAsAbsence(t *testin
 		scannedYards: &fakeScannedYards{err: boom},
 	}
 
-	_, _, _, readable, err := r.PriceFor(context.Background(), 1, hullbuy.HullClassHeavy, "SHIP_HEAVY_FREIGHTER", true)
+	_, _, _, readable, err := priceOne(context.Background(), r, 1, hullbuy.HullClassHeavy, "SHIP_HEAVY_FREIGHTER", true)
 	require.False(t, readable, "a failed read still fails CLOSED (RULINGS #4)")
 	require.ErrorIs(t, err, boom, "a failed read must NOT be reported as a clean absence of yards")
 }
@@ -117,7 +117,7 @@ func TestYardPriceReader_Heavy_EmptyCandidateSet_IsACleanAbsence(t *testing.T) {
 		scannedYards: &fakeScannedYards{},
 	}
 
-	_, _, _, readable, err := r.PriceFor(context.Background(), 1, hullbuy.HullClassHeavy, "SHIP_HEAVY_FREIGHTER", true)
+	_, _, _, readable, err := priceOne(context.Background(), r, 1, hullbuy.HullClassHeavy, "SHIP_HEAVY_FREIGHTER", true)
 	require.False(t, readable, "an empty scan surface still fails CLOSED")
 	require.NoError(t, err, "an absence of yards is not an infrastructure fault")
 }
@@ -132,7 +132,7 @@ func TestYardPriceReader_Heavy_RosterReadFailure_IsNotReportedAsAbsence(t *testi
 		scannedYards: &fakeScannedYards{},
 	}
 
-	_, _, _, readable, err := r.PriceFor(context.Background(), 1, hullbuy.HullClassHeavy, "SHIP_HEAVY_FREIGHTER", true)
+	_, _, _, readable, err := priceOne(context.Background(), r, 1, hullbuy.HullClassHeavy, "SHIP_HEAVY_FREIGHTER", true)
 	require.False(t, readable, "an unreadable roster still fails CLOSED (RULINGS #4)")
 	require.ErrorIs(t, err, boom, "an unreadable roster must NOT be reported as a clean absence of yards")
 }
@@ -150,7 +150,7 @@ func TestYardPriceReader_LightClass_NeverConsultsScannedYards(t *testing.T) {
 		scannedYards: scanned,
 	}
 
-	_, _, _, readable, err := r.PriceFor(context.Background(), 1, hullbuy.HullClassLight, "SHIP_LIGHT_HAULER", true)
+	_, _, _, readable, err := priceOne(context.Background(), r, 1, hullbuy.HullClassLight, "SHIP_LIGHT_HAULER", true)
 	require.NoError(t, err)
 	require.False(t, readable, "a light-class miss must stay fail-closed")
 	require.Zero(t, scanned.calls, "the scanned-yard store is a heavy-class signal only")

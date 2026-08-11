@@ -160,6 +160,7 @@ func (h *GetShipyardListingsHandler) convertShipListings(
 			Name:          ship.Name,
 			Description:   ship.Description,
 			PurchasePrice: ship.PurchasePrice,
+			Supply:        ship.Supply,
 			Frame:         ship.Frame,
 			Reactor:       ship.Reactor,
 			Engine:        ship.Engine,

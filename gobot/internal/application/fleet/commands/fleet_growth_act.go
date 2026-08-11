@@ -351,27 +351,34 @@ func (h *RunFleetGrowthCoordinatorHandler) resolveHullPrice(
 	if h.yardPrice == nil {
 		return preferred, 0, 0, "", false, false
 	}
-	p, c, y, ok, err := h.yardPrice.PriceFor(ctx, cmd.PlayerID, HullClassHeavy, preferred, cfg.PreferDemandProximalYard)
-	if err == nil && ok {
-		return preferred, p, c, y, true, false
+	// ONE walk answers every candidate; a call per type would re-read counters already asked.
+	asks, err := h.yardPrice.PriceFor(ctx, cmd.PlayerID, HullClassHeavy, candidateHullTypes(preferred), cfg.PreferDemandProximalYard)
+	if a := asks[preferred]; a.Readable {
+		return preferred, a.Price, a.Cheapest, a.Yard, true, false
 	}
-	readFailed = err != nil
 	for _, alt := range shipyard.TradeHullPreferenceOrder {
-		if alt == preferred {
-			continue // already asked, and it could not be priced
-		}
-		p, c, y, ok, err := h.yardPrice.PriceFor(ctx, cmd.PlayerID, HullClassHeavy, alt, cfg.PreferDemandProximalYard)
-		if err != nil || !ok {
-			readFailed = readFailed || err != nil
-			continue
+		a := asks[alt]
+		if alt == preferred || !a.Readable {
+			continue // already asked, or unpriceable at every reachable yard
 		}
 		common.LoggerFromContext(ctx).Log("WARN", fmt.Sprintf(
 			"Fleet growth: preferred hull %s cannot be priced at any reachable yard — substituting %s @ %d at %s for this decision (the preferred type wins back automatically once a yard selling it is found)",
-			preferred, alt, p, y), map[string]interface{}{
+			preferred, alt, a.Price, a.Yard), map[string]interface{}{
 			"action": "growth_trade_hull_substituted", "container_id": cmd.ContainerID,
-			"preferred_ship_type": preferred, "ship_type": alt, "price": p, "yard": y,
+			"preferred_ship_type": preferred, "ship_type": alt, "price": a.Price, "yard": a.Yard,
 		})
-		return alt, p, c, y, true, false
+		return alt, a.Price, a.Cheapest, a.Yard, true, false
 	}
-	return preferred, 0, 0, "", false, readFailed
+	return preferred, 0, 0, "", false, err != nil
+}
+
+// candidateHullTypes is the preferred hull then the trade-capable fallback order, deduplicated.
+func candidateHullTypes(preferred string) []string {
+	out := []string{preferred}
+	for _, alt := range shipyard.TradeHullPreferenceOrder {
+		if alt != preferred {
+			out = append(out, alt)
+		}
+	}
+	return out
 }

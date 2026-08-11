@@ -49,11 +49,36 @@ func (f *fakeSystemYardLister) ListBySystemWithTrait(_ context.Context, systemSy
 	return f.bySystem[systemSymbol], nil
 }
 
-// fakeYardAskMediator prices ONE ship type per waypoint. An absent waypoint reads as a yard with no
-// usable listing, exactly as an unpriced (presence-less) yard does.
+// fakeYardAskMediator prices ONE ship type per waypoint, and only where a hull of ours stands.
+// SpaceTraders hands back the priced `ships` array under PRESENCE alone; an unoccupied counter
+// answers with its catalogue and no ask at all, so a fixture cannot encode a price the game would
+// never give. An absent waypoint is a read that failed.
 type fakeYardAskMediator struct {
 	common.Mediator
-	askByWaypoint map[string]int
+	askByWaypoint map[string]map[string]int // waypoint → ship type → ask
+	present       map[string]bool
+}
+
+// yardAsks pairs an ask table with the fleet that unlocks it, deriving presence from where those
+// hulls actually stand rather than letting a fixture assert it separately.
+func yardAsks(fleet []*navigation.Ship, asks map[string]int) fakeYardAskMediator {
+	byType := make(map[string]map[string]int, len(asks))
+	for waypoint, ask := range asks {
+		byType[waypoint] = map[string]int{pairingHeavyType: ask}
+	}
+	return yardAsksByType(fleet, byType)
+}
+
+// yardAsksByType is the multi-hull counter: one waypoint stocking several types, which is what makes
+// a per-type walk distinguishable from a single walk that reads the whole listing array.
+func yardAsksByType(fleet []*navigation.Ship, asks map[string]map[string]int) fakeYardAskMediator {
+	present := map[string]bool{}
+	for _, s := range fleet {
+		if loc := s.CurrentLocation(); loc != nil {
+			present[loc.Symbol] = true
+		}
+	}
+	return fakeYardAskMediator{askByWaypoint: asks, present: present}
 }
 
 func (m *fakeYardAskMediator) Send(_ context.Context, request common.Request) (common.Response, error) {
@@ -61,14 +86,30 @@ func (m *fakeYardAskMediator) Send(_ context.Context, request common.Request) (c
 	if !ok {
 		return nil, errors.New("unexpected request")
 	}
-	ask, found := m.askByWaypoint[q.WaypointSymbol]
+	stocked, found := m.askByWaypoint[q.WaypointSymbol]
 	if !found {
 		return nil, errors.New("no priced listing at " + q.WaypointSymbol)
 	}
+	types := make([]string, 0, len(stocked))
+	listings := make([]domainShipyard.ShipListing, 0, len(stocked))
+	for shipType, ask := range stocked {
+		types = append(types, shipType)
+		listings = append(listings, domainShipyard.ShipListing{ShipType: shipType, PurchasePrice: ask})
+	}
+	if !m.present[q.WaypointSymbol] {
+		listings = nil // presence-less: the catalogue comes back, the asks do not
+	}
 	return &shipyardQueries.GetShipyardListingsResponse{
-		Shipyard: domainShipyard.NewShipyard(q.WaypointSymbol, []string{pairingHeavyType},
-			[]domainShipyard.ShipListing{{ShipType: pairingHeavyType, PurchasePrice: ask}}, 0),
+		Shipyard: domainShipyard.NewShipyard(q.WaypointSymbol, types, listings, 0),
 	}, nil
+}
+
+// priceOne asks the walk for a SINGLE type and unpacks that type's answer, so the many single-hull
+// fixtures read as they did before the walk learned to price a candidate set.
+func priceOne(ctx context.Context, r *fleetYardPriceReader, playerID int, class hullbuy.HullClass, shipType string, preferProximal bool) (int64, int64, string, bool, error) {
+	asks, err := r.PriceFor(ctx, playerID, class, []string{shipType}, preferProximal)
+	ask := asks[shipType]
+	return ask.Price, ask.Cheapest, ask.Yard, ask.Readable, err
 }
 
 // claimingShipRepo records the claim and the hand-back the borrowed signer must produce.
@@ -139,8 +180,9 @@ func liveFrameReader(t *testing.T, ships []*navigation.Ship) *fleetYardPriceRead
 	require.NoError(t, err)
 	cheap, err := shared.NewWaypoint("X1-FH57-B10A", 0, 0)
 	require.NoError(t, err)
+	med := yardAsks(ships, map[string]int{"X1-KP46-A1": 1_600_000, "X1-FH57-B10A": 1_200_000})
 	return &fleetYardPriceReader{
-		med:      &fakeYardAskMediator{askByWaypoint: map[string]int{"X1-KP46-A1": 1_600_000, "X1-FH57-B10A": 1_200_000}},
+		med:      &med,
 		shipRepo: &fakeHeavyShipRepo{all: ships},
 		waypointRepo: &fakeSystemYardLister{bySystem: map[string][]*shared.Waypoint{
 			"X1-KP46": {dear},
@@ -162,7 +204,7 @@ func TestYardPrice_TargetsTheYardWeAlreadyStandOn(t *testing.T) {
 		pairingHull(t, "TORWINDSTG-86", "X1-FH57-B10A", sensingFleetTag),
 	})
 
-	price, cheapest, yard, readable, err := r.PriceFor(context.Background(), 1, hullbuy.HullClassHeavy, pairingHeavyType, false)
+	price, cheapest, yard, readable, err := priceOne(context.Background(), r, 1, hullbuy.HullClassHeavy, pairingHeavyType, false)
 	require.NoError(t, err)
 	require.True(t, readable)
 	require.Equal(t, "X1-KP46-A1", yard, "the target must be a yard a CLAIMABLE hull already stands on")
@@ -179,7 +221,7 @@ func TestYardPrice_AClaimableHullOnTheCheapYardWinsIt(t *testing.T) {
 		pairingHull(t, "TORWINDSTG-2", "X1-FH57-B10A", ""),
 	})
 
-	price, _, yard, readable, err := r.PriceFor(context.Background(), 1, hullbuy.HullClassHeavy, pairingHeavyType, false)
+	price, _, yard, readable, err := priceOne(context.Background(), r, 1, hullbuy.HullClassHeavy, pairingHeavyType, false)
 	require.NoError(t, err)
 	require.True(t, readable)
 	require.Equal(t, "X1-FH57-B10A", yard)
@@ -193,7 +235,7 @@ func TestYardPrice_SameSystemIsNotStanding(t *testing.T) {
 		pairingHull(t, "TORWINDSTG-1", "X1-KP46-A2", navigation.PurchasingFleet), // A2, not the yard A1
 	})
 
-	_, _, _, readable, err := r.PriceFor(context.Background(), 1, hullbuy.HullClassHeavy, pairingHeavyType, false)
+	_, _, _, readable, err := priceOne(context.Background(), r, 1, hullbuy.HullClassHeavy, pairingHeavyType, false)
 	require.NoError(t, err)
 	require.False(t, readable, "a hull one waypoint away would have to fly — that is not a yard we can buy at")
 }
@@ -207,7 +249,7 @@ func TestYardPrice_OnlyForeignFleetHullsStanding_StaysFailClosed(t *testing.T) {
 		pairingHull(t, "TORWINDSTG-87", "X1-KP46-A1", sensingFleetTag),
 	})
 
-	price, _, yard, readable, err := r.PriceFor(context.Background(), 1, hullbuy.HullClassHeavy, pairingHeavyType, false)
+	price, _, yard, readable, err := priceOne(context.Background(), r, 1, hullbuy.HullClassHeavy, pairingHeavyType, false)
 	require.NoError(t, err)
 	require.False(t, readable)
 	require.Zero(t, price)
@@ -231,7 +273,7 @@ func TestYardPrice_ScannedFallback_SkipsCandidatesWeDoNotStandOn(t *testing.T) {
 		scannedYards: scanned,
 	}
 
-	price, cheapest, yard, readable, err := r.PriceFor(context.Background(), 1, hullbuy.HullClassHeavy, pairingHeavyType, false)
+	price, cheapest, yard, readable, err := priceOne(context.Background(), r, 1, hullbuy.HullClassHeavy, pairingHeavyType, false)
 	require.NoError(t, err)
 	require.True(t, readable)
 	require.Equal(t, "X1-NEAR-Y1", yard, "the nearest candidate we STAND ON, not the nearest on the map")
@@ -240,30 +282,32 @@ func TestYardPrice_ScannedFallback_SkipsCandidatesWeDoNotStandOn(t *testing.T) {
 	require.Equal(t, []string{"X1-FH57", "X1-NEAR"}, scanned.gotFrom, "the rank itself is still asked from the fleet's occupied systems")
 }
 
-// The live walk's own cheapest ask travels DOWN into the fallback. A priced yard nothing stands on
-// is not a target, but it is still the cheapest ask KNOWN — dropping it here would leave the premium
-// guard judging against a higher floor, which is a money guard silently loosened (RULINGS #4).
+// The live walk's own cheapest ask travels DOWN into the fallback. A yard only an UNCLAIMABLE hull
+// stands on is priceable but never a target, and dropping its ask would leave the premium guard
+// judging against a higher floor — a money guard silently loosened (RULINGS #4).
 func TestYardPrice_FallbackKeepsTheLiveWalksCheapestKnownAsk(t *testing.T) {
-	unoccupied, err := shared.NewWaypoint("X1-FH57-B10A", 0, 0)
+	untargetable, err := shared.NewWaypoint("X1-FH57-B10A", 0, 0)
 	require.NoError(t, err)
+	fleet := []*navigation.Ship{
+		pairingHull(t, "TORWINDSTG-86", "X1-FH57-B10A", sensingFleetTag), // present, so priced; unclaimable, so not a target
+		pairingHull(t, "TORWINDSTG-2", "X1-NEAR-Y1", ""),
+	}
+	med := yardAsks(fleet, map[string]int{"X1-FH57-B10A": 1_100_000})
 	r := &fleetYardPriceReader{
-		med: &fakeYardAskMediator{askByWaypoint: map[string]int{"X1-FH57-B10A": 1_100_000}},
-		shipRepo: &fakeHeavyShipRepo{all: []*navigation.Ship{
-			pairingHull(t, "TORWINDSTG-86", "X1-FH57-A1", sensingFleetTag), // puts X1-FH57 in the walk
-			pairingHull(t, "TORWINDSTG-2", "X1-NEAR-Y1", ""),
-		}},
-		waypointRepo: &fakeSystemYardLister{bySystem: map[string][]*shared.Waypoint{"X1-FH57": {unoccupied}}},
+		med:          &med,
+		shipRepo:     &fakeHeavyShipRepo{all: fleet},
+		waypointRepo: &fakeSystemYardLister{bySystem: map[string][]*shared.Waypoint{"X1-FH57": {untargetable}}},
 		scannedYards: &fakeScannedYards{candidates: []shipyardQueries.YardCandidate{
 			{SystemSymbol: "X1-NEAR", WaypointSymbol: "X1-NEAR-Y1", ShipType: pairingHeavyType, PurchasePrice: 1_700_000, Hops: 1},
 		}},
 	}
 
-	price, cheapest, yard, readable, err := r.PriceFor(context.Background(), 1, hullbuy.HullClassHeavy, pairingHeavyType, false)
+	price, cheapest, yard, readable, err := priceOne(context.Background(), r, 1, hullbuy.HullClassHeavy, pairingHeavyType, false)
 	require.NoError(t, err)
 	require.True(t, readable)
 	require.Equal(t, "X1-NEAR-Y1", yard)
 	require.Equal(t, int64(1_700_000), price)
-	require.Equal(t, int64(1_100_000), cheapest, "the live walk's unoccupied ask is still the cheapest KNOWN one")
+	require.Equal(t, int64(1_100_000), cheapest, "the untargetable yard's live ask is still the cheapest KNOWN one")
 }
 
 // --- the buyer side ----------------------------------------------------------------------------
@@ -370,7 +414,7 @@ func TestYardPrice_ASpareSensingProbeMakesItsYardTargetable(t *testing.T) {
 	})
 	r.posts = emptyRoster()
 
-	price, _, yard, readable, err := r.PriceFor(context.Background(), 1, hullbuy.HullClassHeavy, pairingHeavyType, false)
+	price, _, yard, readable, err := priceOne(context.Background(), r, 1, hullbuy.HullClassHeavy, pairingHeavyType, false)
 	require.NoError(t, err)
 	require.True(t, readable)
 	require.Equal(t, "X1-FH57-B10A", yard)
@@ -386,7 +430,7 @@ func TestYardPrice_UnreadableScoutPostRoster_RefusesTheBorrowedTier(t *testing.T
 	})
 	r.posts = &fakeScoutPostRoster{err: errors.New("roster unreadable")}
 
-	_, _, _, readable, err := r.PriceFor(context.Background(), 1, hullbuy.HullClassHeavy, pairingHeavyType, false)
+	_, _, _, readable, err := priceOne(context.Background(), r, 1, hullbuy.HullClassHeavy, pairingHeavyType, false)
 	require.NoError(t, err)
 	require.False(t, readable, "an unreadable roster must never read as every probe being spare")
 }
@@ -402,7 +446,7 @@ func TestYardPrice_AProbeManningAScoutPostIsNotBorrowable(t *testing.T) {
 		{SystemSymbol: "X1-FH57", Hulls: 1, AssignedHull: "TORWINDSTG-86"},
 	}}
 
-	_, _, _, readable, err := r.PriceFor(context.Background(), 1, hullbuy.HullClassHeavy, pairingHeavyType, false)
+	_, _, _, readable, err := priceOne(context.Background(), r, 1, hullbuy.HullClassHeavy, pairingHeavyType, false)
 	require.NoError(t, err)
 	require.False(t, readable, "a probe a live post names is that post's, idle or not")
 }

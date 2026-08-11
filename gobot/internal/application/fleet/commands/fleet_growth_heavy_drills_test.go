@@ -2,9 +2,11 @@ package commands
 
 import (
 	"context"
+	"slices"
 	"testing"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shipyard"
 )
 
 // MONEY-PATH DRILLS at heavy magnitude, driven through the growth coordinator's UNCHANGED shared
@@ -248,6 +250,30 @@ func TestGrowthHeavyBuy_FallsBackToThePriceableTradeHull(t *testing.T) {
 	}
 	if len(yards.asked) == 0 || yards.asked[0] != defaultGrowthShipTypeHeavies {
 		t.Fatalf("price attempts = %v, want the preferred %s asked FIRST", yards.asked, defaultGrowthShipTypeHeavies)
+	}
+}
+
+// ONE WALK ANSWERS EVERY CANDIDATE. A shipyard read returns the whole listing array, so asking the
+// port once per candidate type re-walks the same counters and multiplies an Earning read a money
+// guard is waiting on. The fallback here runs to the LAST type, which is the worst case.
+func TestGrowthHeavyBuy_PricesEveryCandidateHullInOneWalk(t *testing.T) {
+	h, buyer, _ := armedForHeavy(t, growthFixture{})
+	yards := &fakeTypedYardPrice{byType: map[string]int64{"SHIP_LIGHT_HAULER": 374176}}
+	h.SetYardPriceReader(yards)
+
+	if _, err := h.reconcileOnce(context.Background(), growthCmd()); err != nil {
+		t.Fatalf("reconcileOnce error: %v", err)
+	}
+	if buyer.calls != 1 {
+		t.Fatalf("expected the fallback buy to happen, got %d — the fixture no longer exercises the full fallback", buyer.calls)
+	}
+	if yards.calls != 1 {
+		t.Fatalf("yard walks = %d, want 1: every candidate type must be priced from the same walk", yards.calls)
+	}
+	for _, want := range append([]string{defaultGrowthShipTypeHeavies}, shipyard.TradeHullPreferenceOrder...) {
+		if !slices.Contains(yards.asked, want) {
+			t.Fatalf("asked = %v, want %s covered by the single walk", yards.asked, want)
+		}
 	}
 }
 

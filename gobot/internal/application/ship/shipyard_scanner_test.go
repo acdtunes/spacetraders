@@ -210,7 +210,7 @@ func TestShipyardScanner_HeavySetConfigurable(t *testing.T) {
 			api := &fakeShipyardAPI{data: &domainPorts.ShipyardData{
 				Symbol:    yard,
 				ShipTypes: []domainPorts.ShipTypeInfo{{Type: tc.scannedTyp}},
-				Ships:     []domainPorts.ShipListingData{{Type: tc.scannedTyp, PurchasePrice: 500_000}},
+				Ships:     []domainPorts.ShipListingData{{Type: tc.scannedTyp, PurchasePrice: 500_000, Supply: "MODERATE"}},
 			}}
 			events := &fakeRecorder{}
 			s := NewShipyardScanner(api, newFakeInventory(), traits, events, shipyard.NewHeavyShipTypeSet(tc.configured), 0)
@@ -246,6 +246,40 @@ func TestShipyardScanner_PersistFailure_SurfacesError(t *testing.T) {
 	err := s.ScanAndSaveShipyard(scanCtx(), 1, yard)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "db down")
+}
+
+// --- behavior: the read-mode discriminator ------------------------------------
+
+// A shipyard quotes an ask and its supply TOGETHER, under presence, and neither without it. That
+// pairing is the store's record of how each row was read, and the buy path's presence gate rests on
+// it — so a reading where the two disagree says the API's rule has changed and must not be cached.
+func TestShipyardScanner_PriceAndSupplyDisagree_RefusesToPersist(t *testing.T) {
+	cases := map[string][]domainPorts.ShipListingData{
+		"an ask with no supply beside it": {{Type: "SHIP_PROBE", PurchasePrice: 50_000}},
+		"a supply with no ask beside it":  {{Type: "SHIP_PROBE", Supply: "ABUNDANT"}},
+	}
+	for name, ships := range cases {
+		t.Run(name, func(t *testing.T) {
+			yard := "X1-AA-Y1"
+			inventory := newFakeInventory()
+			s := NewShipyardScanner(
+				&fakeShipyardAPI{data: &domainPorts.ShipyardData{
+					Symbol:    yard,
+					ShipTypes: []domainPorts.ShipTypeInfo{{Type: "SHIP_PROBE"}},
+					Ships:     ships,
+				}},
+				inventory,
+				&fakeTraits{waypoints: map[string]*shared.Waypoint{yard: waypointWithTraits(t, yard, "SHIPYARD")}},
+				&fakeRecorder{},
+				shipyard.NewHeavyShipTypeSet(nil),
+				0,
+			)
+
+			err := s.ScanAndSaveShipyard(scanCtx(), 1, yard)
+			require.Error(t, err, "a reading that breaks the discriminator must not pass silently")
+			require.Empty(t, inventory.rows, "and it must never reach the store the buy path reads")
+		})
+	}
 }
 
 // --- behavior: rescan recency window ------------------------------------------

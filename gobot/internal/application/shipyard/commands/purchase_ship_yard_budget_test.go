@@ -48,7 +48,7 @@ func (m *meteredYardAPI) GetShipyard(_ context.Context, _, waypoint, _ string) (
 	return &domainPorts.ShipyardData{
 		Symbol:    waypoint,
 		ShipTypes: []domainPorts.ShipTypeInfo{{Type: sells}},
-		Ships:     []domainPorts.ShipListingData{{Type: sells, PurchasePrice: 2_000_000}},
+		Ships:     []domainPorts.ShipListingData{{Type: sells, PurchasePrice: 2_000_000, Supply: "MODERATE"}},
 	}, nil
 }
 
@@ -64,7 +64,7 @@ func (b *bypassAPI) GetShipyard(_ context.Context, _, waypoint, _ string) (*doma
 	return &domainPorts.ShipyardData{
 		Symbol:    waypoint,
 		ShipTypes: []domainPorts.ShipTypeInfo{{Type: searchHullType}},
-		Ships:     []domainPorts.ShipListingData{{Type: searchHullType, PurchasePrice: 2_000_000}},
+		Ships:     []domainPorts.ShipListingData{{Type: searchHullType, PurchasePrice: 2_000_000, Supply: "MODERATE"}},
 	}, nil
 }
 

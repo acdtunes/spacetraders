@@ -66,3 +66,36 @@ func TestRunShipyardYards_PropagatesProviderError(t *testing.T) {
 	require.Error(t, err, "a read failure must surface, never be silently swallowed")
 	require.Contains(t, err.Error(), "db unreachable")
 }
+
+// fakeShipyardInvariantProvider stands in for the repository's SQL probe, so these tests cover the
+// command's VERDICT; the predicate itself is asserted against a real DB in the repository's tests.
+type fakeShipyardInvariantProvider struct {
+	rows []shipyard.ShipTypeAvailability
+	err  error
+}
+
+func (f *fakeShipyardInvariantProvider) PriceSupplyMismatches(_ context.Context, _ int) ([]shipyard.ShipTypeAvailability, error) {
+	return f.rows, f.err
+}
+
+// The probe is an ASSERTION, not a report: a store that breaks the read-mode discriminator must make
+// the command FAIL, because a silent listing is something an operator scrolls past.
+func TestRunShipyardInvariant_FailsOnAMismatchedRow(t *testing.T) {
+	f := &fakeShipyardInvariantProvider{rows: []shipyard.ShipTypeAvailability{
+		{SystemSymbol: "X1-AA", WaypointSymbol: "X1-AA-Y1", ShipType: "SHIP_HEAVY_FREIGHTER", PurchasePrice: 1_900_000},
+	}}
+	var out bytes.Buffer
+
+	err := runShipyardInvariant(context.Background(), f, &out, 1)
+
+	require.Error(t, err)
+	require.Contains(t, out.String(), "X1-AA-Y1", "the offending row must be named, not merely counted")
+}
+
+func TestRunShipyardInvariant_PassesOnACleanStore(t *testing.T) {
+	var out bytes.Buffer
+
+	err := runShipyardInvariant(context.Background(), &fakeShipyardInvariantProvider{}, &out, 1)
+
+	require.NoError(t, err)
+}

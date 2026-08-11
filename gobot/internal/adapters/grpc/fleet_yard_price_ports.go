@@ -1,6 +1,7 @@
 package grpc
 
 import (
+	"cmp"
 	"context"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
@@ -38,97 +39,126 @@ type fleetYardPriceReader struct {
 	posts        scoutPostRoster // the borrowed-probe restraint roster; unwired ⇒ no probe is borrowed
 }
 
-// PriceFor finds the priced listing the purchase path would TARGET for the ship type: the cheapest
-// at a SHIPYARD-trait waypoint WHERE A CLAIMABLE HULL OF OURS ALREADY STANDS. When the live walk
-// finds no such listing the HEAVY class falls back to the scout-scanned inventory under the same
-// rule; readable=false (price guard fails closed) when neither surface knows a yard the fleet can
-// both price and transact at — and a FAILED read leaves on the error channel, never as that absence.
+// PriceFor prices the ship type at the cheapest yard a CLAIMABLE hull of ours already stands on,
+// alongside the cheapest ask KNOWN anywhere; readable=false leaves the price guard fail-closed.
 //
 // TWO NUMBERS, TWO QUESTIONS. price is the TARGET's ask, and restricting it to yards we occupy can
 // RAISE it — correct, because the cheapest ask on the map under-reserves whenever the yard we can
-// transact at is dearer. cheapest stays the cheapest ask KNOWN, occupied or not: it is guardPrice's
-// DENOMINATOR, so narrowing it would raise the premium ceiling (RULINGS #4).
+// transact at is dearer. cheapest is guardPrice's DENOMINATOR, so it stays the cheapest ask known,
+// occupied or not: narrowing it would raise the premium ceiling (RULINGS #4).
 //
-// PRESENCE GATES THE READ, NOT MERELY THE RANKING. Pricing every SHIPYARD-trait waypoint live and
-// only then asking which one a buyer stands on charges the discovery fan-out to the buy decision:
-// these are Earning reads (no trait filter, no rescan window, never declined) on a PriorityLow
-// endpoint, so each BLOCKS on a contended rate-limit token behind every trade call.
-// THE NARROWING IS PER-YARD AND CONDITIONAL ON COVERAGE, which is the safety argument: a live read is
-// dropped only where the scan surface ALREADY KNOWS AN ASK FOR THAT YARD, so every yard that fed the
-// reference still feeds it. A walked yard the store never priced is read live; no ranker, an
-// unreadable or cold store, or a non-heavy class leaves the walk as it was. FRESHNESS is traded, not
-// coverage — the TARGET's ask stays live, re-verified before credits move.
-func (r *fleetYardPriceReader) PriceFor(ctx context.Context, playerID int, class hullbuy.HullClass, shipType string, preferProximal bool) (int64, int64, string, bool, error) {
-	if r.waypointRepo == nil {
-		return 0, 0, "", false, nil
+// PRESENCE GATES THE READ. A shipyard hands back its priced `ships` array only while a hull of ours
+// is there; without one it answers with its catalogue alone. So walking an unoccupied counter spends
+// an Earning request — no trait filter, no rescan window, never declined, blocking on a contended
+// PriorityLow token behind every trade call — to learn a price the API was never going to give. The
+// yards dropped here could not have moved either number, which is what keeps the denominator intact.
+func (r *fleetYardPriceReader) PriceFor(ctx context.Context, playerID int, class hullbuy.HullClass, shipTypes []string, preferProximal bool) (map[string]hullbuy.YardAsk, error) {
+	if r.waypointRepo == nil || len(shipTypes) == 0 {
+		return unreadableAsks(shipTypes), nil
 	}
 	pid, err := shared.NewPlayerID(playerID)
 	if err != nil {
-		return 0, 0, "", false, nil
+		return unreadableAsks(shipTypes), nil
 	}
 	ships, err := r.shipRepo.FindAllByPlayer(ctx, pid)
 	if err != nil {
-		return 0, 0, "", false, err
+		return unreadableAsks(shipTypes), err
+	}
+	walks := make(map[string]*typeWalk, len(shipTypes))
+	for _, shipType := range shipTypes {
+		walks[shipType] = &typeWalk{}
 	}
 	manned, rosterOK := buyerRoster(ctx, r.posts, playerID)
 	buyers := purchaseBuyers(ships, manned, rosterOK)
-	// ONE store read doing two jobs: the premium reference, and the per-yard licence to skip a read.
-	candidates, scanErr := r.scannedYardCandidates(ctx, playerID, class, shipType, ships)
-	scanned := cheapestCandidateAsk(candidates)
-	covered := scannedAskByYard(candidates)
+	present := presentHullWaypoints(ships)
+	candidates, scanErr := r.scannedYardCandidates(ctx, playerID, class, shipTypes, ships)
+	byType := candidatesByType(candidates)
 
-	var cheapest, target int64
-	var cheapestYard, targetYard string
 	for _, system := range distinctShipSystems(ships) {
 		waypoints, werr := r.waypointRepo.ListBySystemWithTrait(ctx, system, "SHIPYARD")
 		if werr != nil {
 			continue
 		}
 		for _, wp := range waypoints {
-			if wp == nil {
+			if wp == nil || !present[wp.Symbol] {
 				continue
 			}
+			asks := r.asksAtShipyard(ctx, system, wp.Symbol, shipTypes, pid)
 			_, standing := standingBuyerAt(buyers, wp.Symbol)
-			// Nothing stands here, so this yard can never be the target, and the surface has its ask.
-			if _, known := covered[wp.Symbol]; known && !standing {
-				continue
-			}
-			price, ok := r.priceAtShipyard(ctx, system, wp.Symbol, shipType, pid)
-			if !ok {
-				continue
-			}
-			if cheapestYard == "" || price < cheapest {
-				cheapest, cheapestYard = price, wp.Symbol
-			}
-			if !standing {
-				continue
-			}
-			if targetYard == "" || price < target {
-				target, targetYard = price, wp.Symbol
+			for shipType, price := range asks {
+				walks[shipType].observe(wp.Symbol, price, standing)
 			}
 		}
 	}
-	cheapest = lowerAsk(cheapest, scanned)
-	if targetYard == "" {
-		return r.scannedYardFallback(candidates, buyers, cheapest, scanErr)
+
+	out := make(map[string]hullbuy.YardAsk, len(shipTypes))
+	var failure error
+	for _, shipType := range shipTypes {
+		w := walks[shipType]
+		cheapest := lowerAsk(w.cheapest, cheapestCandidateAsk(byType[shipType]))
+		if w.targetYard != "" {
+			out[shipType] = hullbuy.YardAsk{Price: w.target, Cheapest: cheapest, Yard: w.targetYard, Readable: true}
+			continue
+		}
+		ask, err := r.scannedYardFallback(byType[shipType], buyers, cheapest, scanErr)
+		out[shipType], failure = ask, cmp.Or(failure, err)
 	}
-	return target, cheapest, targetYard, true, nil
+	return out, failure
 }
 
-// scannedYardCandidates is the persisted scan surface for the type, or nil when it cannot be a
+// typeWalk accumulates ONE candidate type's answer as the shared yard walk proceeds: the cheapest ask
+// seen anywhere, and the cheapest at a yard a claimable hull is standing on.
+type typeWalk struct {
+	cheapest, target         int64
+	cheapestYard, targetYard string
+}
+
+func (w *typeWalk) observe(waypoint string, price int64, standing bool) {
+	if w.cheapestYard == "" || price < w.cheapest {
+		w.cheapest, w.cheapestYard = price, waypoint
+	}
+	if !standing {
+		return
+	}
+	if w.targetYard == "" || price < w.target {
+		w.target, w.targetYard = price, waypoint
+	}
+}
+
+// unreadableAsks is the fail-closed answer for every type asked, so a caller can index the result
+// without distinguishing "no entry" from "no price".
+func unreadableAsks(shipTypes []string) map[string]hullbuy.YardAsk {
+	out := make(map[string]hullbuy.YardAsk, len(shipTypes))
+	for _, shipType := range shipTypes {
+		out[shipType] = hullbuy.YardAsk{}
+	}
+	return out
+}
+
+// scannedYardCandidates is the persisted scan surface for the types, or nil when it cannot be a
 // source. HEAVY-ONLY, matching scannedYardFallback's gate: opening the light tier to remote yards is
 // a policy change this seam does not make. A nil ranker, another class or a read error yields nil
 // and PriceFor walks fully; the error travels beside it, so a miss is never read as an absence.
 // Asked from the OCCUPIED SYSTEMS, which narrowing would shrink.
-func (r *fleetYardPriceReader) scannedYardCandidates(ctx context.Context, playerID int, class hullbuy.HullClass, shipType string, ships []*navigation.Ship) ([]shipyardQueries.YardCandidate, error) {
+func (r *fleetYardPriceReader) scannedYardCandidates(ctx context.Context, playerID int, class hullbuy.HullClass, shipTypes []string, ships []*navigation.Ship) ([]shipyardQueries.YardCandidate, error) {
 	if class != hullbuy.HullClassHeavy || r.scannedYards == nil {
 		return nil, nil
 	}
-	candidates, err := r.scannedYards.NearestYardsSelling(ctx, playerID, []string{shipType}, distinctShipSystems(ships))
+	candidates, err := r.scannedYards.NearestYardsSelling(ctx, playerID, shipTypes, distinctShipSystems(ships))
 	if err != nil {
 		return nil, err
 	}
 	return candidates, nil
+}
+
+// candidatesByType splits the one store read per type, so no type's reference or fallback can ever be
+// fed by another's ask.
+func candidatesByType(candidates []shipyardQueries.YardCandidate) map[string][]shipyardQueries.YardCandidate {
+	out := make(map[string][]shipyardQueries.YardCandidate)
+	for _, c := range candidates {
+		out[c.ShipType] = append(out[c.ShipType], c)
+	}
+	return out
 }
 
 // cheapestCandidateAsk is the minimum PRICED ask; 0 means none. A zero reference makes guardPrice
@@ -144,22 +174,6 @@ func cheapestCandidateAsk(candidates []shipyardQueries.YardCandidate) int64 {
 		}
 	}
 	return cheapest
-}
-
-// scannedAskByYard indexes which WAYPOINTS the scan surface can already price — the licence to skip
-// a live read, since the yard contributes its stored ask. An unpriced row is not coverage.
-func scannedAskByYard(candidates []shipyardQueries.YardCandidate) map[string]int64 {
-	out := make(map[string]int64, len(candidates))
-	for _, c := range candidates {
-		if c.WaypointSymbol == "" || c.PurchasePrice <= 0 {
-			continue
-		}
-		if prior, seen := out[c.WaypointSymbol]; seen && prior <= int64(c.PurchasePrice) {
-			continue
-		}
-		out[c.WaypointSymbol] = int64(c.PurchasePrice)
-	}
-	return out
 }
 
 // lowerAsk folds two asks with 0 meaning "unknown", so the reference can only ever move DOWN.
@@ -212,37 +226,49 @@ func (r *fleetYardPriceReader) PriceForSystem(ctx context.Context, playerID int,
 }
 
 // scannedYardFallback opens the HEAVY price signal from the persisted shipyard scans when the live
-// in-system walk found no priced listing WE ALREADY STAND ON. price = the ask at the nearest OCCUPIED
-// candidate, cheapest = the reference PriceFor already folded; presence decides which is TARGETED.
+// in-system walk found no priced listing WE ALREADY STAND ON. Price = the ask at the nearest OCCUPIED
+// candidate, Cheapest = the reference PriceFor already folded; presence decides which is TARGETED.
 // IT DOES NOT FETCH: candidates, cheapest and scanErr all arrive from PriceFor's single store read,
 // so an empty list means either nothing to say or nothing readable — and scanErr says which.
-func (r *fleetYardPriceReader) scannedYardFallback(candidates []shipyardQueries.YardCandidate, buyers []purchaseBuyer, cheapest int64, scanErr error) (int64, int64, string, bool, error) {
+func (r *fleetYardPriceReader) scannedYardFallback(candidates []shipyardQueries.YardCandidate, buyers []purchaseBuyer, cheapest int64, scanErr error) (hullbuy.YardAsk, error) {
 	if len(candidates) == 0 {
-		return 0, 0, "", false, scanErr // empty or unreadable scan surface → the price guard stays closed
+		return hullbuy.YardAsk{}, scanErr // empty or unreadable scan surface → the price guard stays closed
 	}
 	for _, c := range candidates {
 		if _, standing := standingBuyerAt(buyers, c.WaypointSymbol); !standing {
 			continue
 		}
-		return int64(c.PurchasePrice), cheapest, c.WaypointSymbol, true, nil
+		return hullbuy.YardAsk{Price: int64(c.PurchasePrice), Cheapest: cheapest, Yard: c.WaypointSymbol, Readable: true}, nil
 	}
-	return 0, 0, "", false, nil // known yards, none we stand on → stay fail-closed
+	return hullbuy.YardAsk{}, nil // known yards, none we stand on → stay fail-closed
 }
 
-func (r *fleetYardPriceReader) priceAtShipyard(ctx context.Context, system, waypoint, shipType string, pid shared.PlayerID) (int64, bool) {
+// asksAtShipyard reads ONE yard and takes every requested type's ask out of the same response, which
+// is what makes a multi-type decision cost one request per counter rather than one per type.
+func (r *fleetYardPriceReader) asksAtShipyard(ctx context.Context, system, waypoint string, shipTypes []string, pid shared.PlayerID) map[string]int64 {
 	// The autosizer's fail-closed price guard reads this before it authorises a
 	// hull buy, so it is Earning: metered, never denied (RULINGS #4).
 	q := &shipyardQueries.GetShipyardListingsQuery{SystemSymbol: system, WaypointSymbol: waypoint, PlayerID: pid, Class: marketscan.Earning}
 	resp, err := r.med.Send(ctx, q)
 	if err != nil {
-		return 0, false
+		return nil
 	}
 	out, ok := resp.(*shipyardQueries.GetShipyardListingsResponse)
 	if !ok || out == nil {
-		return 0, false
+		return nil
 	}
-	if listing, found := out.Shipyard.FindListingByType(shipType); found {
-		return int64(listing.PurchasePrice), true
+	asks := make(map[string]int64, len(shipTypes))
+	for _, shipType := range shipTypes {
+		if listing, found := out.Shipyard.FindListingByType(shipType); found {
+			asks[shipType] = int64(listing.PurchasePrice)
+		}
 	}
-	return 0, false
+	return asks
+}
+
+// priceAtShipyard is the single-type read PriceForSystem needs — the home-scoped walk prices one hull
+// class and has no candidate set to spread across.
+func (r *fleetYardPriceReader) priceAtShipyard(ctx context.Context, system, waypoint, shipType string, pid shared.PlayerID) (int64, bool) {
+	price, found := r.asksAtShipyard(ctx, system, waypoint, []string{shipType}, pid)[shipType]
+	return price, found
 }

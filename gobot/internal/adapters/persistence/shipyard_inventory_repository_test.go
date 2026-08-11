@@ -229,3 +229,37 @@ func TestShipyardInventory_ScannedSystems_DistinctAndEraScoped(t *testing.T) {
 	require.ElementsMatch(t, []string{"X1-AA", "X1-BB"}, systems,
 		"ScannedSystems must return each open-era system once (distinct), excluding dead-era and other-player scans")
 }
+
+// THE STORE-WIDE HALF OF THE READ-MODE DISCRIMINATOR. A shipyard quotes an ask and its supply
+// together, under presence, and neither without one — so a row where they disagree is a row nobody
+// can say how they read. The scanner refuses to write one; this catches one that arrived anyway,
+// from a writer that never passed through that check.
+func TestShipyardInventory_PriceSupplyMismatches_CatchesBothOffDiagonals(t *testing.T) {
+	db, err := database.NewTestConnection()
+	require.NoError(t, err)
+	require.NoError(t, db.Create(&persistence.EraModel{Name: "orion", AgentSymbol: "ORION", PlayerID: 1}).Error)
+
+	repo := persistence.NewShipyardInventoryRepository(db)
+	ctx := context.Background()
+	scannedAt := time.Date(2026, 7, 14, 10, 0, 0, 0, time.UTC)
+
+	require.NoError(t, repo.ReplaceScan(ctx, 1, "X1-AA", "X1-AA-Y1", []shipyard.ShipTypeAvailability{
+		availability("X1-AA-Y1", "SHIP_HEAVY_FREIGHTER", 1_200_000, "MODERATE"), // priced under presence
+		availability("X1-AA-Y1", "SHIP_PROBE", 0, ""),                           // catalogue only
+	}, scannedAt))
+	clean, err := repo.PriceSupplyMismatches(ctx, 1)
+	require.NoError(t, err)
+	require.Empty(t, clean, "a store written the only way the API answers must report nothing")
+
+	require.NoError(t, repo.ReplaceScan(ctx, 1, "X1-BB", "X1-BB-Y1", []shipyard.ShipTypeAvailability{
+		availability("X1-BB-Y1", "SHIP_HEAVY_FREIGHTER", 1_900_000, ""), // an ask nobody could have read
+		availability("X1-BB-Y1", "SHIP_PROBE", 0, "ABUNDANT"),           // a supply with no ask beside it
+	}, scannedAt))
+
+	found, err := repo.PriceSupplyMismatches(ctx, 1)
+	require.NoError(t, err)
+	require.Len(t, found, 2, "both off-diagonals must be named, and the honest rows left alone")
+	for _, row := range found {
+		require.Equal(t, "X1-BB-Y1", row.WaypointSymbol)
+	}
+}

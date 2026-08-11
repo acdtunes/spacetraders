@@ -70,10 +70,10 @@ func (p *ProbePurchasePort) persistListings(ctx context.Context, playerID int, y
 	if p.listings == nil {
 		return
 	}
-	priced := make(map[string]int, len(yard.Listings))
+	priced := make(map[string]shipyardDomain.ShipListing, len(yard.Listings))
 	for _, listing := range yard.Listings {
-		if listing.PurchasePrice > priced[listing.ShipType] {
-			priced[listing.ShipType] = listing.PurchasePrice
+		if listing.PurchasePrice > priced[listing.ShipType].PurchasePrice {
+			priced[listing.ShipType] = listing
 		}
 	}
 	system := shared.ExtractSystemSymbol(yardWaypoint)
@@ -83,7 +83,8 @@ func (p *ProbePurchasePort) persistListings(ctx context.Context, playerID int, y
 			SystemSymbol:   system,
 			WaypointSymbol: yardWaypoint,
 			ShipType:       shipType,
-			PurchasePrice:  priced[shipType],
+			PurchasePrice:  priced[shipType].PurchasePrice,
+			Supply:         priced[shipType].Supply,
 			LastScanned:    now,
 		})
 	}

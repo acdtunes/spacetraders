@@ -21,9 +21,22 @@ type BuyResult struct {
 	Dedicated  bool
 }
 
-// YardPriceReader reads the purchase price for a ship type at the preferred yard (demand-proximal
-// when preferProximal), plus the cheapest known yard ask (for the premium ceiling) and the yard
-// waypoint the buy targets. readable=false ⇒ the price guards fail closed.
+// YardAsk is one candidate ship type's answer out of a yard walk: the ask at the yard the buy would
+// target, the yard itself, and Readable=false ⇒ the price guards fail closed.
+type YardAsk struct {
+	Price int64
+	// Cheapest is guardPrice's DENOMINATOR and spans every yard known, occupied or not: narrowing it
+	// would raise the premium ceiling (RULINGS #4).
+	Cheapest int64
+	Yard     string
+	Readable bool
+}
+
+// YardPriceReader prices candidate ship types at the yards the fleet can transact at, demand-proximal
+// when preferProximal. Every requested type gets an entry, unreadable ones included.
+//
+// ONE CALL PRICES EVERY TYPE ASKED, because a shipyard read returns the whole listing array — a
+// per-type call would re-walk the same counters and multiply a read a money guard is waiting on.
 type YardPriceReader interface {
-	PriceFor(ctx context.Context, playerID int, class HullClass, shipType string, preferProximal bool) (price, cheapest int64, yard string, readable bool, err error)
+	PriceFor(ctx context.Context, playerID int, class HullClass, shipTypes []string, preferProximal bool) (map[string]YardAsk, error)
 }

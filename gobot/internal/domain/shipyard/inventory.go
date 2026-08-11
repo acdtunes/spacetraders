@@ -3,6 +3,7 @@ package shipyard
 import (
 	"context"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -20,6 +21,26 @@ type ShipTypeAvailability struct {
 	PurchasePrice  int
 	Supply         string
 	LastScanned    time.Time
+}
+
+// PriceSupplyDisagree reports a row whose price and supply tell different stories about how it was
+// read. A shipyard quotes an ask and its supply TOGETHER under presence, and neither without one, so
+// the pair is the store's record of read mode — and the buy path's presence gate rests on that record.
+// The SQL half of this check lives on the repository, so a writer that bypasses one meets the other.
+func PriceSupplyDisagree(a ShipTypeAvailability) bool {
+	return (a.PurchasePrice > 0) != (strings.TrimSpace(a.Supply) != "")
+}
+
+// DisagreeingRows is PriceSupplyDisagree over a whole reading, naming every offender so a refusal can
+// say which row broke the rule rather than only that one did.
+func DisagreeingRows(rows []ShipTypeAvailability) []ShipTypeAvailability {
+	var out []ShipTypeAvailability
+	for _, a := range rows {
+		if PriceSupplyDisagree(a) {
+			out = append(out, a)
+		}
+	}
+	return out
 }
 
 // heavyHullClasses is the SINGLE source of truth for what "heavy" means, pairing
