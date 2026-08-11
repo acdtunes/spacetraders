@@ -286,8 +286,8 @@ func (s *Service) Connections(ctx context.Context, systemSymbol string, playerID
 // present hull: reading the gate stores OUR edge copy but leaves the gate uncharted-
 // public, so every future jump-OUT re-reads it live (GetJumpGate) and 400s whenever no hull is
 // on the gate. CreateChart makes the gate GetJumpGate-readable forever without a ship present,
-// collapsing that re-read storm. Charting is best-effort and idempotent-by-GUARD-1 (a later
-// arrival on a now-charted system store-hits and never re-charts) — see chartPresentWaypoint.
+// collapsing that re-read storm. Charting is best-effort and skipped on a gate the graph already
+// shows charted, so a gate whose edge read keeps failing is not re-charted on every arrival.
 //
 // It is best-effort from the caller's side: charting must never fail a trade/nav leg, so
 // callers (travelWithJumpBound.chartArrivedGate, the reconcile sweep) log and
@@ -301,10 +301,10 @@ func (s *Service) ChartPresentGate(ctx context.Context, systemSymbol, shipSymbol
 	// Store MISS ⇒ this gate is UNCHARTED-to-us. PUBLICLY chart it from the present hull BEFORE
 	// the edge read, so the durable public chart (the sp-lv2n win) is not contingent on the read
 	// succeeding. Best-effort and gated to THIS present-ship branch only — the remote fetch-
-	// through path (Connections) has no hull on the gate and must never attempt a chart. GUARD 1
-	// above is the idempotence key: a later arrival on a now-charted-by-us system returns there
-	// and never re-charts, so each gate is charted at most once (no wasted call, no error-spam).
-	s.chartPresentWaypoint(ctx, shipSymbol, playerID)
+	// through path (Connections) has no hull on the gate and must never attempt a chart.
+	if !s.gateAlreadyPublic(ctx, systemSymbol, playerID) {
+		s.chartPresentWaypoint(ctx, shipSymbol, playerID)
+	}
 	// presentShip=true: a hull IS on the gate, so the read succeeds even for an
 	// UNCHARTED gate (and we just charted it). BYPASS the doomed-call precondition —
 	// applying it here would defeat the frontier self-heal.
@@ -624,6 +624,16 @@ func (s *Service) gateFromGraph(ctx context.Context, systemSymbol string, player
 		}
 	}
 	return "", false, fmt.Errorf("no jump gate found in system %s", systemSymbol)
+}
+
+// gateAlreadyPublic reports whether the graph we already hold shows this gate charted — by us or
+// by anyone. Fails open (false) so an unreadable graph still charts and the frontier self-heals.
+func (s *Service) gateAlreadyPublic(ctx context.Context, systemSymbol string, playerID int) bool {
+	if s.graphProvider == nil {
+		return false
+	}
+	_, charted, err := s.gateFromGraph(ctx, systemSymbol, playerID)
+	return err == nil && charted
 }
 
 // token loads the player's API token for the live gate fetch.
