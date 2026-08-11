@@ -194,6 +194,16 @@ func (h *RunFleetGrowthCoordinatorHandler) reconcileOnce(ctx context.Context, cm
 		return res, nil
 	}
 
+	// A TICK WHOSE CONTEXT HAS DIED PUBLISHES NOTHING. The ask is read LATE, at decision time, so a
+	// cancellation lands on the price arm alone and its verdict would name the shutdown, not the fleet.
+	if ctx.Err() != nil {
+		logger.Log("INFO", "Fleet growth tick ABANDONED: the context was cancelled before the heavy decision — no decision published and no stall verdict recorded, because neither would describe the fleet", map[string]interface{}{
+			"action": "growth_tick_abandoned", "container_id": cmd.ContainerID,
+			"wave": string(wave), "shortfall": res.Shortfall,
+		})
+		return res, nil
+	}
+
 	buy := h.buyHeavy(ctx, cmd, cfg, demand, in, st)
 	if buy.Bought {
 		res.Purchased++

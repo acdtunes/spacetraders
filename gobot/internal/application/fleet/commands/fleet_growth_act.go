@@ -278,7 +278,7 @@ func (h *RunFleetGrowthCoordinatorHandler) buildPurchaseRequest(
 	in growthTickInputs,
 	st *growthState,
 ) (PurchaseRequest, string) {
-	shipType, price, cheapest, yard, priceOK := h.resolveHullPrice(ctx, cmd, cfg, cfg.ShipTypeHeavies)
+	shipType, price, cheapest, yard, priceOK, priceReadFailed := h.resolveHullPrice(ctx, cmd, cfg, cfg.ShipTypeHeavies)
 
 	return PurchaseRequest{
 		Class:    HullClassHeavy,
@@ -304,6 +304,7 @@ func (h *RunFleetGrowthCoordinatorHandler) buildPurchaseRequest(
 
 		Price:              price,
 		PriceReadable:      priceOK,
+		PriceReadFailed:    priceReadFailed,
 		CheapestKnownPrice: cheapest,
 		MaxPriceClass:      cfg.MaxPriceHeavies,
 		MaxPremiumPct:      cfg.MaxPremiumOverCheapestPct,
@@ -338,24 +339,30 @@ func (h *RunFleetGrowthCoordinatorHandler) buildPurchaseRequest(
 // compares like with like. SELF-CORRECTING, because the preferred type is asked FIRST every tick and
 // nothing is remembered between them. FAILS CLOSED when no trade-capable type can be priced, and
 // logs the substitution per decision so an operator never discovers a changed hull from a ship list.
+//
+// readFailed separates a read that FAILED from a market that sells nothing here. Both refuse the buy
+// and neither is a price; only the decision line differs, so an operator knows where to look.
 func (h *RunFleetGrowthCoordinatorHandler) resolveHullPrice(
 	ctx context.Context,
 	cmd *RunFleetGrowthCoordinatorCommand,
 	cfg growthRunConfig,
 	preferred string,
-) (shipType string, price, cheapest int64, yard string, readable bool) {
+) (shipType string, price, cheapest int64, yard string, readable, readFailed bool) {
 	if h.yardPrice == nil {
-		return preferred, 0, 0, "", false
+		return preferred, 0, 0, "", false, false
 	}
-	if p, c, y, ok, err := h.yardPrice.PriceFor(ctx, cmd.PlayerID, HullClassHeavy, preferred, cfg.PreferDemandProximalYard); err == nil && ok {
-		return preferred, p, c, y, true
+	p, c, y, ok, err := h.yardPrice.PriceFor(ctx, cmd.PlayerID, HullClassHeavy, preferred, cfg.PreferDemandProximalYard)
+	if err == nil && ok {
+		return preferred, p, c, y, true, false
 	}
+	readFailed = err != nil
 	for _, alt := range shipyard.TradeHullPreferenceOrder {
 		if alt == preferred {
 			continue // already asked, and it could not be priced
 		}
 		p, c, y, ok, err := h.yardPrice.PriceFor(ctx, cmd.PlayerID, HullClassHeavy, alt, cfg.PreferDemandProximalYard)
 		if err != nil || !ok {
+			readFailed = readFailed || err != nil
 			continue
 		}
 		common.LoggerFromContext(ctx).Log("WARN", fmt.Sprintf(
@@ -364,7 +371,7 @@ func (h *RunFleetGrowthCoordinatorHandler) resolveHullPrice(
 			"action": "growth_trade_hull_substituted", "container_id": cmd.ContainerID,
 			"preferred_ship_type": preferred, "ship_type": alt, "price": p, "yard": y,
 		})
-		return alt, p, c, y, true
+		return alt, p, c, y, true, false
 	}
-	return preferred, 0, 0, "", false
+	return preferred, 0, 0, "", false, readFailed
 }

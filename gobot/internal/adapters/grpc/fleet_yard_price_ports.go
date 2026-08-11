@@ -42,7 +42,7 @@ type fleetYardPriceReader struct {
 // at a SHIPYARD-trait waypoint WHERE A CLAIMABLE HULL OF OURS ALREADY STANDS. When the live walk
 // finds no such listing the HEAVY class falls back to the scout-scanned inventory under the same
 // rule; readable=false (price guard fails closed) when neither surface knows a yard the fleet can
-// both price and transact at.
+// both price and transact at — and a FAILED read leaves on the error channel, never as that absence.
 //
 // TWO NUMBERS, TWO QUESTIONS. price is the TARGET's ask, and restricting it to yards we occupy can
 // RAISE it — correct, because the cheapest ask on the map under-reserves whenever the yard we can
@@ -68,12 +68,12 @@ func (r *fleetYardPriceReader) PriceFor(ctx context.Context, playerID int, class
 	}
 	ships, err := r.shipRepo.FindAllByPlayer(ctx, pid)
 	if err != nil {
-		return 0, 0, "", false, nil
+		return 0, 0, "", false, err
 	}
 	manned, rosterOK := buyerRoster(ctx, r.posts, playerID)
 	buyers := purchaseBuyers(ships, manned, rosterOK)
 	// ONE store read doing two jobs: the premium reference, and the per-yard licence to skip a read.
-	candidates := r.scannedYardCandidates(ctx, playerID, class, shipType, ships)
+	candidates, scanErr := r.scannedYardCandidates(ctx, playerID, class, shipType, ships)
 	scanned := cheapestCandidateAsk(candidates)
 	covered := scannedAskByYard(candidates)
 
@@ -110,24 +110,25 @@ func (r *fleetYardPriceReader) PriceFor(ctx context.Context, playerID int, class
 	}
 	cheapest = lowerAsk(cheapest, scanned)
 	if targetYard == "" {
-		return r.scannedYardFallback(candidates, buyers, cheapest)
+		return r.scannedYardFallback(candidates, buyers, cheapest, scanErr)
 	}
 	return target, cheapest, targetYard, true, nil
 }
 
 // scannedYardCandidates is the persisted scan surface for the type, or nil when it cannot be a
 // source. HEAVY-ONLY, matching scannedYardFallback's gate: opening the light tier to remote yards is
-// a policy change this seam does not make. Nil ranker, a read error or another class yields nil and
-// PriceFor walks fully. Asked from the OCCUPIED SYSTEMS, which narrowing would shrink.
-func (r *fleetYardPriceReader) scannedYardCandidates(ctx context.Context, playerID int, class hullbuy.HullClass, shipType string, ships []*navigation.Ship) []shipyardQueries.YardCandidate {
+// a policy change this seam does not make. A nil ranker, another class or a read error yields nil
+// and PriceFor walks fully; the error travels beside it, so a miss is never read as an absence.
+// Asked from the OCCUPIED SYSTEMS, which narrowing would shrink.
+func (r *fleetYardPriceReader) scannedYardCandidates(ctx context.Context, playerID int, class hullbuy.HullClass, shipType string, ships []*navigation.Ship) ([]shipyardQueries.YardCandidate, error) {
 	if class != hullbuy.HullClassHeavy || r.scannedYards == nil {
-		return nil
+		return nil, nil
 	}
 	candidates, err := r.scannedYards.NearestYardsSelling(ctx, playerID, []string{shipType}, distinctShipSystems(ships))
 	if err != nil {
-		return nil
+		return nil, err
 	}
-	return candidates
+	return candidates, nil
 }
 
 // cheapestCandidateAsk is the minimum PRICED ask; 0 means none. A zero reference makes guardPrice
@@ -212,13 +213,12 @@ func (r *fleetYardPriceReader) PriceForSystem(ctx context.Context, playerID int,
 
 // scannedYardFallback opens the HEAVY price signal from the persisted shipyard scans when the live
 // in-system walk found no priced listing WE ALREADY STAND ON. price = the ask at the nearest OCCUPIED
-// candidate, cheapest = the reference PriceFor already folded. Nothing readable, or nothing we stand
-// on ⇒ readable=false, as it always was; presence decides which candidate is TARGETED.
-// IT DOES NOT FETCH: candidates and cheapest arrive from PriceFor's single store read, the same one
-// that decides whether the walk may narrow, so an empty list means one thing — nothing to say.
-func (r *fleetYardPriceReader) scannedYardFallback(candidates []shipyardQueries.YardCandidate, buyers []purchaseBuyer, cheapest int64) (int64, int64, string, bool, error) {
+// candidate, cheapest = the reference PriceFor already folded; presence decides which is TARGETED.
+// IT DOES NOT FETCH: candidates, cheapest and scanErr all arrive from PriceFor's single store read,
+// so an empty list means either nothing to say or nothing readable — and scanErr says which.
+func (r *fleetYardPriceReader) scannedYardFallback(candidates []shipyardQueries.YardCandidate, buyers []purchaseBuyer, cheapest int64, scanErr error) (int64, int64, string, bool, error) {
 	if len(candidates) == 0 {
-		return 0, 0, "", false, nil // unreadable or empty scan surface → the price guard stays closed
+		return 0, 0, "", false, scanErr // empty or unreadable scan surface → the price guard stays closed
 	}
 	for _, c := range candidates {
 		if _, standing := standingBuyerAt(buyers, c.WaypointSymbol); !standing {

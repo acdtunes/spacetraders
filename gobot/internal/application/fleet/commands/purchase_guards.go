@@ -102,6 +102,9 @@ type PurchaseRequest struct {
 	// Price (from a demand-proximal yard where preferred).
 	Price         int64
 	PriceReadable bool
+	// PriceReadFailed tells an ask the READ could not reach from one no yard we stand on sells. Both
+	// leave PriceReadable false and both refuse the buy; it names WHICH in the decision line.
+	PriceReadFailed bool
 	// CheapestKnownPrice is the cheapest known yard ask for the type (0 = unknown → premium check
 	// skipped). MaxPriceClass is the per-class absolute cap (0 = none). MaxPremiumPct caps the
 	// premium over CheapestKnownPrice.
@@ -307,7 +310,11 @@ func guardPerTickCap(req PurchaseRequest) GuardVerdict {
 // every number an operator would retune from (max_price_<class>, max_premium_over_cheapest_pct).
 func guardPrice(req PurchaseRequest) GuardVerdict {
 	if !req.PriceReadable {
-		return GuardVerdict{Guard: GuardPrice, Passed: false, Detail: "yard ask UNREADABLE — fail-CLOSED (never buy an unpriceable hull)"}
+		why := "no yard we stand on sells it"
+		if req.PriceReadFailed {
+			why = "the ask could not be read"
+		}
+		return GuardVerdict{Guard: GuardPrice, Passed: false, Detail: fmt.Sprintf("yard ask UNREADABLE (%s) — fail-CLOSED (never buy an unpriceable hull)", why)}
 	}
 	absOK := req.MaxPriceClass <= 0 || req.Price <= req.MaxPriceClass
 	absDetail := "no abs cap"

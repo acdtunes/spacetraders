@@ -8,6 +8,7 @@ package grpc
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -90,6 +91,50 @@ func TestYardPriceReader_Heavy_EmptyScanStore_StaysFailClosed(t *testing.T) {
 	_, _, _, readable, err = r.PriceFor(context.Background(), 1, hullbuy.HullClassHeavy, "SHIP_HEAVY_FREIGHTER", true)
 	require.NoError(t, err)
 	require.False(t, readable)
+}
+
+// A FAILED READ IS NOT AN ABSENCE. It must reach the caller ON THE ERROR CHANNEL while the guard
+// stays CLOSED; swallowed, an infrastructure fault reads as "no yard we stand on sells it".
+func TestYardPriceReader_Heavy_StoreReadFailure_IsNotReportedAsAbsence(t *testing.T) {
+	boom := errors.New("read shipyard inventory: context canceled")
+	r := &fleetYardPriceReader{
+		shipRepo:     &fakeHeavyShipRepo{all: []*navigation.Ship{pairingHull(t, "BUYER-1", "X1-NEAR-Y1", "")}},
+		waypointRepo: &fakeYardWaypointLister{},
+		scannedYards: &fakeScannedYards{err: boom},
+	}
+
+	_, _, _, readable, err := r.PriceFor(context.Background(), 1, hullbuy.HullClassHeavy, "SHIP_HEAVY_FREIGHTER", true)
+	require.False(t, readable, "a failed read still fails CLOSED (RULINGS #4)")
+	require.ErrorIs(t, err, boom, "a failed read must NOT be reported as a clean absence of yards")
+}
+
+// THE OTHER POPULATION, on the SAME fixture so only the store's answer varies: nothing scanned is a
+// genuine absence and must keep reporting a NIL error, or the distinction above is worthless.
+func TestYardPriceReader_Heavy_EmptyCandidateSet_IsACleanAbsence(t *testing.T) {
+	r := &fleetYardPriceReader{
+		shipRepo:     &fakeHeavyShipRepo{all: []*navigation.Ship{pairingHull(t, "BUYER-1", "X1-NEAR-Y1", "")}},
+		waypointRepo: &fakeYardWaypointLister{},
+		scannedYards: &fakeScannedYards{},
+	}
+
+	_, _, _, readable, err := r.PriceFor(context.Background(), 1, hullbuy.HullClassHeavy, "SHIP_HEAVY_FREIGHTER", true)
+	require.False(t, readable, "an empty scan surface still fails CLOSED")
+	require.NoError(t, err, "an absence of yards is not an infrastructure fault")
+}
+
+// The buyer roster is the other read PriceFor cannot proceed without, and it dies in the same
+// instant for the same reason. It must report the same way.
+func TestYardPriceReader_Heavy_RosterReadFailure_IsNotReportedAsAbsence(t *testing.T) {
+	boom := errors.New("find ships by player: context canceled")
+	r := &fleetYardPriceReader{
+		shipRepo:     &fakeHeavyShipRepo{err: boom},
+		waypointRepo: &fakeYardWaypointLister{},
+		scannedYards: &fakeScannedYards{},
+	}
+
+	_, _, _, readable, err := r.PriceFor(context.Background(), 1, hullbuy.HullClassHeavy, "SHIP_HEAVY_FREIGHTER", true)
+	require.False(t, readable, "an unreadable roster still fails CLOSED (RULINGS #4)")
+	require.ErrorIs(t, err, boom, "an unreadable roster must NOT be reported as a clean absence of yards")
 }
 
 // The fallback is HEAVY-ONLY: a light-class miss must not consult the scanned
