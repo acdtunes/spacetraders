@@ -8,6 +8,7 @@ import (
 type SystemGraphModel struct {
 	SystemSymbol string    `gorm:"column:system_symbol;primaryKey"`
 	GraphData    string    `gorm:"column:graph_data;type:jsonb;not null"` // Use JSONB for PostgreSQL, falls back to TEXT for SQLite
+	EraID        *int      `gorm:"column:era_id"`
 	CreatedAt    time.Time `gorm:"column:created_at;not null;autoCreateTime"`
 	UpdatedAt    time.Time `gorm:"column:updated_at;not null;autoUpdateTime"`
 }

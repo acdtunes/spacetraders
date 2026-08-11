@@ -23,12 +23,15 @@ func NewGormSystemGraphRepository(db *gorm.DB) system.SystemGraphRepository {
 	}
 }
 
-// Get retrieves a graph for a system from cache
+// Get retrieves a system's cached graph, scoped to the open era. A closed era's graph reads as
+// a MISS and rebuilds: its waypoints no longer exist, and routing on them 4201s forever.
 func (r *GormSystemGraphRepository) Get(ctx context.Context, systemSymbol string) (*system.NavigationGraph, error) {
 	var model SystemGraphModel
 
+	predicate, args := eraScopePredicate(r.openEraID(ctx))
 	err := r.db.WithContext(ctx).
 		Where("system_symbol = ?", systemSymbol).
+		Where(predicate, args...).
 		First(&model).Error
 
 	if err != nil {
@@ -57,14 +60,17 @@ func (r *GormSystemGraphRepository) Add(ctx context.Context, systemSymbol string
 	model := SystemGraphModel{
 		SystemSymbol: systemSymbol,
 		GraphData:    string(graphJSON),
+		EraID:        r.openEraID(ctx),
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}
 
+	// era_id is rewritten on conflict, so the row a previous era left behind is re-stamped by
+	// the first write of this one rather than lingering as a permanent miss.
 	err = r.db.WithContext(ctx).
 		Clauses(clause.OnConflict{
 			Columns:   []clause.Column{{Name: "system_symbol"}},
-			DoUpdates: clause.AssignmentColumns([]string{"graph_data", "updated_at"}),
+			DoUpdates: clause.AssignmentColumns([]string{"graph_data", "updated_at", "era_id"}),
 		}).
 		Create(&model).Error
 
@@ -73,4 +79,14 @@ func (r *GormSystemGraphRepository) Add(ctx context.Context, systemSymbol string
 	}
 
 	return nil
+}
+
+// openEraID mirrors GormWaypointRepository.openEraID; nil scopes to NULL era_id rows.
+func (r *GormSystemGraphRepository) openEraID(ctx context.Context) *int {
+	var era EraModel
+	if err := r.db.WithContext(ctx).Where("closed_at IS NULL").Order("era_id DESC").First(&era).Error; err != nil {
+		return nil
+	}
+	id := era.EraID
+	return &id
 }
