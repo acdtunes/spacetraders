@@ -288,6 +288,41 @@ func TestLoadConfig_ExternalityWeight_AbsentIsUnarmed(t *testing.T) {
 		"an absent externality_weight must be 0 — the solver then plans byte-identically to today")
 }
 
+// Round-trip pin for the durable-first tour neighbour scan through the REAL viper
+// mapstructure pipeline — the one seam the grpc stamp/rebuild tests cannot cover, and where a
+// tag typo would ship a knob that reads armed in config.yaml and does nothing.
+func TestLoadConfig_TourNeighborsDurableFirst_RoundTrips(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		section string
+		want    bool
+	}{
+		{
+			name:    "the captain's arming reaches the struct",
+			section: "trade_fleet:\n  enabled: true\n  tour_neighbors_durable_first: true\n",
+			want:    true,
+		},
+		{
+			name:    "an absent key stays unarmed (the live scan, byte-identical to today)",
+			section: "trade_fleet:\n  enabled: true\n",
+			want:    false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("SPACETRADERS_CONFIG", "")
+			dir := t.TempDir()
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(tc.section), 0o644))
+			t.Chdir(dir)
+
+			cfg, err := LoadConfig("")
+
+			require.NoError(t, err)
+			require.Equal(t, tc.want, cfg.TradeFleet.TourNeighborsDurableFirst,
+				"tour_neighbors_durable_first must round-trip so the captain arms the durable-first tour neighbour scan from config.yaml")
+		})
+	}
+}
+
 // working_capital_reserve round-trip pin: the credit line every tour buy must leave
 // standing has to travel from config.yaml's [trade_fleet] section into the loaded config
 // unchanged — this is the ONE seam the grpc stamp/rebuild tests cannot cover (they set the

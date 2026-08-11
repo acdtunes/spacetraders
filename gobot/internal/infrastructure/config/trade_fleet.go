@@ -195,6 +195,9 @@ type TradeFleetConfig struct {
 	CandidateHopDepth      int `mapstructure:"candidate_hop_depth"`
 	CandidateShortlistTopN int `mapstructure:"candidate_shortlist_top_n"`
 
+	// Tour-graph neighbours from the persisted gate adjacency; absent → today's live read.
+	TourNeighborsDurableFirst bool `mapstructure:"tour_neighbors_durable_first"`
+
 	// --- Recovery-externality pricing ---
 	// Daemon-global tour tuning (the mirror of candidate_hop_depth above): StartTourRun stamps
 	// it into every tour launch config, buildTourCoordinatorCommand reads it back, and the

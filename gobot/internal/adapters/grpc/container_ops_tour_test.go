@@ -614,3 +614,59 @@ func TestStartTourRun_ExternalityWeightDefaultsWhenUnset(t *testing.T) {
 	cmd := rebuilt.(*tradingCmd.RunTourCoordinatorCommand)
 	require.Equal(t, 0.0, cmd.ExternalityWeight, "an unset externality_weight must rebuild to 0 — the solver then ranks on raw margin, byte-identical to today")
 }
+
+// The durable-first tour neighbour scan is a daemon-global [trade_fleet] arm-seam like
+// reposition_reach_enabled, so it must survive the SAME launch/rebuild boundary: StartTourRun
+// stamps it and buildTourCoordinatorCommand reads it back. Without both writes the knob is
+// inert and every tour keeps re-reading gate topology live.
+func TestStartTourRun_StampsTourNeighborsDurableFirstFromTradeFleetConfig(t *testing.T) {
+	s, db, playerID := newRecoveryTestServer(t)
+	s.tradeFleetConfig.TourNeighborsDurableFirst = true // the captain's [trade_fleet] arming
+
+	hull := newIdleTradeShip(t, "TORWIND-19", playerID)
+	hull.SetDedicatedFleet("trade")
+	s.shipRepo = &tradeRouteShipRepo{ships: map[string]*navigation.Ship{"TORWIND-19": hull}}
+
+	result, err := s.StartTourRun(context.Background(), "TORWIND-19", 5, int64(100000), 10, 3, int64(0), "AGENT", 1, playerID, nil)
+	require.NoError(t, err)
+	runner := s.registeredRunner(result.ContainerID)
+	require.NotNil(t, runner)
+	defer runner.cancelFunc()
+
+	var model persistence.ContainerModel
+	require.NoError(t, db.First(&model, "id = ?", result.ContainerID).Error)
+	require.Contains(t, model.Config, `"tour_neighbors_durable_first":true`, "StartTourRun must stamp the [trade_fleet] tour_neighbors_durable_first so the launch/rebuild reads it back")
+
+	var cfg map[string]interface{}
+	require.NoError(t, json.Unmarshal([]byte(model.Config), &cfg))
+	rebuilt, err := s.buildCommandForType("tour_run", cfg, playerID, result.ContainerID)
+	require.NoError(t, err)
+	cmd := rebuilt.(*tradingCmd.RunTourCoordinatorCommand)
+	require.True(t, cmd.TourNeighborsDurableFirst)
+}
+
+// Default-safety companion: an UNSET key rebuilds to false, so an unarmed daemon — and a
+// recovery rebuild of a container launched before arming — keeps the live neighbour scan.
+func TestStartTourRun_TourNeighborsDurableFirstDefaultsWhenUnset(t *testing.T) {
+	s, db, playerID := newRecoveryTestServer(t)
+	// tradeFleetConfig.TourNeighborsDurableFirst left at its zero value (never armed).
+
+	hull := newIdleTradeShip(t, "TORWIND-19", playerID)
+	hull.SetDedicatedFleet("trade")
+	s.shipRepo = &tradeRouteShipRepo{ships: map[string]*navigation.Ship{"TORWIND-19": hull}}
+
+	result, err := s.StartTourRun(context.Background(), "TORWIND-19", 5, int64(100000), 10, 3, int64(0), "AGENT", 1, playerID, nil)
+	require.NoError(t, err)
+	runner := s.registeredRunner(result.ContainerID)
+	require.NotNil(t, runner)
+	defer runner.cancelFunc()
+
+	var model persistence.ContainerModel
+	require.NoError(t, db.First(&model, "id = ?", result.ContainerID).Error)
+	var cfg map[string]interface{}
+	require.NoError(t, json.Unmarshal([]byte(model.Config), &cfg))
+	rebuilt, err := s.buildCommandForType("tour_run", cfg, playerID, result.ContainerID)
+	require.NoError(t, err)
+	cmd := rebuilt.(*tradingCmd.RunTourCoordinatorCommand)
+	require.False(t, cmd.TourNeighborsDurableFirst, "an unset tour_neighbors_durable_first must rebuild to false — the live neighbour scan, byte-identical to today")
+}

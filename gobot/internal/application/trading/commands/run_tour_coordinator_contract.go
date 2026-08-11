@@ -189,6 +189,10 @@ type RunTourCoordinatorCommand struct {
 	// ADDS on top of the always-present 1-hop floor. 0/absent → candidateShortlistTopNDefault (6).
 	CandidateShortlistTopN int
 
+	// TourNeighborsDurableFirst serves the tour graph's 1-hop neighbor scan from the persisted
+	// gate adjacency. false/absent → the live jump-gate query, exactly as today.
+	TourNeighborsDurableFirst bool
+
 	// ExternalityWeight prices the recovery burden a planned sell tranche imposes on the
 	// rest of the fleet, so hulls stop converging on the same sinks.
 	// Config-driven from [trade_fleet] (RULINGS #5) and threaded through the container

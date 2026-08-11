@@ -316,25 +316,24 @@ func (h *RunTourCoordinatorHandler) tourSystems(ctx context.Context, ship *navig
 // centers it on the hull's current system; the reposition pre-flight centers it on a
 // candidate system to build that candidate's tour graph.
 //
-// At the default (effectiveCandidateHopDepth <= 1) it returns the VERBATIM 1-hop set
-// (oneHopTourSystems) with ZERO durable-graph access — byte-identical. Only when the
-// arming gate opens (a configured depth > 1 AND the solver clamp lifted) does it widen,
-// and the widened set is floored to the 1-hop set so it can never go narrower.
+// At the default (effectiveCandidateHopDepth <= 1) it returns the 1-hop set
+// (oneHopTourSystems). Only when the arming gate opens (a configured depth > 1 AND the
+// solver clamp lifted) does it widen, and the widened set is floored to the 1-hop set so
+// it can never go narrower.
 func (h *RunTourCoordinatorHandler) tourSystemsFrom(ctx context.Context, home string, cmd *RunTourCoordinatorCommand) []string {
-	oneHop := h.oneHopTourSystems(ctx, home, cmd.PlayerID)
+	oneHop := h.oneHopTourSystems(ctx, home, cmd)
 	if h.effectiveCandidateHopDepth(cmd) <= 1 {
-		return oneHop // DEFAULT PATH — byte-identical, zero durable-graph access
+		return oneHop // DEFAULT PATH — the 1-hop set
 	}
 	return h.widenedTourSystems(ctx, home, cmd, oneHop)
 }
 
-// oneHopTourSystems is the VERBATIM tourSystemsFrom body: home + every live
-// 1-gate-hop neighbor with fresh data, deduped, fail-open to home-only. It is the default
-// result AND the floor the widened branch can never go below.
-func (h *RunTourCoordinatorHandler) oneHopTourSystems(ctx context.Context, home string, playerID int) []string {
+// oneHopTourSystems is home + every 1-gate-hop neighbor with fresh data, deduped, fail-open
+// to home-only. It is the default result AND the floor the widened branch never goes below.
+func (h *RunTourCoordinatorHandler) oneHopTourSystems(ctx context.Context, home string, cmd *RunTourCoordinatorCommand) []string {
 	systems := []string{home}
 	seen := map[string]bool{home: true}
-	for _, n := range h.legs.neighborSystems(ctx, home, playerID) {
+	for _, n := range h.oneHopNeighbors(ctx, home, cmd) {
 		if n == "" || seen[n] {
 			continue
 		}
@@ -342,6 +341,20 @@ func (h *RunTourCoordinatorHandler) oneHopTourSystems(ctx context.Context, home 
 		systems = append(systems, n)
 	}
 	return systems
+}
+
+// oneHopNeighbors resolves home's gated neighbors, DURABLE-FIRST once armed: gate topology is
+// static within an era, so the live per-plan read buys an answer already on disk.
+func (h *RunTourCoordinatorHandler) oneHopNeighbors(ctx context.Context, home string, cmd *RunTourCoordinatorCommand) []string {
+	if !cmd.TourNeighborsDurableFirst || h.legs.gateGraph == nil {
+		return h.legs.neighborSystems(ctx, home, cmd.PlayerID)
+	}
+	// A durable read that yields nothing falls back to the live query rather than collapse
+	// the tour graph to home-only, silently shrinking a hull's trading reach.
+	if durable := h.legs.gatedNeighborSystems(ctx, home, cmd.PlayerID); len(durable) > 0 {
+		return durable
+	}
+	return h.legs.neighborSystems(ctx, home, cmd.PlayerID)
 }
 
 func (h *RunTourCoordinatorHandler) tourShipState(ship *navigation.Ship) routing.TourShipState {

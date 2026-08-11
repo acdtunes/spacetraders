@@ -175,6 +175,7 @@ func (s *DaemonServer) addTradeFleetTourKnobs(config map[string]interface{}) {
 	config["candidate_shortlist_top_n"] = s.tradeFleetConfig.CandidateShortlistTopN
 
 	config["externality_weight"] = s.tradeFleetConfig.ExternalityWeight
+	config["tour_neighbors_durable_first"] = s.tradeFleetConfig.TourNeighborsDurableFirst
 }
 
 // TourRepositionConfigPersister backs the tour coordinator's

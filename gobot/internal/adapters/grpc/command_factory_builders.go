@@ -669,7 +669,8 @@ func buildTourCoordinatorCommand(cfg *configReader, playerID int, containerID st
 		// boundary. OptionalFloat yields 0 for an absent key → the solver charges nothing and
 		// ranks on raw margin, byte-identical to today, so every container launched before
 		// arming (and every recovery rebuild of one) stays unarmed.
-		ExternalityWeight: cfg.OptionalFloat("externality_weight", 0),
+		ExternalityWeight:         cfg.OptionalFloat("externality_weight", 0),
+		TourNeighborsDurableFirst: cfg.OptionalBool("tour_neighbors_durable_first"),
 	}
 }
 
