@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	ledgerCommands "github.com/andrescamacho/spacetraders-go/internal/application/ledger/commands"
 	appSensing "github.com/andrescamacho/spacetraders-go/internal/application/parkedsensing"
 	shipQueries "github.com/andrescamacho/spacetraders-go/internal/application/ship/queries"
 	shipTypes "github.com/andrescamacho/spacetraders-go/internal/application/ship/types"
@@ -21,7 +22,7 @@ import (
 // the waypoint under the hull, then read back what that revealed. Narrowed to
 // two methods so the port is testable without an API client.
 type seedChartAPI interface {
-	CreateChart(ctx context.Context, shipSymbol, token string) error
+	CreateChart(ctx context.Context, shipSymbol, token string) (*domainPorts.ChartResult, error)
 	GetWaypoint(ctx context.Context, systemSymbol, waypointSymbol, token string) (*domainPorts.WaypointDetail, error)
 	// ListWaypoints reads one page of a system's waypoint list — the sweep that
 	// turns a system we have never visited into one we know the shape of.
@@ -236,14 +237,26 @@ func (p *SeedCommandPort) Dock(ctx context.Context, playerID int, shipSymbol str
 // call was after. Swallowing it here (rather than letting the engine reason
 // about API codes) is what keeps a frontier another agent got to first from
 // stalling a tour on an error it can do nothing about.
+//
+// A fresh chart PAYS, so the reward is recorded before this returns: the credits are
+// already in the balance, and an unrecorded inflow leaves a gap in the ledger chain.
 func (p *SeedCommandPort) Chart(ctx context.Context, playerID int, shipSymbol string) error {
+	pid, err := shared.NewPlayerID(playerID)
+	if err != nil {
+		return err
+	}
 	token, err := p.token(ctx, playerID)
 	if err != nil {
 		return err
 	}
-	if err := p.api.CreateChart(sensingCtx(ctx), shipSymbol, token); err != nil && !isAlreadyCharted(err) {
-		return fmt.Errorf("failed to chart the waypoint under %s: %w", shipSymbol, err)
+	result, err := p.api.CreateChart(sensingCtx(ctx), shipSymbol, token)
+	if err != nil {
+		if !isAlreadyCharted(err) {
+			return fmt.Errorf("failed to chart the waypoint under %s: %w", shipSymbol, err)
+		}
+		return nil // already public: no chart was made, so no reward was paid
 	}
+	ledgerCommands.RecordChartReward(ctx, p.mediator, pid, shipSymbol, result)
 	return nil
 }
 

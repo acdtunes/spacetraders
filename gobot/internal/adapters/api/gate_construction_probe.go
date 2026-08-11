@@ -12,7 +12,7 @@ import (
 type gateProbeAPI interface {
 	GetJumpGate(ctx context.Context, systemSymbol, waypointSymbol, token string) (*domainPorts.JumpGateData, error)
 	GetWaypoint(ctx context.Context, systemSymbol, waypointSymbol, token string) (*domainPorts.WaypointDetail, error)
-	CreateChart(ctx context.Context, shipSymbol, token string) error
+	CreateChart(ctx context.Context, shipSymbol, token string) (*domainPorts.ChartResult, error)
 }
 
 // BuiltGateStore answers whether a gate waypoint is already recorded as finished
@@ -52,8 +52,9 @@ func (p *GateConstructionProbe) GetJumpGate(ctx context.Context, systemSymbol, w
 	return p.inner.GetJumpGate(ctx, systemSymbol, waypointSymbol, token)
 }
 
-// CreateChart passes through — charting is a write and always goes live.
-func (p *GateConstructionProbe) CreateChart(ctx context.Context, shipSymbol, token string) error {
+// CreateChart passes through — charting is a write and always goes live. The reward it
+// returns is recorded by the caller, so this decorator must not swallow the result.
+func (p *GateConstructionProbe) CreateChart(ctx context.Context, shipSymbol, token string) (*domainPorts.ChartResult, error) {
 	return p.inner.CreateChart(ctx, shipSymbol, token)
 }
 

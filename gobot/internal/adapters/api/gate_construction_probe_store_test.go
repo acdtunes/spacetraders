@@ -31,7 +31,9 @@ func (f *probedGateAPI) GetWaypoint(ctx context.Context, sys, wp, tok string) (*
 	return &domainPorts.WaypointDetail{Symbol: wp, IsUnderConstruction: f.underBuild[wp]}, nil
 }
 
-func (f *probedGateAPI) CreateChart(ctx context.Context, shipSymbol, token string) error { return nil }
+func (f *probedGateAPI) CreateChart(ctx context.Context, shipSymbol, token string) (*domainPorts.ChartResult, error) {
+	return &domainPorts.ChartResult{}, nil
+}
 
 // The whole point, against the real store: when a system's edge set is re-probed
 // because ONE neighbour is still under construction, only that neighbour costs an

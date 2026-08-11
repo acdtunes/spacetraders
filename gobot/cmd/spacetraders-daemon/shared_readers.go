@@ -9,6 +9,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/graph"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/routing"
+	"github.com/andrescamacho/spacetraders-go/internal/application/mediator"
 	ship "github.com/andrescamacho/spacetraders-go/internal/application/ship"
 	"github.com/andrescamacho/spacetraders-go/internal/application/system/gategraph"
 	domainRouting "github.com/andrescamacho/spacetraders-go/internal/domain/routing"
@@ -104,6 +105,7 @@ func newGateGraphService(
 	apiClient *api.SpaceTradersClient,
 	graphService *graph.GraphService,
 	playerRepo *persistence.GormPlayerRepository,
+	med mediator.Mediator,
 ) *gategraph.Service {
 	// A gate-set refresh re-reads EVERY connected gate's build state, and a set expires
 	// as a whole — so one neighbour still under construction drags its healthy siblings
@@ -126,6 +128,9 @@ func newGateGraphService(
 		// (default ON; an explicit [routing] skip_uncharted_gate_fetch:false restores probe-
 		// then-backoff). A nil switch defaults ON, matching SetDefaults.
 		gategraph.WithSkipUnchartedFetch(defaultOn(cfg.SkipUnchartedGateFetch)),
+		// Charting a frontier gate PAYS, so the reward needs a dispatcher to reach the
+		// ledger; without one the credits would land with no row and no re-anchor.
+		gategraph.WithLedgerMediator(med),
 	)
 }
 

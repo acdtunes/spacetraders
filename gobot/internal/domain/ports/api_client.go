@@ -240,6 +240,17 @@ type JumpResult struct {
 	AgentCredits *int
 }
 
+// ChartResult is the outcome of publicly charting a waypoint. The API pays a one-time
+// reward per waypoint priced on trait rarity, reported in-band as the charting transaction.
+type ChartResult struct {
+	WaypointSymbol string
+	Reward         int
+
+	// AgentCredits is the balance AFTER the reward (data.agent.credits). Nil when the API
+	// omitted the agent block, which keeps an absent block distinct from a real zero.
+	AgentCredits *int
+}
+
 type JumpGateData struct {
 	Symbol      string
 	Connections []string

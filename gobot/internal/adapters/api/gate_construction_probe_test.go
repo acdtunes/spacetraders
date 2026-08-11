@@ -32,9 +32,9 @@ func (f *countingGateAPI) GetWaypoint(ctx context.Context, systemSymbol, waypoin
 	return &domainPorts.WaypointDetail{Symbol: waypointSymbol}, nil
 }
 
-func (f *countingGateAPI) CreateChart(ctx context.Context, shipSymbol, token string) error {
+func (f *countingGateAPI) CreateChart(ctx context.Context, shipSymbol, token string) (*domainPorts.ChartResult, error) {
 	f.chartCalls++
-	return nil
+	return &domainPorts.ChartResult{}, nil
 }
 
 type stubBuiltGateStore struct {
@@ -144,7 +144,7 @@ func TestGateConstructionProbe_JumpGateAndChartPassThrough(t *testing.T) {
 	if _, err := probe.GetJumpGate(ctx, "X1-KA42", "X1-KA42-I50", "tok"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if err := probe.CreateChart(ctx, "ORION-1", "tok"); err != nil {
+	if _, err := probe.CreateChart(ctx, "ORION-1", "tok"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if inner.jumpGateCalls != 1 || inner.chartCalls != 1 {

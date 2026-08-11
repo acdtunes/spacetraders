@@ -80,6 +80,8 @@ Categories (derived deterministically from transaction type):
   TRAVEL_COSTS      - NON-fuel cost of moving a hull; today only jump gate fees.
                       Kept separate from FUEL_COSTS: a gate fee is charged per
                       jump, fuel scales with distance burned
+  CHARTING_REVENUE  - Income from publicly charting a waypoint (CHART), priced
+                      by the API on the rarity of the traits the chart reveals
 
 Transaction Types:
   REFUEL              - Ship refueling
@@ -91,6 +93,7 @@ Transaction Types:
   JUMP                - Jump gate fee charged for a cross-system jump
   MODULE_INSTALL      - Shipyard fee to install a module on a hull
   MODULE_REMOVE       - Shipyard fee to remove a module (a fee, not a refund)
+  CHART               - One-time reward paid for publicly charting a waypoint
 
 Examples:
   spacetraders ledger list --player-id 1 --limit 10

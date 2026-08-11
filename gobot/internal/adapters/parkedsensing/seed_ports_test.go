@@ -23,6 +23,7 @@ import (
 
 type fakeChartAPI struct {
 	chartErr    error
+	chartResult *ports.ChartResult
 	detail      *ports.WaypointDetail
 	waypointErr error
 
@@ -57,9 +58,15 @@ func apiWaypoint(symbol, wpType string, x, y float64, traits ...string) domainSy
 	return domainSystem.WaypointAPIData{Symbol: symbol, Type: wpType, X: x, Y: y, Traits: rows}
 }
 
-func (f *fakeChartAPI) CreateChart(_ context.Context, _, _ string) error {
+func (f *fakeChartAPI) CreateChart(_ context.Context, _, _ string) (*ports.ChartResult, error) {
 	f.chartCalls++
-	return f.chartErr
+	if f.chartErr != nil {
+		return nil, f.chartErr
+	}
+	if f.chartResult != nil {
+		return f.chartResult, nil
+	}
+	return &ports.ChartResult{}, nil
 }
 
 func (f *fakeChartAPI) GetWaypoint(_ context.Context, _, waypoint, _ string) (*ports.WaypointDetail, error) {

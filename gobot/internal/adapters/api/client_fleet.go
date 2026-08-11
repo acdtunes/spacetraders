@@ -536,17 +536,44 @@ func (c *SpaceTradersClient) JumpShip(ctx context.Context, shipSymbol, waypointS
 // 400s with code 4230 "waypoint already charted" — a benign no-op the gate-graph caller detects
 // and swallows. Mirrors JumpShip/OrbitShip's shape: an empty-body POST through the rate-limited
 // request() path, with a typed *APIError surfaced on any non-2xx so the caller can classify the
-// already-charted case (charting is free, so there is no agent-cache to invalidate).
-func (c *SpaceTradersClient) CreateChart(ctx context.Context, shipSymbol, token string) error {
+// already-charted case.
+//
+// Charting is NOT free: the 201 body carries a one-time reward (data.transaction.totalPrice) and
+// the post-reward balance (data.agent.credits), both returned so the caller can record and re-anchor.
+func (c *SpaceTradersClient) CreateChart(ctx context.Context, shipSymbol, token string) (*domainPorts.ChartResult, error) {
 	path := fmt.Sprintf("/my/ships/%s/chart", shipSymbol)
+
+	var response struct {
+		Data struct {
+			Chart struct {
+				WaypointSymbol string `json:"waypointSymbol"`
+			} `json:"chart"`
+			Transaction struct {
+				TotalPrice int `json:"totalPrice"`
+			} `json:"transaction"`
+			// Pointer: an omitted agent block must stay distinct from a real zero balance.
+			Agent *struct {
+				Credits int `json:"credits"`
+			} `json:"agent"`
+		} `json:"data"`
+	}
 
 	// Send an empty JSON object {} (not nil) to satisfy the API, exactly as OrbitShip/DockShip do.
 	emptyBody := map[string]interface{}{}
-	if err := c.request(ctx, "POST", path, token, emptyBody, nil); err != nil {
-		return fmt.Errorf("failed to chart waypoint: %w", err)
+	if err := c.request(ctx, "POST", path, token, emptyBody, &response); err != nil {
+		return nil, fmt.Errorf("failed to chart waypoint: %w", err)
 	}
+	c.invalidateAgentCache() // charting pays a reward -> drop the stale-low cache
 
-	return nil
+	result := &domainPorts.ChartResult{
+		WaypointSymbol: response.Data.Chart.WaypointSymbol,
+		Reward:         response.Data.Transaction.TotalPrice,
+	}
+	if response.Data.Agent != nil {
+		credits := response.Data.Agent.Credits
+		result.AgentCredits = &credits
+	}
+	return result, nil
 }
 
 func travelSeconds(departureTimeStr, arrivalTimeStr string) int {

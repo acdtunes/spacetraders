@@ -64,8 +64,8 @@ func (a *reprobeCountingAPI) GetJumpGate(ctx context.Context, sys, wp, tok strin
 func (a *reprobeCountingAPI) GetWaypoint(ctx context.Context, sys, wp, tok string) (*ports.WaypointDetail, error) {
 	return &ports.WaypointDetail{Symbol: wp, IsUnderConstruction: false}, nil
 }
-func (a *reprobeCountingAPI) CreateChart(ctx context.Context, shipSymbol, token string) error {
-	return nil
+func (a *reprobeCountingAPI) CreateChart(ctx context.Context, shipSymbol, token string) (*ports.ChartResult, error) {
+	return &ports.ChartResult{}, nil
 }
 
 // mixedReprobeSet is the production shape: one under-construction row past its 2h window

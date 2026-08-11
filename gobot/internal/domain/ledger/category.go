@@ -29,6 +29,9 @@ const (
 	// shared a bucket. It is an operating expense, so the briefing's ex-capex
 	// slope (category != SHIP_INVESTMENTS) correctly counts it.
 	CategoryTravelCosts Category = "TRAVEL_COSTS"
+
+	// CategoryChartingRevenue is charting income, deliberately not TRADING_REVENUE.
+	CategoryChartingRevenue Category = "CHARTING_REVENUE"
 )
 
 // AllCategories returns all valid categories
@@ -40,6 +43,7 @@ func AllCategories() []Category {
 		CategoryShipInvestments,
 		CategoryContractRevenue,
 		CategoryTravelCosts,
+		CategoryChartingRevenue,
 	}
 }
 
@@ -61,6 +65,7 @@ var TypeToCategoryMap = map[TransactionType]Category{
 	// they upgrade — and are correctly excluded from the ex-capex operating slope.
 	TransactionTypeModuleInstall: CategoryShipInvestments,
 	TransactionTypeModuleRemove:  CategoryShipInvestments,
+	TransactionTypeChart:         CategoryChartingRevenue,
 }
 
 // String returns the string representation of the Category
@@ -76,7 +81,8 @@ func (c Category) IsValid() bool {
 		CategoryTradingCosts,
 		CategoryShipInvestments,
 		CategoryContractRevenue,
-		CategoryTravelCosts:
+		CategoryTravelCosts,
+		CategoryChartingRevenue:
 		return true
 	default:
 		return false
@@ -86,7 +92,7 @@ func (c Category) IsValid() bool {
 // IsIncome returns true if the category represents income
 func (c Category) IsIncome() bool {
 	switch c {
-	case CategoryTradingRevenue, CategoryContractRevenue:
+	case CategoryTradingRevenue, CategoryContractRevenue, CategoryChartingRevenue:
 		return true
 	default:
 		return false

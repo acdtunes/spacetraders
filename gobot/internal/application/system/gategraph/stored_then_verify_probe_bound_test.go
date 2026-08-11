@@ -62,8 +62,8 @@ func (s *slowProbeGateAPI) GetWaypoint(ctx context.Context, sys, wp, tok string)
 	}
 }
 
-func (s *slowProbeGateAPI) CreateChart(ctx context.Context, shipSymbol, token string) error {
-	return nil
+func (s *slowProbeGateAPI) CreateChart(ctx context.Context, shipSymbol, token string) (*ports.ChartResult, error) {
+	return &ports.ChartResult{}, nil
 }
 
 // HEADLINE: the 7–12-hop lanes long-haul exists to fly must resolve INSIDE the pathfind budget.

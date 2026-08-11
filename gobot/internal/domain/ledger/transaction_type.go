@@ -38,6 +38,10 @@ const (
 	// module is removed from a hull. Removal is not a refund: the
 	// API charges a modification fee in the same direction as an install.
 	TransactionTypeModuleRemove TransactionType = "MODULE_REMOVE"
+
+	// TransactionTypeChart represents the one-time reward the API pays for publicly
+	// charting a waypoint, priced on the rarity of the traits the chart reveals.
+	TransactionTypeChart TransactionType = "CHART"
 )
 
 // String returns the string representation of the TransactionType
@@ -56,7 +60,8 @@ func (t TransactionType) IsValid() bool {
 		TransactionTypeContractFulfilled,
 		TransactionTypeJump,
 		TransactionTypeModuleInstall,
-		TransactionTypeModuleRemove:
+		TransactionTypeModuleRemove,
+		TransactionTypeChart:
 		return true
 	default:
 		return false

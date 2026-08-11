@@ -51,7 +51,9 @@ func (a *seqGateAPI) GetWaypoint(_ context.Context, _, waypointSymbol, _ string)
 	return &ports.WaypointDetail{Symbol: waypointSymbol, IsUnderConstruction: false}, nil
 }
 
-func (a *seqGateAPI) CreateChart(_ context.Context, _, _ string) error { return nil }
+func (a *seqGateAPI) CreateChart(_ context.Context, _, _ string) (*ports.ChartResult, error) {
+	return &ports.ChartResult{}, nil
+}
 
 // syncReadStore forces the fetch-through path (Edges always reports a stale MISS so
 // Connections re-fetches), resolves the origin's own gate without a system graph

@@ -15,6 +15,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	ledgerCommands "github.com/andrescamacho/spacetraders-go/internal/application/ledger/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/application/logging"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/ports"
@@ -34,7 +36,7 @@ type gateAPI interface {
 	// makes every future GetJumpGate on it succeed WITHOUT a ship present, so an uncharted
 	// frontier gate stops being live-re-read (and 400ing) on each jump-out. Best-effort: the
 	// ChartPresentGate caller swallows an already-charted (4230) or any other failure.
-	CreateChart(ctx context.Context, shipSymbol, token string) error
+	CreateChart(ctx context.Context, shipSymbol, token string) (*ports.ChartResult, error)
 }
 
 // MaxJumpPath bounds how many jumps a strict (fetch-through) Path route may contain —
@@ -151,6 +153,9 @@ type Service struct {
 	// resolved gate on the no-present-ship path: ChartPresentGate (a hull IS on the gate, so
 	// it reads fine) always bypasses it, preserving the frontier self-heal.
 	skipUnchartedFetch bool
+	// mediator dispatches the charting reward to the ledger. Nil in the CLI, where there is
+	// no ledger to write to; the recorder then logs and records nothing.
+	mediator common.Mediator
 }
 
 // Option customizes a Service at construction (functional options keep the 4-arg
@@ -182,6 +187,12 @@ func WithPathfindBudget(d time.Duration) Option {
 // rollout reversibility switch. See Service.skipUnchartedFetch.
 func WithSkipUnchartedFetch(skip bool) Option {
 	return func(s *Service) { s.skipUnchartedFetch = skip }
+}
+
+// WithLedgerMediator wires the dispatcher the charting reward is recorded through. Omitted,
+// the service still charts — it just cannot write the reward to the ledger.
+func WithLedgerMediator(m common.Mediator) Option {
+	return func(s *Service) { s.mediator = m }
 }
 
 // NewService wires the gate-graph service. Without options it uses the real clock and
@@ -309,8 +320,15 @@ func (s *Service) ChartPresentGate(ctx context.Context, systemSymbol, shipSymbol
 // already-charted gate produces no error-spam. Called ONLY from ChartPresentGate's store-miss
 // branch (an uncharted-to-us gate a present hull can chart); an empty ship symbol (no present
 // hull to chart with) is skipped rather than posting a malformed /my/ships//chart.
+//
+// A chart that actually lands PAYS, so its reward is recorded before this returns — the credits
+// are already in the balance, and an unrecorded inflow leaves a gap in the ledger chain.
 func (s *Service) chartPresentWaypoint(ctx context.Context, shipSymbol string, playerID int) {
 	if shipSymbol == "" {
+		return
+	}
+	pid, err := shared.NewPlayerID(playerID)
+	if err != nil {
 		return
 	}
 	logger := logging.LoggerFromContext(ctx)
@@ -323,7 +341,8 @@ func (s *Service) chartPresentWaypoint(ctx context.Context, shipSymbol string, p
 		})
 		return
 	}
-	if err := s.apiClient.CreateChart(ctx, shipSymbol, token); err != nil {
+	result, err := s.apiClient.CreateChart(ctx, shipSymbol, token)
+	if err != nil {
 		if isAlreadyCharted(err) {
 			return // benign: the gate is already publicly charted — nothing to do, nothing to log
 		}
@@ -332,7 +351,9 @@ func (s *Service) chartPresentWaypoint(ctx context.Context, shipSymbol string, p
 			"ship":   shipSymbol,
 			"error":  err.Error(),
 		})
+		return
 	}
+	ledgerCommands.RecordChartReward(ctx, s.mediator, pid, shipSymbol, result)
 }
 
 // isAlreadyCharted reports whether a CreateChart failure is the API's benign "waypoint already

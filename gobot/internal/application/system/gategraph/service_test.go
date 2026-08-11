@@ -387,7 +387,9 @@ func (f *fakeGateAPI) GetWaypoint(ctx context.Context, sys, wp, tok string) (*po
 // CreateChart is inert for fakeGateAPI's construction-focused tests (they exercise
 // GetJumpGate/GetWaypoint, not the present-ship public chart) — it exists only to satisfy the
 // extended gateAPI interface. The chart behavior is exercised via perSystemGateAPI.
-func (f *fakeGateAPI) CreateChart(ctx context.Context, shipSymbol, token string) error { return nil }
+func (f *fakeGateAPI) CreateChart(ctx context.Context, shipSymbol, token string) (*ports.ChartResult, error) {
+	return &ports.ChartResult{}, nil
+}
 
 type stubPlayerRepo struct{ token string }
 
@@ -608,6 +610,9 @@ type perSystemGateAPI struct {
 	// and (with a 4230 body) that an already-charted gate is swallowed without error-spam.
 	chartCalls []string
 	chartErr   error
+	// chartResult is the body a successful chart returns, so a test can assert the
+	// reward it carries reaches the ledger.
+	chartResult *ports.ChartResult
 }
 
 func (f *perSystemGateAPI) GetJumpGate(ctx context.Context, sys, wp, tok string) (*ports.JumpGateData, error) {
@@ -623,9 +628,15 @@ func (f *perSystemGateAPI) GetJumpGate(ctx context.Context, sys, wp, tok string)
 func (f *perSystemGateAPI) GetWaypoint(ctx context.Context, sys, wp, tok string) (*ports.WaypointDetail, error) {
 	return &ports.WaypointDetail{Symbol: wp, IsUnderConstruction: f.underConstruction[wp]}, nil
 }
-func (f *perSystemGateAPI) CreateChart(ctx context.Context, shipSymbol, token string) error {
+func (f *perSystemGateAPI) CreateChart(ctx context.Context, shipSymbol, token string) (*ports.ChartResult, error) {
 	f.chartCalls = append(f.chartCalls, shipSymbol)
-	return f.chartErr
+	if f.chartErr != nil {
+		return nil, f.chartErr
+	}
+	if f.chartResult != nil {
+		return f.chartResult, nil
+	}
+	return &ports.ChartResult{}, nil
 }
 
 // captureLogger records log messages so a test can assert the honest skip line.
@@ -1511,8 +1522,8 @@ func (c *countingGateAPI) GetWaypoint(ctx context.Context, sys, wp, tok string) 
 	}
 	return &ports.WaypointDetail{Symbol: wp, IsUnderConstruction: c.underConstruction[wp]}, nil
 }
-func (c *countingGateAPI) CreateChart(ctx context.Context, shipSymbol, token string) error {
-	return nil
+func (c *countingGateAPI) CreateChart(ctx context.Context, shipSymbol, token string) (*ports.ChartResult, error) {
+	return &ports.ChartResult{}, nil
 }
 
 // The headline latency fix: the long-haul reposition to a FAR source used the STRICT
@@ -1653,8 +1664,8 @@ func (b *blockingGateAPI) GetWaypoint(ctx context.Context, sys, wp, tok string) 
 	<-ctx.Done() // hang until the pathfind budget (or a parent cancel) fires — the stall under test
 	return nil, ctx.Err()
 }
-func (b *blockingGateAPI) CreateChart(ctx context.Context, shipSymbol, token string) error {
-	return nil
+func (b *blockingGateAPI) CreateChart(ctx context.Context, shipSymbol, token string) (*ports.ChartResult, error) {
+	return &ports.ChartResult{}, nil
 }
 
 // HEADLINE: a construction probe that hangs past the pathfind budget must NOT stall the

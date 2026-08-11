@@ -1117,7 +1117,7 @@ func run(cfg *config.Config) error {
 	// Attached here, where the store exists; the handler keeps its live reads for
 	// anything the store does not hold.
 	jumpShipHandler.SetJumpTopologyStore(gateEdgeRepo)
-	gateGraphService := newGateGraphService(cfg.Routing, gateEdgeRepo, apiClient, graphService, playerRepo)
+	gateGraphService := newGateGraphService(cfg.Routing, gateEdgeRepo, apiClient, graphService, playerRepo, med)
 	// sp-fihvy: wire the SAME gate-graph reachability service into the daemon server so the depot
 	// stocker hull viability precondition can consult it (Routable) — never a second reachability
 	// mechanism. Post-construction (gateGraphService is built after NewDaemonServer runs), mirroring
