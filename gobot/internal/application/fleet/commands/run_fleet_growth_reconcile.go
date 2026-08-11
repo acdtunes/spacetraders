@@ -171,10 +171,6 @@ func (h *RunFleetGrowthCoordinatorHandler) reconcileOnce(ctx context.Context, cm
 		h.metrics.RecordWorkingCapital(pid, in.workingCapital)
 	}
 
-	// The pricing errand runs on the PROBE wave too: it spends no credits, buys nothing, and its
-	// whole job is to make a LATER tick's price readable — which is what lets the wave ever flip.
-	h.runHeavyPricingErrand(ctx, cmd, cfg, in)
-
 	// The anti-thrash WINDOW advances on the DEMAND, every tick, so it is not reset by a wave flip.
 	demand := h.readHeavyDemand(in)
 	res.Shortfall = demand.Shortfall()
@@ -192,21 +188,27 @@ func (h *RunFleetGrowthCoordinatorHandler) reconcileOnce(ctx context.Context, cm
 		// not read as BLOCKED and must clear any stale BLOCKED streak the escalator was holding.
 		h.observeClassStall(ctx, cmd.ContainerID, cmd.PlayerID, HullClassHeavy, health.TickIdle())
 		h.runZeroEffectAlarm(ctx, cmd, cfg, st, false, 0)
+		// The errand runs on the PROBE wave too: it spends no credits, buys nothing, and its whole
+		// job is to make a LATER tick's price readable — which is what lets the wave ever flip.
+		h.runHeavyPricingErrand(ctx, cmd, cfg, in, false)
 		return res, nil
 	}
 
-	bought, unmetNoBuy, guard, guardKnown := h.buyHeavy(ctx, cmd, cfg, demand, in, st)
-	if bought {
+	buy := h.buyHeavy(ctx, cmd, cfg, demand, in, st)
+	if buy.Bought {
 		res.Purchased++
 	}
 	h.observeClassStall(ctx, cmd.ContainerID, cmd.PlayerID, HullClassHeavy,
-		classStallVerdict(demand, nil, bought, unmetNoBuy, guard, guardKnown))
-	h.runZeroEffectAlarm(ctx, cmd, cfg, st, unmetNoBuy, res.Purchased)
+		classStallVerdict(demand, nil, buy.Bought, buy.UnmetNoBuy, buy.Blocked, buy.BlockedKnown))
+	h.runZeroEffectAlarm(ctx, cmd, cfg, st, buy.UnmetNoBuy, res.Purchased)
 
 	logger.Log("INFO", fmt.Sprintf("Fleet growth tick: HEAVY wave — shortfall %d, %d purchased", res.Shortfall, res.Purchased), map[string]interface{}{
 		"action": "growth_tick", "container_id": cmd.ContainerID,
 		"wave": string(wave), "shortfall": res.Shortfall, "purchased": res.Purchased,
 	})
+	// LAST, AND NEVER AHEAD OF THE DECISION. The dispatch verb waits out the flight, so an errand
+	// taken first holds the tick — and the buy behind it — open for the length of a journey.
+	h.runHeavyPricingErrand(ctx, cmd, cfg, in, buy.Bought)
 	return res, nil
 }
 

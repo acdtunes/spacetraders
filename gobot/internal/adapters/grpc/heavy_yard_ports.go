@@ -244,6 +244,7 @@ func (e *heavyYardPricingErrand) ErrandHulls(ctx context.Context, playerID int) 
 			Idle:            sh.IsIdle(),
 			InTransit:       sh.IsInTransit(),
 			CargoCapacity:   sh.CargoCapacity(),
+			EngineSpeed:     sh.EngineSpeed(),
 			MannedScoutPost: manned[sh.ShipSymbol()],
 		})
 	}

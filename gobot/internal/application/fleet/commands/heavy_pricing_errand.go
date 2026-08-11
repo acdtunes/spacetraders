@@ -80,6 +80,9 @@ type PricingErrandHull struct {
 	Location  string
 	Idle      bool
 	InTransit bool
+	// EngineSpeed is the hull's engine rating, and it is what the carrier choice ranks on: the same
+	// errand on a satellite costs multiples of the wall clock it costs a hauler.
+	EngineSpeed int
 	// CargoCapacity is REPORTED AND DELIBERATELY NOT JUDGED. Pricing a yard needs presence at the
 	// waypoint, not a hold, and every carrier the errand now draws on is a zero-cargo probe — so a
 	// hold predicate here would exclude exactly the pool the errand exists to use. It is
@@ -164,6 +167,9 @@ const (
 	pricingErrandCensusBlind pricingErrandDecline = "owned_heavy_census_unreadable"
 	// pricingErrandAtHeavyCap — the fleet already holds its cap, so no price is needed.
 	pricingErrandAtHeavyCap pricingErrandDecline = "already_at_heavy_cap"
+	// pricingErrandHeavyJustBought — this tick already bought its heavy against an ask it could
+	// read, so a further yard's price buys nothing the decision wanted.
+	pricingErrandHeavyJustBought pricingErrandDecline = "heavy_bought_this_tick"
 	// pricingErrandNoYardKnown — no heavy-selling yard is in the catalogue at all. The free,
 	// presence-less sweep keeps looking and costs no hull; this is the cold state, not a stall.
 	pricingErrandNoYardKnown pricingErrandDecline = "no_heavy_yard_known"
@@ -269,8 +275,8 @@ func standingPricingErrand(unpriced []KnownHeavyYard, hulls []PricingErrandHull)
 // beyond the bound or an adjacency never cached, and a hull about to be committed cannot tell them
 // apart. That never strands a cold map: a yard in the carrier's OWN system still measures zero.
 //
-// Ties break on hops, then yard symbol, then ship symbol — a total order, so two consecutive ticks
-// cannot each start a different errand and call the other one "already in flight".
+// Ties break on hops, then ENGINE SPEED, then yard symbol, then ship symbol — a total order, so two
+// consecutive ticks cannot each start a different errand and call the other one "already in flight".
 func nearestRoutablePair(unpriced []KnownHeavyYard, carriers []PricingErrandHull, reach carrierReach) (heavyPricingErrand, error) {
 	if reach == nil {
 		return heavyPricingErrand{}, fmt.Errorf("no reach oracle: a carrier's route to a heavy yard cannot be proved")
@@ -279,8 +285,8 @@ func nearestRoutablePair(unpriced []KnownHeavyYard, carriers []PricingErrandHull
 	// One walk per distinct ORIGIN, not per carrier: probes sharing a system share an answer, and
 	// asking twice would only cost a second store read to learn the same thing.
 	byOrigin := make(map[string]map[string]int, len(carriers))
-	best := heavyPricingErrand{}
-	bestHops := -1
+	best := errandPair{}
+	paired := false
 	for _, c := range carriers {
 		from := systemOf(c.Location)
 		if from == "" {
@@ -300,24 +306,40 @@ func nearestRoutablePair(unpriced []KnownHeavyYard, carriers []PricingErrandHull
 			if !routable {
 				continue
 			}
-			if bestHops >= 0 && !closerPair(d, y.WaypointSymbol, c.Symbol, bestHops, best) {
+			candidate := errandPair{Hops: d, Speed: c.EngineSpeed, Yard: y.WaypointSymbol, Ship: c.Symbol}
+			if paired && !closerPair(candidate, best) {
 				continue
 			}
-			best, bestHops = heavyPricingErrand{Ship: c.Symbol, Yard: y.WaypointSymbol}, d
+			best, paired = candidate, true
 		}
 	}
-	return best, nil
+	if !paired {
+		return heavyPricingErrand{}, nil
+	}
+	return heavyPricingErrand{Ship: best.Ship, Yard: best.Yard}, nil
 }
 
-// closerPair is the total order over candidate pairs: fewer hops, then yard symbol, then ship.
-func closerPair(hops int, yard, ship string, bestHops int, best heavyPricingErrand) bool {
-	if hops != bestHops {
-		return hops < bestHops
+// errandPair is one candidate carrier-and-yard with everything the ranking judges.
+type errandPair struct {
+	Hops  int
+	Speed int
+	Yard  string
+	Ship  string
+}
+
+// closerPair is the total order over candidate pairs: fewer hops, then the FASTER hull, then yard
+// symbol, then ship symbol. Hops price the crossing and say nothing about the flying.
+func closerPair(candidate, best errandPair) bool {
+	if candidate.Hops != best.Hops {
+		return candidate.Hops < best.Hops
 	}
-	if yard != best.Yard {
-		return yard < best.Yard
+	if candidate.Speed != best.Speed {
+		return candidate.Speed > best.Speed
 	}
-	return ship < best.Ship
+	if candidate.Yard != best.Yard {
+		return candidate.Yard < best.Yard
+	}
+	return candidate.Ship < best.Ship
 }
 
 // distinctYardSystems is the target set one reach walk is asked about: deduplicated, first-seen order.
@@ -461,6 +483,9 @@ func pricingErrandCarrier(hulls []PricingErrandHull) (string, bool) {
 // about a purchase that cannot happen is pure loss. It mirrors the reservation's own gate, which is
 // why both stand down together at the cap.
 //
+// IT RUNS AFTER THE TICK'S BUY, never before it: the dispatch verb waits out the flight, so an
+// errand taken first holds every decision behind it open for the length of a journey.
+//
 // Every read failure is a logged WAIT, never fatal: nothing here spends money, so nothing here needs
 // to fail closed against a spend.
 func (h *RunFleetGrowthCoordinatorHandler) runHeavyPricingErrand(
@@ -468,9 +493,10 @@ func (h *RunFleetGrowthCoordinatorHandler) runHeavyPricingErrand(
 	cmd *RunFleetGrowthCoordinatorCommand,
 	cfg growthRunConfig,
 	in growthTickInputs,
+	heavyJustBought bool,
 ) {
 	heavyPricingErrandTick(ctx, cmd.ContainerID, cmd.PlayerID,
-		in.heaviesOwned, in.heaviesOwnedOK, cfg.HeavyCap, h.heavyYardCatalog, h.heavyErrand)
+		in.heaviesOwned, in.heaviesOwnedOK, cfg.HeavyCap, heavyJustBought, h.heavyYardCatalog, h.heavyErrand)
 }
 
 // heavyPricingErrandTick is the errand's tick step, and it takes FACTS rather than a coordinator.
@@ -484,6 +510,7 @@ func heavyPricingErrandTick(
 	heaviesOwned int,
 	heaviesOwnedOK bool,
 	heavyCap int,
+	heavyJustBought bool,
 	catalog HeavyYardCatalogReader,
 	port HeavyPricingErrandPort,
 ) {
@@ -505,6 +532,12 @@ func heavyPricingErrandTick(
 	}
 	if heaviesOwned >= heavyCap {
 		logPricingErrandDecline(ctx, containerID, pricingErrandAtHeavyCap, nil, nil)
+		return
+	}
+	// A PRICE WE JUST SPENT AGAINST NEEDS NO TRIP. Pricing a further yard behind the buy takes a
+	// probe off station to buy information the decision did not want.
+	if heavyJustBought {
+		logPricingErrandDecline(ctx, containerID, pricingErrandHeavyJustBought, nil, nil)
 		return
 	}
 
@@ -592,6 +625,8 @@ func pricingErrandDeclineNarrative(reason pricingErrandDecline) string {
 		return "the owned-heavy census is unreadable, so whether a heavy is wanted at all is unknown"
 	case pricingErrandAtHeavyCap:
 		return "the fleet already holds its heavy cap, so no ask needs reading"
+	case pricingErrandHeavyJustBought:
+		return "this tick bought its heavy against an ask we could already read, so no trip buys anything the decision wanted"
 	case pricingErrandNoYardKnown:
 		return "no heavy-selling yard is in the catalogue yet — the free presence-less sweep keeps looking and costs no hull"
 	case pricingErrandNothingInReach:

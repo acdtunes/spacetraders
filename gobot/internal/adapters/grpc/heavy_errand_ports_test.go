@@ -68,6 +68,13 @@ func (f *fakeHeavyHullCounter) CountHeavyHulls(_ context.Context, playerID share
 // DESTINATION — which is what makes "an errand is already under way" a pure read of durable rows.
 func errandHull(t *testing.T, symbol string, playerID int, waypoint, fleet string, cargoCap int) *navigation.Ship {
 	t.Helper()
+	return errandHullAtSpeed(t, symbol, playerID, waypoint, fleet, cargoCap, 30)
+}
+
+// errandHullAtSpeed names the engine rating too — the fact the carrier choice ranks on, and the one
+// that separates a satellite from a hauler standing in the same pool.
+func errandHullAtSpeed(t *testing.T, symbol string, playerID int, waypoint, fleet string, cargoCap, speed int) *navigation.Ship {
+	t.Helper()
 	cargo, err := shared.NewCargo(cargoCap, 0, nil)
 	require.NoError(t, err)
 	fuel, err := shared.NewFuel(100, 100)
@@ -75,7 +82,7 @@ func errandHull(t *testing.T, symbol string, playerID int, waypoint, fleet strin
 	wp, err := shared.NewWaypoint(waypoint, 0, 0)
 	require.NoError(t, err)
 	ship, err := navigation.NewShip(
-		symbol, shared.MustNewPlayerID(playerID), wp, fuel, 100, cargoCap, cargo, 30,
+		symbol, shared.MustNewPlayerID(playerID), wp, fuel, 100, cargoCap, cargo, speed,
 		"FRAME_FRIGATE", "HAULER", nil, navigation.NavStatusDocked,
 	)
 	require.NoError(t, err)
@@ -115,7 +122,7 @@ func TestErrandHulls_ReportsRawFactsForEveryHullAndPreFiltersNothing(t *testing.
 		shipRepo: &fakeHeavyShipRepo{all: []*navigation.Ship{
 			errandHull(t, "TR-1", 1, "X1-HOME-A1", "trade", 40),
 			inTransit,
-			errandHull(t, "PROBE-9", 1, "X1-DARK-A1", "sensing_parked", 0),
+			errandHullAtSpeed(t, "PROBE-9", 1, "X1-DARK-A1", "sensing_parked", 0, 9),
 		}},
 		posts: emptyRoster(),
 	}
@@ -130,6 +137,7 @@ func TestErrandHulls_ReportsRawFactsForEveryHullAndPreFiltersNothing(t *testing.
 	require.True(t, hulls[0].Idle)
 	require.False(t, hulls[0].InTransit)
 	require.Equal(t, 40, hulls[0].CargoCapacity)
+	require.Equal(t, 30, hulls[0].EngineSpeed)
 	require.False(t, hulls[0].MannedScoutPost)
 
 	require.Equal(t, "TR-2", hulls[1].Symbol)
@@ -141,6 +149,8 @@ func TestErrandHulls_ReportsRawFactsForEveryHullAndPreFiltersNothing(t *testing.
 	require.Equal(t, "sensing_parked", hulls[2].Fleet)
 	require.Zero(t, hulls[2].CargoCapacity,
 		"a probe's zero hold must still reach the policy verbatim — the read reports facts, it does not judge them")
+	require.Equal(t, 9, hulls[2].EngineSpeed,
+		"the engine rating is the fact the carrier choice ranks on, so each hull must carry its own")
 }
 
 // THE STANDING OWNER RULE'S EVIDENCE (sp-gmfvw). The errand now draws from the SAME probe pool the

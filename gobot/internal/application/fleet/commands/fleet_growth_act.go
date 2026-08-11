@@ -173,11 +173,18 @@ func (h *RunFleetGrowthCoordinatorHandler) advanceShortfallDwell(st *growthState
 	}
 }
 
-// buyHeavy runs the tick's demand→guard→buy for the heavy class. It reports whether a hull was
-// bought, whether there was unmet demand that did NOT result in a buy (feeding the zero-effect
-// alarm), and the first failing guard when the guard stack named one — which is what lets the stall
-// verdict say WHY rather than merely that nothing happened. It never returns an error: a tick that
-// cannot buy simply does not buy.
+// heavyBuyOutcome is one tick's heavy decision as the reconcile loop consumes it.
+type heavyBuyOutcome struct {
+	Bought bool
+	// UnmetNoBuy is demand that did NOT result in a buy — the zero-effect alarm's input.
+	UnmetNoBuy bool
+	// Blocked is the first failing guard, named only when the stack could attribute one.
+	Blocked      GuardName
+	BlockedKnown bool
+}
+
+// buyHeavy runs the tick's demand→guard→buy for the heavy class. It never returns an error: a tick
+// that cannot buy simply does not buy.
 func (h *RunFleetGrowthCoordinatorHandler) buyHeavy(
 	ctx context.Context,
 	cmd *RunFleetGrowthCoordinatorCommand,
@@ -185,7 +192,7 @@ func (h *RunFleetGrowthCoordinatorHandler) buyHeavy(
 	d ClassDemand,
 	in growthTickInputs,
 	st *growthState,
-) (bought bool, unmetNoBuy bool, blocked GuardName, blockedKnown bool) {
+) heavyBuyOutcome {
 	logger := common.LoggerFromContext(ctx)
 
 	// Fail-closed: an unreadable demand signal never buys.
@@ -193,10 +200,10 @@ func (h *RunFleetGrowthCoordinatorHandler) buyHeavy(
 		logger.Log("INFO", fmt.Sprintf("Fleet growth: demand unreadable — no buy (%s)", d.Reason), map[string]interface{}{
 			"action": "growth_demand_unreadable", "container_id": cmd.ContainerID,
 		})
-		return false, false, "", false
+		return heavyBuyOutcome{}
 	}
 	if d.Shortfall() <= 0 {
-		return false, false, "", false
+		return heavyBuyOutcome{}
 	}
 
 	// The working-capital rung, ahead of the request so an unreadable ledger cannot reach the
@@ -205,7 +212,7 @@ func (h *RunFleetGrowthCoordinatorHandler) buyHeavy(
 		logger.Log("INFO", "Fleet growth: cargo commitment unreadable — no buy", map[string]interface{}{
 			"action": "growth_working_capital_unreadable", "container_id": cmd.ContainerID,
 		})
-		return false, true, "", false
+		return heavyBuyOutcome{UnmetNoBuy: true}
 	}
 
 	req, yard := h.buildPurchaseRequest(ctx, cmd, cfg, d, in, st)
@@ -220,7 +227,7 @@ func (h *RunFleetGrowthCoordinatorHandler) buyHeavy(
 		if h.metrics != nil {
 			h.metrics.RecordBlocked(HullClassHeavy, decision.BlockedBy)
 		}
-		return false, true, decision.BlockedBy, true
+		return heavyBuyOutcome{UnmetNoBuy: true, Blocked: decision.BlockedBy, BlockedKnown: true}
 	}
 
 	// An unwired purchaser evaluates + logs the APPROVED buy but spends nothing — loudly, and
@@ -229,7 +236,7 @@ func (h *RunFleetGrowthCoordinatorHandler) buyHeavy(
 		logger.Log("WARN", fmt.Sprintf("Fleet growth APPROVED but no purchaser wired — WOULD BUY %s @ %d at %s (mis-wire: the coordinator is armed but cannot spend)", req.ShipType, req.Price, yard), map[string]interface{}{
 			"action": "growth_no_purchaser", "container_id": cmd.ContainerID,
 		})
-		return false, true, "", false
+		return heavyBuyOutcome{UnmetNoBuy: true}
 	}
 
 	res, err := h.purchaser.BuyAndDedicate(ctx, BuyOrder{PlayerID: cmd.PlayerID, Class: HullClassHeavy, ShipType: req.ShipType, Yard: yard, ExpectedPrice: req.Price, ContainerID: cmd.ContainerID})
@@ -237,7 +244,7 @@ func (h *RunFleetGrowthCoordinatorHandler) buyHeavy(
 		logger.Log("ERROR", fmt.Sprintf("Fleet growth heavy buy failed: %v", err), map[string]interface{}{
 			"action": "growth_buy_error", "container_id": cmd.ContainerID,
 		})
-		return false, true, "", false
+		return heavyBuyOutcome{UnmetNoBuy: true}
 	}
 
 	if h.metrics != nil {
@@ -256,7 +263,7 @@ func (h *RunFleetGrowthCoordinatorHandler) buyHeavy(
 		"action": "growth_bought", "container_id": cmd.ContainerID,
 		"ship_symbol": res.ShipSymbol, "price": res.Price, "dedicated": res.Dedicated,
 	})
-	return true, false, "", false
+	return heavyBuyOutcome{Bought: true}
 }
 
 // buildPurchaseRequest resolves the tick's candidate heavy purchase from the demand, the run config
