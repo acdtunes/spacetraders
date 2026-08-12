@@ -24,12 +24,15 @@ const (
 	// is the backstop against a runaway placement plan, not the growth dial.
 	defaultParkedProbeCap = 3000
 
-	// defaultExpansionEnabled is the expansion engine's master switch, encoded
-	// 1=on / 2=off. It is NOT a bool-as-0/1 because `tune <key> 0` means "revert
-	// to the default" fleet-wide — a 0/1 encoding would make "off" unexpressible.
+	// defaultExpansionEnabled is the expansion engine's master switch: ONE knob with
+	// three states, 1=buy probes and dispatch charting seeds. It is NOT a bool-as-0/1
+	// because `tune <key> 0` means "revert to the default" fleet-wide — a 0/1 encoding
+	// would make a state unexpressible.
 	defaultExpansionEnabled = 1
-	// expansionDisabled is the sentinel that switches expansion off.
-	expansionDisabled = 2
+	// expansionDisabled buys nothing at all. expansionProbesOnly keeps buying coverage
+	// probes and dispatches no charting seed — the two spends have different economics.
+	expansionDisabled   = 2
+	expansionProbesOnly = 3
 
 	// defaultTargetUtilPct is the share of the rate-limiter ceiling the whole
 	// fleet aims to occupy, leaving the remainder as burst headroom.
@@ -94,20 +97,22 @@ type sensingConfig struct {
 	Tick              time.Duration
 	WaitLow, WaitHigh time.Duration
 	ProbeCap          int
-	// ExpansionSpend is whether this coordinator may spend on hulls at all. It
-	// feeds BOTH engines that can: the expansion pass, which asks other engines to
-	// buy (a charting seed from the buy queue), and the buy queue itself, which is
-	// what actually pays for a coverage probe.
+	// ProbeSpend and SeedDispatch are the TWO SPENDS `expansion_enabled` resolves into,
+	// and the reason it is one knob with three states rather than two keys: two knobs
+	// that must be kept in sync to stay correct are worse than one, and only the base
+	// value is persisted (RULINGS #5, base plus derived tiers).
 	//
-	// FEEDING ONLY THE FIRST WAS THE DEFECT. Half of it was the NAME: a switch
-	// called `Expansion` reads as the engine being off while what the operator
-	// wants off is the spending, and switching the whole engine
-	// off costs the fleet its free frontier discovery. The other half was that
-	// "spending" then reached one spender: the drain bought six probes a cycle with
-	// the switch off, 907,545 credits' worth (sp-com1h). Both knobs now read this
-	// one field. See parkedsensing.ExpandKnobs.SpendEnabled and
-	// parkedsensing.BuyKnobs.SpendEnabled.
-	ExpansionSpend          bool
+	// ProbeSpend reaches the buy queue, which pays for a coverage probe. SeedDispatch
+	// reaches the expansion pass, which puts a hull on a charting errand. They are
+	// separate because the economics are: a coverage probe prices markets the trade
+	// planner scores lanes from, while a charting errand burns jump fuel for a reward
+	// that only sometimes covers it.
+	//
+	// FEEDING ONLY ONE OF THEM WAS THE DEFECT that put this pair here: a gate on the
+	// expansion pass alone left the drain buying probes with the switch off (sp-com1h).
+	// See parkedsensing.ExpandKnobs.SeedsEnabled and parkedsensing.BuyKnobs.SpendEnabled.
+	ProbeSpend              bool
+	SeedDispatch            bool
 	TargetUtilPct           int
 	MinScanRateMilli        int
 	ClampR                  int
@@ -170,8 +175,11 @@ func resolveSensingConfig(ctx context.Context, cmd *RunProbeSensingCoordinatorCo
 		SurgeInFlightCap:        pick("surge_inflight_cap", cmd.SurgeInFlightCap),
 	}
 
-	// 1=on, 2=off. Anything else — including the absent-key 0 — is the default.
-	c.ExpansionSpend = pick("expansion_enabled", cmd.ExpansionEnabled) != expansionDisabled
+	// 1=both, 2=neither, 3=probes only. Anything else — including the absent-key 0 —
+	// is the default, so an unreadable state can only ever widen back to it.
+	expansion := pick("expansion_enabled", cmd.ExpansionEnabled)
+	c.ProbeSpend = expansion != expansionDisabled
+	c.SeedDispatch = c.ProbeSpend && expansion != expansionProbesOnly
 
 	applySensingDefaults(ctx, cmd, &c)
 	return c
@@ -271,17 +279,29 @@ func (h *RunProbeSensingCoordinatorHandler) liveSnapshot(ctx context.Context, cm
 // config.
 //
 // A NAMED FUNCTION RATHER THAN A STRUCT LITERAL AT THE CALL SITE, so the one line
-// that matters here is assertable. SpendEnabled carries the SAME
-// `expansion_enabled` switch the expansion pass reads, and both engines need it
-// because they spend through different doors: expansion stops ASKING other engines
-// to buy, and this queue stops BUYING. Wiring only the first is precisely what let
-// 25 probes and 907,545 credits go out while the switch read off — a correct gate,
-// shipped unreached (sp-com1h). See sensing_expand_wiring_test.go.
+// that matters here is assertable. Wiring the expansion pass's half of
+// `expansion_enabled` and not this one is precisely what let 25 probes and 907,545
+// credits go out while the switch read off — a correct gate, shipped unreached
+// (sp-com1h). See sensing_expand_wiring_test.go.
 func buyKnobs(cfg sensingConfig) parkedsensing.BuyKnobs {
 	return parkedsensing.BuyKnobs{
-		SpendEnabled: cfg.ExpansionSpend,
+		SpendEnabled: cfg.ProbeSpend,
 		ProbeCap:     cfg.ProbeCap,
 		CapexReserve: cfg.CapexReserveCredits,
 		KMilli:       cfg.CapitalMultiplierKMilli,
+	}
+}
+
+// expandKnobs is the expansion pass's half of the same switch, named for the same
+// reason: a gate nobody passes an argument to is a gate that ships dormant.
+//
+// MinBudgetRate is the SENSING residual floor, never the pacer rate: the emergency
+// brake can drive the residual below the minimum scan rate while the pacer re-imposes
+// it, so gating on the pacer would leave expansion charting through a rate-limit storm.
+func expandKnobs(cfg sensingConfig) parkedsensing.ExpandKnobs {
+	return parkedsensing.ExpandKnobs{
+		SeedsEnabled:  cfg.SeedDispatch,
+		MinBudgetRate: float64(cfg.MinScanRateMilli) / 1000.0,
+		Whitelist:     cfg.Whitelist,
 	}
 }

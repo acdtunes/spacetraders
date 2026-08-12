@@ -429,25 +429,31 @@ func (f *fakeLiveConfig) Snapshot(context.Context, string, int) (liveconfig.Snap
 	return f.snapshot, f.err
 }
 
-// expansion_enabled is encoded 1=on / 2=off rather than 0/1, because
-// `tune <key> 0` means revert-to-default fleet-wide — a 0/1 encoding would make
-// "off" unexpressible.
+// expansion_enabled is ONE knob with three states, not two flags: it resolves
+// into the two spends it has always gated — the coverage probe the buy queue pays
+// for, and the charting errand the expansion pass puts a hull on.
+//
+// It is not encoded 0/1/2 because `tune <key> 0` means revert-to-default
+// fleet-wide, which would make a state unexpressible.
 func TestKnobs_ExpansionEnabledEncoding(t *testing.T) {
 	cases := []struct {
-		name  string
-		value int
-		want  bool
+		name   string
+		value  int
+		probes bool
+		seeds  bool
 	}{
-		{"absent means the default, which is ON", 0, true},
-		{"1 is ON", 1, true},
-		{"2 is OFF", 2, false},
+		{"absent means the default, which is both", 0, true, true},
+		{"1 buys probes and dispatches seeds", 1, true, true},
+		{"2 is neither", 2, false, false},
+		{"3 buys probes and dispatches no seed", 3, true, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			cmd := sensingTestCmd()
 			cmd.ExpansionEnabled = tc.value
 			cfg := resolveSensingConfig(context.Background(), cmd, nil)
-			require.Equal(t, tc.want, cfg.ExpansionSpend)
+			require.Equal(t, tc.probes, cfg.ProbeSpend, "probe buying")
+			require.Equal(t, tc.seeds, cfg.SeedDispatch, "charting seed dispatch")
 		})
 	}
 }
@@ -461,14 +467,14 @@ func TestKnobs_LiveConfigOverridesLaunch(t *testing.T) {
 
 	launched := resolveSensingConfig(context.Background(), cmd, nil)
 	require.Equal(t, 40, launched.ProbeCap, "with no live value the launch config governs")
-	require.True(t, launched.ExpansionSpend)
+	require.True(t, launched.ProbeSpend)
 
 	tuned := resolveSensingConfig(context.Background(), cmd, liveconfig.Snapshot{
 		"probe_cap":         float64(120), // float64: the JSON-recovery shape
 		"expansion_enabled": 2,
 	})
 	require.Equal(t, 120, tuned.ProbeCap, "a live value wins over the launch config")
-	require.False(t, tuned.ExpansionSpend, "and so does a live off-switch")
+	require.False(t, tuned.ProbeSpend, "and so does a live off-switch")
 }
 
 // A failed snapshot runs the tick on the LAUNCH command rather than on an empty
@@ -516,7 +522,7 @@ func TestKnobs_EmptyLaunchResolvesToDocumentedDefaults(t *testing.T) {
 
 	require.Equal(t, defaultSensingTickSeconds*time.Second, cfg.Tick)
 	require.Equal(t, defaultParkedProbeCap, cfg.ProbeCap)
-	require.True(t, cfg.ExpansionSpend)
+	require.True(t, cfg.ProbeSpend)
 	require.Equal(t, defaultTargetUtilPct, cfg.TargetUtilPct)
 	require.Equal(t, defaultMinScanRateMilli, cfg.MinScanRateMilli)
 	require.Equal(t, defaultValueClampR, cfg.ClampR)

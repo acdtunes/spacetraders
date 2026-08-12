@@ -90,20 +90,48 @@ func TestSensingTune_DefaultsMirrorTheRegistry(t *testing.T) {
 	}
 }
 
-// expansion_enabled is bounded [1,2] and its description STATES the encoding.
+// expansion_enabled is bounded [1,3] and its description STATES all three states.
 //
 // The bound is what makes the encoding discoverable: `tune expansion_enabled 0`
 // is the fleet-wide revert verb, so a 0/1 flag could not express "off" at all.
-// An operator reading `tune --show` has only the description to tell them that 2
-// is off rather than an out-of-range mistake.
+// An operator reading `tune --show` has only the description to tell them which
+// state buys what, rather than reading 3 as an out-of-range mistake.
 func TestSensingTune_ExpansionEnabledEncodingIsDocumented(t *testing.T) {
 	bound := sensingBounds(t)["expansion_enabled"]
 
 	require.Equal(t, 1, bound.Min)
-	require.Equal(t, 2, bound.Max)
+	require.Equal(t, 3, bound.Max)
 	require.Equal(t, 1, bound.Default, "expansion ships ON")
-	require.Contains(t, bound.Description, "1=on")
-	require.Contains(t, bound.Description, "2=off")
+	require.Contains(t, bound.Description, "1=buy probes and dispatch charting seeds")
+	require.Contains(t, bound.Description, "2=neither")
+	require.Contains(t, bound.Description, "3=buy probes, dispatch no charting seed")
+}
+
+// The third state is REACHABLE through the tune surface, and the bound still
+// refuses everything past it.
+//
+// 0 is not a fourth state and must never become one: it is the fleet-wide revert
+// verb, which is the whole reason the encoding starts at 1.
+func TestSensingTune_ExpansionEnabledAcceptsProbesOnlyAndNothingBeyond(t *testing.T) {
+	db, repo, playerID := tuneTestDB(t)
+	seedTuneContainer(t, db, playerID, tuneSensingContainerID, sensingContainerType, "probe_sensing_coordinator", "RUNNING", map[string]interface{}{
+		"container_id": tuneSensingContainerID,
+	})
+	s := &DaemonServer{containerRepo: repo}
+	tune := func(value int) (*TuneOutcome, error) {
+		return s.MutateContainerConfigKey(context.Background(), tuneSensingContainerID, "", "expansion_enabled", value, playerID)
+	}
+
+	probesOnly, err := tune(3)
+	require.NoError(t, err, "state 3 must be settable, or an operator cannot ask for probes without charting")
+	require.Equal(t, 3, probesOnly.NewEffective)
+
+	_, err = tune(4)
+	require.Error(t, err, "4 names no state and must be refused before anything is written")
+
+	reverted, err := tune(0)
+	require.NoError(t, err)
+	require.Equal(t, 1, reverted.NewEffective, "0 reverts to the default; it does not express a state")
 }
 
 // The two knobs that bind when the scan rotation is CONSTRUCTED, not per tick,

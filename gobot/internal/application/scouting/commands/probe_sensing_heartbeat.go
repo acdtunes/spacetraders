@@ -141,7 +141,7 @@ func (h *RunProbeSensingCoordinatorHandler) heartbeat(ctx context.Context, cmd *
 		// leak must be told "you switched this off" in those words rather than left to infer
 		// it from a bought count of zero — the whole cost of sp-com1h was a cycle line that
 		// looked healthy while the switch it named did not cover the spending.
-		held = "expansion switch: expansion_enabled is off, so no probe is bought"
+		held = "expansion switch: expansion_enabled is 2, so no probe is bought"
 	case hb.buy.CapHeld:
 		held = "probe cap"
 	case hb.buy.FloorHeld:
@@ -263,10 +263,10 @@ func (h *RunProbeSensingCoordinatorHandler) heartbeat(ctx context.Context, cmd *
 			"docking":    hb.place.Docking,
 			"parked":     hb.place.Parked,
 
-			"expansion_skipped":         hb.expand.Skipped,
-			"expansion_spending_paused": hb.expand.SpendingPaused,
-			"expansion_discovered":      hb.expand.Discovered,
-			"seeds_requested":           hb.expand.SeedsRequested,
+			"expansion_skipped":        hb.expand.Skipped,
+			"expansion_seeding_paused": hb.expand.SeedingPaused,
+			"expansion_discovered":     hb.expand.Discovered,
+			"seeds_requested":          hb.expand.SeedsRequested,
 			// The cold-start deadlock, made readable. A fleet with no staffed probe
 			// counter reported "0 seeds requested" and nothing else for an entire era —
 			// indistinguishable from a fleet with nothing left to seed. seeds_unstaged
@@ -474,8 +474,8 @@ func expansionSummary(rep parkedsensing.ExpandReport) string {
 	if rep.SpareGhostsReleased > 0 {
 		summary += fmt.Sprintf(", %d ghost spare row(s) released", rep.SpareGhostsReleased)
 	}
-	if rep.SpendingPaused {
-		return summary + " (spending paused: no seed purchase)"
+	if rep.SeedingPaused {
+		return summary + " (seed dispatch off: errands in flight still finish)"
 	}
 	return summary
 }

@@ -351,7 +351,13 @@ func (t *expandTick) fillPlacement(ctx context.Context, s ExpandSystem, current 
 // the old errand if the stamp fails, closing the orphan window in the only case that
 // opens it. A restore that itself fails is logged loudly with both systems and the
 // hull named, because the probe can then only be recovered by hand.
+//
+// IT IS A NEW ERRAND, not a continuation, so the seed gate refuses it: the finished hull
+// stands down where it is, draining the charting commitment rather than renewing it.
 func (t *expandTick) retargetSeed(ctx context.Context, s ExpandSystem, current string) (bool, error) {
+	if !t.k.SeedsEnabled {
+		return false, nil
+	}
 	for _, target := range t.targets {
 		if t.covered[target.System] || target.System == s.System {
 			continue

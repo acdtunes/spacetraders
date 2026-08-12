@@ -298,7 +298,8 @@ to nothing.
   station), *expansion* (push the frontier outward, run charting seeds), *scanner* (the single
   fleet-wide pacer that spends the scan budget). Stage failures are COLLECTED, not fatal.
   Defaults (`probe_sensing_config.go`): tick **30s**, `probe_cap 3000`, `expansion_enabled 1`
-  (1=on/2=off, not 0/1, because `tune <key> 0` means revert-to-default), `target_util_pct 92`,
+  (1=probes + charting seeds, 2=neither, 3=probes only; not 0-based, because `tune <key> 0` means
+  revert-to-default), `target_util_pct 92`,
   `min_scan_rate_milli 100` (0.1 req/s), `value_clamp_r 4`, `inflight_cap 3`,
   `capital_multiplier_k_milli 2000` (2h), `capex_reserve_credits 100000`,
   `quartermaster_cadence_secs 3600`, `surge_inflight_cap 8`, `wait_low_ms 50` /

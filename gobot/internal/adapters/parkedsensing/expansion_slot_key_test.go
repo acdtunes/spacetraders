@@ -225,7 +225,7 @@ func TestExpansion_StagesASeedAtAYardThatIsAlreadyAParkedMarket(t *testing.T) {
 		map[string][]string{"X1-A": {"X1-A-YARD"}})
 
 	rep, err := appSensing.AdvanceExpansion(ctx, ports, testPlayerID, appSensing.ExpandKnobs{
-		SpendEnabled: true, MinBudgetRate: 0.05, Whitelist: map[string]bool{"FUEL": true},
+		SeedsEnabled: true, MinBudgetRate: 0.05, Whitelist: map[string]bool{"FUEL": true},
 	}, 1.0)
 	require.NoError(t, err)
 
@@ -296,7 +296,7 @@ func TestExpansion_ClaimingASpareLeavesTheMarketPlacementSharingItsWaypoint(t *t
 		map[string][]string{"X1-A": {"X1-A-YARD"}})
 
 	rep, err := appSensing.AdvanceExpansion(ctx, ports, testPlayerID, appSensing.ExpandKnobs{
-		SpendEnabled: true, MinBudgetRate: 0.05, Whitelist: map[string]bool{"FUEL": true},
+		SeedsEnabled: true, MinBudgetRate: 0.05, Whitelist: map[string]bool{"FUEL": true},
 	}, 1.0)
 	require.NoError(t, err)
 	require.Equal(t, 1, rep.SeedsClaimed, "the parked spare borders X1-B and is claimed for it")
@@ -360,7 +360,7 @@ func TestExpansion_ReleasingAGhostSpareLeavesTheProbeCapWhereItWas(t *testing.T)
 		map[string][]string{"X1-A": {"X1-A-YARD"}})
 
 	rep, err := appSensing.AdvanceExpansion(ctx, ports, testPlayerID, appSensing.ExpandKnobs{
-		SpendEnabled: true, MinBudgetRate: 0.05, Whitelist: map[string]bool{"FUEL": true},
+		SeedsEnabled: true, MinBudgetRate: 0.05, Whitelist: map[string]bool{"FUEL": true},
 	}, 1.0)
 	require.NoError(t, err)
 	require.Equal(t, 1, rep.SpareGhostsReleased)

@@ -278,11 +278,10 @@ type WaveReader interface {
 
 // BuyKnobs are the operator-set economics of the queue.
 type BuyKnobs struct {
-	// SpendEnabled is the operator's expansion switch, and off means NO PROBE IS
-	// BOUGHT. IT IS THE SAME SWITCH AS ExpandKnobs.SpendEnabled (`expansion_enabled`),
-	// fed from the same resolved config on the same tick; it has to reach here as well
-	// as there because the two engines spend through different doors, and this queue
-	// is the one that actually pays.
+	// SpendEnabled is the operator's expansion switch, and off means NO PROBE IS BOUGHT.
+	// IT IS ONE HALF OF THE SAME KNOB AS ExpandKnobs.SeedsEnabled (`expansion_enabled`),
+	// resolved on the same tick: the halves are separately settable because a coverage
+	// probe and a charting errand differ in what they earn.
 	//
 	// OFF STOPS PURCHASES, NOT THE DRAIN, which is what makes "off" safe to leave on:
 	// a paused tick still re-tasks an idle spare into a placement (reuseSpareHull) and

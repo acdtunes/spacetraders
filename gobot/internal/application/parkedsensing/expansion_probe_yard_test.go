@@ -76,7 +76,7 @@ func (h *expandHarness) runWithMemo(t *testing.T, memo *fakeListingMemo) (Expand
 	p := h.ports()
 	p.ListingMemo = memo
 	return AdvanceExpansion(context.Background(), p, 1, ExpandKnobs{
-		SpendEnabled: true, MinBudgetRate: 0.05, Whitelist: h.whitelist,
+		SeedsEnabled: true, MinBudgetRate: 0.05, Whitelist: h.whitelist,
 	}, 1.0)
 }
 
@@ -217,7 +217,7 @@ func TestAdvanceExpansion_AnUnwiredListingMemoLeavesStagingUnchanged(t *testing.
 	}
 	p := h.ports() // ListingMemo left nil
 	rep, err := AdvanceExpansion(context.Background(), p, 1, ExpandKnobs{
-		SpendEnabled: true, MinBudgetRate: 0.05, Whitelist: h.whitelist,
+		SeedsEnabled: true, MinBudgetRate: 0.05, Whitelist: h.whitelist,
 	}, 1.0)
 	if err != nil {
 		t.Fatalf("an unwired memo must not fail the tick: %v", err)

@@ -555,7 +555,7 @@ func (h *expandHarness) run(t *testing.T, uncharted *fakeUncharted) (ExpandRepor
 		p.Uncharted = uncharted
 	}
 	return AdvanceExpansion(context.Background(), p, 1, ExpandKnobs{
-		SpendEnabled: true, MinBudgetRate: 0.05, Whitelist: h.whitelist,
+		SeedsEnabled: true, MinBudgetRate: 0.05, Whitelist: h.whitelist,
 	}, 1.0)
 }
 
@@ -592,7 +592,7 @@ func TestAdvanceExpansion_SpendPausedTickIsNotReportedAsSkipped(t *testing.T) {
 	h.ledger.systems = []ExpandSystem{{System: "X1-A", Verdict: VerdictInScope, UnchartedCount: 4}}
 
 	rep, err := AdvanceExpansion(context.Background(), h.ports(), 1, ExpandKnobs{
-		SpendEnabled: false, MinBudgetRate: 0.05, Whitelist: h.whitelist,
+		SeedsEnabled: false, MinBudgetRate: 0.05, Whitelist: h.whitelist,
 	}, 1.0)
 
 	if err != nil {
@@ -601,7 +601,7 @@ func TestAdvanceExpansion_SpendPausedTickIsNotReportedAsSkipped(t *testing.T) {
 	if rep.Skipped != "" {
 		t.Fatalf("Skipped = %q, want empty — the tick ran, and filing it as skipped is what makes a discovering tick read as idle to the stall verdict", rep.Skipped)
 	}
-	if !rep.SpendingPaused {
+	if !rep.SeedingPaused {
 		t.Fatal("SpendingPaused = false, want true — the heartbeat has no other way to say why the tick stopped where it did")
 	}
 	if h.ledger.systemsCalls == 0 {
@@ -615,7 +615,7 @@ func TestAdvanceExpansion_BudgetStarvedTickIsAZeroCallNoOp(t *testing.T) {
 
 	// The brake has pushed the SENSING residual below the expansion floor.
 	rep, err := AdvanceExpansion(context.Background(), h.ports(), 1, ExpandKnobs{
-		SpendEnabled: true, MinBudgetRate: 0.05, Whitelist: h.whitelist,
+		SeedsEnabled: true, MinBudgetRate: 0.05, Whitelist: h.whitelist,
 	}, 0.04)
 
 	if err != nil {
@@ -631,7 +631,7 @@ func TestAdvanceExpansion_BudgetExactlyAtTheFloorRuns(t *testing.T) {
 	h := newExpandHarness()
 
 	rep, err := AdvanceExpansion(context.Background(), h.ports(), 1, ExpandKnobs{
-		SpendEnabled: true, MinBudgetRate: 0.05, Whitelist: h.whitelist,
+		SeedsEnabled: true, MinBudgetRate: 0.05, Whitelist: h.whitelist,
 	}, 0.05)
 
 	if err != nil {
@@ -647,7 +647,7 @@ func TestAdvanceExpansion_EmptyWhitelistRefusesTheTick(t *testing.T) {
 	h.ledger.systems = []ExpandSystem{{System: "X1-A", Verdict: VerdictInScope, UnchartedCount: 4}}
 
 	_, err := AdvanceExpansion(context.Background(), h.ports(), 1, ExpandKnobs{
-		SpendEnabled: true, MinBudgetRate: 0.05, Whitelist: nil,
+		SeedsEnabled: true, MinBudgetRate: 0.05, Whitelist: nil,
 	}, 1.0)
 
 	if !errors.Is(err, ErrEmptyWhitelist) {

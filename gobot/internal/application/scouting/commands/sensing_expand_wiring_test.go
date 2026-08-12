@@ -57,13 +57,33 @@ func TestSensingEnginePorts_BuyPortsStillCarriesTheListingMemo(t *testing.T) {
 // the coordinator still hands it the value — a gate nobody passes an argument to is
 // a gate that ships dormant, which is the exact failure mode this file exists for.
 func TestSensingBuyKnobs_CarriesTheExpansionSpendSwitch(t *testing.T) {
-	if buyKnobs(sensingConfig{ExpansionSpend: false, ProbeCap: 100}).SpendEnabled {
+	if buyKnobs(sensingConfig{ProbeSpend: false, ProbeCap: 100}).SpendEnabled {
 		t.Fatalf("the buy queue was told spending is ENABLED while expansion_enabled reads off — " +
 			"the drain would buy probes against a switch the operator has turned off (sp-com1h)")
 	}
-	if !buyKnobs(sensingConfig{ExpansionSpend: true, ProbeCap: 100}).SpendEnabled {
+	if !buyKnobs(sensingConfig{ProbeSpend: true, ProbeCap: 100}).SpendEnabled {
 		t.Fatalf("the buy queue was told spending is DISABLED with the switch on — sensing would " +
 			"never buy a probe again")
+	}
+}
+
+// …and the expansion pass is handed the OTHER half of the same switch, through its own named
+// function for the same reason. The two are separately settable, so a wiring that fed one value to
+// both would silently make the probes-only state unreachable.
+func TestSensingExpandKnobs_CarriesTheSeedDispatchSwitch(t *testing.T) {
+	probesOnly := sensingConfig{ProbeSpend: true, SeedDispatch: false}
+
+	if expandKnobs(probesOnly).SeedsEnabled {
+		t.Fatalf("the expansion pass was told to dispatch seeds while the operator asked for probes " +
+			"only — hulls would go back onto charting errands instead of pricing markets")
+	}
+	if !buyKnobs(probesOnly).SpendEnabled {
+		t.Fatalf("the buy queue was told spending is off in the probes-only state — the state would " +
+			"be indistinguishable from a full stop")
+	}
+	if !expandKnobs(sensingConfig{ProbeSpend: true, SeedDispatch: true}).SeedsEnabled {
+		t.Fatalf("the expansion pass was told seeds are off with the switch fully on — charting " +
+			"would never be dispatched again")
 	}
 }
 

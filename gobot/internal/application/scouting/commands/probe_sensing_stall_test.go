@@ -170,7 +170,7 @@ func TestExpansionStallVerdictTable(t *testing.T) {
 			// The operator's switch no longer skips the tick, so a spend pause that
 			// found nothing to discover is graded exactly like any other quiet tick.
 			name:       "a spend-paused tick with nothing to discover is correctly idle",
-			rep:        parkedsensing.ExpandReport{SpendingPaused: true},
+			rep:        parkedsensing.ExpandReport{SeedingPaused: true},
 			wantStatus: health.StallIdle,
 		},
 		{
@@ -178,7 +178,7 @@ func TestExpansionStallVerdictTable(t *testing.T) {
 			// value: a paused tick that discovered systems did real work, and filing it
 			// as idle would hide the one number the operator turned the switch to watch.
 			name:       "a spend-paused tick that discovered systems is progress, not idle",
-			rep:        parkedsensing.ExpandReport{SpendingPaused: true, Discovered: 3},
+			rep:        parkedsensing.ExpandReport{SeedingPaused: true, Discovered: 3},
 			wantStatus: health.StallProgress,
 		},
 		{

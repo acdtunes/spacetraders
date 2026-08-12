@@ -13,11 +13,10 @@ import (
 // sweep, SEEDS asks for a probe to chart a system that cannot be screened remotely,
 // and TOURS drives that probe and stands it down when the system is charted through.
 //
-// Acquiring a seed is NOT this engine's job: it writes a SPARE placement and the
-// buy queue funds it under the same floor and probe cap as everything else, so
-// expansion can never open a second, unguarded spending path. FRONTIER is free and
-// the other two are not, which is why the operator's switch cuts between them
-// rather than around all three (see ExpandKnobs.SpendEnabled).
+// Acquiring a seed is NOT this engine's job: it writes a SPARE placement and the buy
+// queue funds it under the same floor and probe cap as everything else, so expansion can
+// never open a second, unguarded spending path. FRONTIER is free where the other two are
+// not, and that is where the operator's switch cuts (see ExpandKnobs.SeedsEnabled).
 //
 // Nothing is held between ticks — every pass is driven off the sensing_systems row
 // and the hull's row in the ships table — so a restart mid-tour resumes from the
@@ -230,20 +229,20 @@ type ExpandPorts struct {
 
 // ExpandKnobs are the operator-set controls on expansion.
 type ExpandKnobs struct {
-	// SpendEnabled controls whether this engine may ASK FOR MONEY. It does not switch
-	// the engine off, and the difference is the whole point of the field: paused, the
-	// engine still records frontier systems and reads charted jump gates — both free,
-	// and both what keep already-bought hulls supplied with somewhere to go. What it
-	// does not do is command a hull or write a SPARE want, the two ways this engine can
-	// reach the treasury (both through another engine).
+	// SeedsEnabled controls whether this engine may raise a NEW charting errand: a
+	// SPARE want, a spare claimed onto an errand, or a finished seed retargeted. It does
+	// not switch the engine off — paused, it still records frontier systems and reads
+	// charted jump gates, both free and both what keep already-bought hulls supplied
+	// with somewhere to go.
 	//
-	// THE SAME OPERATOR SWITCH ALSO REACHES THE BUY QUEUE, and it has to: this field
-	// stops only the REQUESTS, and the queue that pays them is the larger spender.
-	// See BuyKnobs.SpendEnabled, fed from the same resolved value on the same tick.
+	// AN ERRAND ALREADY IN FLIGHT IS STILL FLOWN. A hull mid-errand holds no placement
+	// row, so an engine that stopped commanding it would strand a probe we own rather
+	// than park it; refusing the retarget is what makes that errand terminate.
 	//
-	// It is NOT the money guard. ProbeBuyFloor and the probe cap are, applied by the
-	// buy queue and the autosizer and unchanged either way (RULINGS #4).
-	SpendEnabled bool
+	// ONE HALF OF A TWO-STATE DERIVATION, the other being BuyKnobs.SpendEnabled off the
+	// same operator knob. Neither is the money guard: ProbeBuyFloor and the probe cap
+	// are, and they are unchanged in every state (RULINGS #4).
+	SeedsEnabled bool
 	// MinBudgetRate is the sensing rate below which expansion pauses for the tick, in
 	// requests per second. It is compared against the SENSING residual, never the
 	// pacer rate: the emergency brake multiplies the residual and can legitimately
@@ -261,13 +260,12 @@ type ExpandKnobs struct {
 type ExpandReport struct {
 	// Skipped names the gate that held the whole tick, and is empty when it ran.
 	Skipped string
-	// SpendingPaused reports that the tick ran its FREE passes and stopped before the
-	// ones that ask another engine for money (SpendEnabled off). A SEPARATE FIELD
-	// RATHER THAN A Skipped VALUE: Skipped means "this tick did nothing" and the
-	// stall verdict reads it that way, so a pause reported there would file a tick
-	// full of discoveries as idle — the silent-stall shape the verdict exists to
-	// catch. A paused tick is graded on Discovered and GatesRead instead.
-	SpendingPaused bool
+	// SeedingPaused reports that the tick ran its FREE passes, flew the errands already in
+	// flight, and stopped before the ones that raise a new one (SeedsEnabled off). A SEPARATE
+	// FIELD RATHER THAN A Skipped VALUE: Skipped means "this tick did nothing" and the stall
+	// verdict reads it that way, so a pause reported there would file a tick full of
+	// discoveries as idle. A paused tick is graded on Discovered instead.
+	SeedingPaused bool
 	// Discovered counts never-evaluated neighbour systems recorded as PENDING.
 	Discovered int
 	// SeedsRequested counts SPARE placements enqueued for the buy queue to fund.
@@ -323,20 +321,22 @@ type ExpandReport struct {
 // floor is the fleet protecting its own API budget, and the second must not be
 // reachable past the first.
 //
-// THE TICK IS IN TWO HALVES, split at purchase intent (see ExpandKnobs.SpendEnabled):
+// THE TICK IS IN THREE PARTS, split at NEW purchase intent (see ExpandKnobs.SeedsEnabled):
 //
 //   - FREE, and always run: frontier marking and the gate read. Both work from facts
 //     we hold or can read without a hull, both write nothing but topology, and
 //     together they keep the placement machine supplied with somewhere to put the
 //     probes we have already bought.
-//   - SPEND-INTENT, run only when SpendEnabled: the seed machinery. It spends no credit
-//     DIRECTLY, but it asks engines that can —
-//     requestSeeds writes a SPARE want the buy queue funds, and claimSpares deletes a placement row,
-//     which is a deliberate UNDER-count of the probe fleet and therefore cap headroom
-//     that authorises a purchase (advanceSeeds sustains that under-count for as long
-//     as an errand runs). Under RULINGS #4 the doubt resolves toward NOT spending.
+//   - FINISHING, and always run: advanceSeeds, which drives errands already in flight to their
+//     end. It raises no new intent, and one the engine stops commanding is a hull we paid for
+//     and stranded.
+//   - NEW INTENT, run only when SeedsEnabled: the rest of the seed machinery. It spends no credit
+//     DIRECTLY but asks engines that can — requestSeeds writes a SPARE want the buy queue funds,
+//     and claimSpares deletes a placement row, a deliberate UNDER-count of the probe fleet and
+//     therefore cap headroom that authorises a purchase (advanceSeeds sustains that under-count
+//     for as long as an errand runs). Under RULINGS #4 the doubt resolves toward NOT spending.
 //
-// A PAUSED TICK IS NOT A SKIPPED TICK: Skipped stays empty and SpendingPaused
+// A PAUSED TICK IS NOT A SKIPPED TICK: Skipped stays empty and SeedingPaused
 // carries the reason.
 func AdvanceExpansion(
 	ctx context.Context,
@@ -396,21 +396,6 @@ func AdvanceExpansion(
 		return rep, err
 	}
 
-	// THE PAUSE: everything above it is free, everything below asks for money. It
-	// sits here rather than at the top of the function because markFrontier is a
-	// ledger write off adjacency we already hold, and the gate read is what keeps
-	// that adjacency growing — cutting either to stop a purchase strands
-	// already-bought probes with nowhere to go.
-	//
-	// EVERYTHING BELOW THIS LINE EITHER COMMANDS A HULL OR RAISES A PURCHASE
-	// INTENT. That is the invariant to preserve when adding a pass: if it can move
-	// a ship, write a SPARE want, delete a placement row, or emit demand, it goes
-	// below. If it only reads stored facts and records topology, it may go above.
-	if !k.SpendEnabled {
-		rep.SpendingPaused = true
-		return rep, nil
-	}
-
 	// The systems needing a hull are resolved ONCE, before anything moves, and every
 	// branch that covers one strikes it off — which is what keeps a single system
 	// from being sent both a spare and a fresh probe.
@@ -422,9 +407,13 @@ func AdvanceExpansion(
 	// or disagree about which waypoints are yards.
 	probeYards := map[string][]string{}
 
-	targets, err = orderTargets(ctx, reach, mapping, targets, book)
-	if err != nil {
-		return rep, err
+	// A gate walk per target, and with the seed gate shut every pass that reads it is
+	// unreachable — the retarget included, which refuses on its own.
+	if k.SeedsEnabled {
+		targets, err = orderTargets(ctx, reach, mapping, targets, book)
+		if err != nil {
+			return rep, err
+		}
 	}
 
 	t := &expandTick{
@@ -440,9 +429,25 @@ func AdvanceExpansion(
 
 	// Seeds move BEFORE spares are claimed, so an errand stamped this tick is not
 	// also flown by it: the ship row has not caught up, and the next tick reads it.
+	// It runs whether or not the gate below is open (see ExpandKnobs.SeedsEnabled).
 	if err := t.advanceSeeds(ctx, systems); err != nil {
 		return rep, err
 	}
+
+	// THE PAUSE: everything above it is free or already paid for. It sits here rather than
+	// at the top because markFrontier is a ledger write off adjacency we hold and the gate
+	// read is what keeps that adjacency growing — cutting either to stop a purchase strands
+	// already-bought probes with nowhere to go.
+	//
+	// EVERYTHING BELOW THIS LINE RAISES A NEW PURCHASE INTENT. That is the invariant to
+	// preserve when adding a pass: if it can write a SPARE want, delete a placement row,
+	// or emit demand, it goes below. If it only reads stored facts, records topology, or
+	// advances an errand already running, it may go above.
+	if !k.SeedsEnabled {
+		rep.SeedingPaused = true
+		return rep, nil
+	}
+
 	// BEFORE the claim, so the yards it frees are stageable on THIS tick rather than
 	// the next, and the freed rows cannot be mistaken for supply by requestSeeds.
 	if err := t.releaseErrandSpares(ctx); err != nil {

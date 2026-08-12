@@ -7,8 +7,9 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 )
 
-// expansion_spend_pause_test.go pins the line ExpandKnobs.SpendEnabled draws through this engine:
-// the free half runs, the half that asks another engine to buy does not.
+// expansion_spend_pause_test.go pins the line ExpandKnobs.SeedsEnabled draws through this engine:
+// the free half runs, the half that raises a NEW charting errand does not, and an errand already in
+// flight is still driven to its end.
 //
 // THE PRODUCTION FAILURE IT EXISTS FOR. The switch used to return the tick before its first port
 // call, so an operator stopping PROBE PURCHASES also stopped markFrontier — a ledger write off
@@ -22,7 +23,7 @@ import (
 // only asserts the paused run did nothing proves nothing: the fixture could be inert. The armed run
 // is what proves the path was live and the pause is what closed it.
 
-// spendPauseFixture is hot on every gate-based path at once — frontier marking, a charting seed in
+// seedGateFixture is hot on every gate-based path at once — frontier marking, a charting seed in
 // flight, a claimable parked spare, and a fundable seed request — so one pair of runs covers the
 // whole split rather than one pass at a time.
 //
@@ -30,7 +31,7 @@ import (
 // discovery the pause must preserve. The two dark systems are deliberately TWO, because claimSpares
 // runs first and marks its target covered — with only one, requestSeeds would find nothing to do and
 // the armed run would fail to prove the spending path was reachable at all.
-func spendPauseFixture() *expandHarness {
+func seedGateFixture() *expandHarness {
 	h := newExpandHarness()
 	h.ledger.systems = []ExpandSystem{
 		{System: "X1-HOME", Verdict: VerdictInScope},
@@ -65,15 +66,35 @@ func spendPauseFixture() *expandHarness {
 	return h
 }
 
-// runSpend drives one tick over the fixture with spending armed or paused.
-func runSpend(t *testing.T, h *expandHarness, spend bool) (ExpandReport, error) {
+// runSeedGate drives one tick over the fixture with seed dispatch armed or paused.
+func runSeedGate(t *testing.T, h *expandHarness, spend bool) (ExpandReport, error) {
 	t.Helper()
 	for i := range h.ledger.systems {
 		h.ledger.systems[i].CatalogKnown = !h.unswept[h.ledger.systems[i].System]
 	}
 	return AdvanceExpansion(context.Background(), h.ports(), 1, ExpandKnobs{
-		SpendEnabled: spend, MinBudgetRate: 0.05, Whitelist: h.whitelist,
+		SeedsEnabled: spend, MinBudgetRate: 0.05, Whitelist: h.whitelist,
 	}, 1.0)
+}
+
+// finishedSeedFixture stands a seed in its target with nothing left to chart and a second dark
+// system in reach, so the armed run retargets it and the paused run has that choice to refuse.
+func finishedSeedFixture() *expandHarness {
+	h := newExpandHarness()
+	h.ledger.systems = []ExpandSystem{
+		{System: "X1-HOME", Verdict: VerdictInScope},
+		{System: "X1-DONE", Verdict: VerdictPending, SeedShip: "PROBE-TOUR", SeedState: SeedStateCharting},
+		{System: "X1-DARK", Verdict: VerdictPending, UnchartedCount: 5},
+	}
+	h.gates.adjacency = map[string][]string{
+		"X1-HOME": {"X1-DONE", "X1-DARK"},
+		"X1-DONE": {"X1-HOME", "X1-DARK"},
+		"X1-DARK": {"X1-HOME", "X1-DONE"},
+	}
+	h.ships.positions = map[string]ShipPos{
+		"PROBE-TOUR": {Waypoint: "X1-DONE-A1", NavStatus: navigation.NavStatusDocked, Found: true},
+	}
+	return h
 }
 
 // --- the regression -----------------------------------------------------------
@@ -86,10 +107,10 @@ func runSpend(t *testing.T, h *expandHarness, spend bool) (ExpandReport, error) 
 // and a MARKET placement is what the idle-orphan dispatch flies an already-bought probe to. Neither
 // of those two reads this knob — so with the first link restored the rest of the chain runs on hulls
 // we already own, for nothing, exactly as the operator asked.
-func TestAdvanceExpansion_SpendPaused_StillMarksTheFrontier(t *testing.T) {
-	h := spendPauseFixture()
+func TestAdvanceExpansion_SeedsPaused_StillMarksTheFrontier(t *testing.T) {
+	h := seedGateFixture()
 
-	rep, err := runSpend(t, h, false)
+	rep, err := runSeedGate(t, h, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -114,14 +135,13 @@ func TestAdvanceExpansion_SpendPaused_StillMarksTheFrontier(t *testing.T) {
 // NOTHING BELOW THE PAUSE IS REACHABLE, proven against a fixture the armed run shows is live on
 // every one of those paths.
 //
-// The three assertions are the three ways this engine can reach the treasury, all of them through
-// another engine: a SPARE want the buy queue funds by buying a probe, a placement row deleted out
-// from under the probe cap (which is headroom, and headroom authorises a purchase), and a hull
-// commanded anywhere at all. Under RULINGS #4 the doubt resolves toward not spending, so all three
-// sit on the far side of the pause and this is what holds them there.
-func TestAdvanceExpansion_SpendPaused_RaisesNoPurchaseIntent(t *testing.T) {
-	armed := spendPauseFixture()
-	armedRep, err := runSpend(t, armed, true)
+// The assertions are the ways this engine can reach the treasury, all of them through another
+// engine: a SPARE want the buy queue funds by buying a probe, and a placement row deleted out from
+// under the probe cap (which is headroom, and headroom authorises a purchase). Under RULINGS #4 the
+// doubt resolves toward not spending, so both sit on the far side of the pause.
+func TestAdvanceExpansion_SeedsPaused_RaisesNoPurchaseIntent(t *testing.T) {
+	armed := seedGateFixture()
+	armedRep, err := runSeedGate(t, armed, true)
 	if err != nil {
 		t.Fatalf("armed run: unexpected error: %v", err)
 	}
@@ -138,14 +158,14 @@ func TestAdvanceExpansion_SpendPaused_RaisesNoPurchaseIntent(t *testing.T) {
 		t.Fatal("armed run commanded no hull — the fixture must actually move the errand in flight")
 	}
 
-	paused := spendPauseFixture()
-	pausedRep, err := runSpend(t, paused, false)
+	paused := seedGateFixture()
+	pausedRep, err := runSeedGate(t, paused, false)
 	if err != nil {
 		t.Fatalf("paused run: unexpected error: %v", err)
 	}
 
-	if !pausedRep.SpendingPaused {
-		t.Fatal("SpendingPaused = false on a paused tick")
+	if !pausedRep.SeedingPaused {
+		t.Fatal("SeedingPaused = false on a paused tick")
 	}
 	// A SPARE want is a purchase order in everything but name: the buy queue drains it
 	// by buying a probe.
@@ -162,11 +182,72 @@ func TestAdvanceExpansion_SpendPaused_RaisesNoPurchaseIntent(t *testing.T) {
 		t.Fatalf("a paused tick stamped errands %v and released placements %v — releasing a row drops its hull out of the probe cap, which is headroom the buy queue spends",
 			paused.ledger.setSeeds, paused.ledger.deleted)
 	}
-	if len(paused.seed.calls) != 0 {
-		t.Fatalf("a paused tick commanded hulls: %v — flying is how an errand sustains that under-count", paused.seed.verbs())
+	// The ONE hull a paused tick may command is the one already out on an errand — see
+	// TestAdvanceExpansion_SeedsPaused_StillFliesAnErrandAlreadyInFlight.
+	for _, call := range paused.seed.calls {
+		if call.ship != "PROBE-TOUR" {
+			t.Fatalf("a paused tick commanded %v — only the errand already in flight may move", paused.seed.calls)
+		}
 	}
 	if len(paused.ledger.transitions) != 0 {
 		t.Fatalf("a paused tick advanced %d placement(s): %v", len(paused.ledger.transitions), paused.ledger.transitions)
+	}
+}
+
+// --- the errand already in flight ---------------------------------------------
+
+// A HULL MID-ERRAND HOLDS NO PLACEMENT ROW, so an engine that stops commanding it does not park a
+// probe — it strands one, invisible to the probe cap and recoverable only by hand. The gate refuses
+// NEW errands; it never abandons a hull on one.
+func TestAdvanceExpansion_SeedsPaused_StillFliesAnErrandAlreadyInFlight(t *testing.T) {
+	h := seedGateFixture()
+
+	rep, err := runSeedGate(t, h, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if rep.Jumped != 1 {
+		t.Fatalf("Jumped = %d, want 1 — the errand in flight is a probe we paid for, and a gate that freezes it strands the hull", rep.Jumped)
+	}
+	if len(h.seed.calls) != 1 || h.seed.calls[0].ship != "PROBE-TOUR" {
+		t.Fatalf("commanded %v, want exactly the one hull already on an errand", h.seed.calls)
+	}
+}
+
+// …and the errand TERMINATES rather than rolling into the next dark system. Refusing the retarget is
+// what drains the fleet's charting commitment instead of renewing it, and the stand-down writes the
+// SPARE row that puts the hull back on the books for the buy queue to re-task.
+func TestAdvanceExpansion_SeedsPaused_StandsAFinishedSeedDownInsteadOfRetargeting(t *testing.T) {
+	armed := finishedSeedFixture()
+	armedRep, err := runSeedGate(t, armed, true)
+	if err != nil {
+		t.Fatalf("armed run: unexpected error: %v", err)
+	}
+	if armedRep.Retargeted != 1 {
+		t.Fatalf("armed Retargeted = %d, want 1 — the fixture must actually offer a retarget, or the paused run proves nothing", armedRep.Retargeted)
+	}
+
+	paused := finishedSeedFixture()
+	pausedRep, err := runSeedGate(t, paused, false)
+	if err != nil {
+		t.Fatalf("paused run: unexpected error: %v", err)
+	}
+
+	if pausedRep.Retargeted != 0 {
+		t.Fatalf("paused Retargeted = %d, want 0 — a retarget is a fresh charting errand, which is the spend the gate refuses", pausedRep.Retargeted)
+	}
+	if pausedRep.Parked != 1 {
+		t.Fatalf("paused Parked = %d, want 1 — a finished seed must land somewhere countable", pausedRep.Parked)
+	}
+	var spares []SlotRecord
+	for _, slot := range paused.ledger.upsertedSlots {
+		if slot.AssignedShip == "PROBE-TOUR" {
+			spares = append(spares, slot)
+		}
+	}
+	if len(spares) != 1 || spares[0].Kind != SlotKindSpare || spares[0].State != SlotStateParked {
+		t.Fatalf("paused tick wrote %v for the finished seed, want one PARKED SPARE row naming it — without a row the hull drops out of the probe cap and a replacement is authorised", spares)
 	}
 }
 
@@ -181,7 +262,7 @@ func TestAdvanceExpansion_SpendPaused_RaisesNoPurchaseIntent(t *testing.T) {
 // does spend API budget, which is why the budget floor stays OUTSIDE the pause and is asserted here
 // too: an operator's economic choice must not be able to reach past the fleet's own rate-limit
 // protection.
-func TestAdvanceExpansion_SpendPaused_StillReadsUnmappedGates(t *testing.T) {
+func TestAdvanceExpansion_SeedsPaused_StillReadsUnmappedGates(t *testing.T) {
 	h := newExpandHarness()
 	h.ledger.systems = []ExpandSystem{
 		{System: "X1-HOME", Verdict: VerdictInScope},
@@ -198,7 +279,7 @@ func TestAdvanceExpansion_SpendPaused_StillReadsUnmappedGates(t *testing.T) {
 	p.GateRead = gates
 
 	rep, err := AdvanceExpansion(context.Background(), p, 1, ExpandKnobs{
-		SpendEnabled: false, MinBudgetRate: 0.05, Whitelist: h.whitelist,
+		SeedsEnabled: false, MinBudgetRate: 0.05, Whitelist: h.whitelist,
 	}, 1.0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -210,7 +291,7 @@ func TestAdvanceExpansion_SpendPaused_StillReadsUnmappedGates(t *testing.T) {
 
 	// And the budget floor still outranks the pause in the other direction.
 	starved, err := AdvanceExpansion(context.Background(), p, 1, ExpandKnobs{
-		SpendEnabled: false, MinBudgetRate: 0.05, Whitelist: h.whitelist,
+		SeedsEnabled: false, MinBudgetRate: 0.05, Whitelist: h.whitelist,
 	}, 0.04)
 	if err != nil {
 		t.Fatalf("budget-starved run: unexpected error: %v", err)
@@ -223,14 +304,14 @@ func TestAdvanceExpansion_SpendPaused_StillReadsUnmappedGates(t *testing.T) {
 // ARMED IS BYTE-IDENTICAL. The pause is a new branch, not a new behaviour on the old path: with
 // spending on, the same fixture produces exactly the report it always did.
 func TestAdvanceExpansion_ArmedIsUnchangedByThePause(t *testing.T) {
-	h := spendPauseFixture()
+	h := seedGateFixture()
 
-	rep, err := runSpend(t, h, true)
+	rep, err := runSeedGate(t, h, true)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if rep.SpendingPaused {
-		t.Fatal("SpendingPaused = true on an armed tick")
+	if rep.SeedingPaused {
+		t.Fatal("SeedingPaused = true on an armed tick")
 	}
 	if rep.Skipped != "" {
 		t.Fatalf("Skipped = %q, want empty", rep.Skipped)

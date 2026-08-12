@@ -514,7 +514,7 @@ func TestAdvanceExpansion_SpendPauseLendsNoHull(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !rep.SpendingPaused {
+	if !rep.SeedingPaused {
 		t.Fatal("SpendingPaused = false, want true")
 	}
 	if rep.CountersStaffed != 0 {
@@ -569,6 +569,6 @@ func advanceExpansionPaused(t *testing.T, p ExpandPorts, h *expandHarness) (Expa
 		h.ledger.systems[i].CatalogKnown = !h.unswept[h.ledger.systems[i].System]
 	}
 	return AdvanceExpansion(context.Background(), p, 1, ExpandKnobs{
-		SpendEnabled: false, MinBudgetRate: 0.05, Whitelist: h.whitelist,
+		SeedsEnabled: false, MinBudgetRate: 0.05, Whitelist: h.whitelist,
 	}, 1.0)
 }

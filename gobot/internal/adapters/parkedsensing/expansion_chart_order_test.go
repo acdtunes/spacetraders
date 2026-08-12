@@ -227,7 +227,7 @@ func runTourToStandDown(t *testing.T, db *gorm.DB, ports appSensing.ExpandPorts)
 	ctx := context.Background()
 	for tick := 1; tick <= 40; tick++ {
 		_, err := appSensing.AdvanceExpansion(ctx, ports, testPlayerID, appSensing.ExpandKnobs{
-			SpendEnabled: true, MinBudgetRate: 0.05, Whitelist: map[string]bool{"FUEL": true},
+			SeedsEnabled: true, MinBudgetRate: 0.05, Whitelist: map[string]bool{"FUEL": true},
 		}, 1.0)
 		require.NoError(t, err)
 		if tourSystemRow(t, db, "X1-T").SeedShip == nil {
@@ -371,7 +371,7 @@ func TestReorderedTour_AnAllAsteroidSystemIsReleasedWithoutFlyingAnywhere(t *tes
 	var row persistence.SensingSystemModel
 	for tick := 1; tick <= 40; tick++ {
 		_, err := appSensing.AdvanceExpansion(ctx, ports, testPlayerID, appSensing.ExpandKnobs{
-			SpendEnabled: true, MinBudgetRate: 0.05, Whitelist: map[string]bool{"FUEL": true},
+			SeedsEnabled: true, MinBudgetRate: 0.05, Whitelist: map[string]bool{"FUEL": true},
 		}, 1.0)
 		require.NoError(t, err)
 		require.NoError(t, db.Where("player_id = ? AND system_symbol = ?", testPlayerID, "X1-U").

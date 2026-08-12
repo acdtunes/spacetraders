@@ -97,8 +97,8 @@ type RunProbeSensingCoordinatorCommand struct {
 
 	// ProbeCap is the hard ceiling on probe hulls the engine may own.
 	ProbeCap int
-	// ExpansionEnabled switches the expansion engine on or off, encoded
-	// 1=on / 2=off. See defaultExpansionEnabled for why it is not 0/1.
+	// ExpansionEnabled is the expansion engine's three-state switch: 1=buy probes and
+	// dispatch charting seeds, 2=neither, 3=probes only. See defaultExpansionEnabled.
 	ExpansionEnabled int
 	// TargetUtilPct is the share of the rate-limiter ceiling the fleet aims at.
 	TargetUtilPct int
@@ -316,7 +316,7 @@ func (h *RunProbeSensingCoordinatorHandler) Handle(ctx context.Context, request 
 
 	cfg := resolveSensingConfig(ctx, cmd, h.liveSnapshot(ctx, cmd))
 	result := &RunProbeSensingCoordinatorResponse{Errors: []string{}}
-	logger.Log("INFO", fmt.Sprintf("Parked-probe sensing coordinator starting (tick %s, probe cap %d, expansion spending %v — frontier discovery runs either way)", cfg.Tick, cfg.ProbeCap, cfg.ExpansionSpend), map[string]interface{}{
+	logger.Log("INFO", fmt.Sprintf("Parked-probe sensing coordinator starting (tick %s, probe cap %d, probe buying %v, charting seeds %v — frontier discovery runs either way)", cfg.Tick, cfg.ProbeCap, cfg.ProbeSpend, cfg.SeedDispatch), map[string]interface{}{
 		"action":       "probe_sensing_start",
 		"container_id": cmd.ContainerID,
 	})
@@ -545,16 +545,7 @@ func (h *RunProbeSensingCoordinatorHandler) ReconcileOnce(ctx context.Context, c
 		failures = append(failures, perr)
 	}
 
-	// Expansion is gated on the SENSING residual, never the pacer rate: the
-	// emergency brake can legitimately drive the residual below the minimum scan
-	// rate, and the pacer re-imposes that floor — so gating on the pacer rate
-	// would make the brake invisible here and leave expansion charting away at
-	// full tilt through a rate-limit storm (budget.go:82-116).
-	expandRep, eerr := parkedsensing.AdvanceExpansion(ctx, ports.expandPorts(playerID, cfg.Whitelist), playerID, parkedsensing.ExpandKnobs{
-		SpendEnabled:  cfg.ExpansionSpend,
-		MinBudgetRate: float64(cfg.MinScanRateMilli) / 1000.0,
-		Whitelist:     cfg.Whitelist,
-	}, sensingRate)
+	expandRep, eerr := parkedsensing.AdvanceExpansion(ctx, ports.expandPorts(playerID, cfg.Whitelist), playerID, expandKnobs(cfg), sensingRate)
 	if eerr != nil {
 		failures = append(failures, eerr)
 	}

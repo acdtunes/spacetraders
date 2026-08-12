@@ -191,7 +191,7 @@ func (t *drainTick) fundPlacement(ctx context.Context, slot QueuedSlot, now time
 	// attempted: it fills a placement by flying a hull we ALREADY OWN across a gate
 	// — no credit, no API call — so switching it off with the purchases would starve
 	// the placement machine of destinations while saving nothing (see
-	// ExpandKnobs.SpendEnabled). A placement it cannot fill is left WANTED for the
+	// ExpandKnobs.SeedsEnabled). A placement it cannot fill is left WANTED for the
 	// tick the pause lifts, and is NOT counted as SkippedNoYard, which means
 	// something specific and would be a lie here.
 	if !t.mayBuy {
