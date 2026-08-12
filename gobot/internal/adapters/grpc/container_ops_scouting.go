@@ -170,12 +170,9 @@ func (s *DaemonServer) ScoutMarkets(
 // resolveScoutingConfig clears these before re-injecting the live values, so a stale
 // persisted copy from a prior boot can never shadow the current config.yaml (the
 // sp-ts82 live-config discipline). Keep in lockstep with injectScoutingConfig and
-// buildScoutTourCommand/buildScoutPostCoordinatorCommand's reads.
+// buildScoutTourCommand's reads.
 var scoutingConfigKeys = []string{
 	"tour_start_jitter_max_seconds",
-	"max_reposition_jumps",
-	"reposition_failure_cooldown_secs",
-	"respawn_attempt_cap",
 }
 
 // resolveScoutingConfig makes config.yaml the single LIVE source of truth for the
@@ -183,8 +180,7 @@ var scoutingConfigKeys = []string{
 // resolveTradeFleetConfig). It clears any scouting keys already in the launch config
 // (stale copies persisted at a prior boot) and re-injects the daemon's boot-loaded
 // values, so the rebuilt command reflects the CURRENT config.yaml on every build —
-// creation and restart recovery alike, for both scout_tour and
-// scout_post_coordinator.
+// creation and restart recovery alike.
 func (s *DaemonServer) resolveScoutingConfig(config map[string]interface{}) {
 	for _, key := range scoutingConfigKeys {
 		delete(config, key)
@@ -193,7 +189,7 @@ func (s *DaemonServer) resolveScoutingConfig(config map[string]interface{}) {
 }
 
 // injectScoutingConfig writes the [scouting] knobs from config.yaml
-// (s.scoutingConfig) into a scout_tour or scout_post_coordinator container's launch
+// (s.scoutingConfig) into a scout_tour container's launch
 // config. Only keys the captain actually set (non-zero) are written, so an unset
 // knob defers to the handler's own documented default (RULINGS #5 — the daemon never
 // hardcodes the operational value).
@@ -201,15 +197,6 @@ func (s *DaemonServer) injectScoutingConfig(config map[string]interface{}) {
 	sc := s.scoutingConfig
 	if sc.TourStartJitterMaxSeconds != 0 {
 		config["tour_start_jitter_max_seconds"] = sc.TourStartJitterMaxSeconds
-	}
-	if sc.MaxRepositionJumps != 0 {
-		config["max_reposition_jumps"] = sc.MaxRepositionJumps
-	}
-	if sc.RepositionFailureCooldownSecs != 0 {
-		config["reposition_failure_cooldown_secs"] = sc.RepositionFailureCooldownSecs
-	}
-	if sc.RespawnAttemptCap != 0 {
-		config["respawn_attempt_cap"] = sc.RespawnAttemptCap
 	}
 }
 

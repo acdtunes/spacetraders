@@ -45,7 +45,7 @@ type gateAPI interface {
 // handful of systems wide; the frontier has since expanded and the deepest CHARTED routes
 // now run 6–12 jumps (measured KN67→SN21=6, →C81=9, sp-8k9m), so a laden hull can no
 // longer assume everything is within five. The EXPENDABLE probe/scout reposition class
-// reaches those deeper posts via RepositionPath (its own [scouting] max_reposition_jumps
+// reaches those deeper posts via RepositionPath (its own caller-supplied
 // bound over the stored adjacency); this strict cap stays 5 deliberately, because a fetch-
 // through BFS deeper than this over unreadable frontier gates is exactly the storm it guards.
 const MaxJumpPath = 5
@@ -729,9 +729,8 @@ func (s *Service) PathWithinJumps(ctx context.Context, fromSystem, toSystem stri
 //     read, so the negative-result backoff is fully honored here; we route PAST
 //     unreadable gates over stored edges, and the present-ship arrival read (never a remote
 //     re-probe) is what actually re-charts them.
-//   - It takes a caller-supplied bound (the [scouting] max_reposition_jumps config,
-//     default 12) rather than the shared MaxJumpPath=5, because the expanded frontier's
-//     posts sit 6–12 gate-jumps from the probe supply.
+//   - It takes a caller-supplied bound rather than the shared MaxJumpPath=5, because the
+//     expanded frontier's posts sit 6–12 gate-jumps from the probe supply.
 //
 // under_construction edges are STILL excluded (a jump into an unbuilt gate crashes at hop
 // time, sp-8qhu — a hazard just as real for a probe). maxJumps <= 0 falls back to

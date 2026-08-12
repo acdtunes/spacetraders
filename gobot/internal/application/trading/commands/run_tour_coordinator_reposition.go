@@ -80,8 +80,8 @@ const (
 	// topology instead of fail-closing on it via the strict fetch-through Path: a heavy whose
 	// ORIGIN gate sits in the unreadable-backoff set (the live TORWIND-37/2C -> GQ92
 	// incident) is otherwise unroutable within the strict MaxJumpPath=5 even where a 2-hop
-	// stored route exists. 12 matches the scout frontier depth ([scouting].max_reposition_jumps
-	// default) — the expanded frontier's grounds sit 6-12 gate-jumps from a hull's home. A named
+	// stored route exists. 12 matches the scout frontier depth — the expanded frontier's grounds
+	// sit 6-12 gate-jumps from a hull's home. A named
 	// config knob, not a magic constant (RULINGS #5); retune as the frontier depth shifts.
 	// The buy-side (arb pre-buy, trade-route lane commits, cargo-delivery travel) is a commitment
 	// of money and keeps the strict Path — the guard distinction is money-commitment vs
