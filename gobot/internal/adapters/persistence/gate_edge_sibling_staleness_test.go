@@ -17,7 +17,7 @@ import (
 //
 //	"does this system need a re-probe?"      — PER-ROW. An under-construction gate
 //	                                           completes on its own clock, so its row
-//	                                           is chased on a short (2h) window.
+//	                                           is chased on a shorter window.
 //	"may I trust this set for routing?"      — WHOLE-SET. A genuinely old set has
 //	                                           unverifiable topology and is condemned.
 //
@@ -30,11 +30,12 @@ import (
 //
 // The fixture below is that exact production shape, and it is the one that must not
 // regress: a MIXED set (one under-construction row, one built row) under a SINGLE
-// synced_at aged past the 2h window but well inside the 24h one.
+// synced_at aged past the under-construction window but well inside the 24h one.
 
 // mixedAgedSet writes X1-RJ93's real production edge shape: several built exits and one
 // still-building exit, all stamped with ONE synced_at at the given age — exactly what
-// Replace produces. ageBeyond2hWithin24h is the window where the bug lived.
+// Replace produces. An age past the under-construction window but inside the healthy one
+// is the band where the bug lived.
 func mixedAgedSet(t *testing.T, db *gorm.DB, age time.Duration) {
 	t.Helper()
 	ts := agoTS(age)
@@ -48,7 +49,7 @@ func mixedAgedSet(t *testing.T, db *gorm.DB, age time.Duration) {
 	}
 }
 
-// THE DEFECT. One still-building exit, 3h after the last probe, used to condemn the
+// THE DEFECT. One still-building exit, past its own short window, used to condemn the
 // whole set — so a system with two perfectly good built exits reported NOTHING and
 // walled off every route through it. The built siblings must survive their neighbour's
 // shorter clock: a static gate does not become unknown because a DIFFERENT gate in the
@@ -57,14 +58,14 @@ func TestGateEdgeRepository_OneBuildingExit_DoesNotCondemnItsBuiltSiblings(t *te
 	db, err := database.NewTestConnection()
 	require.NoError(t, err)
 	require.NoError(t, db.Create(&persistence.EraModel{Name: "orion", AgentSymbol: "ORION", PlayerID: 1}).Error)
-	mixedAgedSet(t, db, 3*time.Hour)
+	mixedAgedSet(t, db, 7*time.Hour)
 
 	repo := persistence.NewGormGateEdgeRepository(db)
 	edges, ok, err := repo.Edges(context.Background(), "X1-RJ93")
 	require.NoError(t, err)
 	require.True(t, ok,
-		"the set was condemned WHOLE by one under-construction sibling 3h old; its two built exits are "+
-			"well inside the 24h window and must still be readable, or this system is a wall in every BFS")
+		"the set was condemned WHOLE by one under-construction sibling past its short window; its two built "+
+			"exits are well inside the 24h window and must still be readable, or this system is a wall in every BFS")
 	require.Equal(t, []string{"X1-AX76", "X1-PA3", "X1-XX80"}, connectedSystems(edges),
 		"every row must still be returned — the caller decides passability from UnderConstruction")
 }
@@ -77,7 +78,7 @@ func TestGateEdgeRepository_MixedAgedSet_FlagsOnlyTheBuildingRowForReprobe(t *te
 	db, err := database.NewTestConnection()
 	require.NoError(t, err)
 	require.NoError(t, db.Create(&persistence.EraModel{Name: "orion", AgentSymbol: "ORION", PlayerID: 1}).Error)
-	mixedAgedSet(t, db, 3*time.Hour)
+	mixedAgedSet(t, db, 7*time.Hour)
 
 	repo := persistence.NewGormGateEdgeRepository(db)
 	edges, ok, err := repo.Edges(context.Background(), "X1-RJ93")
@@ -89,10 +90,10 @@ func TestGateEdgeRepository_MixedAgedSet_FlagsOnlyTheBuildingRowForReprobe(t *te
 		stale[e.ConnectedSystem] = e.Stale
 	}
 	require.True(t, stale["X1-XX80"],
-		"the under-construction row is 3h past its 2h window and MUST read Stale — this is the signal "+
+		"the under-construction row is past its own shorter window and MUST read Stale — this is the signal "+
 			"the fetch-through resolver reads to re-probe the build, and losing it holds the verdict 24h")
-	require.False(t, stale["X1-AX76"], "a built row 3h old is inside its 24h window and is NOT stale")
-	require.False(t, stale["X1-PA3"], "a built row 3h old is inside its 24h window and is NOT stale")
+	require.False(t, stale["X1-AX76"], "a built row 7h old is inside its 24h window and is NOT stale")
+	require.False(t, stale["X1-PA3"], "a built row 7h old is inside its 24h window and is NOT stale")
 }
 
 // PRESERVED: the 24h whole-set window keeps its meaning. Past it the BUILT rows are

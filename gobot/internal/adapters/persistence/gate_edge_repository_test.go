@@ -211,15 +211,15 @@ func TestGateEdgeRepository_UnderConstructionTTL_ShorterThanHealthy(t *testing.T
 	require.NoError(t, err)
 	require.NoError(t, db.Create(&persistence.EraModel{Name: "orion", AgentSymbol: "ORION", PlayerID: 1}).Error)
 
-	// Both edge sets are 3h old: past the 2h under-construction window, well within
+	// Both edge sets are 7h old: past the under-construction window, well within
 	// the 24h healthy window.
 	require.NoError(t, db.Create(&persistence.GateEdgeModel{
 		SystemSymbol: "X1-BUILDING", ConnectedSystem: "X1-AF2", GateWaypoint: "X1-AF2-I1",
-		EraID: intPtr(1), SyncedAt: agoTS(3 * time.Hour), UnderConstruction: true,
+		EraID: intPtr(1), SyncedAt: agoTS(7 * time.Hour), UnderConstruction: true,
 	}).Error)
 	require.NoError(t, db.Create(&persistence.GateEdgeModel{
 		SystemSymbol: "X1-HEALTHY", ConnectedSystem: "X1-PA3", GateWaypoint: "X1-PA3-I51",
-		EraID: intPtr(1), SyncedAt: agoTS(3 * time.Hour), UnderConstruction: false,
+		EraID: intPtr(1), SyncedAt: agoTS(7 * time.Hour), UnderConstruction: false,
 	}).Error)
 
 	repo := persistence.NewGormGateEdgeRepository(db)
@@ -230,15 +230,49 @@ func TestGateEdgeRepository_UnderConstructionTTL_ShorterThanHealthy(t *testing.T
 	require.True(t, ok, "the set is inside the 24h whole-set window, so it is not condemned")
 	require.Len(t, building, 1)
 	require.True(t, building[0].Stale,
-		"an under-construction edge older than its 2h window must be flagged Stale — the signal that "+
+		"an under-construction edge older than its own window must be flagged Stale — the signal that "+
 			"drives the live re-probe, so a completed build is noticed same-era")
 
 	healthy, ok, err := repo.Edges(ctx, "X1-HEALTHY")
 	require.NoError(t, err)
-	require.True(t, ok, "a healthy edge at the same 3h age must still be fresh (24h window)")
+	require.True(t, ok, "a healthy edge at the same 7h age must still be fresh (24h window)")
 	require.Len(t, healthy, 1)
 	require.False(t, healthy[0].Stale,
-		"a healthy edge at the SAME 3h age must NOT be flagged — this is what makes the window per-row")
+		"a healthy edge at the SAME 7h age must NOT be flagged — this is what makes the window per-row")
+}
+
+// Both windows pinned at their boundaries. Read through Adjacency, the raw per-row dump,
+// so a row past the healthy window is still observable instead of hidden by the set verdict.
+func TestGateEdgeRepository_EdgeStalenessFollowsItsOwnWindow(t *testing.T) {
+	for _, c := range []struct {
+		name              string
+		age               time.Duration
+		underConstruction bool
+		wantStale         bool
+	}{
+		{name: "building gate inside its re-probe window", age: 5 * time.Hour, underConstruction: true, wantStale: false},
+		{name: "building gate past its re-probe window", age: 7 * time.Hour, underConstruction: true, wantStale: true},
+		{name: "built gate inside the healthy window", age: 23 * time.Hour, underConstruction: false, wantStale: false},
+		{name: "built gate past the healthy window", age: 25 * time.Hour, underConstruction: false, wantStale: true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			db, err := database.NewTestConnection()
+			require.NoError(t, err)
+			require.NoError(t, db.Create(&persistence.EraModel{Name: "orion", AgentSymbol: "ORION", PlayerID: 1}).Error)
+			require.NoError(t, db.Create(&persistence.GateEdgeModel{
+				SystemSymbol: "X1-RJ93", ConnectedSystem: "X1-XX80", GateWaypoint: "X1-XX80-I1",
+				EraID: intPtr(1), SyncedAt: agoTS(c.age), UnderConstruction: c.underConstruction,
+			}).Error)
+
+			adjacency, err := persistence.NewGormGateEdgeRepository(db).Adjacency(context.Background())
+			require.NoError(t, err)
+			require.Len(t, adjacency["X1-RJ93"], 1)
+			require.Equal(t, c.wantStale, adjacency["X1-RJ93"][0].Stale,
+				"a row goes stale exactly past ITS OWN window — the shorter 6h one while its neighbour gate is "+
+					"still building, the 24h healthy one otherwise. Too short burns API re-probing a build that "+
+					"takes hours; too long hides a gate that has since opened")
+		})
+	}
 }
 
 // Deploy-gap: an EMPTY synced_at — the exact state the migration leaves on

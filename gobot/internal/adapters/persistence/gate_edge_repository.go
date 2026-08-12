@@ -21,13 +21,9 @@ import (
 // topology-cache knob) via WithFreshWindow.
 const gateEdgeFreshWindow = 24 * time.Hour
 
-// gateEdgeUnderConstructionFreshWindow is the SHORTER freshness bound for an edge
-// whose neighbor gate is still under construction. A healthy edge is
-// effectively static within an era (24h), but a build COMPLETES on its own clock:
-// pinning an under-construction edge to a 2h window means the daemon re-probes it
-// and notices the completion same-era, instead of holding a "still building"
-// verdict stale for a full day and refusing an now-valid route.
-const gateEdgeUnderConstructionFreshWindow = 2 * time.Hour
+// gateEdgeUnderConstructionFreshWindow is the SHORTER re-probe bound for an edge whose
+// neighbour gate is still building: later completion discovery, bought with API budget.
+const gateEdgeUnderConstructionFreshWindow = 6 * time.Hour
 
 // unreadableMarker is the sentinel connected_system of a negative-result BACKOFF
 // marker row: a row that records an UNREADABLE system's backoff state
