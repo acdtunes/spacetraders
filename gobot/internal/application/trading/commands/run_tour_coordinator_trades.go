@@ -11,6 +11,7 @@ import (
 	gasCmd "github.com/andrescamacho/spacetraders-go/internal/application/gas/commands"
 	tradingsvc "github.com/andrescamacho/spacetraders-go/internal/application/trading/services"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/routing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/storage"
@@ -246,6 +247,10 @@ func (h *RunTourCoordinatorHandler) executeBuy(
 		}
 	}
 
+	if err := h.ensureDockedForTrade(ctx, cmd.PlayerID, ship); err != nil {
+		return false, fmt.Errorf("re-dock before buying %s at %s failed: %w", trade.Good, leg.Waypoint, err)
+	}
+
 	plannedAt := h.clock.Now()
 	// Arm the per-tranche buy ceiling at the plan's tolerated ask — the planned basis
 	// plus the same tourPriceTolerancePct the leg-level gate above applied. That gate
@@ -325,6 +330,10 @@ func (h *RunTourCoordinatorHandler) executeSell(
 	}
 	if units <= 0 {
 		return false, nil // nothing to sell here (cargo already gone) — not a degrade
+	}
+
+	if err := h.ensureDockedForTrade(ctx, cmd.PlayerID, ship); err != nil {
+		return false, fmt.Errorf("re-dock before selling %s at %s failed: %w", trade.Good, leg.Waypoint, err)
 	}
 
 	plannedAt := h.clock.Now()
@@ -454,6 +463,15 @@ func (h *RunTourCoordinatorHandler) executeDeposit(
 	response.TradesExecuted++
 	dischargePurchaseObligation(netBought, trade.Good, deposited) // left the hull into inventory — not stranded
 	return true, nil
+}
+
+// ensureDockedForTrade restores the leg's docked state, which a deposit breaks by
+// orbiting the hull to match the warehouse anchor. No-op when already docked.
+func (h *RunTourCoordinatorHandler) ensureDockedForTrade(ctx context.Context, playerID int, ship *navigation.Ship) error {
+	if ship.IsDocked() {
+		return nil
+	}
+	return h.legs.dock(ctx, ship, playerID)
 }
 
 // warehousesAt returns ALL RUNNING warehouse operations parked at waypoint — the

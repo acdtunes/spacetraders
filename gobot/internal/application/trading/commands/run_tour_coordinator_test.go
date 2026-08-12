@@ -17,6 +17,7 @@ import (
 	shipCargo "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/cargo"
 	navCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
 	shipQueries "github.com/andrescamacho/spacetraders-go/internal/application/ship/queries"
+	shipTypes "github.com/andrescamacho/spacetraders-go/internal/application/ship/types"
 	storageApp "github.com/andrescamacho/spacetraders-go/internal/application/storage"
 	tradingsvc "github.com/andrescamacho/spacetraders-go/internal/application/trading/services"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/ledger"
@@ -115,6 +116,10 @@ type tourFixture struct {
 	shipUnreadableAfterUnloads int
 	unloads                    int
 
+	// navStatus is the hull's live nav state, moved by the dock/transfer seams below.
+	// Empty means DOCKED, the state every pre-existing test's hull starts and stays in.
+	navStatus navigation.NavStatus
+
 	sellCap  map[string]int // per-good cap on units a sell absorbs (stranded test); 0 = uncapped
 	timeline []string       // ordered "BUY:good"/"SELL:good" for sell-before-buy assertions
 	buys     int
@@ -147,6 +152,15 @@ func (f *tourFixture) recordLegLocked(ctx context.Context, hull, good string, un
 		At:            time.Unix(1_700_000_000, 0).Add(time.Duration(len(f.ledgerLegs)) * time.Second),
 		IsBuy:         isBuy,
 	})
+}
+
+// requireDockedLocked mirrors the cargo handler's validateShipDocked precondition, so a
+// double can never accept a trade the live path rejects. Caller holds fx.mu.
+func (f *tourFixture) requireDockedLocked() error {
+	if f.navStatus == "" || f.navStatus == navigation.NavStatusDocked {
+		return nil
+	}
+	return fmt.Errorf("ship must be docked to perform cargo transactions")
 }
 
 // activeHull models one hull in the fleet snapshot the anti-herd count reads (sp-uf64): the
@@ -214,8 +228,12 @@ func (fx *tourFixture) buildShip(t *testing.T, symbol string) *navigation.Ship {
 	if strings.HasSuffix(fx.location, "-GATE") {
 		wp.Type = "JUMP_GATE"
 	}
+	nav := fx.navStatus
+	if nav == "" {
+		nav = navigation.NavStatusDocked
+	}
 	ship, err := navigation.NewShip(symbol, shared.MustNewPlayerID(1), wp, fuel, 1000, fx.cargoCap, cargo, 30,
-		"FRAME_LIGHT_FREIGHTER", "HAULER", nil, navigation.NavStatusDocked)
+		"FRAME_LIGHT_FREIGHTER", "HAULER", nil, nav)
 	if err != nil {
 		t.Fatalf("ship: %v", err)
 	}
@@ -248,6 +266,10 @@ func (m *tourFakeMediator) Send(ctx context.Context, request common.Request) (co
 		return nil, nil
 	case *shipCargo.PurchaseCargoCommand:
 		m.fx.mu.Lock()
+		if err := m.fx.requireDockedLocked(); err != nil {
+			m.fx.mu.Unlock()
+			return nil, err
+		}
 		price := m.fx.ask[m.fx.location][cmd.GoodSymbol]
 		// Honor the sp-9mkf per-tranche buy ceiling like the real PurchaseCargoCommand
 		// handler: a live ask above MaxAskPerUnit aborts the buy (zero units) rather than
@@ -266,6 +288,10 @@ func (m *tourFakeMediator) Send(ctx context.Context, request common.Request) (co
 		return &shipCargo.PurchaseCargoResponse{TotalCost: units * price, UnitsAdded: units, TransactionCount: 1}, nil
 	case *shipCargo.SellCargoCommand:
 		m.fx.mu.Lock()
+		if err := m.fx.requireDockedLocked(); err != nil {
+			m.fx.mu.Unlock()
+			return nil, err
+		}
 		price := m.fx.bid[m.fx.location][cmd.GoodSymbol]
 		units := cmd.Units
 		if capUnits, ok := m.fx.sellCap[cmd.GoodSymbol]; ok && capUnits < units {
@@ -285,8 +311,16 @@ func (m *tourFakeMediator) Send(ctx context.Context, request common.Request) (co
 		m.fx.mu.Lock()
 		m.fx.cargo[cmd.GoodSymbol] -= cmd.Units
 		m.fx.unloads++
+		// The transfer aligns the visitor to the warehouse anchor, which parks in orbit,
+		// so a deposit leaves the hull ORBITING (AlignVisitorToWarehouse).
+		m.fx.navStatus = navigation.NavStatusInOrbit
 		m.fx.mu.Unlock()
 		return &gasCmd.TransferCargoResponse{UnitsTransferred: cmd.Units}, nil
+	case *shipTypes.DockShipCommand:
+		m.fx.mu.Lock()
+		m.fx.navStatus = navigation.NavStatusDocked
+		m.fx.mu.Unlock()
+		return &shipTypes.DockShipResponse{Status: "docked"}, nil
 	case *shipQueries.GetJumpGateConnectionsQuery:
 		// Jump-gate neighbor scan (tour graph + sp-zhii reposition candidate set).
 		m.fx.mu.Lock()
