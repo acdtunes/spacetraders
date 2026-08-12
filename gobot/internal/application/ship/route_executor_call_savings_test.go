@@ -89,6 +89,11 @@ type tourShipRepo struct {
 	navigateCalls int
 	setModeCalls  int
 
+	// calls records every state-changing verb in the order it reached the driven
+	// port. Counts alone cannot see an ORDERING regression, which is what the
+	// pre-departure refuel sequence below is about.
+	calls []string
+
 	// navModes records the flight mode each Navigate was flown in, in order.
 	navModes []string
 }
@@ -103,6 +108,7 @@ func (r *tourShipRepo) SyncShipFromAPI(_ context.Context, _ string, _ shared.Pla
 
 func (r *tourShipRepo) Orbit(_ context.Context, ship *domainNavigation.Ship, _ shared.PlayerID) error {
 	r.orbitCalls++
+	r.calls = append(r.calls, "orbit")
 	r.reality = domainNavigation.NavStatusInOrbit
 	_, _ = ship.EnsureInOrbit()
 	return nil
@@ -110,6 +116,7 @@ func (r *tourShipRepo) Orbit(_ context.Context, ship *domainNavigation.Ship, _ s
 
 func (r *tourShipRepo) Dock(_ context.Context, ship *domainNavigation.Ship, _ shared.PlayerID) error {
 	r.dockCalls++
+	r.calls = append(r.calls, "dock")
 	_, _ = ship.EnsureDocked() // in-memory always reflects the attempted dock
 	if r.loseDockOnce {
 		// Drift injection: the server did NOT actually dock (reality unchanged).
@@ -126,6 +133,7 @@ func (r *tourShipRepo) Refuel(_ context.Context, ship *domainNavigation.Ship, _ 
 		return nil, fmt.Errorf(`API error (status 400): {"error":{"code":4214,"message":"Ship %s must be docked to refuel."}}`, ship.ShipSymbol())
 	}
 	r.refuelCalls++
+	r.calls = append(r.calls, "refuel")
 	_, _ = ship.RefuelToFull()
 	// CreditsCost 0 keeps the handler's async ledger goroutine a no-op.
 	return &domainNavigation.RefuelResult{
@@ -141,6 +149,7 @@ func (r *tourShipRepo) Navigate(_ context.Context, ship *domainNavigation.Ship, 
 		return nil, fmt.Errorf(`API error (status 400): {"error":{"code":4236,"message":"Ship %s is not currently in orbit."}}`, ship.ShipSymbol())
 	}
 	r.navigateCalls++
+	r.calls = append(r.calls, "navigate")
 	r.navModes = append(r.navModes, ship.FlightMode())
 	// Charge the leg at the mode the ship is actually flying - BURN really costs
 	// 2x - and settle the ship at the destination in orbit (arrival), mirroring
@@ -162,6 +171,7 @@ func (r *tourShipRepo) Navigate(_ context.Context, ship *domainNavigation.Ship, 
 
 func (r *tourShipRepo) SetFlightMode(_ context.Context, ship *domainNavigation.Ship, _ shared.PlayerID, mode string) error {
 	r.setModeCalls++
+	r.calls = append(r.calls, "setmode")
 	ship.SetFlightMode(mode)
 	return nil
 }
@@ -357,6 +367,66 @@ func TestRefuelBeforeDeparture_SkipsWhenFuelSufficient(t *testing.T) {
 			}
 			if spy.dockCalls != tc.wantStartDock {
 				t.Fatalf("fuel=%d: expected %d dock API call(s), got %d", tc.currentFuel, tc.wantStartDock, spy.dockCalls)
+			}
+		})
+	}
+}
+
+// --- CUT 4: refuel before orbit, so a docked hull pays no redundant orbit ---
+
+// TestPreDepartureRefuel_RefuelsBeforeOrbiting pins the ORDER of the
+// pre-departure trio inside executeSegment. A hull normally begins a leg DOCKED
+// (CUT 2 leaves it docked after a post-arrival refuel, and trading docks it), so
+// orbiting BEFORE the pre-departure refuel spends a real orbit that the refuel's
+// own dock immediately undoes: orbit -> dock -> refuel -> orbit. Refuelling
+// first makes the dock a CUT-1 no-op skip and the trailing orbit the only one:
+// refuel -> orbit.
+//
+// The assertion is the SEQUENCE at the driven port (one live API verb each), not
+// a count: a count cannot distinguish the two orderings when the ship starts in
+// orbit, which is the second row here.
+//
+// MUTATION: moving ensureShipInOrbit back above handlePreDepartureRefuel makes
+// the docked row read [orbit dock refuel orbit setmode navigate], failing this
+// test. The in-orbit row is the control — it is identical under both orderings,
+// which is the proof that the swap is never worse.
+func TestPreDepartureRefuel_RefuelsBeforeOrbiting(t *testing.T) {
+	tests := []struct {
+		name      string
+		start     domainNavigation.NavStatus
+		wantCalls []string
+	}{
+		{
+			name:      "hull starts docked - the refuel's dock is a no-op and only one orbit is issued",
+			start:     domainNavigation.NavStatusDocked,
+			wantCalls: []string{"refuel", "orbit", "setmode", "navigate"},
+		},
+		{
+			name:      "hull starts in orbit - unchanged, the refuel still has to dock",
+			start:     domainNavigation.NavStatusInOrbit,
+			wantCalls: []string{"dock", "refuel", "orbit", "setmode", "navigate"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			from := mustWaypoint(t, "X1-TORWIND-A", 0, 0, true)  // sells fuel
+			to := mustWaypoint(t, "X1-TORWIND-B", 100, 0, false) // no post-arrival refuel
+
+			// CRUISE over 100 costs 100; +DefaultFuelSafetyMargin the leg needs 104,
+			// so 50 forces the pre-departure top-off.
+			ship := newTourShip(t, 50, 400, from, tc.start)
+			spy := &tourShipRepo{ship: ship, reality: tc.start}
+			_, executor := newTourHarness(spy)
+
+			route := singleSegmentRoute(t, from, to, shared.FlightModeCruise, false, false)
+
+			if err := executor.ExecuteRoute(context.Background(), route, ship, shared.MustNewPlayerID(1)); err != nil {
+				t.Fatalf("ExecuteRoute: %v", err)
+			}
+
+			if !reflect.DeepEqual(spy.calls, tc.wantCalls) {
+				t.Fatalf("driven-port call sequence = %v, want %v", spy.calls, tc.wantCalls)
 			}
 		})
 	}

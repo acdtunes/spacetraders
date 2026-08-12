@@ -44,6 +44,7 @@ import (
 	shipOutfit "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/outfitting"
 	shipTactics "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/tactics"
 	shipQuery "github.com/andrescamacho/spacetraders-go/internal/application/ship/queries"
+	"github.com/andrescamacho/spacetraders-go/internal/application/ship/strategies"
 	shipTypes "github.com/andrescamacho/spacetraders-go/internal/application/ship/types"
 	shipyardCmd "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/commands"
 	shipyardQuery "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/queries"
@@ -671,7 +672,12 @@ func run(cfg *config.Config) error {
 		cfg.ShipyardScan, cfg.Scouting, apiClient, shipyardInventoryRepo, waypointRepo, captainEventRepo,
 	)
 
-	routeExecutor := ship.NewRouteExecutor(shipRepo, med, nil, marketScanner, shipyardScanner, nil, waypointRepo, shipEventBus) // nil = use RealClock and default refuel strategy
+	// From [refuel] rather than a code literal; printed because the floor silently
+	// overrides a knob set below it, and an operator must see which value won.
+	refuelStrategy := strategies.NewConservativeRefuelStrategy(cfg.Refuel.Threshold)
+	fmt.Printf("Refuel threshold: %.2f of tank capacity (configured %.2f, floor %.2f)\n",
+		strategies.ResolveRefuelThreshold(cfg.Refuel.Threshold), cfg.Refuel.Threshold, strategies.MinRefuelThreshold)
+	routeExecutor := ship.NewRouteExecutor(shipRepo, med, nil, marketScanner, shipyardScanner, refuelStrategy, waypointRepo, shipEventBus) // nil clock = RealClock
 
 	navigateRouteHandler := shipNav.NewNavigateRouteHandler(
 		shipRepo,

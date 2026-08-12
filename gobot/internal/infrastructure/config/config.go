@@ -70,6 +70,8 @@ type Config struct {
 	// interval + jitter — consumed by the daemon's ShipResyncScheduler. Zero defers to the
 	// documented defaults (1h +/-10min).
 	ShipResync ResyncConfig `mapstructure:"ship_resync"`
+	// Refuel holds the fleet's refuel threshold; an absent section resolves to the floor.
+	Refuel RefuelConfig `mapstructure:"refuel"`
 }
 
 // LoadConfig loads configuration from multiple sources with priority:

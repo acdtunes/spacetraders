@@ -328,20 +328,20 @@ func (e *RouteExecutor) executeSegment(
 	fuelReserve int,
 	remainingLegFuel int,
 ) error {
-	// OPTIMIZATION: Only reload ship if it might be in transit
-	// The previous segment's waitForArrival already updated ship state
-	// We only need to check/wait if the ship is IN_TRANSIT
+	// The previous segment's arrival wait already updated ship state.
 	if ship.NavStatus() == domainNavigation.NavStatusInTransit {
 		if err := e.waitForCurrentTransit(ctx, ship, playerID); err != nil {
 			return fmt.Errorf("failed to wait for transit before segment: %w", err)
 		}
 	}
 
-	if err := e.ensureShipInOrbit(ctx, ship, playerID); err != nil {
+	// Refuel FIRST: a hull normally starts a leg docked, and the refuel docks itself and
+	// ends in orbit, so orbiting ahead of it buys an orbit that dock undoes.
+	if err := e.handlePreDepartureRefuel(ctx, segment, ship, playerID); err != nil {
 		return err
 	}
 
-	if err := e.handlePreDepartureRefuel(ctx, segment, ship, playerID); err != nil {
+	if err := e.ensureShipInOrbit(ctx, ship, playerID); err != nil {
 		return err
 	}
 

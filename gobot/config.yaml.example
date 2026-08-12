@@ -683,3 +683,11 @@ capacity_reconciler:
   # (0 => EVERY capital action needs approval — tiered autonomy v1; raise it later to graduate).
   # tick_interval_secs: 300
   # approval_threshold: 0
+
+# Refuel threshold — the fuel fraction below which a hull tops off. It drives BOTH the
+# opportunistic top-up on arrival and the top-off before departure, so it is the fleet's
+# main lever on movement API spend: raise it to buy fuel earlier at more API cost, lower
+# it to spend less. Values under the ruled floor are held there (a stranded hull costs
+# more than an over-refuelled one); 0 or an absent section resolves to the floor.
+# refuel:
+#   threshold: 0.9

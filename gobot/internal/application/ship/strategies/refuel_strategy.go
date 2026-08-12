@@ -37,14 +37,16 @@ type RefuelStrategy interface {
 	GetStrategyName() string
 }
 
+// MinRefuelThreshold is the Admiral's ruled floor on the refuel threshold, and the
+// value an unconfigured one resolves to. Below it hulls run tanks dry between fuel
+// stops and strand, which costs far more than an early top-off.
+const MinRefuelThreshold = 0.7
+
 // ConservativeRefuelStrategy implements a cautious refueling approach.
 //
 // This strategy maintains high fuel levels to minimize risk of running out:
 //   - Refuels before departure if fuel would drop below threshold
 //   - Opportunistically refuels at fuel stations when below threshold
-//   - Default threshold: 90% fuel capacity
-//
-// This is the default strategy and matches the original hardcoded behavior.
 type ConservativeRefuelStrategy struct {
 	threshold   float64 // Fuel percentage threshold (0.0 to 1.0)
 	fuelService *navigation.ShipFuelService
@@ -52,25 +54,36 @@ type ConservativeRefuelStrategy struct {
 
 // NewConservativeRefuelStrategy creates a conservative strategy with the given threshold.
 //
-// The threshold represents the fuel percentage below which refueling is triggered.
-// Example: 0.9 means refuel when fuel drops below 90% capacity.
+// The threshold is the fuel fraction below which refueling is triggered: 0.9 means
+// refuel below 90% of capacity. Raising it buys fuel earlier and spends more API
+// budget; lowering it does the reverse.
 //
-// Typical values:
-//   - 0.9 (90%): Very conservative, frequent refueling (default)
-//   - 0.7 (70%): Balanced approach
-//   - 0.5 (50%): Moderate risk tolerance
+// It is held at MinRefuelThreshold by ResolveRefuelThreshold.
 func NewConservativeRefuelStrategy(threshold float64) *ConservativeRefuelStrategy {
 	return &ConservativeRefuelStrategy{
-		threshold:   threshold,
+		threshold:   ResolveRefuelThreshold(threshold),
 		fuelService: navigation.NewShipFuelService(),
 	}
 }
 
-// NewDefaultRefuelStrategy creates a conservative strategy with the default 90% threshold.
+// ResolveRefuelThreshold holds a configured threshold at MinRefuelThreshold, so an unset
+// (zero) or mistyped knob can only make the fleet more cautious, never strand it.
 //
-// This maintains backward compatibility with the original hardcoded behavior.
+// Clamping rather than rejecting is deliberate: the daemon is the single writer of all
+// ship state, so refusing to boot on a tuning typo turns one bad character into a
+// fleet-wide outage. Exported so the composition root can report what it resolved to
+// without a second copy of the rule.
+func ResolveRefuelThreshold(threshold float64) float64 {
+	if threshold < MinRefuelThreshold {
+		return MinRefuelThreshold
+	}
+	return threshold
+}
+
+// NewDefaultRefuelStrategy creates a conservative strategy at MinRefuelThreshold,
+// for callers that inject no strategy of their own.
 func NewDefaultRefuelStrategy() *ConservativeRefuelStrategy {
-	return NewConservativeRefuelStrategy(0.9)
+	return NewConservativeRefuelStrategy(MinRefuelThreshold)
 }
 
 // ShouldRefuelBeforeDeparture checks if the leg ahead is unaffordable or fuel
