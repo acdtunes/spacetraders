@@ -74,8 +74,11 @@ func TestTour_MarginsDeath_LadenHullOffloadsHeldCargoTowardBestSink(t *testing.T
 	if shared.ExtractSystemSymbol(fx.location) != "X1-O2" {
 		t.Fatalf("the hull must end at the sink system X1-O2, got %q", fx.location)
 	}
-	if !plannerVisitedSystem(planner.positions, "X1-O2") || !plannerVisitedSystem(planner.positions, "X1-O3") {
-		t.Fatalf("fresh-arb ranking must still have evaluated BOTH candidates before the offload fallback engaged, positions=%v", planner.positions)
+	// This hull came up laden and has not traded since, so the offload is the PROMOTED rung: the
+	// fresh-arb ranking never runs. X1-O3 is the witness — the hull never goes there, so the only
+	// thing that could price it is the reconnaissance this hull no longer pays for.
+	if plannerVisitedSystem(planner.positions, "X1-O3") {
+		t.Fatalf("X1-O3 was pre-flighted, so the fresh-arb ranking still ran ahead of the held-cargo jump, positions=%v", planner.positions)
 	}
 	if r.ExitReason != tourExitStarvation {
 		t.Fatalf("exit reason = %q, want %q (the destination is also fresh-arb-dead, so the run still exits honestly after the rescue)", r.ExitReason, tourExitStarvation)

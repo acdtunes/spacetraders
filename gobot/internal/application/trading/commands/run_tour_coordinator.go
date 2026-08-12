@@ -530,12 +530,17 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 	// restarts is precisely the unexpiring hold that would strand a trade hull.
 	relocationOfferUntil := cmd.RelocationOfferUntil
 
+	// A hull already stuck-laden at container START inherited that load across a restart or a
+	// veto relaunch. Until it trades again its rescue is a buyer, not a fresh ground.
+	launchedLaden := false
+
 	if continuous {
 		resumed, rerr := h.resumeInFlightReposition(ctx, cmd, logger)
 		if rerr != nil {
 			return rerr
 		}
 		episode = resumed
+		launchedLaden = h.launchedStuckLaden(ctx, cmd)
 	}
 
 	// budgetMon makes a continuous run that can never re-resolve its dynamic budget
@@ -617,6 +622,8 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 			capitalDeniedStreak = 0
 			response.ToursCompleted++
 			episode = repositionEpisode{}
+			// Trading again: whatever it carries now is this run's own doing.
+			launchedLaden = false
 			if continuous {
 				offerUntil, perr := h.afterProductiveTour(ctx, cmd, response, netBought, tourBudget)
 				if perr != nil {
@@ -712,7 +719,7 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 		// Scoped to CONTINUOUS (-1) runs — a finite/one-shot run already fail-opened above
 		// on iteration-1 infeasibility and never reaches here with no plan.
 		if continuous {
-			rescued, rerr := h.rescueStarvedGround(ctx, cmd, response, &episode, netBought, tourBudget)
+			rescued, rerr := h.rescueStarvedGround(ctx, cmd, response, &episode, netBought, tourBudget, launchedLaden)
 			if rerr != nil {
 				return rerr
 			}
@@ -802,9 +809,32 @@ func (h *RunTourCoordinatorHandler) afterProductiveTour(ctx context.Context, cmd
 	return time.Time{}, nil
 }
 
+// launchedStuckLaden reports whether the hull came up already stuck-laden — the restart signature,
+// since a hull only becomes laden mid-run by buying. An unreadable hull keeps the established order.
+func (h *RunTourCoordinatorHandler) launchedStuckLaden(ctx context.Context, cmd *RunTourCoordinatorCommand) bool {
+	ship, err := h.legs.loadShip(ctx, cmd.ShipSymbol, cmd.PlayerID)
+	if err != nil {
+		return false
+	}
+	return isLadenForOffload(ship.CargoUnits(), ship.CargoCapacity())
+}
+
 // rescueStarvedGround is the three-tier ladder a margins-dead hull descends: rotate to a
 // fresh ground, else offload held cargo at a reachable sink, else distress-sell where it sits.
-func (h *RunTourCoordinatorHandler) rescueStarvedGround(ctx context.Context, cmd *RunTourCoordinatorCommand, response *RunTourCoordinatorResponse, episode *repositionEpisode, netBought map[string]int, budget tourPlanBudget) (bool, error) {
+//
+// launchedLaden PROMOTES the offload rung: the rotation ranks grounds on fresh profit priced
+// against a CLEARED hold (planAtCandidate), which a hull arriving still full cannot earn. It
+// still falls through to rotation when no reachable sink will take the load.
+func (h *RunTourCoordinatorHandler) rescueStarvedGround(ctx context.Context, cmd *RunTourCoordinatorCommand, response *RunTourCoordinatorResponse, episode *repositionEpisode, netBought map[string]int, budget tourPlanBudget, launchedLaden bool) (bool, error) {
+	if launchedLaden {
+		offloaded, oerr := h.maybeOffloadHeldCargo(ctx, cmd, response, episode)
+		if oerr != nil {
+			return false, oerr
+		}
+		if offloaded {
+			return true, nil
+		}
+	}
 	// Margins confirmed dead. Before exiting, try to ROTATE the hull to a fresh
 	// renewable ground: rank jump-reachable systems by expected tour margin, jump to
 	// the best one that clears the reposition floor, and let the loop re-plan there.
@@ -815,11 +845,12 @@ func (h *RunTourCoordinatorHandler) rescueStarvedGround(ctx context.Context, cmd
 	if rerr != nil {
 		return false, rerr
 	}
-	if !repositioned {
+	if !repositioned && !launchedLaden {
 		// sp-2v69u: fresh arb found nothing worth the jump. A LADEN hull is not
 		// actually stuck — it may still be worth jumping toward the best reachable
 		// sink for the cargo it is already holding (margin-exempt cash recovery).
 		// Fallback only: never engages while maybeReposition itself finds a plan.
+		// Skipped under launchedLaden: the promoted rung above already declined.
 		offloaded, oerr := h.maybeOffloadHeldCargo(ctx, cmd, response, episode)
 		if oerr != nil {
 			return false, oerr
