@@ -176,8 +176,6 @@ var scoutingConfigKeys = []string{
 	"max_reposition_jumps",
 	"reposition_failure_cooldown_secs",
 	"respawn_attempt_cap",
-	"gate_reconcile_enabled",
-	"gate_reconcile_max_dispatch",
 }
 
 // resolveScoutingConfig makes config.yaml the single LIVE source of truth for the
@@ -212,21 +210,6 @@ func (s *DaemonServer) injectScoutingConfig(config map[string]interface{}) {
 	}
 	if sc.RespawnAttemptCap != 0 {
 		config["respawn_attempt_cap"] = sc.RespawnAttemptCap
-	}
-	// Gate-reconcile opt-in: true-only injection — false/absent leaves the sweep OFF
-	// (deploy-inert). The cap is written only when the captain set a non-zero override; 0 defers
-	// to defaultGateReconcileMaxDispatch.
-	if sc.GateReconcileEnabled {
-		config["gate_reconcile_enabled"] = true
-	}
-	if sc.GateReconcileMaxDispatch != 0 {
-		config["gate_reconcile_max_dispatch"] = sc.GateReconcileMaxDispatch
-	}
-	// Marketless-widening disable-escape: true-only injection (mirrors coverage_spread /
-	// respawn_cap) — false/absent leaves the widened scope LIVE (marketless transit gates charted)
-	// whenever the sweep is armed.
-	if sc.GateReconcileMarketlessDisabled {
-		config["gate_reconcile_marketless_disabled"] = true
 	}
 }
 

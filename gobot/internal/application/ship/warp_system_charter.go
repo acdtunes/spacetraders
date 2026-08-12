@@ -12,7 +12,7 @@ import (
 // hull arrives in a fresh cluster off the jump-gate network, this is
 // what makes the destination discoverable to the rest of the fleet: it persists
 // the new system's jump-gate edges (so the cheap gate-hopping probe frontier -
-// growFrontierGraph / gategraph - can resume expanding from the new
+// gategraph - can resume expanding from the new
 // cluster), its waypoints, and the market + shipyard telemetry at each.
 //
 // It is a driven collaborator the RouteExecutor delegates to on arrival, exactly
@@ -24,8 +24,8 @@ type SystemCharter interface {
 
 // gateEdgeCharter is the narrow slice of *gategraph.Service the charter needs:
 // the fetch-through Connections call that fetches a system's live jump-gate
-// connections and PERSISTS them into gate_edges (the same store
-// growFrontierGraph reads). Narrowed so the charter test needs no gate store.
+// connections and PERSISTS them into gate_edges. Narrowed so the charter test
+// needs no gate store.
 type gateEdgeCharter interface {
 	Connections(ctx context.Context, systemSymbol string, playerID int) ([]system.GateEdge, error)
 }

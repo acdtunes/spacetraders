@@ -423,18 +423,6 @@ scouting:
   #   - SHIP_HEAVY_FREIGHTER
   #   - SHIP_BULK_FREIGHTER
 
-  # gate_reconcile_enabled (sp-bcsu) arms the RETROACTIVE gate-reconcile sweep: a bounded pass
-  # in the standing scout_post_coordinator that dispatches LEFTOVER idle probes (after manning)
-  # to market-known-but-gate-uncharted frontier systems, so each probe lands on that system's
-  # jump gate and the chart-on-arrival (routing.chart_gate_on_arrival) fills its gate_edges —
-  # automating the manual UF64 procedure that clears the market-swept-but-gate-empty backlog the
-  # strict pathfinder strands hulls on. DEFAULT OFF (deploy-inert): the sweep moves probes and
-  # spends API budget, so arm it only when the frontier backlog needs clearing. gate_reconcile_max_dispatch
-  # HARD-CAPS relays per tick (the rate-budget guard; 0/absent => 2) so it can never burst the
-  # limiter or starve trade hulls. Already-charted systems cost zero API (store-first idempotency).
-  # gate_reconcile_enabled: false
-  # gate_reconcile_max_dispatch: 2
-
 # sensing: the standing PARKED-PROBE sensing coordinator's config.yaml-authoritative knobs.
 # Injected into the probe_sensing_coordinator container on every build — creation AND
 # restart recovery — so a retune reaches the running fleet after a daemon restart, no
