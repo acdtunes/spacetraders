@@ -21,9 +21,9 @@ import (
 // topology-cache knob) via WithFreshWindow.
 const gateEdgeFreshWindow = 24 * time.Hour
 
-// gateEdgeUnderConstructionFreshWindow is the SHORTER re-probe bound for an edge whose
-// neighbour gate is still building: later completion discovery, bought with API budget.
-const gateEdgeUnderConstructionFreshWindow = 6 * time.Hour
+// gateEdgeUnderConstructionFreshWindow is the SHORTER re-probe bound for a still-building
+// neighbour gate. Loose: our gate is done, we supply no build, and the API budget is full.
+const gateEdgeUnderConstructionFreshWindow = 12 * time.Hour
 
 // unreadableMarker is the sentinel connected_system of a negative-result BACKOFF
 // marker row: a row that records an UNREADABLE system's backoff state

@@ -58,7 +58,7 @@ func TestGateEdgeRepository_OneBuildingExit_DoesNotCondemnItsBuiltSiblings(t *te
 	db, err := database.NewTestConnection()
 	require.NoError(t, err)
 	require.NoError(t, db.Create(&persistence.EraModel{Name: "orion", AgentSymbol: "ORION", PlayerID: 1}).Error)
-	mixedAgedSet(t, db, 7*time.Hour)
+	mixedAgedSet(t, db, 13*time.Hour)
 
 	repo := persistence.NewGormGateEdgeRepository(db)
 	edges, ok, err := repo.Edges(context.Background(), "X1-RJ93")
@@ -78,7 +78,7 @@ func TestGateEdgeRepository_MixedAgedSet_FlagsOnlyTheBuildingRowForReprobe(t *te
 	db, err := database.NewTestConnection()
 	require.NoError(t, err)
 	require.NoError(t, db.Create(&persistence.EraModel{Name: "orion", AgentSymbol: "ORION", PlayerID: 1}).Error)
-	mixedAgedSet(t, db, 7*time.Hour)
+	mixedAgedSet(t, db, 13*time.Hour)
 
 	repo := persistence.NewGormGateEdgeRepository(db)
 	edges, ok, err := repo.Edges(context.Background(), "X1-RJ93")
@@ -92,8 +92,8 @@ func TestGateEdgeRepository_MixedAgedSet_FlagsOnlyTheBuildingRowForReprobe(t *te
 	require.True(t, stale["X1-XX80"],
 		"the under-construction row is past its own shorter window and MUST read Stale — this is the signal "+
 			"the fetch-through resolver reads to re-probe the build, and losing it holds the verdict 24h")
-	require.False(t, stale["X1-AX76"], "a built row 7h old is inside its 24h window and is NOT stale")
-	require.False(t, stale["X1-PA3"], "a built row 7h old is inside its 24h window and is NOT stale")
+	require.False(t, stale["X1-AX76"], "a built row of the same age is inside its 24h window and is NOT stale")
+	require.False(t, stale["X1-PA3"], "a built row of the same age is inside its 24h window and is NOT stale")
 }
 
 // PRESERVED: the 24h whole-set window keeps its meaning. Past it the BUILT rows are

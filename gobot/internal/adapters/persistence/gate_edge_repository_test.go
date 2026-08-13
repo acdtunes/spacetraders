@@ -193,8 +193,8 @@ func TestGateEdgeRepository_UnderConstruction_RoundTrip(t *testing.T) {
 	require.True(t, af2.UnderConstruction, "Adjacency must expose the under-construction flag")
 }
 
-// TTL split: an under-construction edge uses the SHORTER (2h) freshness
-// window while a healthy edge keeps 24h. At the SAME 3h age the under-construction row is
+// TTL split: an under-construction edge uses the SHORTER freshness window while a
+// healthy edge keeps the configured one. At the SAME age the under-construction row is
 // flagged STALE (re-probe, so a completed build is noticed same-era) and the healthy row is
 // not — proving the window is per-row, not global.
 //
@@ -211,15 +211,15 @@ func TestGateEdgeRepository_UnderConstructionTTL_ShorterThanHealthy(t *testing.T
 	require.NoError(t, err)
 	require.NoError(t, db.Create(&persistence.EraModel{Name: "orion", AgentSymbol: "ORION", PlayerID: 1}).Error)
 
-	// Both edge sets are 7h old: past the under-construction window, well within
-	// the 24h healthy window.
+	// Both edge sets share one age: past the under-construction window, well within
+	// the healthy one.
 	require.NoError(t, db.Create(&persistence.GateEdgeModel{
 		SystemSymbol: "X1-BUILDING", ConnectedSystem: "X1-AF2", GateWaypoint: "X1-AF2-I1",
-		EraID: intPtr(1), SyncedAt: agoTS(7 * time.Hour), UnderConstruction: true,
+		EraID: intPtr(1), SyncedAt: agoTS(13 * time.Hour), UnderConstruction: true,
 	}).Error)
 	require.NoError(t, db.Create(&persistence.GateEdgeModel{
 		SystemSymbol: "X1-HEALTHY", ConnectedSystem: "X1-PA3", GateWaypoint: "X1-PA3-I51",
-		EraID: intPtr(1), SyncedAt: agoTS(7 * time.Hour), UnderConstruction: false,
+		EraID: intPtr(1), SyncedAt: agoTS(13 * time.Hour), UnderConstruction: false,
 	}).Error)
 
 	repo := persistence.NewGormGateEdgeRepository(db)
@@ -235,10 +235,10 @@ func TestGateEdgeRepository_UnderConstructionTTL_ShorterThanHealthy(t *testing.T
 
 	healthy, ok, err := repo.Edges(ctx, "X1-HEALTHY")
 	require.NoError(t, err)
-	require.True(t, ok, "a healthy edge at the same 7h age must still be fresh (24h window)")
+	require.True(t, ok, "a healthy edge at the same age must still be fresh (healthy window)")
 	require.Len(t, healthy, 1)
 	require.False(t, healthy[0].Stale,
-		"a healthy edge at the SAME 7h age must NOT be flagged — this is what makes the window per-row")
+		"a healthy edge at the SAME age must NOT be flagged — this is what makes the window per-row")
 }
 
 // Both windows pinned at their boundaries. Read through Adjacency, the raw per-row dump,
@@ -250,8 +250,8 @@ func TestGateEdgeRepository_EdgeStalenessFollowsItsOwnWindow(t *testing.T) {
 		underConstruction bool
 		wantStale         bool
 	}{
-		{name: "building gate inside its re-probe window", age: 5 * time.Hour, underConstruction: true, wantStale: false},
-		{name: "building gate past its re-probe window", age: 7 * time.Hour, underConstruction: true, wantStale: true},
+		{name: "building gate inside its re-probe window", age: 11 * time.Hour, underConstruction: true, wantStale: false},
+		{name: "building gate past its re-probe window", age: 13 * time.Hour, underConstruction: true, wantStale: true},
 		{name: "built gate inside the healthy window", age: 23 * time.Hour, underConstruction: false, wantStale: false},
 		{name: "built gate past the healthy window", age: 25 * time.Hour, underConstruction: false, wantStale: true},
 	} {
@@ -268,8 +268,8 @@ func TestGateEdgeRepository_EdgeStalenessFollowsItsOwnWindow(t *testing.T) {
 			require.NoError(t, err)
 			require.Len(t, adjacency["X1-RJ93"], 1)
 			require.Equal(t, c.wantStale, adjacency["X1-RJ93"][0].Stale,
-				"a row goes stale exactly past ITS OWN window — the shorter 6h one while its neighbour gate is "+
-					"still building, the 24h healthy one otherwise. Too short burns API re-probing a build that "+
+				"a row goes stale exactly past ITS OWN window — the shorter one while its neighbour gate is "+
+					"still building, the healthy one otherwise. Too short burns API re-probing a build that "+
 					"takes hours; too long hides a gate that has since opened")
 		})
 	}
