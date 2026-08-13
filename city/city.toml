@@ -1,6 +1,7 @@
 [workspace]
 name = "spacetraders"
 provider = "claude"
+color = "purple"
 
 # Lightweight mode. No [daemon] block. No auto-spawn.
 # Agents are invoked manually via `acd run <agent>` or `acd prime <agent>`.
@@ -24,3 +25,6 @@ args_append = ["--model", "claude-opus-4-8"]
 [providers.claude-sonnet5]
 base = "builtin:claude"
 args_append = ["--model", "claude-sonnet-5"]
+
+[providers.claude]
+base = "builtin:claude"
