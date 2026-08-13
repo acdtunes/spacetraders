@@ -93,6 +93,8 @@ func hullProtected(hull RelocatorHull) (string, bool) {
 		return "command_frigate_protected", true // RULINGS #7
 	case hull.Pinned:
 		return "pinned_hull_protected", true // RULINGS #7
+	case hull.Retiring:
+		return "retiring_hull_protected", true
 	case hull.OnTour && !hull.Offered:
 		// Only at honest tour release — OR at a boundary its tour has explicitly offered. The offer is
 		// the ONE exemption here, and it is deliberately narrow: it lifts the mid-tour rule and nothing

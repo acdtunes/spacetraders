@@ -111,6 +111,8 @@ func (r *ShipRepository) shipToModel(ship *navigation.Ship) persistence.ShipMode
 	// ReservationOverrides() never returns nil, so an empty set persists as "{}".
 	model.ReservationOverrides = marshalJSONColumn(ship.ReservationOverrides())
 
+	model.RetiringAt = ship.RetiringAt()
+
 	model.AssignmentOwner = string(navigation.AssignmentOwnerContainer)
 	applyAssignmentColumns(&model, ship.Assignment())
 
@@ -312,6 +314,8 @@ func (r *ShipRepository) modelToDomain(ctx context.Context, model *persistence.S
 	// protections it cannot read.
 	overrides, corrupt := parseReservationOverrides(model.ReservationOverrides)
 	ship.SetReservationOverrides(overrides, corrupt)
+
+	ship.SetRetiringAt(model.RetiringAt)
 
 	// Nav route origin + departure: reload the persisted transit origin
 	// onto the domain ship so it survives a subsequent whole-row Save instead of

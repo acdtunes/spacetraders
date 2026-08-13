@@ -194,6 +194,31 @@ func (s *DaemonServer) ReserveShip(ctx context.Context, shipSymbol, reason strin
 	return reserveResp.ShipSymbol, reserveResp.Reason, reserveResp.Warning, reserveResp.Preempted, reserveResp.PreemptedFrom, nil
 }
 
+// RetireShip withdraws a hull from service — the operator's `ship retire`. It writes only
+// the standing mark: the live claim and the fleet dedication are untouched, so the tour in
+// flight finishes and sells, and the coordinator declines the next one once the hold is
+// empty. Returns the mark plus the hold, which together say whether it has drained.
+func (s *DaemonServer) RetireShip(ctx context.Context, shipSymbol string, cancel bool, playerID *int, agentSymbol string) (string, bool, int, bool, error) {
+	cmd := &shipAssignmentCmd.RetireShipCommand{
+		ShipSymbol:  shipSymbol,
+		Cancel:      cancel,
+		PlayerID:    playerID,
+		AgentSymbol: agentSymbol,
+	}
+
+	response, err := s.mediator.Send(ctx, cmd)
+	if err != nil {
+		return "", false, 0, false, fmt.Errorf("failed to retire ship: %w", err)
+	}
+
+	retireResp, ok := response.(*shipAssignmentCmd.RetireShipResponse)
+	if !ok {
+		return "", false, 0, false, fmt.Errorf("unexpected response type")
+	}
+
+	return retireResp.ShipSymbol, retireResp.Retiring, retireResp.CargoUnits, retireResp.Drained, nil
+}
+
 // ReleaseShip clears a captain reservation, returning the ship to idle so
 // normal coordinator discovery can claim it again.
 func (s *DaemonServer) ReleaseShip(ctx context.Context, shipSymbol, reason string, playerID *int, agentSymbol string) (string, error) {

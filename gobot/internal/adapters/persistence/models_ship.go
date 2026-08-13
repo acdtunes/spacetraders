@@ -81,6 +81,9 @@ type ShipModel struct {
 	// silently wiped and a staged module is re-exposed to coordinator liquidation.
 	ReservationOverrides string `gorm:"column:reservation_overrides;type:jsonb;default:'{}'"`
 
+	// RetiringAt is the operator's retirement mark; preserved across the API sync like DedicatedFleet.
+	RetiringAt *time.Time `gorm:"column:retiring_at"`
+
 	// Power/slot/crew data. Reactor and frame-slot fields are fixed
 	// for the life of the hull - reactors/frames have no swap endpoint in the
 	// SpaceTraders API. Flattened into columns (not JSON) to mirror the

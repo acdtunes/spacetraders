@@ -232,6 +232,13 @@ func (r daemonRepos) registerFleetAssignmentHandlers() (*shipAssignment.ReserveS
 		return nil, nil, fmt.Errorf("failed to register AssignShipFleet handler: %w", err)
 	}
 
+	// Retirement: the standing per-hull withdrawal mark the trade fleet coordinator's
+	// relaunch gate reads once a retiring hull's hold is empty.
+	retireShipHandler := shipAssignment.NewRetireShipHandler(r.shipRepo, r.playerRepo)
+	if err := mediator.RegisterHandler[*shipAssignment.RetireShipCommand](r.med, retireShipHandler); err != nil {
+		return nil, nil, fmt.Errorf("failed to register RetireShip handler: %w", err)
+	}
+
 	listFleetsHandler := shipQuery.NewListFleetsHandler(r.shipRepo, r.playerRepo)
 	if err := mediator.RegisterHandler[*shipQuery.ListFleetsQuery](r.med, listFleetsHandler); err != nil {
 		return nil, nil, fmt.Errorf("failed to register ListFleets handler: %w", err)

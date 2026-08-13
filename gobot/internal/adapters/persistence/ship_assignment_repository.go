@@ -289,6 +289,8 @@ type ShipAssignmentInfo struct {
 	// purchase — that class of mistake — is visible at a glance
 	// instead of requiring a per-ship cross-check against `fleet list`.
 	DedicatedFleet string
+
+	Retiring bool
 }
 
 // ListActive returns role/assignment/cache-age info for every ship owned by a
@@ -316,6 +318,7 @@ func (r *ShipAssignmentRepositoryGORM) ListActive(
 			AssignmentOwner:  model.AssignmentOwner,
 			AssignmentReason: model.AssignmentReason,
 			DedicatedFleet:   model.DedicatedFleet,
+			Retiring:         model.RetiringAt != nil,
 		})
 	}
 

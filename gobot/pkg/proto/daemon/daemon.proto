@@ -176,6 +176,10 @@ service DaemonService {
   // general pool (sp-l7h2)
   rpc UnassignShipFleet(UnassignShipFleetRequest) returns (UnassignShipFleetResponse);
 
+  // RetireShip withdraws a hull from service: its current tour finishes and sells,
+  // and once the hold is empty no coordinator plans it another
+  rpc RetireShip(RetireShipRequest) returns (RetireShipResponse);
+
   // ListFleets lists every dedicated fleet and its member ships (sp-l7h2)
   rpc ListFleets(ListFleetsRequest) returns (ListFleetsResponse);
 
@@ -1175,6 +1179,26 @@ message FleetHubResponse {
   // changed is false when the verb was a no-op (add of an existing hub, or
   // remove of an absent one), so the CLI can report it honestly.
   bool changed = 3;
+}
+
+// RetireShipRequest marks a hull for retirement, or cancels the mark. Unlike
+// UnassignShipFleet it never breaks the live claim: the tour in flight finishes and
+// sells, and only the NEXT tour is declined.
+message RetireShipRequest {
+  string ship_symbol = 1;
+  // cancel clears the mark, returning the hull to normal service.
+  bool cancel = 2;
+  optional int32 player_id = 3;
+  optional string agent_symbol = 4;
+}
+
+message RetireShipResponse {
+  string ship_symbol = 1;
+  bool retiring = 2;
+  // cargo_units is what the hull still holds; drained (cargo_units == 0 while
+  // retiring) is the scrap-ready signal the scrap guard refuses without.
+  int32 cargo_units = 3;
+  bool drained = 4;
 }
 
 // UnassignShipFleetRequest clears a ship's fleet dedication (sp-l7h2)

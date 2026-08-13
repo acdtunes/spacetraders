@@ -119,6 +119,9 @@ type Ship struct {
 	// unreadable override set had protected (RULINGS #4).
 	reservationStateCorrupt bool
 
+	// retiringAt is the operator's retirement mark: drain the hold, then plan no more tours.
+	retiringAt *time.Time
+
 	// persistedVersion is the ships.version value this entity was loaded at
 	// (0 = never loaded from a row, e.g. API-born). Infrastructure carries it
 	// for the Save CAS tripwire: it is NOT domain state and has no

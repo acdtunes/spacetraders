@@ -39,6 +39,7 @@ Examples:
 	cmd.AddCommand(newShipRefreshCommand())
 	cmd.AddCommand(newShipReserveCommand())
 	cmd.AddCommand(newShipReleaseCommand())
+	cmd.AddCommand(newShipRetireCommand())
 	cmd.AddCommand(newShipReserveCargoCommand())
 	cmd.AddCommand(newShipUnreserveCargoCommand())
 	cmd.AddCommand(newShipReservedCargoCommand())
@@ -138,6 +139,9 @@ func buildShipRows(ships []*pb.ShipInfo, infos map[string]persistence.ShipAssign
 			if info.DedicatedFleet != "" {
 				row.Fleet = info.DedicatedFleet
 			}
+			if info.Retiring {
+				row.Fleet = retiringFleetLabel(row.Fleet, s.CargoUnits)
+			}
 			switch {
 			case info.AssignmentOwner == string(navigation.AssignmentOwnerCaptain):
 				// A captain reservation has no ContainerID (it was
@@ -164,6 +168,17 @@ func buildShipRows(ships []*pb.ShipInfo, infos map[string]persistence.ShipAssign
 	sortShipListRowsNatural(rows)
 
 	return rows
+}
+
+// retiringFleetLabel annotates the FLEET column of a hull the operator has retired.
+// "drained" is derived from the live hold rather than from a finished tour, because a tour
+// can report success having traded nothing — so an empty hold is the only honest signal
+// that the hull is ready to scrap.
+func retiringFleetLabel(fleet string, cargoUnits int32) string {
+	if cargoUnits == 0 {
+		return fleet + " (retiring, drained)"
+	}
+	return fleet + " (retiring)"
 }
 
 // renderShipList prints the merged ship rows as a table or as JSON.

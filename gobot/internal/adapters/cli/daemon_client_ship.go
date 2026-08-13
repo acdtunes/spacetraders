@@ -121,6 +121,25 @@ func (c *DaemonClient) ReleaseShip(ctx context.Context, shipSymbol string, reaso
 	return resp, nil
 }
 
+// RetireShip withdraws a hull from service: its current tour finishes and sells, and once
+// its hold is empty no coordinator plans it another. cancel clears the mark.
+func (c *DaemonClient) RetireShip(ctx context.Context, shipSymbol string, cancel bool, playerIdent *PlayerIdentifier) (*pb.RetireShipResponse, error) {
+	playerID, agentSymbol := playerPointers(playerIdent)
+	req := &pb.RetireShipRequest{
+		ShipSymbol:  shipSymbol,
+		Cancel:      cancel,
+		PlayerId:    playerID,
+		AgentSymbol: agentSymbol,
+	}
+
+	resp, err := c.client.RetireShip(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf(grpcCallFailed, err)
+	}
+
+	return resp, nil
+}
+
 // AssignShipFleet dedicates a ship to a named fleet, making it exclusive to
 // that coordinator's discovery
 func (c *DaemonClient) AssignShipFleet(ctx context.Context, shipSymbol, fleet string, playerIdent *PlayerIdentifier) (*pb.AssignShipFleetResponse, error) {

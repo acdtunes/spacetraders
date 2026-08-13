@@ -141,6 +141,11 @@ type ShipRepository interface {
 	// sell leg via Ship.IsCargoReserved.
 	SetCargoReservation(ctx context.Context, shipSymbol, good string, reserved bool, playerID shared.PlayerID) error
 
+	// SetShipRetiring atomically marks (true) or clears (false) a hull's retirement,
+	// row-locked and idempotent like AssignFleet. Like dedication it governs the NEXT job,
+	// not the current one: marking a hull mid-tour lets that tour finish and sell.
+	SetShipRetiring(ctx context.Context, shipSymbol string, retiring bool, playerID shared.PlayerID) error
+
 	// ReserveForCaptain atomically reserves an idle ship for the captain's direct,
 	// manual use, hiding it from coordinator discovery. Uses the same
 	// row-level locking as ClaimShip so a concurrent coordinator claim can never

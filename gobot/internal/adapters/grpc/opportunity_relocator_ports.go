@@ -211,6 +211,7 @@ func relocatorHullFrom(ship *navigation.Ship, systemSymbol string, tours tourOcc
 		OnTour:           onTour,
 		InTransit:        inTransit,
 		Offered:          offered,
+		Retiring:         ship.IsRetiring(),
 	}
 }
 

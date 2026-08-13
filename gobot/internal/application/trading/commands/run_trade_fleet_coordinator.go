@@ -403,6 +403,9 @@ func (h *RunTradeFleetCoordinatorHandler) reconcileOnce(ctx context.Context, cmd
 	pauseEmptyRelaunch, fullPct := inventoryPressurePause(idle, running, cmd, logger)
 
 	for _, ship := range idle {
+		if declineRetiredHull(ship, logger) {
+			continue
+		}
 		// sp-tgll8: under fleet saturation, hold an EMPTY idle hull this tick rather than
 		// start a NEW buying tour into a fleet drowning in unsold inventory. A LADEN idle hull
 		// (cargo to sell) is never held — blocking a sell would wedge the fleet (RULINGS #4).
@@ -476,6 +479,27 @@ func inventoryPressurePause(idle, running []*navigation.Ship, cmd *RunTradeFleet
 		"pause_pct":   pausePct,
 	})
 	return true, fullPct
+}
+
+// declineRetiredHull is the retirement gate: an operator-marked hull is planned no further
+// tours ONCE ITS HOLD IS EMPTY. While it still carries cargo it relaunches like any other
+// laden hull, because that relaunch is how it sells — declining a laden hull would park it
+// loaded for good, and a stranded laden hull is worse than a trading one (RULINGS #4).
+//
+// It touches no claim and no dedication, so a hull marked mid-tour is not even seen here:
+// it is in `running`, its container keeps flying it, and the gate applies to the tour AFTER
+// that one (RULINGS #3 — retirement never becomes a second writer).
+func declineRetiredHull(ship *navigation.Ship, logger common.ContainerLogger) bool {
+	if !ship.RetirementDrained() {
+		return false
+	}
+	logger.Log("INFO", fmt.Sprintf(
+		"Trade hull %s is retiring and its hold is empty — declining to plan it another tour; it is drained and ready to scrap",
+		ship.ShipSymbol()), map[string]interface{}{
+		"action":      "trade_fleet_retirement_declined",
+		"ship_symbol": ship.ShipSymbol(),
+	})
+	return true
 }
 
 // escalateReachAfterVeto arms reposition-reach for a hull the honest-completion veto sent

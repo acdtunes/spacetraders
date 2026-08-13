@@ -124,6 +124,7 @@ func preserveLocallyOwnedColumns(model *persistence.ShipModel, existingModel per
 	model.AssignmentReason = existingModel.AssignmentReason
 	model.DedicatedFleet = existingModel.DedicatedFleet
 	model.ReservationOverrides = existingModel.ReservationOverrides
+	model.RetiringAt = existingModel.RetiringAt
 }
 
 func (r *ShipRepository) upsertShipModels(ctx context.Context, models []persistence.ShipModel) error {
@@ -318,6 +319,9 @@ func (r *ShipRepository) SyncShipFromAPI(ctx context.Context, symbol string, pla
 		// do-not-sell reservation is silently wiped the next time this ship is
 		// synced from the API, re-exposing a staged outfitting module.
 		model.ReservationOverrides = existingModel.ReservationOverrides
+		// Same clobber class: without this a retired hull quietly rejoins service on
+		// the next sync and gets planned another tour.
+		model.RetiringAt = existingModel.RetiringAt
 	}
 
 	err = r.db.WithContext(ctx).

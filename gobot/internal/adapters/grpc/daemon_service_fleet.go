@@ -180,6 +180,30 @@ func (s *daemonServiceImpl) UnassignShipFleet(ctx context.Context, req *pb.Unass
 	}, nil
 }
 
+// RetireShip is deliberately NOT UnassignShipFleet: it leaves both the dedication and the
+// live claim alone, so the tour in flight finishes and sells, and the hull is never handed
+// to the general pool where another coordinator would re-employ it.
+func (s *daemonServiceImpl) RetireShip(ctx context.Context, req *pb.RetireShipRequest) (*pb.RetireShipResponse, error) {
+	var playerID *int
+	if req.PlayerId != nil {
+		pid := FromProtobufPlayerID(*req.PlayerId)
+		playerID = &pid
+	}
+
+	shipSymbol, retiring, cargoUnits, drained, err := s.daemon.RetireShip(
+		ctx, req.ShipSymbol, req.GetCancel(), playerID, stringValue(req.AgentSymbol))
+	if err != nil {
+		return nil, fmt.Errorf("failed to retire ship: %w", err)
+	}
+
+	return &pb.RetireShipResponse{
+		ShipSymbol: shipSymbol,
+		Retiring:   retiring,
+		CargoUnits: int32(cargoUnits),
+		Drained:    drained,
+	}, nil
+}
+
 func (s *daemonServiceImpl) ListFleets(ctx context.Context, req *pb.ListFleetsRequest) (*pb.ListFleetsResponse, error) {
 	var playerID *int
 	if req.PlayerId != nil {

@@ -33,6 +33,9 @@ type RelocatorHull struct {
 	// "ownership is waived": a protected hull stays protected, and an offer that lapses before the move
 	// commits is abandoned through the counted actuation re-check like any other lost hull.
 	Offered bool
+	// Retiring marks a hull the operator has withdrawn from service. Relocation exists to put
+	// a hull on new ground to trade from, which is the one thing a retiring hull will not do.
+	Retiring bool
 }
 
 // RelocatorRegion is one candidate region: an anchor system plus the neighbourhood a tour planned

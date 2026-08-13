@@ -500,6 +500,40 @@ func (r *ShipRepository) SetCargoReservation(ctx context.Context, shipSymbol, go
 	})
 }
 
+// SetShipRetiring atomically marks or clears a hull's retirement — the single write path
+// behind `ship retire`. Like AssignFleet it deliberately does NOT reject a claimed or
+// captain-reserved hull: the mark governs which job the hull is given NEXT, it does not
+// evict the holder of the current one, so a hull marked mid-tour finishes that tour and
+// sells its load. Same row-level lock and idempotence as AssignFleet.
+func (r *ShipRepository) SetShipRetiring(ctx context.Context, shipSymbol string, retiring bool, playerID shared.PlayerID) error {
+	if r.db == nil {
+		return fmt.Errorf("database not configured")
+	}
+
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		model, err := lockShipRow(tx, shipSymbol, playerID)
+		if err != nil {
+			return err
+		}
+
+		if (model.RetiringAt != nil) == retiring {
+			return nil
+		}
+
+		var mark *time.Time
+		if retiring {
+			now := time.Now().UTC()
+			mark = &now
+		}
+		if err := tx.Model(&model).Update("retiring_at", mark).Error; err != nil {
+			return fmt.Errorf("failed to set ship retirement: %w", err)
+		}
+
+		r.shipListCache.Delete(playerID.Value())
+		return nil
+	})
+}
+
 // lockShipRow takes the row's SELECT FOR UPDATE inside an open transaction so a claim
 // swap cannot interleave with a concurrent coordinator ClaimShip (RULING #7).
 func lockShipRow(tx *gorm.DB, shipSymbol string, playerID shared.PlayerID) (persistence.ShipModel, error) {
