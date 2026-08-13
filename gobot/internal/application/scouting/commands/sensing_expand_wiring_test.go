@@ -87,6 +87,19 @@ func TestSensingExpandKnobs_CarriesTheSeedDispatchSwitch(t *testing.T) {
 	}
 }
 
+// …and the buy queue is handed the operator's coverage-reserve share, the tune
+// key that reaches a never-entered system inside an already-held backlog. Same
+// failure shape as the expansion switch above: a gate nobody passes an argument
+// to is a gate that ships dormant.
+func TestSensingBuyKnobs_CarriesTheCoverageReserve(t *testing.T) {
+	if got := buyKnobs(sensingConfig{ProbeSpend: true, ProbeCap: 100, CoverageReserve: 3}).CoverageReserve; got != 3 {
+		t.Fatalf("buy queue coverage reserve = %d, want 3 — an armed tune key would reach nothing", got)
+	}
+	if got := buyKnobs(sensingConfig{ProbeSpend: true, ProbeCap: 100}).CoverageReserve; got != 0 {
+		t.Fatalf("buy queue coverage reserve = %d, want 0 when unset — it must ship off by default", got)
+	}
+}
+
 // wiringYardDemand is a stand-in for the shipyard-read budget, identifiable by
 // pointer so a test can assert the drain and the presence pass got the SAME one.
 type wiringYardDemand struct{}

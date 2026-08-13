@@ -64,6 +64,9 @@ func TestSensingTune_LiveKnobSet(t *testing.T) {
 		// switch: `tune surge_inflight_cap 0` reverts to the documented default, so the
 		// surge cannot be turned off through the tune surface at all.
 		"surge_inflight_cap",
+		// The fill queue's coverage-reserve share. Unlike every other knob in this
+		// list, its documented default IS 0 — so this one ships off, not armed.
+		"coverage_reserve",
 	}
 	for _, key := range live {
 		require.Contains(t, bounds, key, "%s must be tunable", key)

@@ -63,6 +63,10 @@ const (
 	// FLOOR on the scan interval, never a target: hull prices move on their own
 	// schedule, so the budget may slow a yard down but never speed it past this.
 	defaultQuartermasterCadenceSecs = 3600
+	// defaultCoverageReserve ships the buy queue's coverage reserve OFF: unlike
+	// every other knob here, zero is the documented default rather than a revert
+	// to some positive one, so the saturate-first order runs unarmed until set.
+	defaultCoverageReserve = 0
 
 	// screenSweepBatch bounds how many PENDING systems one tick screens. A plain
 	// constant, deliberately not a knob: it paces API bursts (an unresolved
@@ -122,6 +126,8 @@ type sensingConfig struct {
 	QuartermasterCadence    time.Duration
 	// SurgeInFlightCap is the standing bound on surge dispatches in flight.
 	SurgeInFlightCap int
+	// CoverageReserve is the buy queue's coverage-reserve share. See BuyKnobs.CoverageReserve.
+	CoverageReserve int
 }
 
 // resolveSensingConfig resolves one tick's effective config from the launch
@@ -173,6 +179,7 @@ func resolveSensingConfig(ctx context.Context, cmd *RunProbeSensingCoordinatorCo
 		CapexReserveCredits:     int64(pick("capex_reserve_credits", cmd.CapexReserveCredits)),
 		QuartermasterCadence:    time.Duration(pick("quartermaster_cadence_secs", cmd.QuartermasterCadence)) * time.Second,
 		SurgeInFlightCap:        pick("surge_inflight_cap", cmd.SurgeInFlightCap),
+		CoverageReserve:         pick("coverage_reserve", cmd.CoverageReserve),
 	}
 
 	// 1=both, 2=neither, 3=probes only. Anything else — including the absent-key 0 —
@@ -245,6 +252,10 @@ func applySensingDefaults(ctx context.Context, cmd *RunProbeSensingCoordinatorCo
 		// 8 rather than stopping the surge. The pass ships ARMED and has no off seam.
 		c.SurgeInFlightCap = defaultSurgeInFlightCap
 	}
+	if c.CoverageReserve < 0 {
+		warnNegativeSensingKnob(ctx, "coverage_reserve", c.CoverageReserve, defaultCoverageReserve)
+		c.CoverageReserve = defaultCoverageReserve
+	}
 }
 
 func warnNegativeSensingKnob(ctx context.Context, key string, v, fallback int) {
@@ -285,10 +296,11 @@ func (h *RunProbeSensingCoordinatorHandler) liveSnapshot(ctx context.Context, cm
 // (sp-com1h). See sensing_expand_wiring_test.go.
 func buyKnobs(cfg sensingConfig) parkedsensing.BuyKnobs {
 	return parkedsensing.BuyKnobs{
-		SpendEnabled: cfg.ProbeSpend,
-		ProbeCap:     cfg.ProbeCap,
-		CapexReserve: cfg.CapexReserveCredits,
-		KMilli:       cfg.CapitalMultiplierKMilli,
+		SpendEnabled:    cfg.ProbeSpend,
+		ProbeCap:        cfg.ProbeCap,
+		CapexReserve:    cfg.CapexReserveCredits,
+		KMilli:          cfg.CapitalMultiplierKMilli,
+		CoverageReserve: cfg.CoverageReserve,
 	}
 }
 

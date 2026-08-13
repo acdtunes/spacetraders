@@ -306,4 +306,8 @@ type BuyKnobs struct {
 	// registry is integer end to end — see domain/parkedsensing.ProbeBuyFloor for why
 	// a float would put NaN inside a money guard.
 	KMilli int
+	// CoverageReserve holds back this many FILL attempts per tick for the best
+	// placement in a system the fleet has never entered. Zero (the default)
+	// leaves the saturate-first order in drainorder.go untouched.
+	CoverageReserve int
 }

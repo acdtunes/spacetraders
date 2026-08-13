@@ -40,32 +40,36 @@ import (
 // The yardOrder is returned so the loop below can report what the ordering did;
 // the coverageSurface beside it is the demand the tick is holding, published
 // whether or not it may spend so a hold never reads as absent demand.
-func drainCandidates(ctx context.Context, p BuyPorts, playerID int) ([]QueuedSlot, yardOrder, coverageSurface, error) {
+// The fourth return is the per-system coverage count DrainBuyQueue reuses to
+// carve out BuyKnobs.CoverageReserve — the same read the saturation tier below
+// already priced, so a caller that also wants "is this system held" spends no
+// second query on it.
+func drainCandidates(ctx context.Context, p BuyPorts, playerID int) ([]QueuedSlot, yardOrder, coverageSurface, map[string]int, error) {
 	slots, err := p.Ledger.SlotsByState(ctx, playerID, SlotStateWanted, SlotStateQueued)
 	if err != nil {
-		return nil, yardOrder{}, coverageSurface{}, fmt.Errorf("failed to list unfilled sensing slots: %w", err)
+		return nil, yardOrder{}, coverageSurface{}, nil, fmt.Errorf("failed to list unfilled sensing slots: %w", err)
 	}
 	if len(slots) == 0 {
-		return nil, yardOrder{}, coverageSurface{}, nil
+		return nil, yardOrder{}, coverageSurface{}, nil, nil
 	}
 
 	systems, err := p.Ledger.SystemsByVerdict(ctx, playerID, VerdictInScope)
 	if err != nil {
-		return nil, yardOrder{}, coverageSurface{}, fmt.Errorf("failed to list in-scope sensing systems: %w", err)
+		return nil, yardOrder{}, coverageSurface{}, nil, fmt.Errorf("failed to list in-scope sensing systems: %w", err)
 	}
 	depth, inScope := indexScreenedSystems(systems)
 	fills, seeds := partitionFillsAndSeeds(slots, inScope)
 
 	if len(fills) == 0 {
-		return seeds, yardOrder{}, coverageSurface{}, nil
+		return seeds, yardOrder{}, coverageSurface{}, nil, nil
 	}
 	fills, surface := reachableFills(ctx, p, playerID, fills)
 	if len(fills) == 0 {
-		return seeds, yardOrder{}, surface, nil
+		return seeds, yardOrder{}, surface, nil, nil
 	}
 	covered, err := coverageBySystem(ctx, p, playerID)
 	if err != nil {
-		return nil, yardOrder{}, coverageSurface{}, err
+		return nil, yardOrder{}, coverageSurface{}, nil, err
 	}
 	surface.measure(fills, covered)
 
@@ -116,7 +120,7 @@ func drainCandidates(ctx context.Context, p BuyPorts, playerID int) ([]QueuedSlo
 			yards.atHead++
 		}
 	}
-	return append(out, seeds...), yards, surface, nil
+	return append(out, seeds...), yards, surface, covered, nil
 }
 
 // coverageSurface is one tick's measurement of the map the fleet wants watched and has

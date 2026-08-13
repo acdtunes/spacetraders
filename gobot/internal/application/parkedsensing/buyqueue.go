@@ -63,7 +63,7 @@ func DrainBuyQueue(
 
 	// Cheapest-first gate order: the ledger reads are local, the treasury and
 	// price reads are network. A tick with nothing to buy must not cost an API call.
-	candidates, yards, surface, err := drainCandidates(ctx, p, playerID)
+	candidates, yards, surface, covered, err := drainCandidates(ctx, p, playerID)
 	// PUBLISHED BEFORE THE EMPTY-QUEUE RETURN, so an empty queue reports a zero it
 	// measured rather than leaving the last tick's value standing. The error path
 	// publishes nothing: an unread surface is not a small one.
@@ -131,6 +131,14 @@ func DrainBuyQueue(
 	// to it. See seedshare.go.
 	fillBudget := fillAttemptBudget(candidates)
 
+	// The share of the fill budget an already-held placement may spend before
+	// standing aside for BuyKnobs.CoverageReserve. Computed only when armed, so
+	// an unarmed tick never even evaluates coverageReserveActive. See coverageshare.go.
+	coverageBudget := fillBudget
+	if k.CoverageReserve > 0 {
+		coverageBudget = coverageFillBudget(fillBudget, k.CoverageReserve, coverageReserveActive(candidates, covered, yards))
+	}
+
 	for _, slot := range candidates {
 		if rep.Attempts >= maxDrainAttempts {
 			break
@@ -142,6 +150,9 @@ func DrainBuyQueue(
 		// Checked BEFORE any read, so a fill standing aside costs nothing: the
 		// loop runs past the remaining fills to reach the seeds behind them.
 		if yieldsToSeeds(slot, rep.Attempts, fillBudget) {
+			continue
+		}
+		if k.CoverageReserve > 0 && yieldsToCoverageReserve(slot, covered, yards, rep.Attempts, coverageBudget) {
 			continue
 		}
 

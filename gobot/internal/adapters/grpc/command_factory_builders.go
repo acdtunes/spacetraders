@@ -194,6 +194,7 @@ func buildProbeSensingCoordinatorCommand(cfg *configReader, playerID int, contai
 		CapexReserveCredits:     cfg.OptionalInt("capex_reserve_credits", 0),
 		QuartermasterCadence:    cfg.OptionalInt("quartermaster_cadence_secs", 0),
 		SurgeInFlightCap:        cfg.OptionalInt("surge_inflight_cap", 0),
+		CoverageReserve:         cfg.OptionalInt("coverage_reserve", 0),
 
 		// Retired: read for recovery tolerance, never consulted by the loop.
 		DepthFloor:               int64(cfg.OptionalInt("depth_floor", 0)),

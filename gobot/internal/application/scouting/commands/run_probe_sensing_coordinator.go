@@ -119,6 +119,9 @@ type RunProbeSensingCoordinatorCommand struct {
 	// SurgeInFlightCap bounds how many surplus probes may be flying toward
 	// charted-but-unpriced systems at once (sp-zvywu). See defaultSurgeInFlightCap.
 	SurgeInFlightCap int
+	// CoverageReserve holds back this many fill attempts per tick for the best
+	// never-entered system. Zero (default) ships off. See BuyKnobs.CoverageReserve.
+	CoverageReserve int
 
 	// --- retired: read by the old touring core, ignored by this one -----------
 
