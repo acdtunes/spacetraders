@@ -7,6 +7,7 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing/gate"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
@@ -193,7 +194,7 @@ func (h *RunConstructionCoordinatorHandler) releaseClaim(ctx context.Context, co
 			if !sh.IsAssigned() || sh.ContainerID() != containerID {
 				return false, nil
 			}
-			sh.ForceRelease("construction_supply_complete", h.clock)
+			sh.ForceRelease(gate.ConstructionReleaseReason, h.clock)
 			return true, nil
 		}); err != nil {
 		logger.Log("WARNING", fmt.Sprintf("Could not release hauler %s after its construction supply: %v", shipSymbol, err), nil)

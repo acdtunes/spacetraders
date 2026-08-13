@@ -2,6 +2,7 @@ package navigation
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
@@ -33,6 +34,26 @@ func (s *Ship) ContainerID() string {
 		return ""
 	}
 	return s.assignment.ContainerID()
+}
+
+// ReleasedWithinBy reports whether the ship is IDLE because an operation releasing with reason
+// handed it back less than window ago. IsAssigned() covers a hull mid-job; this covers the gap
+// either side of it, where an operation working a hull BETWEEN legs is indistinguishable from one
+// that never held it. The window keeps this a HAND-BACK rather than a second ownership claim: it
+// lapses on its own, so an operation that stopped working cannot hold a hull it is not using. A
+// release timestamped in the future (clock skew) counts as inside it — the safe direction.
+func (s *Ship) ReleasedWithinBy(reason string, now time.Time, window time.Duration) bool {
+	if s.assignment == nil || !s.assignment.IsIdle() {
+		return false
+	}
+	if r := s.assignment.ReleaseReason(); r == nil || *r != reason {
+		return false
+	}
+	releasedAt := s.assignment.ReleasedAt()
+	if releasedAt == nil {
+		return false
+	}
+	return now.Sub(*releasedAt) < window
 }
 
 // AssignToContainer assigns the ship to a container operation.

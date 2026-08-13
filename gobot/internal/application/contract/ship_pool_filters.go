@@ -3,12 +3,51 @@ package contract
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	domainContract "github.com/andrescamacho/spacetraders-go/internal/domain/contract"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing/gate"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
+
+// PoolOption is one knob on the shared idle-hauler pre-filter (FindIdleLightHaulers). One variadic
+// of options rather than one per policy is what lets a pool-wide exclusion default to ON: a caller
+// that must opt out says so, and a caller written later inherits the guard without knowing it
+// exists. Every option's ZERO VALUE is the default, so an unset knob is never an armed one.
+type PoolOption interface{ applyToPool(*poolOptions) }
+
+// poolOptions is the resolved knob set for one FindIdleLightHaulers call.
+type poolOptions struct {
+	commandShip    CommandShipPolicy
+	gateHandback   GateHandbackPolicy
+	handbackWindow time.Duration
+	clock          shared.Clock
+}
+
+// resolvePoolOptions folds opts over the defaults: command ship excluded, gate hand-backs held,
+// the standard hand-back window, and the wall clock the persisted released_at is measured against.
+func resolvePoolOptions(opts []PoolOption) poolOptions {
+	resolved := poolOptions{
+		commandShip:    ExcludeCommandShip,
+		gateHandback:   HoldGateHandback,
+		handbackWindow: GateHandbackWindow,
+		clock:          shared.NewRealClock(),
+	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt.applyToPool(&resolved)
+		}
+	}
+	if resolved.handbackWindow <= 0 {
+		resolved.handbackWindow = GateHandbackWindow
+	}
+	if resolved.clock == nil {
+		resolved.clock = shared.NewRealClock()
+	}
+	return resolved
+}
 
 // CommandShipPolicy controls whether the command ship counts as a haul candidate.
 type CommandShipPolicy int
@@ -25,6 +64,47 @@ const (
 	// fleet capacity.
 	IncludeCommandShip
 )
+
+func (p CommandShipPolicy) applyToPool(o *poolOptions) { o.commandShip = p }
+
+// GateHandbackPolicy controls whether hulls the gate-construction drain has just handed back stay
+// invisible to the general pool.
+type GateHandbackPolicy int
+
+const (
+	// HoldGateHandback keeps a hull the construction drain released moments ago OUT of the general
+	// pool, so the drain's next tick still finds the crew it is mid-campaign with. Default for every
+	// caller: the drain borrows UNDEDICATED hulls by design, so "is it tagged" cannot be the test.
+	HoldGateHandback GateHandbackPolicy = iota
+	// ReleaseGateHandback puts those hulls back in the pool. ONLY the construction drain may pass
+	// it: the hold reserves the bench FOR the drain, so applying it there starves it on its own crew.
+	ReleaseGateHandback
+)
+
+func (p GateHandbackPolicy) applyToPool(o *poolOptions) { o.gateHandback = p }
+
+// PoolClock supplies the clock the gate hand-back window is measured against; defaults to the
+// wall clock. Exists so a test can pin "released N ago" instead of racing real time.
+type PoolClock struct{ Clock shared.Clock }
+
+func (c PoolClock) applyToPool(o *poolOptions) { o.clock = c.Clock }
+
+// PoolGateHandbackWindow overrides how long a hand-back is held (<=0 keeps the default).
+type PoolGateHandbackWindow time.Duration
+
+func (w PoolGateHandbackWindow) applyToPool(o *poolOptions) { o.handbackWindow = time.Duration(w) }
+
+// GateHandbackWindow is how long after a gate leg a hull stays reserved to the drain. Sized off the
+// drain's own tick cadence plus the ship-list cache TTL, with headroom for a slow tick and a
+// pipeline briefly out of ready tasks - and deliberately far too short to be an ownership claim: a
+// drain that stopped using a hull gives it up within minutes, with no operator action.
+const GateHandbackWindow = 3 * time.Minute
+
+// onGateConstructionHandback reports whether ship is a hull the construction drain finished a gate
+// leg with inside the hand-back window - a borrowed UNDEDICATED hauler between legs.
+func onGateConstructionHandback(ship *navigation.Ship, now time.Time, window time.Duration) bool {
+	return ship.ReleasedWithinBy(gate.ConstructionReleaseReason, now, window)
+}
 
 // CargoCapacityPolicy controls whether a dedicated-fleet lookup excludes hulls
 // with zero cargo capacity, mirroring the "unsuitable = UNSELECTABLE, not

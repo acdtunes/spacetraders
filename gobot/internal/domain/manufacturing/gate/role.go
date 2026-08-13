@@ -35,6 +35,9 @@ const (
 	FactoryFleetTag  = "gate-factory"
 )
 
+// ConstructionReleaseReason is stamped when a gate leg ends; the general pool's hand-back hold reads it.
+const ConstructionReleaseReason = "construction_supply_complete"
+
 // roleTags is the single source of truth for the Role <-> tag mapping, so String,
 // FleetTag and ParseFleetTag cannot drift apart.
 var roleTags = map[Role]string{

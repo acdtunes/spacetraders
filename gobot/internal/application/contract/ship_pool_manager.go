@@ -19,9 +19,10 @@ const roleHauler = "HAULER"
 // A ship is a candidate if:
 //  1. Its role is "HAULER" - or "COMMAND" when the caller passes IncludeCommandShip
 //  2. It is not dedicated to a coordinator's exclusive fleet (Ship.DedicatedFleet() is empty)
-//  3. It has cargo capacity (excludes probes/satellites)
-//  4. It is currently in systemFilter's system when a non-empty systemFilter is given
-//  5. It is not in transit and has no active assignment (Ship.IsIdle() is true)
+//  3. It is not a hull the gate-construction drain just handed back (see the hand-back hold below)
+//  4. It has cargo capacity (excludes probes/satellites)
+//  5. It is currently in systemFilter's system when a non-empty systemFilter is given
+//  6. It is not in transit and has no active assignment (Ship.IsIdle() is true)
 //
 // This provides a dynamic pool of available haulers without requiring pre-assignment.
 // Ship assignment status is now embedded in the Ship aggregate and enriched by the repository.
@@ -32,20 +33,20 @@ const roleHauler = "HAULER"
 //     so an out-of-system hull they could never operate is UNSELECTABLE here
 //     rather than claimed-then-failed. Fleet-wide callers (contract) pass ""
 //     for the pre-filter's original, unfiltered behavior.
-//   - policies: Optional command-ship policy (default: ExcludeCommandShip). Pass
-//     IncludeCommandShip to treat the command ship as a first-class candidate.
+//   - opts: Optional pool knobs, each defaulting to its zero value. Pass IncludeCommandShip to
+//     treat the command ship as a first-class candidate; pass ReleaseGateHandback (construction
+//     drain only) to see hulls the drain itself just handed back.
 func FindIdleLightHaulers(
 	ctx context.Context,
 	playerID shared.PlayerID,
 	shipRepo navigation.ShipRepository,
 	systemFilter string,
-	policies ...CommandShipPolicy,
+	opts ...PoolOption,
 ) ([]*navigation.Ship, []string, error) {
-	// Default: keep the command ship out of the pool.
-	policy := ExcludeCommandShip
-	if len(policies) > 0 {
-		policy = policies[0]
-	}
+	// Defaults: keep the command ship out of the pool, hold the gate drain's hand-backs.
+	options := resolvePoolOptions(opts)
+	policy := options.commandShip
+	now := options.clock.Now()
 	logger := common.LoggerFromContext(ctx)
 
 	// Fetch all ships for player (includes assignment data via hybrid repo)
@@ -63,6 +64,9 @@ func FindIdleLightHaulers(
 	// Track whether ANY haul-capable hull exists (regardless of availability),
 	// purely for the discovery log below.
 	candidateShipsExist := false
+
+	// Named in the log: a hull silently missing from the pool is the invisibility to avoid.
+	var gateHandbackHeld []string
 
 	for _, ship := range allShips {
 		// Candidacy by role. Haulers always qualify. The command ship (role
@@ -93,6 +97,19 @@ func FindIdleLightHaulers(
 		// contract` carries the tag and is routed to the coordinator's own
 		// FindIdleShipsByFleet lookup instead of here.
 		if ship.DedicatedFleet() != "" {
+			continue
+		}
+
+		// GATE HAND-BACK HOLD. The claim-filter above only sees hulls someone LABELLED, but the
+		// construction drain works UNDEDICATED hulls by design - its opportunistic pool is this very
+		// function - and releases the claim between legs, so between one gate leg and the next its
+		// crew carries no tag AND no assignment: identical here to a hull nobody is using. The pool
+		// would hand a mid-campaign gate hauler to the next asker, bleeding the drain's fleet one
+		// hull at a time. Classify on what the hull was DOING: the release the drain itself wrote.
+		// A HAND-BACK, not a second dedication - it lapses (GateHandbackWindow), and like the
+		// claim-filter it is layer 1 only; ClaimShip stays the correctness guarantee.
+		if options.gateHandback == HoldGateHandback && onGateConstructionHandback(ship, now, options.handbackWindow) {
+			gateHandbackHeld = append(gateHandbackHeld, ship.ShipSymbol())
 			continue
 		}
 
@@ -170,6 +187,7 @@ func FindIdleLightHaulers(
 		"hauler_symbols":               idleHaulerSymbols,
 		"command_hulls_held":           len(idleCommandHulls),
 		"command_admitted_last_resort": commandAdmittedLastResort,
+		"gate_handback_held":           gateHandbackHeld,
 	})
 
 	return idleHaulers, idleHaulerSymbols, nil

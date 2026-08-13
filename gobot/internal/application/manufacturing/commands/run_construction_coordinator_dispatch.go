@@ -116,7 +116,7 @@ func (h *RunConstructionCoordinatorHandler) selectHaulers(ctx context.Context, c
 	// Opportunistic pool: undedicated idle haulers in-system. FindIdleLightHaulers already excludes
 	// every dedicated hull and system-filters, so it never double-counts the dedicated pool above.
 	// Appended AFTER dedicated so the fan-out always pairs dedicated hulls first.
-	opportunistic, _, err := contract.FindIdleLightHaulers(ctx, playerID, h.shipRepo, systemSymbol)
+	opportunistic, _, err := contract.FindIdleLightHaulers(ctx, playerID, h.shipRepo, systemSymbol, contract.ReleaseGateHandback)
 	if err != nil {
 		return nil, fmt.Errorf("failed to discover idle haulers: %w", err)
 	}
