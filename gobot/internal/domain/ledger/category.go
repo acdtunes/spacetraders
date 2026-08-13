@@ -66,6 +66,8 @@ var TypeToCategoryMap = map[TransactionType]Category{
 	TransactionTypeModuleInstall: CategoryShipInvestments,
 	TransactionTypeModuleRemove:  CategoryShipInvestments,
 	TransactionTypeChart:         CategoryChartingRevenue,
+	// Scrapping is the disposal side of a hull purchase, so it lands beside it.
+	TransactionTypeScrapShip: CategoryShipInvestments,
 }
 
 // String returns the string representation of the Category

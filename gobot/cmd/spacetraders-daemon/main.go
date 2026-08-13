@@ -42,6 +42,7 @@ import (
 	shipCargo "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/cargo"
 	shipNav "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
 	shipOutfit "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/outfitting"
+	shipScrap "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/scrap"
 	shipTactics "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/tactics"
 	shipQuery "github.com/andrescamacho/spacetraders-go/internal/application/ship/queries"
 	"github.com/andrescamacho/spacetraders-go/internal/application/ship/strategies"
@@ -717,6 +718,13 @@ func run(cfg *config.Config) error {
 	}
 	if err := mediator.RegisterHandler[*shipOutfit.ListShipModulesQuery](med, outfittingHandler); err != nil {
 		return fmt.Errorf("failed to register ListShipModules handler: %w", err)
+	}
+
+	// Ship scrap handler: sells a hull for credits and retires it. Claims the hull
+	// (RULING #3/#7) and refuses while it still holds cargo (RULING #4).
+	scrapHandler := shipScrap.NewScrapShipHandler(shipRepo, playerRepo, apiClient, containerRepo, med, nil) // nil clock = RealClock
+	if err := mediator.RegisterHandler[*shipScrap.ScrapShipCommand](med, scrapHandler); err != nil {
+		return fmt.Errorf("failed to register ScrapShip handler: %w", err)
 	}
 
 	// Market scouting handlers (shipyardScanner constructed above, next to the

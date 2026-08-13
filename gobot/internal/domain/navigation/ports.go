@@ -87,6 +87,7 @@ type ShipRepository interface {
 	// Persistence methods (save ship aggregate including full state)
 	Save(ctx context.Context, ship *Ship) error
 	SaveAll(ctx context.Context, ships []*Ship) error
+	DeleteShip(ctx context.Context, symbol string, playerID shared.PlayerID) error
 
 	// SaveWithRetry loads the ship fresh, applies mutate, and persists it under
 	// the ships.version CAS guard. On a concurrent-writer conflict it

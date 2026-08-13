@@ -53,6 +53,12 @@ service DaemonService {
   // between: the move is instantaneous, so there is nothing to track.
   rpc TransferCargo(TransferCargoRequest) returns (TransferCargoResponse);
 
+  // ScrapShip sells a hull back to a shipyard for credits and retires it from the
+  // fleet. Single-writer daemon op (RULING #3): atomically claims the hull, REFUSES
+  // while it still holds cargo (a scrap destroys the hold and pays nothing for it),
+  // docks, sells, records the proceeds and deletes the ships row. Irreversible.
+  rpc ScrapShip(ScrapShipRequest) returns (ScrapShipResponse);
+
   // BatchContractWorkflow executes batch contract workflow operations
   rpc BatchContractWorkflow(BatchContractWorkflowRequest) returns (BatchContractWorkflowResponse);
 
@@ -640,6 +646,36 @@ message TransferCargoResponse {
   // sitting at different waypoints and a receiver with no room left; both name
   // their own condition, so neither is ever collapsed into a generic failure.
   string error = 7;
+}
+
+// ScrapShipRequest sells one hull for credits and retires it. Irreversible.
+message ScrapShipRequest {
+  // Hull to scrap (e.g., "TORWIND-446")
+  string ship_symbol = 1;
+
+  // Player ID for authentication
+  int32 player_id = 2;
+
+  // Optional agent symbol (alternative to player_id)
+  optional string agent_symbol = 3;
+}
+
+// ScrapShipResponse reports the completed sale, or the refusal.
+message ScrapShipResponse {
+  bool success = 1;
+  string ship_symbol = 2;
+
+  // waypoint_symbol is the shipyard the hull was sold at.
+  string waypoint_symbol = 3;
+
+  // total_price is what the hull fetched, in credits.
+  int32 total_price = 4;
+
+  string message = 5;
+
+  // error carries the refusal VERBATIM. The one an operator hits most is a hull
+  // that still holds cargo, which names its own condition and its own load.
+  string error = 6;
 }
 
 // BatchContractWorkflowRequest initiates batch contract workflow

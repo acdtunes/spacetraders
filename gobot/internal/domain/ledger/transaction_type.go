@@ -42,6 +42,8 @@ const (
 	// TransactionTypeChart represents the one-time reward the API pays for publicly
 	// charting a waypoint, priced on the rarity of the traits the chart reveals.
 	TransactionTypeChart TransactionType = "CHART"
+
+	TransactionTypeScrapShip TransactionType = "SCRAP_SHIP"
 )
 
 // String returns the string representation of the TransactionType
@@ -61,7 +63,8 @@ func (t TransactionType) IsValid() bool {
 		TransactionTypeJump,
 		TransactionTypeModuleInstall,
 		TransactionTypeModuleRemove,
-		TransactionTypeChart:
+		TransactionTypeChart,
+		TransactionTypeScrapShip:
 		return true
 	default:
 		return false

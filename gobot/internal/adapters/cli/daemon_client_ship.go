@@ -249,6 +249,48 @@ func (c *DaemonClient) TransferCargo(
 	}, nil
 }
 
+// ScrapShipResponse is the CLI-side result of a hull sale. Error carries the
+// daemon's refusal verbatim when the sale was turned away.
+type ScrapShipResponse struct {
+	Success        bool
+	ShipSymbol     string
+	WaypointSymbol string
+	TotalPrice     int32
+	Message        string
+	Error          string
+}
+
+// ScrapShip sells a hull for credits and retires it. The daemon performs the sale
+// behind its cargo guard (RULING #3: the CLI never touches the game API itself).
+func (c *DaemonClient) ScrapShip(
+	ctx context.Context,
+	shipSymbol string,
+	playerID int,
+	agentSymbol string,
+) (*ScrapShipResponse, error) {
+	req := &pb.ScrapShipRequest{
+		ShipSymbol: shipSymbol,
+		PlayerId:   int32(playerID),
+	}
+	if agentSymbol != "" {
+		req.AgentSymbol = &agentSymbol
+	}
+
+	resp, err := c.client.ScrapShip(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf(grpcCallFailed, err)
+	}
+
+	return &ScrapShipResponse{
+		Success:        resp.Success,
+		ShipSymbol:     resp.ShipSymbol,
+		WaypointSymbol: resp.WaypointSymbol,
+		TotalPrice:     resp.TotalPrice,
+		Message:        resp.Message,
+		Error:          resp.Error,
+	}, nil
+}
+
 // JettisonCargo jettisons cargo from a ship
 func (c *DaemonClient) JettisonCargo(
 	ctx context.Context,

@@ -52,6 +52,11 @@ type APIClient interface {
 	// return envelope.
 	WarpShip(ctx context.Context, symbol, destination, token string) (*navigation.Result, error)
 
+	// GetScrapQuote prices a hull without selling it; ScrapShip sells it and
+	// removes it from the fleet. Both refuse with 4263 away from a SHIPYARD.
+	GetScrapQuote(ctx context.Context, shipSymbol, token string) (*ScrapQuote, error)
+	ScrapShip(ctx context.Context, shipSymbol, token string) (*ScrapResult, error)
+
 	// Jump gate operations
 	GetJumpGate(ctx context.Context, systemSymbol, waypointSymbol, token string) (*JumpGateData, error)
 

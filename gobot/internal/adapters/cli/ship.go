@@ -55,6 +55,7 @@ Examples:
 	cmd.AddCommand(newShipJettisonCommand())
 	cmd.AddCommand(newShipOutfitCommand())
 	cmd.AddCommand(newShipTransferCommand())
+	cmd.AddCommand(newShipScrapCommand())
 
 	return cmd
 }

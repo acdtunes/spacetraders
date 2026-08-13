@@ -151,9 +151,20 @@ func mainPackageStats(t *testing.T, moduleDir string, touched []string) map[stri
 
 	// Only the touched packages are materialised; a full checkout of a large tree per gate run is
 	// wasted work when the comparison covers a handful of directories.
+	//
+	// A package the lane ADDED is absent here and is dropped: `git checkout <base> -- a b` is
+	// all-or-nothing, so leaving one unknown pathspec in the list would refuse the checkout and
+	// take the comparison for every other touched package down with it.
 	paths := make([]string, 0, len(touched))
 	for _, pkg := range touched {
-		paths = append(paths, filepath.Join(rel, pkg))
+		p := filepath.Join(rel, pkg)
+		if !presentAt(dir, base, p) {
+			continue
+		}
+		paths = append(paths, p)
+	}
+	if len(paths) == 0 {
+		return nil
 	}
 	if _, err := runGit(dir, append([]string{"checkout", base, "--"}, paths...)...); err != nil {
 		t.Fatalf("materialising the merge-base copies of %v: %v", touched, err)
@@ -248,6 +259,13 @@ func mergeBaseWithMain(t *testing.T, dir string) string {
 		"work out which those are without that ref. Fetch main, or run from a checkout "+
 		"that has it.", strings.Join(tried, "; "))
 	return ""
+}
+
+// presentAt reports whether commit's tree holds path. An unreadable answer counts as absent,
+// which only ever DROPS a package from the comparison — never invents a baseline for one.
+func presentAt(dir, commit, path string) bool {
+	out, err := runGit(dir, "ls-tree", "--name-only", commit, "--", path)
+	return err == nil && strings.TrimSpace(out) != ""
 }
 
 // looksLikeSHA is the calibration on the merge-base: an answer that is not a
@@ -595,6 +613,29 @@ func TestFileCeilingWithNoChangedFilesChecksNoFile(t *testing.T) {
 	// the file scope working and not a fixture whose file sits under the bar.
 	if got := scopedGateViolations(pkgs, bl, []string{"internal/mine"}, []string{"internal/mine/essay.go"}); len(got) != 2 {
 		t.Fatalf("violations = %v, want the regression AND the file ceiling once the file is named", got)
+	}
+}
+
+// A lane that ADDS a package must still be measurable. The new directory is absent from the
+// merge-base tree, and `git checkout <base> -- a b` is all-or-nothing: one unknown pathspec
+// refuses the whole checkout, so the comparison for every OTHER package it touched dies with it.
+func TestMergeBaseCensusToleratesAPackageTheLaneAdded(t *testing.T) {
+	dir := t.TempDir()
+	gitInit(t, dir)
+	writeGoFile(t, dir, "pkg/existing.go", leanLines)
+	gitMust(t, dir, "add", "-A")
+	gitMust(t, dir, "commit", "-m", "baseline on main")
+	gitMust(t, dir, "checkout", "-b", "lane")
+
+	writeGoFile(t, dir, "newpkg/added.go", essayLines)
+
+	onMain := mainPackageStats(t, dir, []string{"newpkg", "pkg"})
+
+	if _, ok := onMain["pkg"]; !ok {
+		t.Fatalf("the pre-existing package must still be censused at the merge base, got %v", onMain)
+	}
+	if _, ok := onMain["newpkg"]; ok {
+		t.Fatalf("a package absent from the merge base cannot have a census there, got %v", onMain)
 	}
 }
 

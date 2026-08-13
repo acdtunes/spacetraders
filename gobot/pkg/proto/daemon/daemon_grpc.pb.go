@@ -30,6 +30,7 @@ const (
 	DaemonService_RemoveModule_FullMethodName                  = "/daemon.DaemonService/RemoveModule"
 	DaemonService_ListShipModules_FullMethodName               = "/daemon.DaemonService/ListShipModules"
 	DaemonService_TransferCargo_FullMethodName                 = "/daemon.DaemonService/TransferCargo"
+	DaemonService_ScrapShip_FullMethodName                     = "/daemon.DaemonService/ScrapShip"
 	DaemonService_BatchContractWorkflow_FullMethodName         = "/daemon.DaemonService/BatchContractWorkflow"
 	DaemonService_ContractFleetCoordinator_FullMethodName      = "/daemon.DaemonService/ContractFleetCoordinator"
 	DaemonService_ScoutTour_FullMethodName                     = "/daemon.DaemonService/ScoutTour"
@@ -141,6 +142,11 @@ type DaemonServiceClient interface {
 	// the API requires co-location. Synchronous like the outfit verbs it sits
 	// between: the move is instantaneous, so there is nothing to track.
 	TransferCargo(ctx context.Context, in *TransferCargoRequest, opts ...grpc.CallOption) (*TransferCargoResponse, error)
+	// ScrapShip sells a hull back to a shipyard for credits and retires it from the
+	// fleet. Single-writer daemon op (RULING #3): atomically claims the hull, REFUSES
+	// while it still holds cargo (a scrap destroys the hold and pays nothing for it),
+	// docks, sells, records the proceeds and deletes the ships row. Irreversible.
+	ScrapShip(ctx context.Context, in *ScrapShipRequest, opts ...grpc.CallOption) (*ScrapShipResponse, error)
 	// BatchContractWorkflow executes batch contract workflow operations
 	BatchContractWorkflow(ctx context.Context, in *BatchContractWorkflowRequest, opts ...grpc.CallOption) (*BatchContractWorkflowResponse, error)
 	// ContractFleetCoordinator manages a pool of ships for continuous contract execution
@@ -453,6 +459,16 @@ func (c *daemonServiceClient) TransferCargo(ctx context.Context, in *TransferCar
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(TransferCargoResponse)
 	err := c.cc.Invoke(ctx, DaemonService_TransferCargo_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) ScrapShip(ctx context.Context, in *ScrapShipRequest, opts ...grpc.CallOption) (*ScrapShipResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ScrapShipResponse)
+	err := c.cc.Invoke(ctx, DaemonService_ScrapShip_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1171,6 +1187,11 @@ type DaemonServiceServer interface {
 	// the API requires co-location. Synchronous like the outfit verbs it sits
 	// between: the move is instantaneous, so there is nothing to track.
 	TransferCargo(context.Context, *TransferCargoRequest) (*TransferCargoResponse, error)
+	// ScrapShip sells a hull back to a shipyard for credits and retires it from the
+	// fleet. Single-writer daemon op (RULING #3): atomically claims the hull, REFUSES
+	// while it still holds cargo (a scrap destroys the hold and pays nothing for it),
+	// docks, sells, records the proceeds and deletes the ships row. Irreversible.
+	ScrapShip(context.Context, *ScrapShipRequest) (*ScrapShipResponse, error)
 	// BatchContractWorkflow executes batch contract workflow operations
 	BatchContractWorkflow(context.Context, *BatchContractWorkflowRequest) (*BatchContractWorkflowResponse, error)
 	// ContractFleetCoordinator manages a pool of ships for continuous contract execution
@@ -1411,6 +1432,9 @@ func (UnimplementedDaemonServiceServer) ListShipModules(context.Context, *ListSh
 }
 func (UnimplementedDaemonServiceServer) TransferCargo(context.Context, *TransferCargoRequest) (*TransferCargoResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method TransferCargo not implemented")
+}
+func (UnimplementedDaemonServiceServer) ScrapShip(context.Context, *ScrapShipRequest) (*ScrapShipResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ScrapShip not implemented")
 }
 func (UnimplementedDaemonServiceServer) BatchContractWorkflow(context.Context, *BatchContractWorkflowRequest) (*BatchContractWorkflowResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method BatchContractWorkflow not implemented")
@@ -1828,6 +1852,24 @@ func _DaemonService_TransferCargo_Handler(srv interface{}, ctx context.Context, 
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(DaemonServiceServer).TransferCargo(ctx, req.(*TransferCargoRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_ScrapShip_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ScrapShipRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).ScrapShip(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_ScrapShip_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).ScrapShip(ctx, req.(*ScrapShipRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -3088,6 +3130,10 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "TransferCargo",
 			Handler:    _DaemonService_TransferCargo_Handler,
+		},
+		{
+			MethodName: "ScrapShip",
+			Handler:    _DaemonService_ScrapShip_Handler,
 		},
 		{
 			MethodName: "BatchContractWorkflow",
