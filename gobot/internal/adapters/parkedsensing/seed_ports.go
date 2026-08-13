@@ -153,13 +153,12 @@ func (p *SeedCommandPort) JumpTo(ctx context.Context, playerID int, shipSymbol, 
 	nextSystem, err := nextHopToward(ctx, p.neighbours, currentSystem, targetSystem)
 	if err != nil {
 		common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf(
-			"Charting seed %s is bound for %s from %s, but no gate route could be named within %d jumps of stored adjacency — the errand is held and retried, and the hull keeps counting against the probe cap: %v",
-			shipSymbol, targetSystem, currentSystem, routerHopBound, err), map[string]interface{}{
-			"action":         "parked_sensing_seed_walk_unroutable",
-			"ship_symbol":    shipSymbol,
-			"from_system":    currentSystem,
-			"target_system":  targetSystem,
-			"max_walk_rings": routerHopBound,
+			"Charting seed %s is bound for %s from %s, but an unbounded search of stored adjacency found no connected path — the errand is held and retried, and the hull keeps counting against the probe cap: %v",
+			shipSymbol, targetSystem, currentSystem, err), map[string]interface{}{
+			"action":        "parked_sensing_seed_walk_unroutable",
+			"ship_symbol":   shipSymbol,
+			"from_system":   currentSystem,
+			"target_system": targetSystem,
 		})
 		return fmt.Errorf("failed to name the next system for seed %s bound for %s: %w", shipSymbol, targetSystem, err)
 	}

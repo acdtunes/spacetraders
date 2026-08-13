@@ -135,8 +135,15 @@ func TestRouteAcross_StillNamesAnUnroutableWalk(t *testing.T) {
 	err := mover.RouteAcross(ctx, testPlayerID, "PROBE-A", "X1-AA-G1", "X1-BB-M1")
 	require.Error(t, err)
 
-	require.Len(t, logger.withAction("parked_sensing_gate_walk_unroutable"), 1,
-		"an unroutable walk must still be named")
+	named := logger.withAction("parked_sensing_gate_walk_unroutable")
+	require.Len(t, named, 1, "an unroutable walk must still be named")
 	require.Empty(t, logger.withAction("parked_sensing_gate_step_failed"),
 		"an unroutable walk was reported as a refused step, though no step was ever attempted")
+
+	// routerHopBound is the unbounded sentinel (0), not a real cap: printed as "within
+	// 0 jumps" it reads as a hop limit that was hit, which is not what happened here.
+	require.NotContains(t, named[0].message, "0 jumps",
+		"the unbounded search sentinel was printed as if it were a real hop count")
+	require.Contains(t, named[0].message, "unbounded",
+		"the message must say the search was unbounded, not imply a numeric cap was reached")
 }

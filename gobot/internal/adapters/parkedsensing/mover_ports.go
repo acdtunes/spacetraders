@@ -158,13 +158,12 @@ func (p *MoverPort) RouteAcross(ctx context.Context, playerID int, shipSymbol, f
 	nextSystem, err := nextHopToward(ctx, p.neighbours, currentSystem, shared.ExtractSystemSymbol(destination))
 	if err != nil {
 		common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf(
-			"Sensing placement wants %s walked from %s to %s, but no gate route could be named within %d jumps of stored adjacency — the placement is held and retried, and the hull keeps counting against the probe cap: %v",
-			shipSymbol, currentSystem, destination, routerHopBound, err), map[string]interface{}{
-			"action":         "parked_sensing_gate_walk_unroutable",
-			"ship_symbol":    shipSymbol,
-			"from_system":    currentSystem,
-			"destination":    destination,
-			"max_walk_rings": routerHopBound,
+			"Sensing placement wants %s walked from %s to %s, but an unbounded search of stored adjacency found no connected path — the placement is held and retried, and the hull keeps counting against the probe cap: %v",
+			shipSymbol, currentSystem, destination, err), map[string]interface{}{
+			"action":      "parked_sensing_gate_walk_unroutable",
+			"ship_symbol": shipSymbol,
+			"from_system": currentSystem,
+			"destination": destination,
 		})
 		return fmt.Errorf("failed to name the next system for %s walking to %s: %w", shipSymbol, destination, err)
 	}
@@ -419,7 +418,10 @@ func nextHopToward(ctx context.Context, neighbours appSensing.GateNeighbours, fr
 		}
 		frontier = next
 	}
-	return "", fmt.Errorf("no stored gate route from %s to %s within %d jumps", fromSystem, toSystem, routerHopBound)
+	if routerHopBound <= 0 {
+		return "", fmt.Errorf("no stored gate route from %s to %s: an unbounded search of stored adjacency found no connected path", fromSystem, toSystem)
+	}
+	return "", fmt.Errorf("no stored gate route from %s to %s within %d jumps of stored adjacency", fromSystem, toSystem, routerHopBound)
 }
 
 // dispatchHop orbits a hull and hands it ONE in-system hop, returning as soon as

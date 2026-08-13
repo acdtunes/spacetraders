@@ -131,7 +131,7 @@ func (t *drainTick) candidatesInSystem(ctx context.Context, slot QueuedSlot, inS
 	}
 
 	yards := make([]string, 0, len(listed)+1)
-	if slot.PurchaseYard != "" {
+	if recordedLocalYard(slot) != "" {
 		yards = append(yards, slot.PurchaseYard)
 	}
 	for _, y := range listed {
@@ -156,6 +156,18 @@ func (t *drainTick) candidatesInSystem(ctx context.Context, slot QueuedSlot, inS
 		}
 	}
 	return candidates, nil
+}
+
+// recordedLocalYard returns slot.PurchaseYard when it names a yard inside
+// slot.System, and "" for a remote one that ferry.candidates must re-verify.
+func recordedLocalYard(slot QueuedSlot) string {
+	if slot.PurchaseYard == "" {
+		return ""
+	}
+	if shared.ExtractSystemSymbol(slot.PurchaseYard) != slot.System {
+		return ""
+	}
+	return slot.PurchaseYard
 }
 
 // skipKnownProbeless reports whether a yard may be passed over WITHOUT a live
