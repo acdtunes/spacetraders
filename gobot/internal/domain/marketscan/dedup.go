@@ -7,7 +7,7 @@ import "time"
 // every DedupEligible caller so the guards can never disagree about what
 // "negligible" means. It also bounds how much OLDER than afterArrival the
 // cached row's own timestamp may be — see DedupEligible.
-const DedupMaxElapsedSinceArrival = 3 * time.Second
+const DedupMaxElapsedSinceArrival = 20 * time.Second
 
 // DedupEligible reports whether an Earning-class guard scan may reuse a market
 // row already on file instead of spending a fresh live scan. Every condition
