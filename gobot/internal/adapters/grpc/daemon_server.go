@@ -529,6 +529,14 @@ func (s *DaemonServer) registerMetricsCollectors(getContainers func() map[string
 	}
 	metrics.SetGlobalScanBudgetCollector(scanBudgetCollector)
 
+	// The scan-dedup A/B test's saved-calls counter. Same unpublished-collector trap as
+	// scan-budget above: an unwired global leaves the recorder a silent, nil-safe no-op.
+	scanDedupCollector, err := registerCollector(metrics.NewScanDedupMetricsCollector(), "scan-dedup metrics collector")
+	if err != nil {
+		return err
+	}
+	metrics.SetGlobalScanDedupCollector(scanDedupCollector)
+
 	fleetHealthCollector, err := registerCollector(metrics.NewFleetHealthMetricsCollector(), "fleet-health metrics collector")
 	if err != nil {
 		return err

@@ -327,6 +327,8 @@ func (h *RunTourCoordinatorHandler) buyLookbackItem(
 	if err != nil {
 		return 0
 	}
+	// Fresh per manifest item, so the bracket is never shared across purchases.
+	dedupBracket := h.legs.startScanDedupBracket(ctx, cmd.ShipSymbol, cmd.PlayerID)
 	ship, err = h.legs.travel(ctx, ship, item.SourceWaypoint, cmd.PlayerID)
 	if err != nil {
 		logger.Log("INFO", fmt.Sprintf("Look-back: could not reach source %s for %s (%v) - skipping this good", item.SourceWaypoint, item.Good, err), map[string]interface{}{
@@ -337,6 +339,7 @@ func (h *RunTourCoordinatorHandler) buyLookbackItem(
 	if err := h.legs.dock(ctx, ship, cmd.PlayerID); err != nil {
 		return 0
 	}
+	dedupBracket = h.legs.confirmScanDedupArrival(dedupBracket)
 
 	live, oerr := h.legs.observeGood(ctx, item.SourceWaypoint, item.Good, cmd.PlayerID)
 	if oerr != nil {
@@ -406,7 +409,7 @@ func (h *RunTourCoordinatorHandler) buyLookbackItem(
 	}
 
 	plannedAt := h.clock.Now()
-	buyResp, err := h.legs.purchaseWithCeiling(ctx, cmd.ShipSymbol, item.Good, units, cmd.PlayerID, maxAsk, scanDedupBracket{}) // no scan-dedup for this leg
+	buyResp, err := h.legs.purchaseWithCeiling(ctx, cmd.ShipSymbol, item.Good, units, cmd.PlayerID, maxAsk, dedupBracket)
 	if err != nil {
 		logger.Log("INFO", fmt.Sprintf("Look-back: purchase of %d %s at %s failed (%v) - skipping this good", units, item.Good, item.SourceWaypoint, err), map[string]interface{}{
 			"ship_symbol": cmd.ShipSymbol, "good": item.Good, "waypoint": item.SourceWaypoint,

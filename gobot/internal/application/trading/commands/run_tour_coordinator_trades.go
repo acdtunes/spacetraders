@@ -87,6 +87,7 @@ func (h *RunTourCoordinatorHandler) executeTrade(
 	legIdx int,
 	trade routing.TourTrade,
 	legSells map[string]*tourSinkSale,
+	dedup scanDedupBracket,
 ) (bool, error) {
 	logger := common.LoggerFromContext(ctx)
 
@@ -125,7 +126,7 @@ func (h *RunTourCoordinatorHandler) executeTrade(
 	}
 
 	if trade.IsBuy {
-		return h.executeBuy(ctx, run.cmd, leg, legIdx, trade, run.shadowSinks, run.dispositions, live, run.response, run.netBought, run.cumulativeSpend, run.maxSpend, run.reserve)
+		return h.executeBuy(ctx, run.cmd, leg, legIdx, trade, run.shadowSinks, run.dispositions, live, run.response, run.netBought, run.cumulativeSpend, run.maxSpend, run.reserve, dedup)
 	}
 	return h.executeSell(ctx, run, leg, legIdx, trade, live, legSells)
 }
@@ -143,6 +144,7 @@ func (h *RunTourCoordinatorHandler) executeBuy(
 	netBought map[string]int,
 	cumulativeSpend *int64,
 	maxSpend, reserve int64,
+	dedup scanDedupBracket,
 ) (bool, error) {
 	logger := common.LoggerFromContext(ctx)
 
@@ -259,7 +261,7 @@ func (h *RunTourCoordinatorHandler) executeBuy(
 	// sub-tranche prices past the plan's tolerance.
 	planned := trade.ExpectedUnitPrice
 	maxAskPerUnit := planned + planned*tourPriceTolerancePct/100
-	buyResp, err := h.legs.purchaseWithCeiling(ctx, cmd.ShipSymbol, trade.Good, units, cmd.PlayerID, maxAskPerUnit, scanDedupBracket{}) // no scan-dedup for this leg
+	buyResp, err := h.legs.purchaseWithCeiling(ctx, cmd.ShipSymbol, trade.Good, units, cmd.PlayerID, maxAskPerUnit, dedup)
 	if err != nil {
 		return false, fmt.Errorf("purchase of %d %s at %s failed: %w", units, trade.Good, leg.Waypoint, err)
 	}

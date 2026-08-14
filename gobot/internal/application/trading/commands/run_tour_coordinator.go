@@ -1068,6 +1068,9 @@ func (h *RunTourCoordinatorHandler) executePlan(
 		// place the real departure time exists. It anchors the visualizer's
 		// schedule-drift glyph (drift = arrivesAt − (departedAt + travelSeconds)).
 		legDepartedAt := time.Now().UTC()
+		// Captured before travel(); cleared after the leg's first buy consumes it
+		// (below), since a leg may carry several.
+		legDedupBracket := h.legs.startScanDedupBracket(ctx, cmd.ShipSymbol, cmd.PlayerID)
 		ship, err = h.legs.travel(ctx, ship, leg.Waypoint, cmd.PlayerID)
 		if err != nil {
 			if errors.Is(err, gategraph.ErrUnroutable) {
@@ -1092,6 +1095,7 @@ func (h *RunTourCoordinatorHandler) executePlan(
 		if err := h.legs.dock(ctx, ship, cmd.PlayerID); err != nil {
 			return false, fmt.Errorf("dock at leg %d (%s) failed: %w", legIdx, leg.Waypoint, err)
 		}
+		legDedupBracket = h.legs.confirmScanDedupArrival(legDedupBracket)
 
 		legDegraded := false
 		// Accumulate realized units sold per good at THIS leg, so the sink's recovery
@@ -1101,7 +1105,10 @@ func (h *RunTourCoordinatorHandler) executePlan(
 		// Sells before buys (errata): a leg that fills the hold both ways must free
 		// space before spending it, and sell tranches are ordered price-ascending.
 		for _, trade := range legTradesToFly(leg.Trades, discharging) {
-			executed, terr := h.executeTrade(ctx, run, leg, legIdx, trade, legSells)
+			executed, terr := h.executeTrade(ctx, run, leg, legIdx, trade, legSells, legDedupBracket)
+			if trade.IsBuy {
+				legDedupBracket = scanDedupBracket{} // exhausted once offered to one buy
+			}
 			if terr != nil {
 				return false, terr
 			}

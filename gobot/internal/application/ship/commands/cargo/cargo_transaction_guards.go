@@ -89,10 +89,10 @@ func (h *CargoTransactionHandler) liveBidForFloor(ctx context.Context, waypoint,
 // port, matching liveBidForFloor). ok=false on any inability to read an ask, so the
 // caller holds the remainder (does not buy) rather than purchase blind above the ceiling.
 //
-// dedupBeforeTravel/dedupAfterArrival are the scan-dedup bracket (zero on
-// every caller but the trade-route circuit's first-visit purchase): when
-// reuseScanDedup proves it safe, this skips the scan below and reads the row
-// the same visit's arrival already wrote. The ceiling verdict never changes.
+// dedupBeforeTravel/dedupAfterArrival are the scan-dedup bracket (zero
+// unless the caller captured one for this purchase): when reuseScanDedup
+// proves it safe, this skips the scan below and reads the row the same
+// visit's arrival already wrote. The ceiling verdict never changes.
 func (h *CargoTransactionHandler) liveAskForCeiling(ctx context.Context, waypoint, good, shipSymbol string, playerID shared.PlayerID, dedupBeforeTravel, dedupAfterArrival time.Time) (int, bool) {
 	if h.marketRefresher != nil {
 		if !h.reuseScanDedup(ctx, dedupBeforeTravel, dedupAfterArrival, waypoint, shipSymbol, playerID) {

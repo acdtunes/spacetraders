@@ -127,6 +127,7 @@ func (w circuitWiring) configureTourCoordinator(h *tradeRouteCmd.RunTourCoordina
 	// Trade's share of the per-operation capital budget; degrades gracefully to the
 	// whole pool whenever the construction drain is not running.
 	h.SetCapitalWorkSensor(w.capitalWorkSensor)
+	h.SetScanDedupAllowlist(persistence.NewScanDedupAllowlistGORM(w.db))
 	return marketFreshness
 }
 

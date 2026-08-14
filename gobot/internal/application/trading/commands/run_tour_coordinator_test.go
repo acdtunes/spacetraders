@@ -137,6 +137,10 @@ type tourFixture struct {
 	// replay a real daemon bounce against the real derivation instead of a hand-written
 	// obligation map. Purely additive; a test that never reads it is unaffected.
 	ledgerLegs []ledger.CargoLeg
+
+	// dedupBrackets captures each PurchaseCargoCommand's ScanDedupBeforeTravel/AfterArrival
+	// pair, in dispatch order. Purely additive; a test that never reads it is unaffected.
+	dedupBrackets []scanDedupBracket
 }
 
 // recordLegLocked appends the ledger row a cargo transaction writes. Caller holds fx.mu. The
@@ -283,6 +287,7 @@ func (m *tourFakeMediator) Send(ctx context.Context, request common.Request) (co
 		m.fx.timeline = append(m.fx.timeline, "BUY:"+cmd.GoodSymbol)
 		m.fx.buys++
 		m.fx.buyOpTypes = append(m.fx.buyOpTypes, shared.OperationContextFromContext(ctx).NormalizedOperationType())
+		m.fx.dedupBrackets = append(m.fx.dedupBrackets, scanDedupBracket{BeforeTravel: cmd.ScanDedupBeforeTravel, AfterArrival: cmd.ScanDedupAfterArrival})
 		m.fx.recordLegLocked(ctx, cmd.ShipSymbol, cmd.GoodSymbol, units, true)
 		m.fx.mu.Unlock()
 		return &shipCargo.PurchaseCargoResponse{TotalCost: units * price, UnitsAdded: units, TransactionCount: 1}, nil

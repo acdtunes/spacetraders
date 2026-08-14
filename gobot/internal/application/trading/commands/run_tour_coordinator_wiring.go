@@ -121,6 +121,12 @@ func (h *RunTourCoordinatorHandler) SetChartGateOnArrival(enabled bool) {
 	h.legs.SetChartGateOnArrival(enabled)
 }
 
+// SetScanDedupAllowlist mirrors the SetGateGraph delegation. Left unset (nil), every
+// leg's bracket stays disabled.
+func (h *RunTourCoordinatorHandler) SetScanDedupAllowlist(a ScanDedupAllowlist) {
+	h.legs.SetScanDedupAllowlist(a)
+}
+
 // SetScanPolicy wires the tour-scan load policy (recent-scan freshness gate +
 // impact-sample rate, resolved from cfg.TradeImpact on restart). Stamped onto ctx at run
 // start so the shared arrival + post-trade scans throttle the deliberate price-impact
