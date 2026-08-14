@@ -406,7 +406,7 @@ func (h *RunTourCoordinatorHandler) buyLookbackItem(
 	}
 
 	plannedAt := h.clock.Now()
-	buyResp, err := h.legs.purchaseWithCeiling(ctx, cmd.ShipSymbol, item.Good, units, cmd.PlayerID, maxAsk)
+	buyResp, err := h.legs.purchaseWithCeiling(ctx, cmd.ShipSymbol, item.Good, units, cmd.PlayerID, maxAsk, scanDedupBracket{}) // no scan-dedup for this leg
 	if err != nil {
 		logger.Log("INFO", fmt.Sprintf("Look-back: purchase of %d %s at %s failed (%v) - skipping this good", units, item.Good, item.SourceWaypoint, err), map[string]interface{}{
 			"ship_symbol": cmd.ShipSymbol, "good": item.Good, "waypoint": item.SourceWaypoint,

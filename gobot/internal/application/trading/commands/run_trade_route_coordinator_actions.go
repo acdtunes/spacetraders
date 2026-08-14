@@ -97,13 +97,18 @@ func (h *RunTradeRouteCoordinatorHandler) dock(ctx context.Context, ship *naviga
 // buy-side mirror of sellWithFloor and the fix for the stale-ask ladder (SHIP_PARTS
 // bought at D39 as the ask ran 3,985→~7k inside one dispatch). maxAskPerUnit==0 is
 // exactly a plain buy, so the manufacturing/contract callers are unchanged.
-func (h *RunTradeRouteCoordinatorHandler) purchaseWithCeiling(ctx context.Context, shipSymbol, good string, units, playerID, maxAskPerUnit int) (*shipCargo.PurchaseCargoResponse, error) {
+//
+// dedup forwards the scan-dedup bracket so the buy-ceiling guard may reuse
+// this visit's own arrival scan; see CargoTransactionCommand's fields.
+func (h *RunTradeRouteCoordinatorHandler) purchaseWithCeiling(ctx context.Context, shipSymbol, good string, units, playerID, maxAskPerUnit int, dedup scanDedupBracket) (*shipCargo.PurchaseCargoResponse, error) {
 	resp, err := h.mediator.Send(ctx, &shipCargo.PurchaseCargoCommand{
-		ShipSymbol:    shipSymbol,
-		GoodSymbol:    good,
-		Units:         units,
-		PlayerID:      shared.MustNewPlayerID(playerID),
-		MaxAskPerUnit: maxAskPerUnit,
+		ShipSymbol:            shipSymbol,
+		GoodSymbol:            good,
+		Units:                 units,
+		PlayerID:              shared.MustNewPlayerID(playerID),
+		MaxAskPerUnit:         maxAskPerUnit,
+		ScanDedupBeforeTravel: dedup.BeforeTravel,
+		ScanDedupAfterArrival: dedup.AfterArrival,
 	})
 	if err != nil {
 		return nil, err

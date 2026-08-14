@@ -197,6 +197,14 @@ service DaemonService {
   // daemon is the sole writer of the persisted set (RULINGS #3).
   rpc FleetHub(FleetHubRequest) returns (FleetHubResponse);
 
+  // ScanDedupAllowlist adds, removes, or lists ships on the sp-7q61f scan-dedup
+  // A/B test's live allowlist, with no container restart. An armed ship's
+  // trade-route circuit may reuse a visit's own arrival scan for its
+  // earning-class guards instead of spending a second live GetMarket call; the
+  // default (unarmed) is byte-identical to before this bead. The daemon is the
+  // sole writer of the persisted set (RULINGS #3).
+  rpc ScanDedupAllowlist(ScanDedupAllowlistRequest) returns (ScanDedupAllowlistResponse);
+
   // ListWaypoints lists the waypoints of a system from the daemon's waypoint cache
   rpc ListWaypoints(ListWaypointsRequest) returns (ListWaypointsResponse);
 
@@ -1215,6 +1223,26 @@ message FleetHubResponse {
   // changed is false when the verb was a no-op (add of an existing hub, or
   // remove of an absent one), so the CLI can report it honestly.
   bool changed = 3;
+}
+
+// ScanDedupAllowlistRequest mutates or reads the sp-7q61f scan-dedup allowlist
+// for one player, live (sp-7q61f).
+message ScanDedupAllowlistRequest {
+  // action is "add", "remove", or "list". ship_symbol is required for
+  // add/remove and ignored for list.
+  string action = 1;
+  string ship_symbol = 2;
+  optional int32 player_id = 3;
+  optional string agent_symbol = 4;
+}
+
+message ScanDedupAllowlistResponse {
+  // ship_symbols is the resulting armed set after the mutation (or the full
+  // set, for a list action), sorted.
+  repeated string ship_symbols = 1;
+  // changed is false when add/remove was a no-op (add of an already-armed
+  // ship, or remove of an absent one); always false for a list action.
+  bool changed = 2;
 }
 
 // RetireShipRequest marks a hull for retirement, or cancels the mark. Unlike

@@ -285,6 +285,9 @@ func (h *RunTradeRouteCoordinatorHandler) flyVisits(
 		// Leg 1: buy a tranche at the source (exporter). A cross-system lane
 		// jumps instead of navigating (sp-wlev); travel reloads the ship
 		// afterward so this pointer reflects its post-jump state.
+		//
+		// Captured before travel() so BeforeTravel precedes this visit's arrival.
+		dedupBracket := h.startScanDedupBracket(ctx, ship.ShipSymbol(), playerID)
 		var err error
 		ship, err = h.travel(ctx, ship, lane.SourceWaypoint, playerID)
 		if err != nil {
@@ -300,6 +303,9 @@ func (h *RunTradeRouteCoordinatorHandler) flyVisits(
 			logger.Log("WARNING", fmt.Sprintf("Dock at source %s failed: %v - ending circuit", lane.SourceWaypoint, err), map[string]interface{}{"error": err.Error()})
 			return ship, held
 		}
+		// Confirmed arrival: the elapsed budget below is measured from here, not
+		// from travel start, so flight time itself never counts against it.
+		dedupBracket = h.confirmScanDedupArrival(dedupBracket)
 
 		// Live-verify the ranked basis before the FIRST buy (hazard b): the lane was
 		// ranked from a market cache that can be many minutes stale. Now that the hull
@@ -307,7 +313,7 @@ func (h *RunTradeRouteCoordinatorHandler) flyVisits(
 		// re-read the source ask and abort if it has run away from the basis the lane
 		// was ranked on — buying on a stale basis has realised a large loss (a -196k
 		// precedent). Only the first visit re-verifies; later visits already re-observe.
-		if i == 0 && h.staleAskAborts(ctx, lane, playerID, response) {
+		if i == 0 && h.staleAskAborts(ctx, lane, playerID, response, ship.ShipSymbol(), dedupBracket) {
 			return ship, held
 		}
 
@@ -316,7 +322,7 @@ func (h *RunTradeRouteCoordinatorHandler) flyVisits(
 		// above checked only this visit's FIRST live ask; this bounds the intra-buy ladder
 		// a multi-tranche purchase walks up itself (the D39 stale-ask class), aborting the
 		// remainder once a sub-tranche prices past the bid-floor.
-		buyResp, err := h.purchaseWithCeiling(ctx, ship.ShipSymbol(), lane.Good, buyUnits, playerID, destBid-trading.MinBidMargin)
+		buyResp, err := h.purchaseWithCeiling(ctx, ship.ShipSymbol(), lane.Good, buyUnits, playerID, destBid-trading.MinBidMargin, dedupBracket)
 		if err != nil {
 			response.AbortReason = fmt.Sprintf("purchase of %d %s at source %s failed: %v", buyUnits, lane.Good, lane.SourceWaypoint, err)
 			logger.Log("WARNING", "Purchase failed - ending circuit", map[string]interface{}{"error": err.Error()})

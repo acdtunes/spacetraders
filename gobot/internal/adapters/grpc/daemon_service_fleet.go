@@ -158,6 +158,42 @@ func (s *daemonServiceImpl) FleetHub(ctx context.Context, req *pb.FleetHubReques
 	}, nil
 }
 
+// ScanDedupAllowlist adds, removes, or lists ships on the sp-7q61f scan-dedup
+// A/B test's live allowlist. Resolves the player from player_id or
+// agent_symbol (like the other coordinator RPCs), then delegates the
+// persisted-set mutation/read to the daemon, which is the single writer
+// (RULINGS #3).
+func (s *daemonServiceImpl) ScanDedupAllowlist(ctx context.Context, req *pb.ScanDedupAllowlistRequest) (*pb.ScanDedupAllowlistResponse, error) {
+	var pid int32
+	if req.PlayerId != nil {
+		pid = *req.PlayerId
+	}
+	playerID, err := s.resolvePlayerID(ctx, pid, req.AgentSymbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve player: %w", err)
+	}
+
+	switch req.Action {
+	case "add", "remove":
+		if req.ShipSymbol == "" {
+			return nil, fmt.Errorf("ship_symbol is required for action %q", req.Action)
+		}
+		ships, changed, err := s.daemon.MutateScanDedupAllowlist(ctx, req.ShipSymbol, req.Action == "add", playerID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to mutate scan-dedup allowlist: %w", err)
+		}
+		return &pb.ScanDedupAllowlistResponse{ShipSymbols: ships, Changed: changed}, nil
+	case "list":
+		ships, err := s.daemon.ListScanDedupAllowlist(ctx, playerID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to list scan-dedup allowlist: %w", err)
+		}
+		return &pb.ScanDedupAllowlistResponse{ShipSymbols: ships}, nil
+	default:
+		return nil, fmt.Errorf("unknown scan-dedup allowlist action %q (want add|remove|list)", req.Action)
+	}
+}
+
 func (s *daemonServiceImpl) UnassignShipFleet(ctx context.Context, req *pb.UnassignShipFleetRequest) (*pb.UnassignShipFleetResponse, error) {
 	var playerID *int
 	if req.PlayerId != nil {

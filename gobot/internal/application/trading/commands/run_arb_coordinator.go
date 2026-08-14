@@ -798,7 +798,7 @@ func (h *RunArbCoordinatorHandler) guardAndBuy(
 	if cmd.MinMargin <= 0 {
 		maxAskPerUnit = destBid - 1
 	}
-	buyResp, err := h.legs.purchaseWithCeiling(ctx, cmd.ShipSymbol, cmd.Good, units, cmd.PlayerID, maxAskPerUnit)
+	buyResp, err := h.legs.purchaseWithCeiling(ctx, cmd.ShipSymbol, cmd.Good, units, cmd.PlayerID, maxAskPerUnit, scanDedupBracket{}) // no scan-dedup for this leg
 	if err != nil {
 		response.AbortReason = fmt.Sprintf("purchase of %d %s at %s failed: %v", units, cmd.Good, cmd.BuyAt, err)
 		return 0, err

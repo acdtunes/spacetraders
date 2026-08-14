@@ -378,6 +378,10 @@ type RunTradeRouteCoordinatorHandler struct {
 	// test — ranks on the analyst's era3/4 fit rather than a cap of 0. Only the ranker
 	// VISIBILITY cap; the execution money guards are untouched (RULINGS #4).
 	rankerAgeCaps trading.RankerAgeCaps
+	// scanDedupAllowlist is the live ship-symbol allowlist for the scan-dedup A/B
+	// test: armed ships let staleAskAborts reuse a visit's own arrival scan.
+	// Optional; nil disables the dedup path entirely, byte-for-byte unchanged.
+	scanDedupAllowlist ScanDedupAllowlist
 }
 
 // GateGraph resolves multi-jump routes over the persisted cross-system gate

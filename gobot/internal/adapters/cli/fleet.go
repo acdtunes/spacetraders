@@ -62,6 +62,7 @@ Examples:
 	cmd.AddCommand(newFleetUnassignCommand())
 	cmd.AddCommand(newFleetListCommand())
 	cmd.AddCommand(newFleetHubCommand())
+	cmd.AddCommand(newFleetScanDedupCommand())
 
 	return cmd
 }

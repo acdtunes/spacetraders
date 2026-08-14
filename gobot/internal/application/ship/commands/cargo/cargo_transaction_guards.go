@@ -3,10 +3,16 @@ package cargo
 import (
 	"context"
 	"fmt"
+	"time"
 
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
 	"github.com/andrescamacho/spacetraders-go/internal/application/logging"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/marketscan"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
+
+// scanDedupGuardBuyCeiling labels the buy-ceiling guard for the saved-calls counter.
+const scanDedupGuardBuyCeiling = "buy_ceiling"
 
 // sellFloorTripped re-reads the LIVE bid before a sell tranche; a crushed bid holds
 // the remainder aboard. Armed by MinBidPerUnit>0; fails CLOSED on an unreadable bid.
@@ -34,7 +40,7 @@ func (h *CargoTransactionHandler) buyCeilingTripped(ctx context.Context, cmd *Ca
 	if transactionType != "purchase" || cmd.MaxAskPerUnit <= 0 {
 		return false, 0
 	}
-	liveAsk, ok := h.liveAskForCeiling(ctx, waypointSymbol, cmd.GoodSymbol, cmd.PlayerID)
+	liveAsk, ok := h.liveAskForCeiling(ctx, waypointSymbol, cmd.GoodSymbol, cmd.ShipSymbol, cmd.PlayerID, cmd.ScanDedupBeforeTravel, cmd.ScanDedupAfterArrival)
 	if ok && liveAsk <= cmd.MaxAskPerUnit {
 		return false, 0
 	}
@@ -82,11 +88,18 @@ func (h *CargoTransactionHandler) liveBidForFloor(ctx context.Context, waypoint,
 // bought. With no refresher wired it reads the cached ask (fail-open on the missing
 // port, matching liveBidForFloor). ok=false on any inability to read an ask, so the
 // caller holds the remainder (does not buy) rather than purchase blind above the ceiling.
-func (h *CargoTransactionHandler) liveAskForCeiling(ctx context.Context, waypoint, good string, playerID shared.PlayerID) (int, bool) {
+//
+// dedupBeforeTravel/dedupAfterArrival are the scan-dedup bracket (zero on
+// every caller but the trade-route circuit's first-visit purchase): when
+// reuseScanDedup proves it safe, this skips the scan below and reads the row
+// the same visit's arrival already wrote. The ceiling verdict never changes.
+func (h *CargoTransactionHandler) liveAskForCeiling(ctx context.Context, waypoint, good, shipSymbol string, playerID shared.PlayerID, dedupBeforeTravel, dedupAfterArrival time.Time) (int, bool) {
 	if h.marketRefresher != nil {
-		// LIVE, not budgeted — the exact mirror of liveBidForFloor's exemption.
-		if err := h.marketRefresher.ScanAndSaveMarket(shared.WithLiveScanRequired(ctx), uint(playerID.Value()), waypoint); err != nil {
-			return 0, false
+		if !h.reuseScanDedup(ctx, dedupBeforeTravel, dedupAfterArrival, waypoint, shipSymbol, playerID) {
+			// LIVE, not budgeted — the exact mirror of liveBidForFloor's exemption.
+			if err := h.marketRefresher.ScanAndSaveMarket(shared.WithLiveScanRequired(ctx), uint(playerID.Value()), waypoint); err != nil {
+				return 0, false
+			}
 		}
 	}
 	mkt, err := h.marketRepo.GetMarketData(ctx, waypoint, playerID.Value())
@@ -98,4 +111,27 @@ func (h *CargoTransactionHandler) liveAskForCeiling(ctx context.Context, waypoin
 		return 0, false
 	}
 	return g.PurchasePrice(), true // market PURCHASE price = the ASK the hull pays to buy
+}
+
+// reuseScanDedup is the buy-ceiling guard's eligibility+reuse check, the
+// cargo-side mirror of the trade-route circuit's own. Any doubt reports
+// false, the caller's cue to scan live exactly as before (fail closed).
+func (h *CargoTransactionHandler) reuseScanDedup(ctx context.Context, beforeTravel, afterArrival time.Time, waypoint, shipSymbol string, playerID shared.PlayerID) bool {
+	if beforeTravel.IsZero() || afterArrival.IsZero() {
+		return false
+	}
+	row, err := h.marketRepo.GetMarketData(ctx, waypoint, playerID.Value())
+	if err != nil || row == nil {
+		return false
+	}
+	if !marketscan.DedupEligible(h.clock.Now(), beforeTravel, afterArrival, row.LastUpdated(), marketscan.DedupMaxElapsedSinceArrival) {
+		return false
+	}
+	metrics.RecordScanDedupSaved(playerID.Value(), shipSymbol, scanDedupGuardBuyCeiling)
+	logging.LoggerFromContext(ctx).Log("DEBUG", fmt.Sprintf(
+		"Scan-dedup: reusing this visit's own arrival scan of %s for the buy-ceiling guard instead of a second live GetMarket call",
+		waypoint), map[string]interface{}{
+		"action": "scan_dedup_reused", "waypoint": waypoint, "ship_symbol": shipSymbol, "guard": scanDedupGuardBuyCeiling,
+	})
+	return true
 }

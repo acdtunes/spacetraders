@@ -165,15 +165,25 @@ func (h *RunTradeRouteCoordinatorHandler) spendFloorBreached(
 // refresher wired, or when the refresh/read itself fails, it proceeds on the ranked
 // basis (a transient scan hiccup must not strand an otherwise-good circuit). Only a
 // live ask that is actually present AND beyond tolerance aborts the run.
+//
+// dedup is the scan-dedup bracket (zero on every unarmed ship): when
+// reuseScanDedup proves it safe, it skips the scan below and reads the row
+// this visit's own arrival already wrote — the verdict itself never changes.
 func (h *RunTradeRouteCoordinatorHandler) staleAskAborts(
 	ctx context.Context,
 	lane trading.ArbitrageLane,
 	playerID int,
 	response *RunTradeRouteCoordinatorResponse,
+	shipSymbol string,
+	dedup scanDedupBracket,
 ) bool {
 	logger := common.LoggerFromContext(ctx)
 	if h.marketRefresher == nil {
 		return false
+	}
+
+	if h.reuseScanDedup(ctx, dedup, shipSymbol, lane.SourceWaypoint, playerID, scanDedupGuardStaleAsk, logger) {
+		return h.staleAskVerdict(ctx, lane, playerID, response, logger)
 	}
 
 	// LIVE, not budgeted: the whole point of this guard is that the RANKED basis
@@ -187,6 +197,18 @@ func (h *RunTradeRouteCoordinatorHandler) staleAskAborts(
 		return false
 	}
 
+	return h.staleAskVerdict(ctx, lane, playerID, response, logger)
+}
+
+// staleAskVerdict applies the tolerance check to the now-live source ask,
+// shared by both the fresh-scan and the proven-safe-reuse path.
+func (h *RunTradeRouteCoordinatorHandler) staleAskVerdict(
+	ctx context.Context,
+	lane trading.ArbitrageLane,
+	playerID int,
+	response *RunTradeRouteCoordinatorResponse,
+	logger common.ContainerLogger,
+) bool {
 	liveSrc, err := h.observeGood(ctx, lane.SourceWaypoint, lane.Good, playerID)
 	if err != nil {
 		logger.Log("WARNING", "Could not read live source ask after refresh - proceeding on ranked basis", map[string]interface{}{

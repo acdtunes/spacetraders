@@ -197,6 +197,26 @@ func (c *DaemonClient) FleetHub(ctx context.Context, operation, waypoint string,
 	return resp, nil
 }
 
+// ScanDedupAllowlist adds, removes, or lists ships on the sp-7q61f scan-dedup
+// A/B test's live allowlist. action is "add", "remove", or "list"; shipSymbol
+// is ignored for "list".
+func (c *DaemonClient) ScanDedupAllowlist(ctx context.Context, action, shipSymbol string, playerIdent *PlayerIdentifier) (*pb.ScanDedupAllowlistResponse, error) {
+	playerID, agentSymbol := playerPointers(playerIdent)
+	req := &pb.ScanDedupAllowlistRequest{
+		Action:      action,
+		ShipSymbol:  shipSymbol,
+		PlayerId:    playerID,
+		AgentSymbol: agentSymbol,
+	}
+
+	resp, err := c.client.ScanDedupAllowlist(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf(grpcCallFailed, err)
+	}
+
+	return resp, nil
+}
+
 // ListFleets lists every dedicated fleet and its member ships
 func (c *DaemonClient) ListFleets(ctx context.Context, playerIdent *PlayerIdentifier) (*pb.ListFleetsResponse, error) {
 	playerID, agentSymbol := playerPointers(playerIdent)

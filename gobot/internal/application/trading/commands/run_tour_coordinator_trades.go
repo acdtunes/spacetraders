@@ -259,7 +259,7 @@ func (h *RunTourCoordinatorHandler) executeBuy(
 	// sub-tranche prices past the plan's tolerance.
 	planned := trade.ExpectedUnitPrice
 	maxAskPerUnit := planned + planned*tourPriceTolerancePct/100
-	buyResp, err := h.legs.purchaseWithCeiling(ctx, cmd.ShipSymbol, trade.Good, units, cmd.PlayerID, maxAskPerUnit)
+	buyResp, err := h.legs.purchaseWithCeiling(ctx, cmd.ShipSymbol, trade.Good, units, cmd.PlayerID, maxAskPerUnit, scanDedupBracket{}) // no scan-dedup for this leg
 	if err != nil {
 		return false, fmt.Errorf("purchase of %d %s at %s failed: %w", units, trade.Good, leg.Waypoint, err)
 	}

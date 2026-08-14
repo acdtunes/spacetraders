@@ -3,6 +3,7 @@ package cargo
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	scoutingQuery "github.com/andrescamacho/spacetraders-go/internal/application/scouting/queries"
@@ -33,6 +34,11 @@ type PurchaseCargoCommand struct {
 	// if it rises above this per-unit ceiling. 0 disables it — the unchanged path for
 	// every caller but the arb/circuit executors. See CargoTransactionCommand.
 	MaxAskPerUnit int
+
+	// ScanDedupBeforeTravel/AfterArrival forward the scan-dedup bracket to the
+	// buy-ceiling guard; see CargoTransactionCommand's fields of the same name.
+	ScanDedupBeforeTravel time.Time
+	ScanDedupAfterArrival time.Time
 }
 
 // PurchaseCargoResponse contains the results of a cargo purchase operation.
@@ -99,11 +105,13 @@ func (h *PurchaseCargoHandler) Handle(ctx context.Context, request common.Reques
 
 	// Convert to unified command
 	unifiedCmd := &CargoTransactionCommand{
-		ShipSymbol:    cmd.ShipSymbol,
-		GoodSymbol:    cmd.GoodSymbol,
-		Units:         cmd.Units,
-		PlayerID:      cmd.PlayerID,
-		MaxAskPerUnit: cmd.MaxAskPerUnit, // Per-tranche buy ceiling (0 → disabled)
+		ShipSymbol:            cmd.ShipSymbol,
+		GoodSymbol:            cmd.GoodSymbol,
+		Units:                 cmd.Units,
+		PlayerID:              cmd.PlayerID,
+		MaxAskPerUnit:         cmd.MaxAskPerUnit, // Per-tranche buy ceiling (0 → disabled)
+		ScanDedupBeforeTravel: cmd.ScanDedupBeforeTravel,
+		ScanDedupAfterArrival: cmd.ScanDedupAfterArrival,
 	}
 
 	// Delegate to unified handler

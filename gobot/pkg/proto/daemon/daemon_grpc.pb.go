@@ -65,6 +65,7 @@ const (
 	DaemonService_RetireShip_FullMethodName                    = "/daemon.DaemonService/RetireShip"
 	DaemonService_ListFleets_FullMethodName                    = "/daemon.DaemonService/ListFleets"
 	DaemonService_FleetHub_FullMethodName                      = "/daemon.DaemonService/FleetHub"
+	DaemonService_ScanDedupAllowlist_FullMethodName            = "/daemon.DaemonService/ScanDedupAllowlist"
 	DaemonService_ListWaypoints_FullMethodName                 = "/daemon.DaemonService/ListWaypoints"
 	DaemonService_GetWaypoint_FullMethodName                   = "/daemon.DaemonService/GetWaypoint"
 	DaemonService_PurchaseShip_FullMethodName                  = "/daemon.DaemonService/PurchaseShip"
@@ -249,6 +250,13 @@ type DaemonServiceClient interface {
 	// hub removed re-homes its hulls to the remaining set on the next tick. The
 	// daemon is the sole writer of the persisted set (RULINGS #3).
 	FleetHub(ctx context.Context, in *FleetHubRequest, opts ...grpc.CallOption) (*FleetHubResponse, error)
+	// ScanDedupAllowlist adds, removes, or lists ships on the sp-7q61f scan-dedup
+	// A/B test's live allowlist, with no container restart. An armed ship's
+	// trade-route circuit may reuse a visit's own arrival scan for its
+	// earning-class guards instead of spending a second live GetMarket call; the
+	// default (unarmed) is byte-identical to before this bead. The daemon is the
+	// sole writer of the persisted set (RULINGS #3).
+	ScanDedupAllowlist(ctx context.Context, in *ScanDedupAllowlistRequest, opts ...grpc.CallOption) (*ScanDedupAllowlistResponse, error)
 	// ListWaypoints lists the waypoints of a system from the daemon's waypoint cache
 	ListWaypoints(ctx context.Context, in *ListWaypointsRequest, opts ...grpc.CallOption) (*ListWaypointsResponse, error)
 	// GetWaypoint returns the detail of a single waypoint
@@ -815,6 +823,16 @@ func (c *daemonServiceClient) FleetHub(ctx context.Context, in *FleetHubRequest,
 	return out, nil
 }
 
+func (c *daemonServiceClient) ScanDedupAllowlist(ctx context.Context, in *ScanDedupAllowlistRequest, opts ...grpc.CallOption) (*ScanDedupAllowlistResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ScanDedupAllowlistResponse)
+	err := c.cc.Invoke(ctx, DaemonService_ScanDedupAllowlist_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *daemonServiceClient) ListWaypoints(ctx context.Context, in *ListWaypointsRequest, opts ...grpc.CallOption) (*ListWaypointsResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListWaypointsResponse)
@@ -1294,6 +1312,13 @@ type DaemonServiceServer interface {
 	// hub removed re-homes its hulls to the remaining set on the next tick. The
 	// daemon is the sole writer of the persisted set (RULINGS #3).
 	FleetHub(context.Context, *FleetHubRequest) (*FleetHubResponse, error)
+	// ScanDedupAllowlist adds, removes, or lists ships on the sp-7q61f scan-dedup
+	// A/B test's live allowlist, with no container restart. An armed ship's
+	// trade-route circuit may reuse a visit's own arrival scan for its
+	// earning-class guards instead of spending a second live GetMarket call; the
+	// default (unarmed) is byte-identical to before this bead. The daemon is the
+	// sole writer of the persisted set (RULINGS #3).
+	ScanDedupAllowlist(context.Context, *ScanDedupAllowlistRequest) (*ScanDedupAllowlistResponse, error)
 	// ListWaypoints lists the waypoints of a system from the daemon's waypoint cache
 	ListWaypoints(context.Context, *ListWaypointsRequest) (*ListWaypointsResponse, error)
 	// GetWaypoint returns the detail of a single waypoint
@@ -1537,6 +1562,9 @@ func (UnimplementedDaemonServiceServer) ListFleets(context.Context, *ListFleetsR
 }
 func (UnimplementedDaemonServiceServer) FleetHub(context.Context, *FleetHubRequest) (*FleetHubResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method FleetHub not implemented")
+}
+func (UnimplementedDaemonServiceServer) ScanDedupAllowlist(context.Context, *ScanDedupAllowlistRequest) (*ScanDedupAllowlistResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ScanDedupAllowlist not implemented")
 }
 func (UnimplementedDaemonServiceServer) ListWaypoints(context.Context, *ListWaypointsRequest) (*ListWaypointsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListWaypoints not implemented")
@@ -2486,6 +2514,24 @@ func _DaemonService_FleetHub_Handler(srv interface{}, ctx context.Context, dec f
 	return interceptor(ctx, in, info, handler)
 }
 
+func _DaemonService_ScanDedupAllowlist_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ScanDedupAllowlistRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).ScanDedupAllowlist(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_ScanDedupAllowlist_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).ScanDedupAllowlist(ctx, req.(*ScanDedupAllowlistRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _DaemonService_ListWaypoints_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ListWaypointsRequest)
 	if err := dec(in); err != nil {
@@ -3270,6 +3316,10 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "FleetHub",
 			Handler:    _DaemonService_FleetHub_Handler,
+		},
+		{
+			MethodName: "ScanDedupAllowlist",
+			Handler:    _DaemonService_ScanDedupAllowlist_Handler,
 		},
 		{
 			MethodName: "ListWaypoints",

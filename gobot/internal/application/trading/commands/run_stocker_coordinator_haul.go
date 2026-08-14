@@ -67,7 +67,7 @@ func (h *RunStockerCoordinatorHandler) buy(
 	// sp-9mkf live-verify: arm the per-tranche ceiling at the miner's foreign ask plus
 	// tolerance, so a laddered/stale live ask aborts the remainder fail-closed before spend.
 	maxAskPerUnit := pick.ForeignAsk + pick.ForeignAsk*tourPriceTolerancePct/100
-	buyResp, err := h.legs.purchaseWithCeiling(ctx, cmd.ShipSymbol, pick.Good, units, cmd.PlayerID, maxAskPerUnit)
+	buyResp, err := h.legs.purchaseWithCeiling(ctx, cmd.ShipSymbol, pick.Good, units, cmd.PlayerID, maxAskPerUnit, scanDedupBracket{}) // no scan-dedup for this leg
 	if err != nil {
 		return 0, fmt.Errorf("purchase of %d %s at %s failed: %w", units, pick.Good, pick.ForeignMarket, err)
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync/atomic"
+	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/application/logging"
@@ -60,6 +61,12 @@ type CargoTransactionCommand struct {
 	// executors arm it with the max ask that still clears the lane's justifying margin
 	// (quoted dest bid − min-margin); see the arb coordinator. Ignored for sells.
 	MaxAskPerUnit int
+
+	// ScanDedupBeforeTravel and ScanDedupAfterArrival are the scan-dedup bracket
+	// the buy-ceiling guard checks. Both zero (every caller but the trade-route
+	// circuit's armed first-visit purchase) leaves the guard unchanged.
+	ScanDedupBeforeTravel time.Time
+	ScanDedupAfterArrival time.Time
 }
 
 // CargoTransactionResponse contains the unified results of a cargo transaction.
@@ -127,6 +134,10 @@ type CargoTransactionHandler struct {
 	// permanently sampled-in or -out. Atomic because the handler is a daemon singleton
 	// dispatched concurrently across hulls.
 	impactNonce atomic.Uint64
+
+	// clock backs the buy-ceiling guard's scan-dedup eligibility check. Defaults
+	// to RealClock; SetClock lets a test share a MockClock with the caller.
+	clock shared.Clock
 }
 
 // NewCargoTransactionHandler creates a new cargo transaction handler with the given strategy.
@@ -154,6 +165,15 @@ func NewCargoTransactionHandler(
 		apiClient:       apiClient,
 		mediator:        mediator,
 		marketRefresher: marketRefresher,
+		clock:           shared.NewRealClock(),
+	}
+}
+
+// SetClock overrides the handler's clock, so a test can share a *shared.MockClock
+// with a caller across the package boundary. A nil clock is ignored.
+func (h *CargoTransactionHandler) SetClock(c shared.Clock) {
+	if c != nil {
+		h.clock = c
 	}
 }
 
@@ -353,6 +373,16 @@ func (h *CargoTransactionHandler) executeTransactions(ctx context.Context, cmd *
 				serverGoodUnits = 0
 			}
 			shortfallExhausted = true
+		}
+
+		// A purchase tranche just executed for real, so its own fill can move
+		// the ask before the next tranche checks it — exactly what the buy
+		// ceiling exists to catch. The dedup bracket may only ever cover the
+		// first tranche: clear it so any later tranche is forced back onto
+		// liveAskForCeiling's live scan, same as an unarmed ship.
+		if transactionType == "purchase" {
+			cmd.ScanDedupBeforeTravel = time.Time{}
+			cmd.ScanDedupAfterArrival = time.Time{}
 		}
 
 		totalAmount += result.TotalAmount
