@@ -4,12 +4,11 @@ import (
 	"context"
 	"log"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/andrescamacho/spacetraders-go/internal/application/common"
-	ledgerQueries "github.com/andrescamacho/spacetraders-go/internal/application/ledger/queries"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
@@ -17,7 +16,6 @@ import (
 // FinancialMetricsCollector handles all financial metrics (credits, transactions, P&L)
 type FinancialMetricsCollector struct {
 	// Dependencies
-	mediator      common.Mediator
 	playerRepo    player.PlayerRepository         // For fetching player data
 	getContainers func() map[string]ContainerInfo // Function to get current containers
 
@@ -33,6 +31,15 @@ type FinancialMetricsCollector struct {
 	// operation_type (contract/tour/arbitrage/...) + category + player_id.
 	ledgerRevenueTotal *prometheus.CounterVec // += amount when amount > 0
 	ledgerCostTotal    *prometheus.CounterVec // += -amount when amount < 0
+
+	// categoryTotalsMu guards revenueByCategory/expenseByCategory, the in-process
+	// running totals updateProfitLoss reads instead of re-deriving all-time sums
+	// from the database every tick (sp-<pending>): they're updated in lockstep with
+	// ledgerRevenueTotal/ledgerCostTotal above, at zero extra DB cost, and reset on
+	// restart exactly like those counters already do.
+	categoryTotalsMu  sync.Mutex
+	revenueByCategory map[string]map[string]int64 // player_id -> category -> total
+	expenseByCategory map[string]map[string]int64
 
 	// P&L metrics
 	totalRevenue  *prometheus.GaugeVec
@@ -50,14 +57,14 @@ type FinancialMetricsCollector struct {
 
 // NewFinancialMetricsCollector creates a new financial metrics collector
 func NewFinancialMetricsCollector(
-	mediator common.Mediator,
 	playerRepo player.PlayerRepository,
 	getContainers func() map[string]ContainerInfo,
 ) *FinancialMetricsCollector {
 	return &FinancialMetricsCollector{
-		mediator:      mediator,
-		playerRepo:    playerRepo,
-		getContainers: getContainers,
+		playerRepo:        playerRepo,
+		getContainers:     getContainers,
+		revenueByCategory: make(map[string]map[string]int64),
+		expenseByCategory: make(map[string]map[string]int64),
 
 		// Current credits balance gauge
 		creditsBalance: newGaugeVec(
@@ -164,13 +171,10 @@ func (c *FinancialMetricsCollector) Start(ctx context.Context) {
 	c.startPolling(60*time.Second, true, c.updateProfitLoss)
 }
 
-// updateProfitLoss fetches and updates P&L metrics
+// updateProfitLoss republishes the in-process running totals (kept current by
+// recordLedgerFlow on every transaction) into the P&L gauges. No database read:
+// see the categoryTotalsMu field comment for why.
 func (c *FinancialMetricsCollector) updateProfitLoss() {
-	if c.mediator == nil {
-		return
-	}
-
-	// Get unique player IDs from active containers
 	containers := c.getContainers()
 	if len(containers) == 0 {
 		// No active containers, skip P&L metrics
@@ -182,28 +186,7 @@ func (c *FinancialMetricsCollector) updateProfitLoss() {
 		playerIDs[containerInfo.PlayerID()] = true
 	}
 
-	// Collect metrics for each player with active containers
 	for playerID := range playerIDs {
-		// Execute GetProfitLossQuery for all-time P&L
-		// Use epoch start and far future to capture all transactions
-		query := &ledgerQueries.GetProfitLossQuery{
-			PlayerID:  playerID,
-			StartDate: time.Unix(0, 0),                // Epoch start (1970-01-01)
-			EndDate:   time.Now().Add(24 * time.Hour), // Tomorrow to ensure we get everything
-		}
-
-		response, err := c.mediator.Send(context.Background(), query)
-		if err != nil {
-			log.Printf("Failed to fetch profit/loss for player %d: %v", playerID, err)
-			continue // Skip this player but continue with others
-		}
-
-		plResponse, ok := response.(*ledgerQueries.GetProfitLossResponse)
-		if !ok {
-			log.Printf("Unexpected response type for P&L query: %T", response)
-			continue
-		}
-
 		playerIDStr := strconv.Itoa(playerID)
 
 		// Fetch player data from database to get agent symbol
@@ -221,18 +204,21 @@ func (c *FinancialMetricsCollector) updateProfitLoss() {
 		// this gauge's sole writer, sourced from the ledger's authoritative running
 		// balance.
 
-		// Update revenue metrics by category
-		for category, amount := range plResponse.RevenueBreakdown {
+		c.categoryTotalsMu.Lock()
+		revenue := c.revenueByCategory[playerIDStr]
+		expense := c.expenseByCategory[playerIDStr]
+		var totalRevenue, totalExpense int64
+		for category, amount := range revenue {
 			c.totalRevenue.WithLabelValues(playerIDStr, agentSymbol, category).Set(float64(amount))
+			totalRevenue += amount
 		}
-
-		// Update expense metrics by category
-		for category, amount := range plResponse.ExpenseBreakdown {
+		for category, amount := range expense {
 			c.totalExpenses.WithLabelValues(playerIDStr, agentSymbol, category).Set(float64(amount))
+			totalExpense += amount
 		}
+		c.categoryTotalsMu.Unlock()
 
-		// Update net profit
-		c.netProfit.WithLabelValues(playerIDStr).Set(float64(plResponse.NetProfit))
+		c.netProfit.WithLabelValues(playerIDStr).Set(float64(totalRevenue - totalExpense))
 	}
 }
 
@@ -274,11 +260,24 @@ func (c *FinancialMetricsCollector) RecordTransaction(
 func (c *FinancialMetricsCollector) recordLedgerFlow(operationType, category, playerIDStr string, amount int) {
 	if amount > 0 {
 		c.ledgerRevenueTotal.WithLabelValues(operationType, category, playerIDStr).Add(float64(amount))
+		c.addCategoryTotal(c.revenueByCategory, playerIDStr, category, int64(amount))
 		return
 	}
 	if amount < 0 {
 		c.ledgerCostTotal.WithLabelValues(operationType, category, playerIDStr).Add(float64(-amount))
+		c.addCategoryTotal(c.expenseByCategory, playerIDStr, category, int64(-amount))
 	}
+}
+
+// addCategoryTotal increments one player+category cell of a running-total map,
+// initializing the player's row on first use.
+func (c *FinancialMetricsCollector) addCategoryTotal(totals map[string]map[string]int64, playerIDStr, category string, delta int64) {
+	c.categoryTotalsMu.Lock()
+	defer c.categoryTotalsMu.Unlock()
+	if totals[playerIDStr] == nil {
+		totals[playerIDStr] = make(map[string]int64)
+	}
+	totals[playerIDStr][category] += delta
 }
 
 // RecordTrade records trade profitability metrics

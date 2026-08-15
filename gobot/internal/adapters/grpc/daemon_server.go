@@ -430,7 +430,7 @@ func (s *DaemonServer) registerMetricsCollectors(getContainers func() map[string
 	}
 	metrics.SetGlobalNavigationCollector(navCollector)
 
-	finCollector, err := registerCollector(metrics.NewFinancialMetricsCollector(s.mediator, s.playerRepo, getContainers), "financial metrics collector")
+	finCollector, err := registerCollector(metrics.NewFinancialMetricsCollector(s.playerRepo, getContainers), "financial metrics collector")
 	if err != nil {
 		return err
 	}

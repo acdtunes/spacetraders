@@ -26,7 +26,7 @@ import (
 // RecordTrade OBSERVES BOTH HISTOGRAMS. Pins the arithmetic the wiring depends on: margin is
 // (sell-buy)/buy as a percentage, profit is per UNIT.
 func TestRecordTrade_ObservesMarginAndProfitPerUnit(t *testing.T) {
-	c := NewFinancialMetricsCollector(nil, nil, nil)
+	c := NewFinancialMetricsCollector(nil, nil)
 
 	require.Zero(t, testutil.CollectAndCount(c.tradeMarginPercent), "fresh collector should hold no series")
 
@@ -42,7 +42,7 @@ func TestRecordTrade_ObservesMarginAndProfitPerUnit(t *testing.T) {
 // the documented fail-open floor), and dividing by it would emit a wrong sample. A missing sample is
 // better than a wrong one.
 func TestRecordTrade_RefusesToPublishAMarginItCannotCompute(t *testing.T) {
-	c := NewFinancialMetricsCollector(nil, nil, nil)
+	c := NewFinancialMetricsCollector(nil, nil)
 
 	c.RecordTrade(1, "FUEL", 0, 150, 10)  // no basis
 	c.RecordTrade(1, "FUEL", 100, 0, 10)  // no revenue

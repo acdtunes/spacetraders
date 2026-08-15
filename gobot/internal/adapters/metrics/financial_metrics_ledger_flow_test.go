@@ -42,7 +42,7 @@ func TestRecordTransaction_EmitsLedgerFlowCounters(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			collector := NewFinancialMetricsCollector(nil, nil, nil)
+			collector := NewFinancialMetricsCollector(nil, nil)
 
 			collector.RecordTransaction(
 				playerID, agentSymbol, "CONTRACT_ACCEPTED", category, tc.amount, 100000, operationType,

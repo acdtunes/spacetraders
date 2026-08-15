@@ -21,7 +21,7 @@ import (
 // splits Operating vs Net capex on category!='SHIP_INVESTMENTS'. This test
 // fails loudly if a future cleanup over-reaches and strips category there too.
 func TestTransactionMetrics_LabeledByTypeNotCategory(t *testing.T) {
-	collector := NewFinancialMetricsCollector(nil, nil, nil)
+	collector := NewFinancialMetricsCollector(nil, nil)
 
 	reg := prometheus.NewRegistry()
 	reg.MustRegister(

@@ -7,23 +7,10 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
 
-	"github.com/andrescamacho/spacetraders-go/internal/application/common"
-	ledgerQueries "github.com/andrescamacho/spacetraders-go/internal/application/ledger/queries"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
-
-// stubCreditsGaugeMediator answers GetProfitLossQuery with a fixed response,
-// just enough to drive the poller (updateProfitLoss) without a database.
-type stubCreditsGaugeMediator struct {
-	common.Mediator
-	plResponse *ledgerQueries.GetProfitLossResponse
-}
-
-func (s *stubCreditsGaugeMediator) Send(_ context.Context, _ common.Request) (common.Response, error) {
-	return s.plResponse, nil
-}
 
 // stubCreditsGaugePlayerRepo mirrors the REAL GormPlayerRepository contract:
 // FindByID never populates Credits from the DB (the column isn't persisted
@@ -67,13 +54,6 @@ func TestUpdateProfitLoss_NeverStompsCreditsBalanceToZero(t *testing.T) {
 	const agentSymbol = "TEST_AGENT"
 	const realBalance = 3245000
 
-	mediator := &stubCreditsGaugeMediator{
-		plResponse: &ledgerQueries.GetProfitLossResponse{
-			RevenueBreakdown: map[string]int{},
-			ExpenseBreakdown: map[string]int{},
-			NetProfit:        realBalance,
-		},
-	}
 	playerRepo := &stubCreditsGaugePlayerRepo{agentSymbol: agentSymbol}
 	getContainers := func() map[string]ContainerInfo {
 		return map[string]ContainerInfo{
@@ -81,7 +61,7 @@ func TestUpdateProfitLoss_NeverStompsCreditsBalanceToZero(t *testing.T) {
 		}
 	}
 
-	collector := NewFinancialMetricsCollector(mediator, playerRepo, getContainers)
+	collector := NewFinancialMetricsCollector(playerRepo, getContainers)
 
 	// A real transaction lands first - the ledger's authoritative value.
 	collector.RecordTransaction(playerID, agentSymbol, "SELL_CARGO", "trade", 1000, realBalance, "tour")
@@ -100,18 +80,13 @@ func TestUpdateProfitLoss_NeverStompsCreditsBalanceToZero(t *testing.T) {
 
 // TestUpdateProfitLoss_StillUpdatesProfitAndLossMetrics guards against a fix
 // that silences the poller entirely: revenue/expense/net-profit are this
-// poller's actual job (unlike the credits gauge) and must keep landing.
+// poller's actual job (unlike the credits gauge) and must keep landing —
+// now sourced from the in-process running totals RecordTransaction maintains,
+// not a database round trip.
 func TestUpdateProfitLoss_StillUpdatesProfitAndLossMetrics(t *testing.T) {
 	const playerID = 7
 	const agentSymbol = "OTHER_AGENT"
 
-	mediator := &stubCreditsGaugeMediator{
-		plResponse: &ledgerQueries.GetProfitLossResponse{
-			RevenueBreakdown: map[string]int{"trade": 500},
-			ExpenseBreakdown: map[string]int{"fuel": 200},
-			NetProfit:        300,
-		},
-	}
 	playerRepo := &stubCreditsGaugePlayerRepo{agentSymbol: agentSymbol}
 	getContainers := func() map[string]ContainerInfo {
 		return map[string]ContainerInfo{
@@ -119,7 +94,10 @@ func TestUpdateProfitLoss_StillUpdatesProfitAndLossMetrics(t *testing.T) {
 		}
 	}
 
-	collector := NewFinancialMetricsCollector(mediator, playerRepo, getContainers)
+	collector := NewFinancialMetricsCollector(playerRepo, getContainers)
+	collector.RecordTransaction(playerID, agentSymbol, "SELL_CARGO", "trade", 500, 500, "tour")
+	collector.RecordTransaction(playerID, agentSymbol, "REFUEL", "fuel", -200, 300, "tour")
+
 	collector.updateProfitLoss()
 
 	if got := testutil.ToFloat64(collector.totalRevenue.WithLabelValues("7", agentSymbol, "trade")); got != 500 {
