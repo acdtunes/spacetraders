@@ -29,13 +29,13 @@ type GetProfitLossResponse struct {
 
 // GetProfitLossHandler handles the GetProfitLoss query
 type GetProfitLossHandler struct {
-	transactionRepo ledger.TransactionRepository
+	categoryTotals ledger.CategoryTotalsReader
 }
 
 // NewGetProfitLossHandler creates a new GetProfitLossHandler
-func NewGetProfitLossHandler(transactionRepo ledger.TransactionRepository) *GetProfitLossHandler {
+func NewGetProfitLossHandler(categoryTotals ledger.CategoryTotalsReader) *GetProfitLossHandler {
 	return &GetProfitLossHandler{
-		transactionRepo: transactionRepo,
+		categoryTotals: categoryTotals,
 	}
 }
 
@@ -51,34 +51,27 @@ func (h *GetProfitLossHandler) Handle(ctx context.Context, request common.Reques
 		return nil, fmt.Errorf("invalid player ID: %w", err)
 	}
 
-	opts := ledger.QueryOptions{
-		StartDate: &query.StartDate,
-		EndDate:   &query.EndDate,
-		Limit:     0, // No limit - get all transactions
-	}
-
-	transactions, err := h.transactionRepo.FindByPlayer(ctx, playerID, opts)
+	totals, err := h.categoryTotals.CategoryTotals(ctx, playerID, query.StartDate, query.EndDate)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query transactions: %w", err)
+		return nil, fmt.Errorf("failed to aggregate category totals: %w", err)
 	}
 
-	return h.calculateProfitLoss(query, transactions), nil
+	return h.calculateProfitLoss(query, totals), nil
 }
 
 func (h *GetProfitLossHandler) calculateProfitLoss(
 	query *GetProfitLossQuery,
-	transactions []*ledger.Transaction,
+	totals map[string]int64,
 ) *GetProfitLossResponse {
 	revenueBreakdown := make(map[string]int)
 	expenseBreakdown := make(map[string]int)
 	totalRevenue := 0
 	totalExpenses := 0
 
-	for _, tx := range transactions {
-		category := tx.Category().String()
-		amount := tx.Amount()
+	for category, total := range totals {
+		amount := int(total)
 
-		if tx.IsIncome() {
+		if ledger.Category(category).IsIncome() {
 			revenueBreakdown[category] += amount
 			totalRevenue += amount
 		} else {

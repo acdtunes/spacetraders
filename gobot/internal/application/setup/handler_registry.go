@@ -1,6 +1,8 @@
 package setup
 
 import (
+	"fmt"
+
 	gasCommands "github.com/andrescamacho/spacetraders-go/internal/application/gas/commands"
 	ledgerCommands "github.com/andrescamacho/spacetraders-go/internal/application/ledger/commands"
 	ledgerQueries "github.com/andrescamacho/spacetraders-go/internal/application/ledger/queries"
@@ -81,7 +83,11 @@ func (r *HandlerRegistry) RegisterLedgerHandlers(m mediator.Mediator) error {
 		return err
 	}
 
-	getProfitLossHandler := ledgerQueries.NewGetProfitLossHandler(r.transactionRepo)
+	categoryTotals, ok := r.transactionRepo.(ledger.CategoryTotalsReader)
+	if !ok {
+		return fmt.Errorf("transaction repository %T does not implement ledger.CategoryTotalsReader", r.transactionRepo)
+	}
+	getProfitLossHandler := ledgerQueries.NewGetProfitLossHandler(categoryTotals)
 	if err := mediator.RegisterHandler[*ledgerQueries.GetProfitLossQuery](m, getProfitLossHandler); err != nil {
 		return err
 	}

@@ -52,6 +52,14 @@ type TreasuryHighWaterReader interface {
 	) (highWater int64, readable bool, err error)
 }
 
+// CategoryTotalsReader sums signed amounts per category over a window in SQL, mirroring
+// GateFeeAggregator's separation from TransactionRepository above.
+type CategoryTotalsReader interface {
+	CategoryTotals(
+		ctx context.Context, playerID shared.PlayerID, since, until time.Time,
+	) (map[string]int64, error)
+}
+
 // QueryOptions defines filtering and pagination options for transaction queries
 type QueryOptions struct {
 	// Date range filtering

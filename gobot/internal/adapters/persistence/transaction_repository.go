@@ -156,6 +156,37 @@ func (r *GormTransactionRepository) PerOriginGateFees(
 	return fees, nil
 }
 
+var _ ledger.CategoryTotalsReader = (*GormTransactionRepository)(nil)
+
+// CategoryTotals sums signed amounts per category in one aggregate query — see
+// ledger.CategoryTotalsReader. A category absent from the window is simply absent from the
+// map, not a zero entry.
+func (r *GormTransactionRepository) CategoryTotals(
+	ctx context.Context, playerID shared.PlayerID, since, until time.Time,
+) (map[string]int64, error) {
+	type row struct {
+		Category string
+		Total    int64
+	}
+	var rows []row
+	result := r.db.WithContext(ctx).Model(&TransactionModel{}).
+		Select("category, SUM(amount) AS total").
+		Where("player_id = ?", playerID.Value()).
+		Where("timestamp >= ?", since).
+		Where("timestamp <= ?", until).
+		Group("category").
+		Scan(&rows)
+	if result.Error != nil {
+		return nil, fmt.Errorf("failed to aggregate category totals: %w", result.Error)
+	}
+
+	totals := make(map[string]int64, len(rows))
+	for _, rw := range rows {
+		totals[rw.Category] = rw.Total
+	}
+	return totals, nil
+}
+
 var _ ledger.TreasuryHighWaterReader = (*GormTransactionRepository)(nil)
 
 // TreasuryHighWaterSince reports the window's peak balance, and whether it held anything to read.
