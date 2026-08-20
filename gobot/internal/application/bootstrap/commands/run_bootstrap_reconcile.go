@@ -86,7 +86,7 @@ type reconcileResult struct {
 	FrigatePivoted          bool // the first-hauler pivot fired this tick: the idle-in-trade frigate was dedicated the exclusive purchasing ship. With a readable yard price the buy also runs this tick; on a COLD price it is a SEPARATE later tick once the freed frigate is positioned (fault-2)
 	PurchaserReleased       bool // the purchasing dedication was handed back to the TRADE fleet this tick — either the cold-start buys finished, or the buy it was freed for moved out of reach
 	FrigateContractFallback bool // the frigate's dedication was cleared this tick — trade is locally starved, or the cold-start buy it stands by for is capital-gated — so the contract pool's existing last-resort admission can now see it
-	FrigateBuyShipRestored  bool // a returning untagged frigate was re-dedicated the exclusive PURCHASING ship this tick, because the cold-start acquisition that names it by symbol is still unbought
+	FrigateBuyShipRestored  bool // the frigate was (re-)dedicated the exclusive PURCHASING ship this tick because the cold-start acquisition that names it by symbol is still unbought — either returning untagged from the contract pool, or pivoted back out of the trade fleet for the trade seed
 	TradeHullSeeded         bool // the cold-start hull-routing trade-seed fired this tick: acquisition #2 bought + dedicated to the trade fleet + the trade coordinator ensured
 	PlacementSlots          int  // fixed delivery slots this era resolves — where the ramp spreads its hulls (for the heartbeat)
 

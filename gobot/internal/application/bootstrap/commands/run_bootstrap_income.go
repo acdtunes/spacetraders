@@ -233,8 +233,11 @@ func frigateBuyShipFallbackOpen(obs Observation, ask int64, now time.Time) bool 
 
 // buyShipAsk reads the yard ONCE per tick and only where the answer can change a decision. Read-only:
 // it spends nothing and gates nothing. 0 is no reading, which every consumer treats as no evidence.
+//
+// An ON-TRADE frigate is read too: the trade-seed pivot weighs this same ask to decide whether taking the
+// only earner off trade is affordable, so skipping it there would blind that capital test (RULINGS #4).
 func (h *RunBootstrapCoordinatorHandler) buyShipAsk(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, obs Observation) int64 {
-	if h.haulAcquirer == nil || !frigateBuyShipWanted(obs) || !obs.CommandFrigateIdle || obs.CommandFrigateOnTrade {
+	if h.haulAcquirer == nil || !frigateBuyShipWanted(obs) || !obs.CommandFrigateIdle {
 		return 0
 	}
 	ask, _, _, _ := h.haulAcquirer.PriceCheck(ctx, cmd.PlayerID, haulerShipType)
@@ -348,6 +351,26 @@ func frigateIdleInTrade(obs Observation) bool {
 	return obs.CommandFrigateOnTrade && obs.CommandFrigateIdle
 }
 
+// tradeSeedPivotDue reports whether the command frigate must come back OUT of the trade fleet to be the
+// trade seed's buy ship — the SECOND pivot. Same safety shape as the first-hauler pivot: the hull is
+// honestly free between tours (frigateIdleInTrade, never mid-tour — PLAYBOOK §9) and carries no cargo a
+// tour would have to sell first. What differs is only WHICH acquisition it is claimed for: the seed, still
+// wanted (frigateBuyShipWanted) and in reach on the SAME cushion≥floor test the seed's own buy gates on —
+// read here, never moved (RULINGS #4). Nothing has to disarm it: the seed landing makes the want false.
+//
+// It DEFERS to the starved-trade fallback. While that offer is open the release step would clear this very
+// tag on the same tick it was written, and the offer's own lapse hands the hull back through the restore
+// branch anyway — so the seed is never stranded by waiting, and the two never fight over one hull.
+func tradeSeedPivotDue(obs Observation, ask int64, now time.Time) bool {
+	if !frigateBuyShipWanted(obs) || !frigateIdleInTrade(obs) || !obs.FrigateCargoEmpty {
+		return false
+	}
+	if frigateContractFallbackOpen(obs, now) {
+		return false
+	}
+	return !pivotWouldHold(obs.Treasury, ask)
+}
+
 // ensureFrigateTrading gives a free, untagged command frigate a home again — normally the TRADE fleet, so
 // it earns under the same coordinator that tours every other trade hull (no second, hand-rolled earner
 // loop, and the one write also clears whatever tag it carried). It waits for a genuinely free tick and
@@ -363,11 +386,42 @@ func frigateIdleInTrade(obs Observation) bool {
 // the fleet then has no idle hull at all, the presence-gated yard can never be warmed, and probe buying
 // deadlocks for good. Below target the frigate is left alone, so the yard errand actData runs alongside
 // this has a hull. Only a NEW dedication is deferred; an already-trading frigate returned above (RULINGS #1).
+//
+// AN ALREADY-TRADING FRIGATE LEAVES AGAIN FOR ONE THING: the trade seed. Trade is a resting place the hull
+// can legitimately reach with that buy still unbought — the purchasing stall's offer lapses to it — and the
+// first-hauler pivot is scoped to a hull-less fleet, so without the second pivot below NOTHING would ever
+// take the seed's only named buyer back out. It is deliberately NOT sequenced behind the probe seed the way
+// a trade dedication is: it sends the hull TO the presence-gated yard rather than out on a tour a
+// coordinator claims for minutes, which is the contention that sequencing exists to prevent.
 func (h *RunBootstrapCoordinatorHandler) ensureFrigateTrading(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, obs Observation, res *reconcileResult, ask int64) {
-	if obs.CommandFrigateID == "" || obs.CommandFrigateOnTrade || obs.CommandFrigatePurchasing || !obs.CommandFrigateIdle {
+	if obs.CommandFrigateID == "" || obs.CommandFrigatePurchasing || !obs.CommandFrigateIdle {
 		return
 	}
 	logger := common.LoggerFromContext(ctx)
+
+	if obs.CommandFrigateOnTrade {
+		if !tradeSeedPivotDue(obs, ask, h.clock.Now()) {
+			return
+		}
+		if h.retirer == nil {
+			res.Blocker = "no_retirer"
+			logger.Log("WARN", "Bootstrap needs to take the command frigate off trade to buy the cold-start trade seed but no retirer wired — the seed would keep waiting on a hull nothing can claim", map[string]interface{}{
+				"action":       "bootstrap_income_blocked",
+				"container_id": cmd.ContainerID,
+				"blocker":      "no_retirer",
+			})
+			return
+		}
+		logger.Log("INFO", fmt.Sprintf("Bootstrap TRADE-SEED PIVOT: taking the idle-in-trade command frigate %s back OUT of the trade fleet at an honest inter-tour tick — the cold-start trade seed is still unbought and within reach (ask=%d treasury=%d floor=%d), and this hull is the buy's only named buyer", obs.CommandFrigateID, ask, obs.Treasury, contractWorkingCapitalFloor), map[string]interface{}{
+			"action":       "bootstrap_frigate_trade_seed_pivot",
+			"container_id": cmd.ContainerID,
+			"ship":         obs.CommandFrigateID,
+			"hauler_ask":   ask,
+			"treasury":     obs.Treasury,
+		})
+		h.restoreFrigateBuyShip(ctx, cmd, obs, res, ask)
+		return
+	}
 
 	if obs.ProbeCount < probeTarget {
 		logger.Log("INFO", fmt.Sprintf("Bootstrap frigate trade dedication DEFERRED: probes=%d/%d — leaving the command frigate %s undedicated and idle so the probe buy can send it to warm the home shipyard; it takes up trade once the seed completes", obs.ProbeCount, probeTarget, obs.CommandFrigateID), map[string]interface{}{
