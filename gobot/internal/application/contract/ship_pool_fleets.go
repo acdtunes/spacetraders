@@ -46,6 +46,35 @@ func FleetHasMembers(
 	return false, nil
 }
 
+// OwnsHaulerHull reports whether the player owns ANY haul-capable HAULER-role hull at all —
+// idle, busy, in transit, or pinned to another coordinator's exclusive fleet. It answers a
+// different question from FindIdleLightHaulers: not "is a hauler free right now" (which the
+// pool's last-resort admission already decides) but "does a hauler exist to prefer over the
+// command frigate", the comparison FilterCommandCargoBaseline's economics rest on.
+//
+// The candidacy test is the pool's own, minus every availability condition: not the command
+// frigate (it can never be the hauler it is compared against — IsCommandHull also matches the
+// "*-1" symbol, so a mis-registered flagship never counts itself), role HAULER, and non-zero
+// cargo (a probe/satellite mistagged HAULER single-trips nothing, so it is no hauler either).
+func OwnsHaulerHull(
+	ctx context.Context,
+	playerID shared.PlayerID,
+	shipRepo navigation.ShipRepository,
+) (bool, error) {
+	allShips, err := shipRepo.FindAllByPlayer(ctx, playerID)
+	if err != nil {
+		return false, fmt.Errorf("failed to fetch ships: %w", err)
+	}
+
+	for _, ship := range allShips {
+		if isCommandHull(ship) || ship.Role() != roleHauler || ship.CargoCapacity() == 0 {
+			continue
+		}
+		return true, nil
+	}
+	return false, nil
+}
+
 // FindFleetMemberSymbols returns the symbols of EVERY ship currently carrying the
 // given DedicatedFleet tag — idle, busy, or in transit — the LIVE membership of a
 // coordinator's dedicated fleet. Unlike FindIdleShipsByFleet it applies no

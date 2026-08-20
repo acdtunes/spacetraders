@@ -61,7 +61,16 @@ func (p *coordinatorPass) discoverShipPool(ctx context.Context) (shipPool, bool)
 	// double-trip a load a dedicated hauler moves in one pass, spending its
 	// whole speed advantage for a net loss, so it is filtered back out here,
 	// before any candidate is ranked or claimed.
-	generalShips = appContract.FilterCommandCargoBaseline(ctx, generalShipEntities, p.cmd.CommandCargoBaseline)
+	// That comparison needs a hauler to lose out to, so a fleet owning NONE
+	// (cold start) skips it — OWNERSHIP is the test, not this tick's idleness.
+	ownsHauler, err := appContract.OwnsHaulerHull(ctx, p.cmd.PlayerID, p.h.shipRepo)
+	if err != nil {
+		p.retryAfterStepFailure(ctx, "", fmt.Sprintf("Failed to check fleet hauler ownership: %v", err), err)
+		return shipPool{}, false
+	}
+	if ownsHauler {
+		generalShips = appContract.FilterCommandCargoBaseline(ctx, generalShipEntities, p.cmd.CommandCargoBaseline)
+	}
 
 	// The coordinator's own dedicated fleet is invisible to
 	// FindIdleLightHaulers via the claim-filter, so it is looked up
