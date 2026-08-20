@@ -105,8 +105,35 @@ func TestBootstrap_StarvedFallback_ProductiveTourIsNotStarvation(t *testing.T) {
 	}
 }
 
-// The dwell sits above the trade coordinator's base relaunch cooldown, so a hull merely BETWEEN
-// normal tours is left alone — trade gets every chance before contracts do.
+// tradeFleetBaseCooldown mirrors the trade-fleet coordinator's defaultTradeFleetCooldownSeconds
+// (180s), which lives in another package and is unexported. The fallback's whole timing contract is
+// stated relative to it, so it is pinned here rather than re-spelled at each assertion.
+const tradeFleetBaseCooldown = 180 * time.Second
+
+// THE INVERSION this bead exists for. The dwell used to be 300s — LONGER than the trade
+// coordinator's own 180s relaunch cooldown — so on a first starved exit trade always won the race
+// and the fallback was unreachable, leaving the hull idle for minutes. The window must now be open
+// by bootstrap's very next tick, long before trade's own retry comes due.
+func TestBootstrap_StarvedFallback_OpensBeforeTheTradeCoordinatorRelaunches(t *testing.T) {
+	oneTick := defaultBootstrapTickSeconds * time.Second
+	if oneTick >= tradeFleetBaseCooldown {
+		t.Fatalf("precondition: bootstrap's tick (%s) must land well inside trade's relaunch cooldown (%s)", oneTick, tradeFleetBaseCooldown)
+	}
+
+	obs := starvedObs(oneTick)
+	ret := &fakeRetirer{}
+	h := starvedHandler(obs, ret, &fakeHaulerAcquirer{price: 100_000, yard: "Y", readable: true}, &fakeContractRunner{}, &fakeHandoff{})
+
+	res, err := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
+	if err != nil {
+		t.Fatalf("reconcileOnce: %v", err)
+	}
+	if len(ret.ships) != 1 || ret.ships[0] != "FRIGATE-1" || !res.FrigateContractFallback {
+		t.Fatalf("one bootstrap tick (%s) after a starved exit — %s before trade's own relaunch is even due — the frigate must already be released to contract work, got retires=%v fallback=%v blocker=%q", oneTick, tradeFleetBaseCooldown-oneTick, ret.ships, res.FrigateContractFallback, res.Blocker)
+	}
+}
+
+// The dwell is a brief settle buffer, not a race with trade: a hull still inside it is left alone.
 func TestBootstrap_StarvedFallback_HoldsUntilTheDwellElapses(t *testing.T) {
 	obs := starvedObs(frigateStarvedDwell - time.Second)
 	ret := &fakeRetirer{}
@@ -292,17 +319,60 @@ func TestBootstrap_StarvedFallback_NoRunOnRecordIsNotStarvation(t *testing.T) {
 	}
 }
 
-// The dwell must sit ABOVE the trade coordinator's 180s base relaunch cooldown, and the window must
-// close at its 600s backoff ceiling — that alignment is what guarantees trade always has the hull
-// back in time for its own next relaunch. Pinned so a retune cannot silently break the interlock.
+// The dwell must sit an order of magnitude BELOW the trade coordinator's 180s base relaunch
+// cooldown — a settle buffer, not a race trade always wins — while the window still closes by its
+// 600s backoff ceiling so trade has the hull back before its own next relaunch. Pinned so a retune
+// cannot silently re-open the starvation stall.
 func TestBootstrap_StarvedFallback_WindowIsAlignedToTheTradeBackoffLadder(t *testing.T) {
-	if frigateStarvedDwell <= 180*time.Second {
-		t.Fatalf("the dwell (%s) must exceed the trade coordinator's 180s base relaunch cooldown, or a hull merely between normal tours is taken", frigateStarvedDwell)
+	if frigateStarvedDwell <= 0 {
+		t.Fatalf("the dwell must stay a positive settle buffer, got %s", frigateStarvedDwell)
+	}
+	if frigateStarvedDwell > tradeFleetBaseCooldown/10 {
+		t.Fatalf("the dwell (%s) must sit an order of magnitude under trade's %s base relaunch cooldown, or trade wins every first starved exit and the fallback never fires", frigateStarvedDwell, tradeFleetBaseCooldown)
+	}
+	if frigateStarvedDwell >= defaultBootstrapTickSeconds*time.Second {
+		t.Fatalf("the dwell (%s) must have elapsed by bootstrap's next tick (%ds), or the window opens a whole tick late", frigateStarvedDwell, defaultBootstrapTickSeconds)
+	}
+	if frigateContractFallbackWindow != 300*time.Second {
+		t.Fatalf("how long the window STAYS open was never the problem — only when it opens; it stays 300s, got %s", frigateContractFallbackWindow)
 	}
 	if frigateStarvedDwell+frigateContractFallbackWindow > 600*time.Second {
 		t.Fatalf("the window must close by the trade coordinator's 600s backoff ceiling, got %s", frigateStarvedDwell+frigateContractFallbackWindow)
 	}
 	if frigateStarvedTourMax != 90*time.Second {
 		t.Fatalf("the fast-fail line must mirror the trade coordinator's own minProductiveTourDuration (90s), got %s", frigateStarvedTourMax)
+	}
+}
+
+// THE ACCEPTANCE-CRITICAL PROPERTY, and the one the dwell was never carrying: the release fires only
+// against a genuinely free hull. idle && cargo-empty is an INDEPENDENT guard (PLAYBOOK §9,
+// RULINGS #1) — a flying or laden frigate is refused at EVERY park age, so shrinking the dwell can
+// not have traded safety for speed.
+func TestBootstrap_StarvedFallback_IdleAndEmptyGuardHoldsAtEveryParkAge(t *testing.T) {
+	parkAges := []time.Duration{
+		0,
+		frigateStarvedDwell,
+		defaultBootstrapTickSeconds * time.Second,
+		tradeFleetBaseCooldown + time.Minute,
+		frigateStarvedDwell + frigateContractFallbackWindow + time.Minute,
+	}
+	unfree := map[string]func(*Observation){
+		"mid-tour / still flying": func(o *Observation) { o.CommandFrigateIdle = false },
+		"still holding cargo":     func(o *Observation) { o.FrigateCargoEmpty = false },
+		"flying AND laden":        func(o *Observation) { o.CommandFrigateIdle, o.FrigateCargoEmpty = false, false },
+	}
+
+	for name, makeUnfree := range unfree {
+		for _, parked := range parkAges {
+			obs := starvedObs(parked)
+			makeUnfree(&obs)
+			ret := &fakeRetirer{}
+			h := starvedHandler(obs, ret, &fakeHaulerAcquirer{price: 100_000, yard: "Y", readable: true}, &fakeContractRunner{}, &fakeHandoff{})
+
+			h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
+			if len(ret.ships) != 0 {
+				t.Fatalf("a frigate %s must never be reassigned, whatever the dwell is (parked %s), got retires=%v", name, parked, ret.ships)
+			}
+		}
 	}
 }

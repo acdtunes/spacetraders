@@ -24,14 +24,14 @@ const (
 	// escalation, which is exactly the exit this fallback answers.
 	frigateStarvedTourMax = 90 * time.Second
 
-	// frigateStarvedDwell is how long the frigate stays parked before contracts may have it. ABOVE the
-	// coordinator's 180s base cooldown on purpose: a hull merely between normal tours is relaunched long
-	// before this, so only one the coordinator has ESCALATED is ever offered.
-	frigateStarvedDwell = 300 * time.Second
+	// frigateStarvedDwell is a brief settle buffer before contracts may have the frigate, an order of
+	// magnitude UNDER the coordinator's 180s base cooldown: above it, trade wins every first starved exit
+	// and the hull idles instead. Whether it is FREE is the release's idle+cargo-empty guard, not this.
+	frigateStarvedDwell = 15 * time.Second
 
 	// frigateContractFallbackWindow is how long the released frigate stays untagged and visible to the
 	// contract pool. It LAPSES so a fallback nobody took hands the hull back rather than stranding it,
-	// closing at the coordinator's 600s backoff ceiling — trade has it back before its next relaunch.
+	// closing inside the coordinator's 600s backoff ceiling — trade has it back before its next relaunch.
 	frigateContractFallbackWindow = 300 * time.Second
 )
 
@@ -177,10 +177,10 @@ func frigateTradeTourStarved(obs Observation) bool {
 }
 
 // frigateContractFallbackOpen reports whether the starved frigate's contract-fallback window is open
-// right now: it came back from a starved run AND has stayed parked past the dwell, so the trade
-// coordinator has demonstrably ESCALATED rather than simply relaunched it. Both bootstrap steps that
+// right now: it came back from a starved run AND has settled past the dwell. Both bootstrap steps that
 // touch the tag read this ONE predicate, which is what makes them incapable of fighting each other —
-// the release fires only while it is open, the trade re-dedication holds off only while it is open.
+// the release fires only while it is open, the trade re-dedication holds off only while it is open —
+// and it is why the dwell can be short without the two steps racing to swap the tag.
 func frigateContractFallbackOpen(obs Observation, now time.Time) bool {
 	if !frigateTradeTourStarved(obs) {
 		return false
