@@ -133,16 +133,8 @@ func FindIdleLightHaulers(
 			continue
 		}
 
-		// Exclude ships in transit (even without assignment): a hull being
-		// balanced or navigating is not available for a new contract leg.
-		if ship.NavStatus() == navigation.NavStatusInTransit {
-			continue
-		}
-
-		// Only idle ships (no active assignment). Ship.IsIdle() checks the
-		// embedded assignment state. The command frigate is held back into its
-		// own bucket so it can be admitted last-resort-only below.
-		if !ship.IsIdle() {
+		// The command frigate is bucketed apart so it can be admitted last-resort-only below.
+		if !availableNow(ship) {
 			continue
 		}
 		if isCommand {
@@ -191,6 +183,14 @@ func FindIdleLightHaulers(
 	})
 
 	return idleHaulers, idleHaulerSymbols, nil
+}
+
+// availableNow is the AVAILABILITY half of the pool's candidacy test: a hull mid-flight (even
+// unassigned, e.g. mid-balance) or carrying an active assignment cannot take a new leg this tick.
+// Split out of the loop above so HaulerAlternativeAvailable reuses the EXACT same notion of "free
+// right now" — a second definition is how the pool and the cargo baseline would come to disagree.
+func availableNow(ship *navigation.Ship) bool {
+	return ship.NavStatus() != navigation.NavStatusInTransit && ship.IsIdle()
 }
 
 // FindIdleShipsByFleet looks up a coordinator's own dedicated fleet by name -

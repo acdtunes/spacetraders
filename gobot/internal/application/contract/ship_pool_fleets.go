@@ -46,17 +46,18 @@ func FleetHasMembers(
 	return false, nil
 }
 
-// OwnsHaulerHull reports whether the player owns ANY haul-capable HAULER-role hull at all —
-// idle, busy, in transit, or pinned to another coordinator's exclusive fleet. It answers a
-// different question from FindIdleLightHaulers: not "is a hauler free right now" (which the
-// pool's last-resort admission already decides) but "does a hauler exist to prefer over the
-// command frigate", the comparison FilterCommandCargoBaseline's economics rest on.
+// HaulerAlternativeAvailable reports whether a hauler exists that the coordinator could dispatch
+// INSTEAD OF the command frigate — the comparison FilterCommandCargoBaseline's economics rest on.
+// A baseline that fires with no such alternative is not preferring the better hull, it is benching
+// the only one: sp-5kn8v releases the frigate to contract work only once hauler #1 exists, so
+// sp-00y49's OWNERSHIP test re-armed the baseline forever and the released frigate never ran.
 //
-// The candidacy test is the pool's own, minus every availability condition: not the command
-// frigate (it can never be the hauler it is compared against — IsCommandHull also matches the
-// "*-1" symbol, so a mis-registered flagship never counts itself), role HAULER, and non-zero
-// cargo (a probe/satellite mistagged HAULER single-trips nothing, so it is no hauler either).
-func OwnsHaulerHull(
+// Hull test, the pool's own: not the command frigate (IsCommandHull also matches the "*-1" symbol,
+// so a mis-registered flagship never counts itself), role HAULER, non-zero cargo. It then counts
+// when availableNow — shared with the pool so the two cannot diverge — OR when pinned to an
+// exclusive fleet, where unavailability is an operator decision and staffing around it with the
+// flagship is what RULINGS #7 forbids (a CONTRACT pin is moot: EXCLUSIVE MODE drops this pool).
+func HaulerAlternativeAvailable(
 	ctx context.Context,
 	playerID shared.PlayerID,
 	shipRepo navigation.ShipRepository,
@@ -70,7 +71,9 @@ func OwnsHaulerHull(
 		if isCommandHull(ship) || ship.Role() != roleHauler || ship.CargoCapacity() == 0 {
 			continue
 		}
-		return true, nil
+		if availableNow(ship) || ship.DedicatedFleet() != "" {
+			return true, nil
+		}
 	}
 	return false, nil
 }

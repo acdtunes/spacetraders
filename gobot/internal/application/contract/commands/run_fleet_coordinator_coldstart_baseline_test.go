@@ -11,7 +11,7 @@ import (
 )
 
 // The command-ship cargo baseline is a COMPARATIVE guard: it prefers dispatching a light hauler
-// over double-tripping a stock frigate. These two tests pin both sides of that comparison through
+// over double-tripping a stock frigate. These tests pin every side of that comparison through
 // discoverShipPool's REAL pipeline, because the baseline drop happens AFTER FindIdleLightHaulers'
 // last-resort admission and is therefore invisible to every pool-side test.
 
@@ -22,13 +22,39 @@ func coldstartFrigate(t *testing.T) *navigation.Ship {
 	return newBaselineShip(t, "TORWIND-1", "COMMAND", "FRAME_FRIGATE", 40)
 }
 
-// ownedBusyHauler is a HAULER-role hull the fleet OWNS but that is not idle this tick (in transit).
-// It is deliberately unavailable so the last-resort admission still offers the frigate up — leaving
-// the cargo baseline as the only thing that can drop it.
+// baselineHauler is an idle, undedicated light freighter — the alternative the baseline exists to
+// prefer over the frigate. The variants below make it unavailable in each of the ways that matter.
+func baselineHauler(t *testing.T, symbol string) *navigation.Ship {
+	t.Helper()
+	return newBaselineShip(t, symbol, "HAULER", "FRAME_LIGHT_FREIGHTER", 80)
+}
+
+// ownedBusyHauler is in transit: owned, but not dispatchable this tick. Being unavailable is what
+// lets the last-resort admission offer the frigate up, leaving the baseline the only thing that
+// could still drop it.
 func ownedBusyHauler(t *testing.T, symbol string) *navigation.Ship {
 	t.Helper()
-	hauler := newBaselineShip(t, symbol, "HAULER", "FRAME_LIGHT_FREIGHTER", 80)
+	hauler := baselineHauler(t, symbol)
 	hauler.SetNavStatus(navigation.NavStatusInTransit)
+	return hauler
+}
+
+// claimedBusyHauler is docked but already working a container — the OTHER way the live fleet's one
+// hauler is busy (TORWINDSTG4-5 was mid-contract), and a different code path from in transit.
+func claimedBusyHauler(t *testing.T, symbol string) *navigation.Ship {
+	t.Helper()
+	hauler := baselineHauler(t, symbol)
+	if err := hauler.AssignToContainer("contract-worker-"+symbol, shared.NewRealClock()); err != nil {
+		t.Fatalf("AssignToContainer: %v", err)
+	}
+	return hauler
+}
+
+// pinnedHauler is walled off in ANOTHER coordinator's exclusive fleet.
+func pinnedHauler(t *testing.T, symbol, fleet string) *navigation.Ship {
+	t.Helper()
+	hauler := baselineHauler(t, symbol)
+	hauler.SetDedicatedFleet(fleet)
 	return hauler
 }
 
@@ -97,11 +123,13 @@ func TestDiscoverShipPool_ZeroHaulerFleetKeepsBelowBaselineFrigate(t *testing.T)
 	}
 }
 
-// MATURE FLEET, unchanged: the fleet owns a hauler, so the baseline's own rationale applies whether
-// or not that hauler is free this tick — waiting for it beats a 40-cargo double-trip. Ownership is
-// the test, NOT idleness: this hauler is in transit, which is precisely when the last-resort
-// admission hands the frigate up and only the baseline can still drop it.
-func TestDiscoverShipPool_OwnedBusyHaulerStillDropsBelowBaselineFrigate(t *testing.T) {
+// sp-6378a CORRECTS sp-00y49's "ownership, not idleness" here. A hauler that EXISTS but is busy on
+// this fleet's own work is not an alternative the coordinator can dispatch instead of the frigate
+// this tick, so the comparative baseline has nothing to compare against and must not fire. Live
+// (TORWINDSTG4, 2026-08-20): the one hauler was busy on another contract, and the frigate sp-5kn8v
+// had just released to contract work was re-dropped by the baseline on every pass — released to a
+// job it could never be given, sitting fully idle, exactly the outcome sp-5kn8v exists to prevent.
+func TestDiscoverShipPool_BusyHaulerNoLongerBlocksBelowBaselineFrigate(t *testing.T) {
 	frigate := coldstartFrigate(t)
 	hauler := ownedBusyHauler(t, "TORWIND-7")
 	repo := &singleHullFakeShipRepo{ships: []*navigation.Ship{frigate, hauler}}
@@ -110,7 +138,74 @@ func TestDiscoverShipPool_OwnedBusyHaulerStillDropsBelowBaselineFrigate(t *testi
 	if !ok {
 		t.Fatal("discoverShipPool must succeed on a healthy repo")
 	}
+	if !containsShipSymbol(pool.available, "TORWIND-1") {
+		t.Fatalf("the only hauler is busy — nothing is available to prefer over the frigate, so it must stay claimable, got %v", pool.available)
+	}
+}
+
+// Same correction via the OTHER busy path: claimed by a container rather than in transit. Both must
+// read as unavailable, or the fix only covers whichever kind of busy the live fleet happened to hit.
+func TestDiscoverShipPool_ClaimedHaulerNoLongerBlocksBelowBaselineFrigate(t *testing.T) {
+	frigate := coldstartFrigate(t)
+	hauler := claimedBusyHauler(t, "TORWIND-7")
+	repo := &singleHullFakeShipRepo{ships: []*navigation.Ship{frigate, hauler}}
+
+	pool, ok := newBaselinePass(repo).discoverShipPool(context.Background())
+	if !ok {
+		t.Fatal("discoverShipPool must succeed on a healthy repo")
+	}
+	if !containsShipSymbol(pool.available, "TORWIND-1") {
+		t.Fatalf("the only hauler is mid-contract — the frigate must stay claimable, got %v", pool.available)
+	}
+}
+
+// sp-00y49's core case, UNCHANGED: with a genuinely available hauler the coordinator has something
+// better to dispatch, so the stock frigate must not be in the working set — the fleet works the
+// 80-cargo hull in one trip instead of double-tripping the 40-cargo one.
+func TestDiscoverShipPool_IdleHaulerStillDropsBelowBaselineFrigate(t *testing.T) {
+	frigate := coldstartFrigate(t)
+	hauler := baselineHauler(t, "TORWIND-7")
+	repo := &singleHullFakeShipRepo{ships: []*navigation.Ship{frigate, hauler}}
+
+	pool, ok := newBaselinePass(repo).discoverShipPool(context.Background())
+	if !ok {
+		t.Fatal("discoverShipPool must succeed on a healthy repo")
+	}
 	if containsShipSymbol(pool.available, "TORWIND-1") {
-		t.Fatalf("the fleet owns a hauler — the 80 baseline must still drop the stock frigate, got %v", pool.available)
+		t.Fatalf("an idle hauler is available to prefer — the stock frigate must be dropped, got %v", pool.available)
+	}
+	if !containsShipSymbol(pool.available, "TORWIND-7") {
+		t.Fatalf("the idle hauler must be the candidate, got %v", pool.available)
+	}
+}
+
+// RULINGS #7, unchanged by sp-6378a: a hauler pinned to ANOTHER coordinator's exclusive fleet is
+// unavailable because an operator said so, not because it is mid-job — so it keeps blocking the
+// frigate whatever its own nav state, rather than the coordinator quietly staffing around the pin
+// with the flagship. This is the line between "walled off elsewhere" and "busy on our own work".
+func TestDiscoverShipPool_ForeignFleetHaulerStillDropsBelowBaselineFrigate(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		hauler func(t *testing.T) *navigation.Ship
+	}{
+		{"idle in the mining fleet", func(t *testing.T) *navigation.Ship { return pinnedHauler(t, "TORWIND-7", "mining") }},
+		{"in transit for the mining fleet", func(t *testing.T) *navigation.Ship {
+			hauler := pinnedHauler(t, "TORWIND-7", "mining")
+			hauler.SetNavStatus(navigation.NavStatusInTransit)
+			return hauler
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			frigate := coldstartFrigate(t)
+			repo := &singleHullFakeShipRepo{ships: []*navigation.Ship{frigate, tc.hauler(t)}}
+
+			pool, ok := newBaselinePass(repo).discoverShipPool(context.Background())
+			if !ok {
+				t.Fatal("discoverShipPool must succeed on a healthy repo")
+			}
+			if containsShipSymbol(pool.available, "TORWIND-1") {
+				t.Fatalf("a hauler pinned to another fleet must keep the baseline armed, got %v", pool.available)
+			}
+		})
 	}
 }
