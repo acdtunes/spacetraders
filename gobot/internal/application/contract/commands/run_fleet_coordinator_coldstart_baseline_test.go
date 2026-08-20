@@ -179,19 +179,26 @@ func TestDiscoverShipPool_IdleHaulerStillDropsBelowBaselineFrigate(t *testing.T)
 	}
 }
 
-// RULINGS #7, unchanged by sp-6378a: a hauler pinned to ANOTHER coordinator's exclusive fleet is
-// unavailable because an operator said so, not because it is mid-job — so it keeps blocking the
-// frigate whatever its own nav state, rather than the coordinator quietly staffing around the pin
-// with the flagship. This is the line between "walled off elsewhere" and "busy on our own work".
-func TestDiscoverShipPool_ForeignFleetHaulerStillDropsBelowBaselineFrigate(t *testing.T) {
+// A hauler pinned to ANOTHER coordinator's fleet is not a hull this one can ever dispatch: the
+// claim-filter hides it from the general pool and FindIdleShipsByFleet reads only the contract tag.
+// So it is no reason to bench the frigate in ANY state, idle included — otherwise the fleet does no
+// contract work at all while a trade hull tours.
+func TestDiscoverShipPool_ForeignFleetHaulerNoLongerBlocksBelowBaselineFrigate(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		hauler func(t *testing.T) *navigation.Ship
 	}{
-		{"idle in the mining fleet", func(t *testing.T) *navigation.Ship { return pinnedHauler(t, "TORWIND-7", "mining") }},
-		{"in transit for the mining fleet", func(t *testing.T) *navigation.Ship {
-			hauler := pinnedHauler(t, "TORWIND-7", "mining")
+		{"idle in the trade fleet", func(t *testing.T) *navigation.Ship { return pinnedHauler(t, "TORWIND-7", "trade") }},
+		{"in transit for the trade fleet", func(t *testing.T) *navigation.Ship {
+			hauler := pinnedHauler(t, "TORWIND-7", "trade")
 			hauler.SetNavStatus(navigation.NavStatusInTransit)
+			return hauler
+		}},
+		{"mid-job for the trade fleet", func(t *testing.T) *navigation.Ship {
+			hauler := pinnedHauler(t, "TORWIND-7", "trade")
+			if err := hauler.AssignToContainer("trade-tour-TORWIND-7", shared.NewRealClock()); err != nil {
+				t.Fatalf("AssignToContainer: %v", err)
+			}
 			return hauler
 		}},
 	} {
@@ -203,9 +210,32 @@ func TestDiscoverShipPool_ForeignFleetHaulerStillDropsBelowBaselineFrigate(t *te
 			if !ok {
 				t.Fatal("discoverShipPool must succeed on a healthy repo")
 			}
-			if containsShipSymbol(pool.available, "TORWIND-1") {
-				t.Fatalf("a hauler pinned to another fleet must keep the baseline armed, got %v", pool.available)
+			if !containsShipSymbol(pool.available, "TORWIND-1") {
+				t.Fatalf("a foreign pin is no dispatchable alternative — the frigate must stay claimable, got %v", pool.available)
 			}
 		})
+	}
+}
+
+// EXCLUSIVE MODE is untouched here, and asserted so it stays that way: once ANY hull carries the
+// contract tag the coordinator draws only from its own idle members, so a sole contract-pinned
+// hauler that is busy yields an EMPTY pool no matter what the baseline decides. Seating the frigate
+// in that state is a pool-admission question, deliberately not a baseline one.
+func TestDiscoverShipPool_OwnFleetPinnedBusyHaulerKeepsExclusiveModeEmpty(t *testing.T) {
+	hauler := pinnedHauler(t, "TORWIND-7", dedicatedFleetContract)
+	if err := hauler.AssignToContainer("contract-worker-TORWIND-7", shared.NewRealClock()); err != nil {
+		t.Fatalf("AssignToContainer: %v", err)
+	}
+	repo := &singleHullFakeShipRepo{ships: []*navigation.Ship{coldstartFrigate(t), hauler}}
+
+	pool, ok := newBaselinePass(repo).discoverShipPool(context.Background())
+	if !ok {
+		t.Fatal("discoverShipPool must succeed on a healthy repo")
+	}
+	if !pool.dedicatedFleetActive {
+		t.Fatal("a contract-tagged hull must keep EXCLUSIVE MODE active")
+	}
+	if len(pool.available) != 0 {
+		t.Fatalf("EXCLUSIVE MODE with no idle member must yield an empty pool, got %v", pool.available)
 	}
 }

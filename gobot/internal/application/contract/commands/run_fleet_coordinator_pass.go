@@ -63,7 +63,7 @@ func (p *coordinatorPass) discoverShipPool(ctx context.Context) (shipPool, bool)
 	// before any candidate is ranked or claimed.
 	// That comparison needs a hauler dispatchable INSTEAD, so a fleet with none
 	// AVAILABLE — none owned (cold start), or all busy — skips it and keeps the frigate.
-	haulerAlternative, err := appContract.HaulerAlternativeAvailable(ctx, p.cmd.PlayerID, p.h.shipRepo)
+	haulerAlternative, err := appContract.HaulerAlternativeAvailable(ctx, p.cmd.PlayerID, p.h.shipRepo, dedicatedFleetContract)
 	if err != nil {
 		p.retryAfterStepFailure(ctx, "", fmt.Sprintf("Failed to check for an available hauler alternative: %v", err), err)
 		return shipPool{}, false

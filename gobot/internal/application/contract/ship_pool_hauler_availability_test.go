@@ -14,12 +14,17 @@ import (
 // predicate — a hull the pool could never treat as a hauler must not silently keep the baseline
 // armed, and neither must one that is not dispatchable at all this tick.
 //
-// sp-6378a corrects sp-00y49's ownership-only reading of that predicate. sp-00y49 counted a hauler
-// in ANY state, reasoning that waiting for it beats a 40-cargo double-trip. Live on TORWINDSTG4
-// that reasoning broke down: sp-5kn8v only releases the frigate to contract work once hauler #1
-// exists, so ownership always read true, the baseline re-armed on every pass, and the released
-// frigate sat fully idle instead of waiting productively. Availability, not ownership, is what the
-// comparison needs — with the pin case (below) kept as-is.
+// The predicate is exactly "is a hauler in THIS coordinator's candidate pool free right now":
+// availableNow AND drawable here. Dedication only ever EXCLUDES — the claim-filter drops every
+// dedicated hull from the general pool and FindIdleShipsByFleet picks up only the coordinator's
+// own tag, so a foreign pin is no candidate in any state, idle included.
+const (
+	ownFleet = "contract"
+	// "trade" is the live foreign pin; stocker/warehouse/depot-delivery are hauler-capable
+	// fleets that read identically here — the rule is by-name inequality, not an enumeration.
+	otherFleet = "trade"
+)
+
 func TestHaulerAlternativeAvailable(t *testing.T) {
 	inTransit := func(ship *navigation.Ship) *navigation.Ship {
 		ship.SetNavStatus(navigation.NavStatusInTransit)
@@ -102,19 +107,37 @@ func TestHaulerAlternativeAvailable(t *testing.T) {
 			want: false,
 		},
 		{
-			// RULINGS #7: a pin is an operator decision about where that hull works, so its own
-			// nav state is not this coordinator's to read around — unavailable, and it stays that
-			// way. Unchanged from sp-00y49.
-			name: "a hauler pinned to another coordinator's fleet counts while idle",
+			// THE case that separates ownership from pool-membership: this hull is perfectly
+			// idle, yet the claim-filter makes it invisible to contract selection — the
+			// coordinator cannot dispatch it, so it is no alternative and must not bench the
+			// frigate. Inverted by sp-u7n3m; sp-00y49/sp-6378a both counted it.
+			name: "an IDLE hauler pinned to a foreign fleet was never a contract candidate",
 			ships: func(t *testing.T) []*navigation.Ship {
-				return []*navigation.Ship{dedicated(newCandidateShip(t, "TORWIND-7", "HAULER", 80, 0, 0), "mining")}
+				return []*navigation.Ship{dedicated(newCandidateShip(t, "TORWIND-7", "HAULER", 80, 0, 0), otherFleet)}
 			},
-			want: true,
+			want: false,
 		},
 		{
-			name: "a hauler pinned to another coordinator's fleet counts in transit too",
+			name: "a foreign-pinned hauler in transit is no alternative either",
 			ships: func(t *testing.T) []*navigation.Ship {
-				return []*navigation.Ship{inTransit(dedicated(newCandidateShip(t, "TORWIND-7", "HAULER", 80, 0, 0), "mining"))}
+				return []*navigation.Ship{inTransit(dedicated(newCandidateShip(t, "TORWIND-7", "HAULER", 80, 0, 0), otherFleet))}
+			},
+			want: false,
+		},
+		{
+			name: "a BUSY foreign-pinned hauler is no alternative either",
+			ships: func(t *testing.T) []*navigation.Ship {
+				return []*navigation.Ship{claimed(t, dedicated(newCandidateShip(t, "TORWIND-7", "HAULER", 80, 0, 0), otherFleet))}
+			},
+			want: false,
+		},
+		{
+			// The one genuine "a better hull is free right now" case, and the reason dedication
+			// alone cannot decide this: EXCLUSIVE MODE routes this hull through dedicatedIdleShips,
+			// so the coordinator really can send it instead. availableNow's role is untouched.
+			name: "an IDLE hauler pinned to this coordinator's own fleet IS a genuine alternative",
+			ships: func(t *testing.T) []*navigation.Ship {
+				return []*navigation.Ship{dedicated(newCandidateShip(t, "TORWIND-7", "HAULER", 80, 0, 0), ownFleet)}
 			},
 			want: true,
 		},
@@ -134,6 +157,29 @@ func TestHaulerAlternativeAvailable(t *testing.T) {
 			want: false,
 		},
 		{
+			// sp-u7n3m AC1, the live TORWINDSTG4 shape sp-6378a still failed on: the fleet's one
+			// hauler is busy AND carries THIS coordinator's own "contract" pin. That pin does not
+			// wall it off from contract work — it IS contract work, mid-leg — so it is no
+			// alternative, and the baseline must not re-arm against the released frigate.
+			// dedicatedIdleShips is empty on this tick, which is precisely when RULINGS #7's
+			// last-resort admission is meant to seat the frigate.
+			name: "the fleet's only hauler is busy AND pinned to this coordinator's own fleet",
+			ships: func(t *testing.T) []*navigation.Ship {
+				return []*navigation.Ship{
+					newCandidateShip(t, "TORWINDSTG4-1", "COMMAND", 40, 0, 0),
+					claimed(t, dedicated(newCandidateShip(t, "TORWINDSTG4-5", "HAULER", 80, 0, 0), ownFleet)),
+				}
+			},
+			want: false,
+		},
+		{
+			name: "an own-fleet-pinned hauler in transit is likewise no alternative",
+			ships: func(t *testing.T) []*navigation.Ship {
+				return []*navigation.Ship{inTransit(dedicated(newCandidateShip(t, "TORWINDSTG4-5", "HAULER", 80, 0, 0), ownFleet))}
+			},
+			want: false,
+		},
+		{
 			name: "one free hauler among busy ones is enough",
 			ships: func(t *testing.T) []*navigation.Ship {
 				return []*navigation.Ship{
@@ -147,7 +193,7 @@ func TestHaulerAlternativeAvailable(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := HaulerAlternativeAvailable(context.Background(), shared.MustNewPlayerID(1), &stubShipRepo{ships: tt.ships(t)})
+			got, err := HaulerAlternativeAvailable(context.Background(), shared.MustNewPlayerID(1), &stubShipRepo{ships: tt.ships(t)}, ownFleet)
 			if err != nil {
 				t.Fatalf("HaulerAlternativeAvailable: %v", err)
 			}
