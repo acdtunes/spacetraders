@@ -12,10 +12,13 @@ import (
 // tag) and refused to the contract coordinator that asks for it. It funnels through the SAME mechanism:
 // clear the dedication, let the last-resort admission take it, restore the dedication on return.
 //
-// The two halves differ in one deliberate place — this one does not LAPSE. The trade window closes
-// because the trade coordinator re-takes the hull on its own ladder; nothing re-takes a stalled buy ship,
-// and the only clock either half has advances solely when a container run ENDS, so a lapse could never
-// re-open. The CAPITAL test is the close instead.
+// The two halves close on the SAME two bounds. This one was first built not to lapse at all, on the
+// reasoning that a stalled buy ship has no coordinator to re-take it and that capital coming back is the
+// close instead — but capital comes back only if something is EARNING, and when the contract engine's own
+// available work is blocked by the same empty treasury (sp-uuejg, live) nothing earns, no leg ever claims
+// the hull, and both states are dead ends. So the offer lapses, and lapsed sends the hull to TRADE: the
+// income gated on neither the buy nor the contract. What does NOT lapse is the stall's SHAPE — the
+// release that unpins a buy ship from a buy it cannot make fires at every park age.
 
 const stalledSeedAsk int64 = 313_730
 
@@ -215,6 +218,127 @@ func TestBootstrap_StalledPurchaser_StaysUntaggedWhileTheBuyIsOutOfReach(t *test
 	}
 }
 
+// Outcome 3 — NOBODY took the offer and the buy never came back within reach (sp-uuejg). The stall's
+// capital test can never close on its own here: the one contract available is blocked by the SAME empty
+// treasury, so nothing earns and the treasury cannot move. The offer lapses on the trade half's own
+// window and the hull goes TRADING — the income that is gated on neither this buy nor this contract.
+func TestBootstrap_StalledPurchaser_UnclaimedOfferLapsesToTrade(t *testing.T) {
+	obs := releasedPurchaserObs(frigateStarvedDwell + frigateContractFallbackWindow + time.Second)
+	ret := &fakeRetirer{}
+	h := starvedHandler(obs, ret, stalledAcquirer(), &fakeContractRunner{}, &fakeHandoff{})
+
+	res, err := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
+	if err != nil {
+		t.Fatalf("reconcileOnce: %v", err)
+	}
+	if len(ret.tradeDedications) != 1 || ret.tradeDedications[0] != "FRIGATE-1" || !res.FrigateTrading {
+		t.Fatalf("an offer no contract leg ever took must LAPSE to trade rather than hold the hull in limbo for good; trade=%v trading=%v blocker=%q", ret.tradeDedications, res.FrigateTrading, res.Blocker)
+	}
+	if len(ret.dedications) != 0 || res.FrigateBuyShipRestored {
+		t.Fatalf("PURCHASING is the state that stalled — re-entering it changes nothing; purchasing=%v restored=%v", ret.dedications, res.FrigateBuyShipRestored)
+	}
+}
+
+// The offer stays open for the WHOLE window first — the lapse is the exit from a dead end, not a
+// shortcut past the contract pool's own next pass.
+func TestBootstrap_StalledPurchaser_OfferHoldsForTheFullWindow(t *testing.T) {
+	obs := releasedPurchaserObs(frigateStarvedDwell + frigateContractFallbackWindow - time.Second)
+	ret := &fakeRetirer{}
+	h := starvedHandler(obs, ret, stalledAcquirer(), &fakeContractRunner{}, &fakeHandoff{})
+
+	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
+	if len(ret.tradeDedications) != 0 || len(ret.dedications) != 0 || res.FrigateTrading {
+		t.Fatalf("one second inside the window the hull is still offered to contracts; trade=%v purchasing=%v", ret.tradeDedications, ret.dedications)
+	}
+}
+
+// CAPITAL RECOVERY IS UNCHANGED, on both sides of the lapse: the buy coming back within reach is the
+// stall's real close, and it still takes the hull straight back to the yard. Only the UNRESOLVED
+// timeout is what this bead re-answers.
+func TestBootstrap_StalledPurchaser_RecoveredCapitalRestoresTheBuyShipEitherSideOfTheLapse(t *testing.T) {
+	ages := map[string]time.Duration{
+		"inside the window": frigateStarvedDwell + time.Minute,
+		"after it lapsed":   frigateStarvedDwell + frigateContractFallbackWindow + time.Minute,
+	}
+	for when, parked := range ages {
+		obs := releasedPurchaserObs(parked)
+		obs.Treasury = 2_000_000 // the ask is comfortably inside the working-capital floor again
+		ret := &fakeRetirer{}
+		h := starvedHandler(obs, ret, stalledAcquirer(), &fakeContractRunner{}, &fakeHandoff{})
+
+		res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
+		if len(ret.dedications) != 1 || !res.FrigateBuyShipRestored {
+			t.Fatalf("capital recovering %s must still restore the exclusive BUY SHIP — the lapse only answers a stall that never resolved; purchasing=%v restored=%v blocker=%q", when, ret.dedications, res.FrigateBuyShipRestored, res.Blocker)
+		}
+		if len(ret.tradeDedications) != 0 || res.FrigateTrading {
+			t.Fatalf("an affordable seed is not a lapse case: the hull belongs at the yard, got trade=%v", ret.tradeDedications)
+		}
+	}
+}
+
+// A stall found long after the fact — a fresh era's frigate has NO run on record, so it reads parked
+// since the era began — must still be UNPINNED from the buy it cannot make. The clock bounds how long
+// the hull then waits untagged, never whether the release may fire: a purchasing tag nothing can use
+// would otherwise be permanent, which is the very stall the release exists to end.
+func TestBootstrap_StalledPurchaser_ReleaseIsNeverGatedByTheLapse(t *testing.T) {
+	obs := stalledPurchaserObs(0)
+	obs.CommandFrigateLastRunStart = time.Time{}
+	obs.CommandFrigateLastRunEnd = time.Time{}
+	ret := &fakeRetirer{}
+	h := starvedHandler(obs, ret, stalledAcquirer(), &fakeContractRunner{}, &fakeHandoff{})
+
+	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
+	if len(ret.ships) != 1 || ret.ships[0] != "FRIGATE-1" || !res.FrigateContractFallback {
+		t.Fatalf("a buy ship with no run on record is stalled at every park age and must still be released; retires=%v fallback=%v blocker=%q", ret.ships, res.FrigateContractFallback, res.Blocker)
+	}
+}
+
+// ONE window, ONE pair of constants (RULINGS #5): the purchasing half lapses exactly where the trade
+// half does, pinned from both sides. The SHAPE test stays unbounded — that is the release's, not the
+// wait's.
+func TestBootstrap_ContractFallback_BothHalvesLapseOnTheSameBound(t *testing.T) {
+	lapse := frigateStarvedDwell + frigateContractFallbackWindow
+
+	if !frigateBuyShipFallbackOpen(releasedPurchaserObs(lapse-time.Second), stalledSeedAsk, starvedNow) {
+		t.Fatalf("the purchasing half must stay open for the whole %s", lapse)
+	}
+	if frigateBuyShipFallbackOpen(releasedPurchaserObs(lapse), stalledSeedAsk, starvedNow) {
+		t.Fatalf("the purchasing half must lapse at %s, the trade half's own bound", lapse)
+	}
+	if !frigateContractFallbackOpen(starvedObs(lapse-time.Second), starvedNow) {
+		t.Fatalf("the trade half's bound is unchanged: still open one second inside %s", lapse)
+	}
+	if frigateContractFallbackOpen(starvedObs(lapse), starvedNow) {
+		t.Fatalf("the trade half's bound is unchanged: still lapsed at %s", lapse)
+	}
+	if !frigateBuyShipStalled(stalledPurchaserObs(lapse+time.Hour), stalledSeedAsk, starvedNow) {
+		t.Fatalf("the stall SHAPE must not lapse — a hull pinned to a buy it cannot make is stalled at every park age")
+	}
+}
+
+// OSCILLATION. Once the lapse hands the hull to trade it STAYS there while capital is short: the
+// first-hauler pivot is the only step that conscripts an idle-in-trade frigate into purchasing, and it
+// is scoped to a hull-less operation (len(Haulers)==0) — the exact opposite of the stall's shape, which
+// needs hauler #1 owned. The two are mutually exclusive by construction, so trade → stall → lapse →
+// trade cannot thrash, and no dampening guard is needed.
+func TestBootstrap_StalledPurchaser_TradingFrigateIsNotReConscriptedWhileCapitalIsShort(t *testing.T) {
+	obs := releasedPurchaserObs(frigateStarvedDwell + frigateContractFallbackWindow + time.Minute)
+	obs.CommandFrigateOnTrade = true // where the lapse just put it
+	ret, acq := &fakeRetirer{}, stalledAcquirer()
+	h := starvedHandler(obs, ret, acq, &fakeContractRunner{}, &fakeHandoff{})
+
+	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
+	if len(ret.dedications) != 0 || res.FrigatePivoted {
+		t.Fatalf("nothing may pull the hull back into purchasing while the buy is still out of reach — that is the thrash; purchasing=%v pivoted=%v", ret.dedications, res.FrigatePivoted)
+	}
+	if len(ret.ships) != 0 || res.FrigateContractFallback {
+		t.Fatalf("nor may it be re-offered to contracts on a park age the window already lapsed on; retires=%v fallback=%v", ret.ships, res.FrigateContractFallback)
+	}
+	if acq.buys != 0 || acq.dedicateBuys != 0 {
+		t.Fatalf("and the money guard still buys nothing at this treasury; buys=%d seeds=%d", acq.buys, acq.dedicateBuys)
+	}
+}
+
 // A laden hull goes to trade, which is what sells the hold; the restore is for an EMPTY frigate only.
 func TestBootstrap_StalledPurchaser_LadenReturnGoesToTradeToSellItsHold(t *testing.T) {
 	obs := releasedPurchaserObs(frigateStarvedDwell + time.Minute)
@@ -296,6 +420,44 @@ func TestBootstrap_TradeSeed_ColdYard_SendsTheBuyShipBackToTheShipyard(t *testin
 	}
 	if acq.dedicateBuys != 0 {
 		t.Fatalf("an unreadable price still buys NOTHING this tick (RULINGS #4 fail-closed); seeds=%d", acq.dedicateBuys)
+	}
+}
+
+// --- THE DEADLOCK ARC: stalled → offered → nobody takes it → lapsed → TRADING ---
+
+// The live wedge end to end. The treasury never moves across it because in this shape nothing can move
+// it: the one contract available is blocked by the same 13390cr that blocks the buy, so the frigate is
+// the only hull left that can go and earn.
+func TestBootstrap_StalledPurchaser_UnclaimedArcEndsInTrade(t *testing.T) {
+	ret, acq := &fakeRetirer{}, stalledAcquirer()
+	h := starvedHandler(stalledPurchaserObs(frigateStarvedDwell), ret, acq, &fakeContractRunner{}, &fakeHandoff{})
+
+	// (1) The dwell is up: the dedication is cleared and the hull is offered to the contract pool.
+	if res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd()); !res.FrigateContractFallback {
+		t.Fatalf("tick 1 must offer the stalled buy ship to contracts (blocker=%q)", res.Blocker)
+	}
+
+	// (2) Mid-window the pool still cannot use it — its own work is capital-blocked — so no leg ever
+	// claims the hull and the clock, which advances only when a run ENDS, keeps counting.
+	h.SetWorldObserver(&fakeObserver{obs: releasedPurchaserObs(frigateStarvedDwell + frigateContractFallbackWindow - time.Second)})
+	if _, err := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd()); err != nil {
+		t.Fatalf("tick 2: %v", err)
+	}
+	if len(ret.tradeDedications) != 0 || len(ret.dedications) != 0 {
+		t.Fatalf("mid-window the offer stands; trade=%v purchasing=%v", ret.tradeDedications, ret.dedications)
+	}
+
+	// (3) The window lapses with the stall unresolved: TRADE, not back to a yard it cannot buy at.
+	h.SetWorldObserver(&fakeObserver{obs: releasedPurchaserObs(frigateStarvedDwell + frigateContractFallbackWindow)})
+	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
+	if len(ret.tradeDedications) != 1 || ret.tradeDedications[0] != "FRIGATE-1" || !res.FrigateTrading {
+		t.Fatalf("tick 3 must send the hull TRADING — the deadlock's only exit; trade=%v trading=%v blocker=%q", ret.tradeDedications, res.FrigateTrading, res.Blocker)
+	}
+	if len(ret.dedications) != 0 || len(ret.ships) != 1 {
+		t.Fatalf("each transition happens exactly once, and none of them re-enters purchasing; purchasing=%v retires=%v", ret.dedications, ret.ships)
+	}
+	if acq.buys != 0 || acq.dedicateBuys != 0 {
+		t.Fatalf("nothing in the arc weakens the money guard: the treasury never covered the ask; buys=%d seeds=%d", acq.buys, acq.dedicateBuys)
 	}
 }
 

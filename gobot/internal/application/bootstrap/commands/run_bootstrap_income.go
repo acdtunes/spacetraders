@@ -30,8 +30,8 @@ const (
 	frigateStarvedDwell = 15 * time.Second
 
 	// frigateContractFallbackWindow is how long the released frigate stays untagged and visible to the
-	// contract pool. It LAPSES so a fallback nobody took hands the hull back rather than stranding it,
-	// closing inside the coordinator's 600s backoff ceiling — trade has it back before its next relaunch.
+	// contract pool, for BOTH shapes. It LAPSES so a fallback nobody took hands the hull back to trade
+	// rather than stranding it, closing inside the coordinator's 600s backoff ceiling.
 	frigateContractFallbackWindow = 300 * time.Second
 )
 
@@ -205,12 +205,10 @@ func frigateBuyShipWanted(obs Observation) bool {
 // buy is out of reach, and the hull is free and empty past the same dwell the trade half opens on (a
 // frigate with no run on record has been off the roster since the era began, so it is past by default).
 //
-// UNLIKE THE TRADE HALF IT DOES NOT LAPSE. That window closes because the trade coordinator re-takes the
-// hull on its own ladder; nothing re-takes a stalled buy ship, and the only clock either half has
-// advances solely when a container run ENDS — so a lapse could never re-open, and would park the frigate
-// back at the yard for good, which IS the stall. The CAPITAL test is the close instead. That test is
-// READ, never moved: pivotWouldHold is the seed's own cushion≥floor gate, so this decides only WHERE the
-// frigate waits (RULINGS #4).
+// This is the SHAPE, and it does not lapse: a hull pinned to a buy it cannot make is stalled at every park
+// age, so the release below is never gated by the clock and no tag nothing can use becomes permanent. How
+// long it then WAITS untagged is frigateBuyShipFallbackOpen's bounded question. The capital test is READ,
+// never moved: pivotWouldHold is the seed's own cushion≥floor gate, so this decides only WHERE it waits.
 func frigateBuyShipStalled(obs Observation, ask int64, now time.Time) bool {
 	if !frigateBuyShipWanted(obs) || !obs.CommandFrigateIdle || !obs.FrigateCargoEmpty {
 		return false
@@ -219,6 +217,18 @@ func frigateBuyShipStalled(obs Observation, ask int64, now time.Time) bool {
 		return false
 	}
 	return now.Sub(obs.CommandFrigateLastRunEnd) >= frigateStarvedDwell
+}
+
+// frigateBuyShipFallbackOpen is the purchasing half's frigateContractFallbackOpen — the stalled buy ship's
+// offer to the contract pool, on the SAME two bounds. Closing on capital alone deadlocks when the contract
+// engine's own work is blocked by the same empty treasury: nothing earns, so capital never recovers and no
+// leg ever claims the hull. So it LAPSES — to TRADE (ensureFrigateTrading's default), income gated on
+// neither the buy nor that contract, never back to the yard, which is the state that stalled.
+func frigateBuyShipFallbackOpen(obs Observation, ask int64, now time.Time) bool {
+	if !frigateBuyShipStalled(obs, ask, now) {
+		return false
+	}
+	return now.Sub(obs.CommandFrigateLastRunEnd) < frigateStarvedDwell+frigateContractFallbackWindow
 }
 
 // buyShipAsk reads the yard ONCE per tick and only where the answer can change a decision. Read-only:
@@ -285,7 +295,7 @@ func (h *RunBootstrapCoordinatorHandler) releaseStarvedFrigateToContract(ctx con
 	}
 	res.FrigateContractFallback = true
 	parked := now.Sub(obs.CommandFrigateLastRunEnd)
-	why := fmt.Sprintf("the cold-start buy it stands by for is out of reach (hauler ask=%d treasury=%d cushion=(treasury−ask)=%d floor=%d) — it returns to being the buy ship the moment that clears", ask, obs.Treasury, obs.Treasury-ask, contractWorkingCapitalFloor)
+	why := fmt.Sprintf("the cold-start buy it stands by for is out of reach (hauler ask=%d treasury=%d cushion=(treasury−ask)=%d floor=%d) — it returns to being the buy ship the moment that clears, or goes TRADING if nothing takes the offer before it lapses", ask, obs.Treasury, obs.Treasury-ask, contractWorkingCapitalFloor)
 	if starved {
 		why = fmt.Sprintf("its last tour ran %s (under the %s fast-fail line — it never traded), so trade here is starved — it returns to trade when the leg ends or in %s if nothing takes it",
 			obs.CommandFrigateLastRunEnd.Sub(obs.CommandFrigateLastRunStart).Truncate(time.Second),
@@ -372,10 +382,10 @@ func (h *RunBootstrapCoordinatorHandler) ensureFrigateTrading(ctx context.Contex
 
 	// HOLD while EITHER fallback window is open. The frigate was untagged ON PURPOSE — an undedicated
 	// command hull is the only shape the last-resort admission accepts — so re-tagging it here would take
-	// it back before the contract coordinator's own next pass ran. Both steps read these SAME predicates,
-	// which is what forbids that race; each closes on its own terms, so this defers, never drops.
+	// it back before the contract coordinator's own next pass ran. Each hold is its release's shape plus
+	// the window it stays offered for; both LAPSE, so an offer nobody took ends in a home, not in limbo.
 	now := h.clock.Now()
-	if frigateContractFallbackOpen(obs, now) || frigateBuyShipStalled(obs, ask, now) {
+	if frigateContractFallbackOpen(obs, now) || frigateBuyShipFallbackOpen(obs, ask, now) {
 		logger.Log("INFO", fmt.Sprintf("Bootstrap holding the command frigate %s UNDEDICATED: it has nothing to earn where it stands and is offered to the contract coordinator's last-resort pool; it takes a home again when that leg ends, when the window lapses, or when its buy comes back within reach", obs.CommandFrigateID), map[string]interface{}{
 			"action":       "bootstrap_frigate_trade_held_for_contract",
 			"container_id": cmd.ContainerID,
@@ -396,7 +406,8 @@ func (h *RunBootstrapCoordinatorHandler) ensureFrigateTrading(ctx context.Contex
 
 	// BACK TO THE YARD, not out on a tour: the acquisition naming this hull is still unbought and in
 	// reach, so it resumes the post the fallback lent it away from. A laden hull is excluded (trade sells
-	// its hold), and so is one still out of reach — the window above is holding that one out.
+	// its hold), and so is one still OUT of reach — the same capital test the stall opens on, so a lapsed
+	// offer can never re-enter it here; it falls through to trade below.
 	if frigateBuyShipWanted(obs) && obs.FrigateCargoEmpty && !pivotWouldHold(obs.Treasury, ask) {
 		h.restoreFrigateBuyShip(ctx, cmd, obs, res, ask)
 		return
