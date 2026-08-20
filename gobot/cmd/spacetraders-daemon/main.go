@@ -1007,6 +1007,9 @@ func run(cfg *config.Config) error {
 	// reader (separate process, wake gate not a money guard).
 	ledgerTreasury := grpc.NewLedgerTreasuryReader(db, apiClient)
 
+	// sp-9bacx: wired here, not beside the handler above, which is registered before this exists.
+	tradeFleetCoordinatorHandler.SetTreasuryReader(ledgerTreasury)
+
 	// sp-ps2oc: THE CROSS-OPERATION CONCURRENT SPEND CAP. One ledger, shared by every operation
 	// that draws on the treasury — the construction executor below and the contract source-buy
 	// further down. It must be ONE instance: two ledgers are two budgets, and the aggregate

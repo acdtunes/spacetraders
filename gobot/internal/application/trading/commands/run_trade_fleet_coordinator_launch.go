@@ -17,9 +17,10 @@ func (h *RunTradeFleetCoordinatorHandler) launchTourForHull(
 	ship *navigation.Ship,
 	cooldown time.Duration,
 	reachEscalated bool,
+	reserve int64,
 	logger common.ContainerLogger,
 ) bool {
-	spec := buildTourLaunchSpec(cmd, ship.ShipSymbol(), reachEscalated)
+	spec := buildTourLaunchSpec(cmd, ship.ShipSymbol(), reachEscalated, reserve)
 	containerID, lerr := h.launcher.LaunchTour(ctx, spec)
 	if lerr != nil {
 		// A single hull's launch failure (e.g. it was claimed between the snapshot
@@ -70,6 +71,7 @@ func (h *RunTradeFleetCoordinatorHandler) relaunchHungTours(
 	cmd *RunTradeFleetCoordinatorCommand,
 	running []*navigation.Ship,
 	now time.Time,
+	reserveFor func() int64,
 	logger common.ContainerLogger,
 ) (killed, relaunched int) {
 	// The watchdog ENGINE is shared with the long-haul engine (relaunchHungContainers, see
@@ -86,7 +88,7 @@ func (h *RunTradeFleetCoordinatorHandler) relaunchHungTours(
 		humanLabel: "Trade fleet",
 		action:     "trade_fleet",
 		relaunch: func(ctx context.Context, shipSymbol string) (string, error) {
-			return h.launcher.LaunchTour(ctx, buildTourLaunchSpec(cmd, shipSymbol, false))
+			return h.launcher.LaunchTour(ctx, buildTourLaunchSpec(cmd, shipSymbol, false, reserveFor()))
 		},
 	})
 }
@@ -117,15 +119,16 @@ func (h *RunTradeFleetCoordinatorHandler) reclaimDeadContainerAbsorption(ctx con
 // buildTourLaunchSpec assembles the launch request for one hull, shared by the idle-relaunch
 // path and the sp-m3122 watchdog relaunch (one spec shape, no drift). reachEscalated arms
 // reposition-reach for this tour (sp-nxrt); the watchdog always passes false — a fresh tour on
-// a hung hull re-plans normally, it was not a margins-death fast-fail.
-func buildTourLaunchSpec(cmd *RunTradeFleetCoordinatorCommand, shipSymbol string, reachEscalated bool) TourLaunchSpec {
+// a hung hull re-plans normally, it was not a margins-death fast-fail. reserve is this pass's
+// resolved working-capital reserve (sp-9bacx, resolveTourReserve) rather than cmd's raw knob.
+func buildTourLaunchSpec(cmd *RunTradeFleetCoordinatorCommand, shipSymbol string, reachEscalated bool, reserve int64) TourLaunchSpec {
 	return TourLaunchSpec{
 		ShipSymbol:               shipSymbol,
 		MaxHops:                  cmd.MaxHops,
 		MaxSpend:                 cmd.MaxSpend,
 		MinMargin:                cmd.MinMargin,
 		ReplanLimit:              cmd.ReplanLimit,
-		WorkingCapitalReserve:    cmd.WorkingCapitalReserve,
+		WorkingCapitalReserve:    reserve,
 		AgentSymbol:              cmd.AgentSymbol,
 		Iterations:               tourIterationsContinuous,
 		PlayerID:                 cmd.PlayerID.Value(),
@@ -236,4 +239,11 @@ func (h *RunTradeFleetCoordinatorHandler) SetTourStopper(port TourStopper) {
 // Optional-injection: without it the reclaim is skipped (nil-safe).
 func (h *RunTradeFleetCoordinatorHandler) SetAbsorptionReclaimer(port DeadContainerAbsorptionReclaimer) {
 	h.absorptionReclaimer = port
+}
+
+// SetTreasuryReader wires the shared ledger-backed balance reader (sp-muq66) resolveTourReserve
+// derives each launch's working-capital reserve from (sp-9bacx). Optional-injection like
+// SetTourLauncher: without it every launch keeps the tour's own default reserve.
+func (h *RunTradeFleetCoordinatorHandler) SetTreasuryReader(r TreasuryReader) {
+	h.treasury = r
 }

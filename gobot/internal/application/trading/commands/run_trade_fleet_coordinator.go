@@ -144,9 +144,10 @@ type RunTradeFleetCoordinatorCommand struct {
 
 	// Tour launch knobs, passed verbatim to StartTourRun. 0 => the tour's own
 	// documented default for that knob (max_hops->6, max_spend->25% of live treasury,
-	// replan_limit->2, working_capital_reserve->the non-tunable floor, sp-05glh flat). Sourced
+	// replan_limit->2, working_capital_reserve->the 150k non-contract floor). Sourced
 	// live from config.yaml's [trade_fleet] section on every build so an edit+restart
-	// retunes a recovered coordinator (sp-ts82 live-config pattern).
+	// retunes a recovered coordinator (sp-ts82 live-config pattern). WorkingCapitalReserve
+	// is the one knob the coordinator may resolve itself when unset — see resolveTourReserve.
 	MaxHops               int
 	MaxSpend              int64
 	MinMargin             int
@@ -242,6 +243,11 @@ type RunTradeFleetCoordinatorHandler struct {
 	// absorptionReclaimer promptly releases absorption reservations of dead containers
 	// (sp-m3122 part 3). Optional; nil skips the reclaim.
 	absorptionReclaimer DeadContainerAbsorptionReclaimer
+
+	// treasury is the balance the per-launch working-capital reserve is derived from
+	// (sp-9bacx, see resolveTourReserve). Optional-injection via SetTreasuryReader: nil
+	// leaves every launch on the tour's own default, byte-identical to before.
+	treasury TreasuryReader
 
 	// startupReclaimDone gates the one-shot restart absorption reclaim to the FIRST reconcile
 	// pass of this handler (a fresh handler per daemon process — so it re-runs on every daemon
@@ -357,6 +363,10 @@ func (h *RunTradeFleetCoordinatorHandler) reconcileOnce(ctx context.Context, cmd
 
 	idle, running := partitionTradeFleet(ships)
 
+	// The reserve every tour launched THIS pass carries, re-derived from live treasury and
+	// resolved lazily on first launch (sp-9bacx, resolveTourReserve).
+	reserveFor := h.tourReserveResolver(ctx, cmd, logger)
+
 	// Liveness watchdog: a RUNNING claim is no longer trusted as healthy. Kill and
 	// relaunch fresh any running tour that has made ZERO real progress past the stall
 	// threshold (a hung mid-jump restart-resume, or any other silent wedge). Runs BEFORE the
@@ -364,7 +374,7 @@ func (h *RunTradeFleetCoordinatorHandler) reconcileOnce(ctx context.Context, cmd
 	// idle bucket, yet that tour is exactly what must be killed. Because the progress signal is
 	// persistent, a daemon-restart hang is detected on the FIRST pass (its last progress
 	// predates the restart), not one stall-threshold later.
-	watchdogKilled, watchdogRelaunched := h.relaunchHungTours(ctx, cmd, running, now, logger)
+	watchdogKilled, watchdogRelaunched := h.relaunchHungTours(ctx, cmd, running, now, reserveFor, logger)
 
 	// sp-m3122 part 3: promptly release absorption reservations held by containers that no
 	// longer exist — on restart (this handler's first pass) and after any watchdog kill (the
@@ -446,7 +456,7 @@ func (h *RunTradeFleetCoordinatorHandler) reconcileOnce(ctx context.Context, cmd
 			continue
 		}
 
-		if !h.launchTourForHull(ctx, cmd, ship, cooldown, reachEscalated, logger) {
+		if !h.launchTourForHull(ctx, cmd, ship, cooldown, reachEscalated, reserveFor(), logger) {
 			continue
 		}
 		runningTours++

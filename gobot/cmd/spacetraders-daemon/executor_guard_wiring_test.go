@@ -71,9 +71,16 @@ type executorWiring struct {
 	argNil   bool
 }
 
-// analyseExecutorWiring extracts, for each named setter, its call count, the identifier it was
-// called on, and whether the argument is syntactically nil. It also collects the arguments of the
-// executor constructor so a setter can be tied to the object the coordinator actually uses.
+// analyseExecutorWiring extracts, for each named setter, how many times it is called ON THE
+// EXECUTOR, the identifier it was called on, and whether the argument is syntactically nil. It
+// also collects the executor constructor's assignment so a setter can be tied to the object the
+// coordinator actually uses.
+//
+// The count is receiver-SCOPED because these setter names are not the executor's alone: sp-9bacx
+// gave the trade-fleet coordinator its own SetTreasuryReader at this same composition root. A
+// bare name count would read that legitimate second call as a duplicate on the executor. The
+// receiver of a call that is NOT on the executor is still recorded (when nothing on the executor
+// has been seen), so the orphan-receiver shape stays visible rather than reading as merely absent.
 func analyseExecutorWiring(t *testing.T, filename string, src []byte, setters []string) (map[string]executorWiring, []string) {
 	t.Helper()
 	fset := token.NewFileSet()
@@ -85,33 +92,9 @@ func analyseExecutorWiring(t *testing.T, filename string, src []byte, setters []
 		wanted[s] = true
 	}
 
-	found := make(map[string]executorWiring, len(setters))
+	// The executor identifier: the LHS of `x := goodsServices.NewProductionExecutor(...)`. Found
+	// FIRST, because the setter pass below scopes its count to it.
 	var executorReceivers []string
-	ast.Inspect(file, func(n ast.Node) bool {
-		call, ok := n.(*ast.CallExpr)
-		if !ok {
-			return true
-		}
-		name := calledFuncName(call)
-		if name == "NewProductionExecutor" {
-			// The receiver every guard setter must land on is whatever this constructor's result
-			// was assigned to; captured via the enclosing assignment below.
-			return true
-		}
-		if !wanted[name] {
-			return true
-		}
-		w := found[name]
-		w.calls++
-		w.receiver = receiverName(call)
-		if len(call.Args) == 1 && isNilArg(call.Args[0]) {
-			w.argNil = true
-		}
-		found[name] = w
-		return true
-	})
-
-	// The executor identifier: the LHS of `x := goodsServices.NewProductionExecutor(...)`.
 	ast.Inspect(file, func(n ast.Node) bool {
 		assign, ok := n.(*ast.AssignStmt)
 		if !ok || len(assign.Lhs) != 1 || len(assign.Rhs) != 1 {
@@ -122,6 +105,35 @@ func analyseExecutorWiring(t *testing.T, filename string, src []byte, setters []
 				executorReceivers = append(executorReceivers, ident.Name)
 			}
 		}
+		return true
+	})
+	executor := ""
+	if len(executorReceivers) == 1 {
+		executor = executorReceivers[0]
+	}
+
+	found := make(map[string]executorWiring, len(setters))
+	ast.Inspect(file, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		name := calledFuncName(call)
+		if !wanted[name] {
+			return true
+		}
+		receiver := receiverName(call)
+		w := found[name]
+		if receiver == executor {
+			w.calls++
+			w.receiver = receiver
+			if len(call.Args) == 1 && isNilArg(call.Args[0]) {
+				w.argNil = true
+			}
+		} else if w.receiver == "" {
+			w.receiver = receiver
+		}
+		found[name] = w
 		return true
 	})
 	return found, executorReceivers

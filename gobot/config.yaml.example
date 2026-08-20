@@ -272,13 +272,17 @@ trade_fleet:
   max_concurrent_tours: 0
   tick_seconds: 30             # reconcile cadence (default 30)
   # Per-tour caps, passed verbatim to each tour launch. 0 => the tour's own default
-  # (max_hops->6, max_spend->25% of live treasury, replan_limit->2, reserve->the floor).
+  # (max_hops->6, max_spend->25% of live treasury, replan_limit->2, reserve->150k).
   # Iterations is NOT configurable: every relaunched tour is continuous by construction.
   # max_hops: 6
   # max_spend: 0
   # min_margin: 0
   # replan_limit: 0
-  # working_capital_reserve: 0   # 0/absent => the flat immutable floor (sp-05glh; no proportional pct knob)
+  # working_capital_reserve: 0   # 0/absent => the 150k non-contract floor, EXCEPT while treasury
+  #                              # sits at or below it: that default deploys 0 capital and denies
+  #                              # every tour, so the coordinator launches on the 50k immutable
+  #                              # anti-stall floor until the fleet trades back above 150k
+  #                              # (sp-9bacx, RULINGS #5). Setting a value here overrides both.
   # relaunch_backoff_max_minutes (sp-1pli): ceiling for the per-hull ADAPTIVE relaunch
   # backoff. When a hull's continuous tour exits unproductive (fast-fail — no plausible
   # trade leg flown), its relaunch cooldown DOUBLES from cooldown_seconds, up to this
