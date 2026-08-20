@@ -60,9 +60,13 @@ const (
 // Each action is guarded "already done / in-flight?" against the FRESH observation, so re-evaluation —
 // including the first tick after a restart — never double-acts or double-buys.
 func (h *RunBootstrapCoordinatorHandler) actIncome(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, obs Observation, res *reconcileResult) {
+	// ONE yard reading serves the whole tick: the frigate's home (1) and the contract fallback (4) both
+	// weigh whether its buy is in reach, and two readings could disagree about the same hull.
+	ask := h.buyShipAsk(ctx, cmd, obs)
+
 	// (1) The frigate EARNS IN TRADE once probes reach target, ahead of the graduation stop — trade is not
 	// contract income, so a graduated fleet follows the same order.
-	h.ensureFrigateTrading(ctx, cmd, obs, res)
+	h.ensureFrigateTrading(ctx, cmd, obs, res, ask)
 	h.ensureTradeCoordinator(ctx, cmd)
 
 	// CONTRACT GRADUATION: a graduated player has DURABLY retired contracts as the funding
@@ -94,9 +98,9 @@ func (h *RunBootstrapCoordinatorHandler) actIncome(ctx context.Context, cmd *Run
 		h.ensureBatchContract(ctx, cmd, res)
 	}
 
-	// (4) STARVED TRADE → CONTRACT WORK. Also zero-capital (it writes one dedication), so it sits
-	// above the gate: a cold-start fleet is exactly the one that needs it.
-	h.releaseStarvedFrigateToContract(ctx, cmd, cfg, obs, res)
+	// (4) STARVED TRADE (or a CAPITAL-GATED buy) → CONTRACT WORK. Also zero-capital (it writes one
+	// dedication), so it sits above the gate: a cold-start fleet is exactly the one that needs it.
+	h.releaseStarvedFrigateToContract(ctx, cmd, cfg, obs, res, ask)
 
 	// (5) THE CONTRACT-START GATE — NEW SPEND only: once the operation is under way, a treasury dip
 	// (including the one its own hull buys cause) never stands it back down.
@@ -189,27 +193,73 @@ func frigateContractFallbackOpen(obs Observation, now time.Time) bool {
 	return parked >= frigateStarvedDwell && parked < frigateStarvedDwell+frigateContractFallbackWindow
 }
 
-// releaseStarvedFrigateToContract hands the frigate to the contract engine when trade is locally starved,
-// by CLEARING its trade tag and nothing else. That one write is the whole mechanism: the existing
-// last-resort admission (ship_pool_manager.go, RULINGS #7) takes the command hull only when it carries NO
-// dedication and no regular hauler is idle, so an untagged frigate is picked up on the engine's own next
-// pass under its own unmodified rules. This is not a second contract path — it only makes the hull
-// visible to the one that exists.
+// frigateBuyShipWanted reports whether bootstrap still needs the frigate STANDING BY as its exclusive
+// buy ship: exactly one acquisition names it by symbol and has no other buyer — the trade seed (step
+// 8a). Read off the live fleet (RULINGS #2), and OFF for a graduated player, who buys no cold-start
+// hull at all and whose frigate must never be pinned to a buy that will not happen.
+func frigateBuyShipWanted(obs Observation) bool {
+	return obs.CommandFrigateID != "" && !obs.ContractGraduated && len(obs.Haulers) > 0 && obs.TradeHullCount == 0
+}
+
+// frigateBuyShipStalled reports the PURCHASING half of the contract fallback: a buy ship is wanted, its
+// buy is out of reach, and the hull is free and empty past the same dwell the trade half opens on (a
+// frigate with no run on record has been off the roster since the era began, so it is past by default).
 //
-// It fires at an honest free tick only: idle, not flying (never mid-tour, PLAYBOOK §9), and cargo-empty,
-// since a laden frigate sells its hold on its next tour and the pool's unrelated-cargo filter would
-// refuse it anyway. Writing a dedication commands and stops nothing, so no accepted contract and no
-// running tour is abandoned (RULINGS #1), and it spends nothing (RULINGS #4).
-func (h *RunBootstrapCoordinatorHandler) releaseStarvedFrigateToContract(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, obs Observation, res *reconcileResult) {
-	if obs.CommandFrigateID == "" || !obs.CommandFrigateOnTrade || !obs.CommandFrigateIdle || !obs.FrigateCargoEmpty {
+// UNLIKE THE TRADE HALF IT DOES NOT LAPSE. That window closes because the trade coordinator re-takes the
+// hull on its own ladder; nothing re-takes a stalled buy ship, and the only clock either half has
+// advances solely when a container run ENDS — so a lapse could never re-open, and would park the frigate
+// back at the yard for good, which IS the stall. The CAPITAL test is the close instead. That test is
+// READ, never moved: pivotWouldHold is the seed's own cushion≥floor gate, so this decides only WHERE the
+// frigate waits (RULINGS #4).
+func frigateBuyShipStalled(obs Observation, ask int64, now time.Time) bool {
+	if !frigateBuyShipWanted(obs) || !obs.CommandFrigateIdle || !obs.FrigateCargoEmpty {
+		return false
+	}
+	if !pivotWouldHold(obs.Treasury, ask) {
+		return false
+	}
+	return now.Sub(obs.CommandFrigateLastRunEnd) >= frigateStarvedDwell
+}
+
+// buyShipAsk reads the yard ONCE per tick and only where the answer can change a decision. Read-only:
+// it spends nothing and gates nothing. 0 is no reading, which every consumer treats as no evidence.
+func (h *RunBootstrapCoordinatorHandler) buyShipAsk(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, obs Observation) int64 {
+	if h.haulAcquirer == nil || !frigateBuyShipWanted(obs) || !obs.CommandFrigateIdle || obs.CommandFrigateOnTrade {
+		return 0
+	}
+	ask, _, _, _ := h.haulAcquirer.PriceCheck(ctx, cmd.PlayerID, haulerShipType)
+	return ask
+}
+
+// releaseStarvedFrigateToContract hands the frigate to the contract engine when it has nothing to earn
+// where it stands, by CLEARING its dedication and nothing else. That one write is the whole mechanism:
+// the existing last-resort admission (ship_pool_manager.go, RULINGS #7) takes the command hull only when
+// it carries NO dedication and no regular hauler is idle, so an untagged frigate is picked up on the
+// engine's own next pass under its own unmodified rules. This is not a second contract path — it only
+// makes the hull visible to the one that exists.
+//
+// TWO starvation shapes funnel through it, and the hull is equally idle in both: trade here is locally
+// starved, or the cold-start buy it was dedicated to make is capital-gated.
+//
+// It fires at an honest free tick only: idle, not flying (never mid-tour, never mid-navigation to the
+// yard, PLAYBOOK §9) and cargo-empty. Idle is also what makes an in-flight purchase safe — a purchase
+// container CLAIMS its buy ship, so a running transaction never reads free. Writing a dedication
+// commands and stops nothing, so no accepted contract, tour or committed buy is abandoned (RULINGS #1).
+func (h *RunBootstrapCoordinatorHandler) releaseStarvedFrigateToContract(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, obs Observation, res *reconcileResult, ask int64) {
+	if obs.CommandFrigateID == "" || !obs.CommandFrigateIdle || !obs.FrigateCargoEmpty {
 		return
 	}
-	if !frigateContractFallbackOpen(obs, h.clock.Now()) {
+	now := h.clock.Now()
+	starved := obs.CommandFrigateOnTrade && frigateContractFallbackOpen(obs, now)
+	stalled := obs.CommandFrigatePurchasing && frigateBuyShipStalled(obs, ask, now)
+	if !starved && !stalled {
 		return
 	}
 
 	// Capital ops outrank one opportunistic leg: while the operation is funded and still hull-less the
-	// frigate is the first-hauler pivot's purchaser, so leave it where the pivot expects to find it.
+	// frigate is the first-hauler pivot's purchaser, so leave it where the pivot expects to find it. Still
+	// scoped to a HULL-LESS op on purpose: once hauler #1 exists the pivot is over, and a hull-less stall
+	// keeps its own cure (releaseStrandedPurchaser hands the frigate back to TRADE to earn toward the ask).
 	if contractOpsWarranted(obs, cfg.ContractStartTreasury) && len(obs.Haulers) == 0 {
 		return
 	}
@@ -217,7 +267,7 @@ func (h *RunBootstrapCoordinatorHandler) releaseStarvedFrigateToContract(ctx con
 	logger := common.LoggerFromContext(ctx)
 	if h.retirer == nil {
 		res.Blocker = "no_retirer"
-		logger.Log("WARN", "Bootstrap needs to release the starved command frigate to contract work but no retirer wired — it would keep idle-retrying a starved system", map[string]interface{}{
+		logger.Log("WARN", "Bootstrap needs to release the idle command frigate to contract work but no retirer wired — it would keep standing by with nothing to earn", map[string]interface{}{
 			"action":       "bootstrap_income_blocked",
 			"container_id": cmd.ContainerID,
 			"blocker":      "no_retirer",
@@ -226,7 +276,7 @@ func (h *RunBootstrapCoordinatorHandler) releaseStarvedFrigateToContract(ctx con
 	}
 	if err := h.retirer.RetireFromContract(ctx, cmd.PlayerID, obs.CommandFrigateID); err != nil {
 		res.Blocker = "frigate_fallback_release_error"
-		logger.Log("ERROR", fmt.Sprintf("Bootstrap could not clear the starved command frigate %s's trade tag — it stays in a starved trade fleet; retry next tick: %v", obs.CommandFrigateID, err), map[string]interface{}{
+		logger.Log("ERROR", fmt.Sprintf("Bootstrap could not clear the command frigate %s's dedication — it stays where it is earning nothing; retry next tick: %v", obs.CommandFrigateID, err), map[string]interface{}{
 			"action":       "bootstrap_frigate_fallback_release_error",
 			"container_id": cmd.ContainerID,
 			"ship":         obs.CommandFrigateID,
@@ -234,19 +284,43 @@ func (h *RunBootstrapCoordinatorHandler) releaseStarvedFrigateToContract(ctx con
 		return
 	}
 	res.FrigateContractFallback = true
-	parked := h.clock.Now().Sub(obs.CommandFrigateLastRunEnd)
-	logger.Log("INFO", fmt.Sprintf("Bootstrap released the command frigate %s from the TRADE fleet to CONTRACT work: its last tour ran %s (under the %s fast-fail line — it never traded) and it has sat parked %s since, so trade here is starved. Untagged, it is now visible to the contract coordinator's last-resort admission; it returns to trade when the leg ends or in %s if nothing takes it",
-		obs.CommandFrigateID,
-		obs.CommandFrigateLastRunEnd.Sub(obs.CommandFrigateLastRunStart).Truncate(time.Second),
-		frigateStarvedTourMax, parked.Truncate(time.Second),
-		(frigateStarvedDwell+frigateContractFallbackWindow-parked).Truncate(time.Second)), map[string]interface{}{
-		"action":            "bootstrap_frigate_contract_fallback",
-		"container_id":      cmd.ContainerID,
-		"ship":              obs.CommandFrigateID,
-		"last_tour_secs":    int(obs.CommandFrigateLastRunEnd.Sub(obs.CommandFrigateLastRunStart).Seconds()),
-		"parked_secs":       int(parked.Seconds()),
-		"fallback_max_secs": int((frigateStarvedDwell + frigateContractFallbackWindow).Seconds()),
+	parked := now.Sub(obs.CommandFrigateLastRunEnd)
+	why := fmt.Sprintf("the cold-start buy it stands by for is out of reach (hauler ask=%d treasury=%d cushion=(treasury−ask)=%d floor=%d) — it returns to being the buy ship the moment that clears", ask, obs.Treasury, obs.Treasury-ask, contractWorkingCapitalFloor)
+	if starved {
+		why = fmt.Sprintf("its last tour ran %s (under the %s fast-fail line — it never traded), so trade here is starved — it returns to trade when the leg ends or in %s if nothing takes it",
+			obs.CommandFrigateLastRunEnd.Sub(obs.CommandFrigateLastRunStart).Truncate(time.Second),
+			frigateStarvedTourMax,
+			(frigateStarvedDwell + frigateContractFallbackWindow - parked).Truncate(time.Second))
+	}
+	logger.Log("INFO", fmt.Sprintf("Bootstrap released the command frigate %s to CONTRACT work after %s off the earning roster: %s. Untagged, it is now visible to the contract coordinator's last-resort admission",
+		obs.CommandFrigateID, parked.Truncate(time.Second), why), map[string]interface{}{
+		"action":         "bootstrap_frigate_contract_fallback",
+		"container_id":   cmd.ContainerID,
+		"ship":           obs.CommandFrigateID,
+		"reason":         fallbackReason(starved),
+		"last_tour_secs": int(obs.CommandFrigateLastRunEnd.Sub(obs.CommandFrigateLastRunStart).Seconds()),
+		"parked_secs":    int(parked.Seconds()),
+		"hauler_ask":     ask,
+		"treasury":       obs.Treasury,
 	})
+}
+
+// fallbackReason names which starvation shape opened the fallback, for the decision log.
+func fallbackReason(starved bool) string {
+	if starved {
+		return "trade_starved"
+	}
+	return "buy_ship_capital_gated"
+}
+
+// committedBuyShip names the frigate only while it carries the purchasing dedication — the hull an
+// earlier tick committed, and so the only one a cold yard may be answered by sending (awaitHaulerPrice's
+// own rule). Untagged or trading it is not this decision's to fly.
+func committedBuyShip(obs Observation) string {
+	if obs.CommandFrigatePurchasing && obs.CommandFrigateID != "" {
+		return obs.CommandFrigateID
+	}
+	return ""
 }
 
 // contractOpsWarranted reports whether the contract operation may act this tick. The treasury comparison
@@ -264,17 +338,22 @@ func frigateIdleInTrade(obs Observation) bool {
 	return obs.CommandFrigateOnTrade && obs.CommandFrigateIdle
 }
 
-// ensureFrigateTrading puts the command frigate in its standing home, the TRADE fleet, so it earns under
-// the same coordinator that tours every other trade hull — no second, hand-rolled earner loop, and the one
-// write also clears whatever tag it carried. It waits for a genuinely free tick and never touches the
-// committed purchaser, so no accepted contract and no in-flight purchase is abandoned (RULINGS #1).
+// ensureFrigateTrading gives a free, untagged command frigate a home again — normally the TRADE fleet, so
+// it earns under the same coordinator that tours every other trade hull (no second, hand-rolled earner
+// loop, and the one write also clears whatever tag it carried). It waits for a genuinely free tick and
+// never touches the committed purchaser, so no accepted contract and no in-flight purchase is abandoned
+// (RULINGS #1).
+//
+// It is also where a hull the contract fallback lent out comes BACK to, and the two homes are not
+// interchangeable: while the acquisition that names the frigate by symbol is still unbought, the hull
+// belongs at the yard as its buy ship, not out on a multi-minute tour a coordinator claims it for.
 //
 // SEQUENCED BEHIND THE PROBE SEED. The trade coordinator CLAIMS the hull it tours, so a dedicated frigate
 // is idle at no tick for the length of a multi-minute leg — and with the one probe claimed by its own tour
 // the fleet then has no idle hull at all, the presence-gated yard can never be warmed, and probe buying
 // deadlocks for good. Below target the frigate is left alone, so the yard errand actData runs alongside
 // this has a hull. Only a NEW dedication is deferred; an already-trading frigate returned above (RULINGS #1).
-func (h *RunBootstrapCoordinatorHandler) ensureFrigateTrading(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, obs Observation, res *reconcileResult) {
+func (h *RunBootstrapCoordinatorHandler) ensureFrigateTrading(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, obs Observation, res *reconcileResult, ask int64) {
 	if obs.CommandFrigateID == "" || obs.CommandFrigateOnTrade || obs.CommandFrigatePurchasing || !obs.CommandFrigateIdle {
 		return
 	}
@@ -291,12 +370,13 @@ func (h *RunBootstrapCoordinatorHandler) ensureFrigateTrading(ctx context.Contex
 		return
 	}
 
-	// HOLD while the starved-trade fallback window is open. The frigate was untagged ON PURPOSE — an
-	// undedicated command hull is the only shape the last-resort admission accepts — so re-tagging it here
-	// would take it back before the contract coordinator's own next pass ran, and the two steps would trade
-	// the tag forever. It lapses, so this defers the re-dedication, never drops it.
-	if frigateContractFallbackOpen(obs, h.clock.Now()) {
-		logger.Log("INFO", fmt.Sprintf("Bootstrap holding the command frigate %s OUT of the trade fleet: trade here is starved and it is offered to the contract coordinator's last-resort pool; it returns to trade when that leg ends or when the window lapses", obs.CommandFrigateID), map[string]interface{}{
+	// HOLD while EITHER fallback window is open. The frigate was untagged ON PURPOSE — an undedicated
+	// command hull is the only shape the last-resort admission accepts — so re-tagging it here would take
+	// it back before the contract coordinator's own next pass ran. Both steps read these SAME predicates,
+	// which is what forbids that race; each closes on its own terms, so this defers, never drops.
+	now := h.clock.Now()
+	if frigateContractFallbackOpen(obs, now) || frigateBuyShipStalled(obs, ask, now) {
+		logger.Log("INFO", fmt.Sprintf("Bootstrap holding the command frigate %s UNDEDICATED: it has nothing to earn where it stands and is offered to the contract coordinator's last-resort pool; it takes a home again when that leg ends, when the window lapses, or when its buy comes back within reach", obs.CommandFrigateID), map[string]interface{}{
 			"action":       "bootstrap_frigate_trade_held_for_contract",
 			"container_id": cmd.ContainerID,
 			"ship":         obs.CommandFrigateID,
@@ -306,13 +386,22 @@ func (h *RunBootstrapCoordinatorHandler) ensureFrigateTrading(ctx context.Contex
 
 	if h.retirer == nil {
 		res.Blocker = "no_retirer"
-		logger.Log("WARN", "Bootstrap needs to put the command frigate in the trade fleet but no retirer wired — it would sit idle instead of earning", map[string]interface{}{
+		logger.Log("WARN", "Bootstrap needs to give the command frigate a fleet but no retirer wired — it would sit idle instead of earning", map[string]interface{}{
 			"action":       "bootstrap_income_blocked",
 			"container_id": cmd.ContainerID,
 			"blocker":      "no_retirer",
 		})
 		return
 	}
+
+	// BACK TO THE YARD, not out on a tour: the acquisition naming this hull is still unbought and in
+	// reach, so it resumes the post the fallback lent it away from. A laden hull is excluded (trade sells
+	// its hold), and so is one still out of reach — the window above is holding that one out.
+	if frigateBuyShipWanted(obs) && obs.FrigateCargoEmpty && !pivotWouldHold(obs.Treasury, ask) {
+		h.restoreFrigateBuyShip(ctx, cmd, obs, res, ask)
+		return
+	}
+
 	if err := h.retirer.DedicateAsTrade(ctx, cmd.PlayerID, obs.CommandFrigateID); err != nil {
 		res.Blocker = "frigate_trade_dedicate_error"
 		logger.Log("ERROR", fmt.Sprintf("Bootstrap could not dedicate the command frigate %s to the trade fleet — retry next tick: %v", obs.CommandFrigateID, err), map[string]interface{}{
@@ -327,6 +416,32 @@ func (h *RunBootstrapCoordinatorHandler) ensureFrigateTrading(ctx context.Contex
 		"action":       "bootstrap_frigate_trading",
 		"container_id": cmd.ContainerID,
 		"ship":         obs.CommandFrigateID,
+	})
+}
+
+// restoreFrigateBuyShip puts the exclusive PURCHASING dedication back on a returning untagged frigate —
+// the same protected role the pivot writes, through the same single write path. That dedication is what
+// keeps the hull reserved at the yard instead of claimed for a tour, which is what makes the next buy
+// deterministic (RULINGS #7). It commands nothing and spends nothing.
+func (h *RunBootstrapCoordinatorHandler) restoreFrigateBuyShip(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, obs Observation, res *reconcileResult, ask int64) {
+	logger := common.LoggerFromContext(ctx)
+
+	if err := h.retirer.DedicateAsPurchaser(ctx, cmd.PlayerID, obs.CommandFrigateID); err != nil {
+		res.Blocker = "frigate_dedicate_error"
+		logger.Log("ERROR", fmt.Sprintf("Bootstrap could not restore the command frigate %s as the exclusive purchasing ship — retry next tick: %v", obs.CommandFrigateID, err), map[string]interface{}{
+			"action":       "bootstrap_frigate_buy_ship_restore_error",
+			"container_id": cmd.ContainerID,
+			"ship":         obs.CommandFrigateID,
+		})
+		return
+	}
+	res.FrigateBuyShipRestored = true
+	logger.Log("INFO", fmt.Sprintf("Bootstrap restored the command frigate %s as the EXCLUSIVE purchasing ship: the cold-start trade seed is still unbought and its ask is back within reach (ask=%d treasury=%d floor=%d), and this hull is the buy's only named buyer — it stands by at the yard rather than touring, and goes back to trade the moment the seed lands", obs.CommandFrigateID, ask, obs.Treasury, contractWorkingCapitalFloor), map[string]interface{}{
+		"action":       "bootstrap_frigate_buy_ship_restored",
+		"container_id": cmd.ContainerID,
+		"ship":         obs.CommandFrigateID,
+		"hauler_ask":   ask,
+		"treasury":     obs.Treasury,
 	})
 }
 
@@ -709,16 +824,12 @@ func (h *RunBootstrapCoordinatorHandler) maybeSeedTradeHull(ctx context.Context,
 	}
 
 	// Price-check (reuse shipyard list — a live, PRESENCE-GATED GetShipyard). Unreadable ⇒ the capital gate
-	// cannot be evaluated, so nothing is bought this tick (RULINGS #4 fail-closed). By the trade-seed point the
-	// purchasing frigate is at the yard from the contract-#1 buy, so the price normally reads.
+	// cannot be evaluated, so nothing is bought this tick (RULINGS #4 fail-closed). The buy ship normally
+	// stands at the yard from the contract-#1 buy, but the contract fallback can lend it out and a leg
+	// leaves it wherever it ended, so a cold yard is answered as the hauler buy answers one: SEND it.
 	price, yard, readable, err := h.haulAcquirer.PriceCheck(ctx, cmd.PlayerID, haulerShipType)
 	if err != nil || !readable {
-		res.Blocker = "price_unreadable"
-		logger.Log("WARN", fmt.Sprintf("Bootstrap trade-seed price unreadable — failing closed (no buy): err=%v", err), map[string]interface{}{
-			"action":       "bootstrap_income_blocked",
-			"container_id": cmd.ContainerID,
-			"blocker":      "price_unreadable",
-		})
+		h.awaitReadablePrice(ctx, cmd, obs, res, committedBuyShip(obs), "", "trade-seed", err)
 		return
 	}
 
