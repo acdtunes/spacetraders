@@ -86,15 +86,17 @@ type fakeScanner struct {
 	calls       int
 	homeSystems []string
 	purchasers  []string // the hull each call was asked to send (order = call order)
+	borrows     []string // the tagged-but-free hull each call was offered to lend ("" = none)
 	readyAcq    *fakeAcquirer
 	readyHaul   *fakeHaulerAcquirer
 	world       *incomeWorld
 }
 
-func (f *fakeScanner) EnsureShipyardReadable(ctx context.Context, playerID int, homeSystem, purchaser string) (bool, error) {
+func (f *fakeScanner) EnsureShipyardReadable(ctx context.Context, playerID int, homeSystem, purchaser, borrow string) (bool, error) {
 	f.calls++
 	f.homeSystems = append(f.homeSystems, homeSystem)
 	f.purchasers = append(f.purchasers, purchaser)
+	f.borrows = append(f.borrows, borrow)
 	if f.err != nil {
 		return false, f.err
 	}

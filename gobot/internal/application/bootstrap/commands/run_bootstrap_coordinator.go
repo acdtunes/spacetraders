@@ -189,13 +189,13 @@ type ShipyardScanner interface {
 	// EnsureShipyardReadable sends a hull to a home-system shipyard so the next tick's price read
 	// succeeds. purchaser names the hull to send — the committed purchasing frigate, whose dedication
 	// puts it outside the free-hull search; empty means "pick a free hull", which never takes one
-	// another controller owns (RULINGS #7). Presence is enough for the listing to price; the buy path
-	// docks.
+	// another controller owns (RULINGS #7). borrow lends a TAGGED but free hull when that search is
+	// empty, re-tagging nothing and refusing one back on tour. Presence is enough to price; buys dock.
 	//
 	// Idempotent and best-effort: dispatched=false is a WAIT, not a failure — a hull already standing
 	// at a yard, one already en route from an earlier tick, no free hull, or no home shipyard known
 	// yet — so calling it on every unreadable tick never re-navigates or thrashes.
-	EnsureShipyardReadable(ctx context.Context, playerID int, homeSystem, purchaser string) (dispatched bool, err error)
+	EnsureShipyardReadable(ctx context.Context, playerID int, homeSystem, purchaser, borrow string) (dispatched bool, err error)
 }
 
 // MetricsSink records the bootstrap's observation series (spec §Observability). Pure observation:

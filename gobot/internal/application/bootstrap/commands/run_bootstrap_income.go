@@ -652,7 +652,7 @@ func (h *RunBootstrapCoordinatorHandler) awaitHaulerPrice(ctx context.Context, c
 	// Freeing the frigate is only worth it if something can then send it. With no scanner wired, fail
 	// closed without stopping it — an earning loop is never halted for a trip that cannot be made.
 	if h.scanner == nil {
-		h.awaitReadablePrice(ctx, cmd, obs, res, "", "hauler", priceErr)
+		h.awaitReadablePrice(ctx, cmd, obs, res, "", "", "hauler", priceErr)
 		return
 	}
 
@@ -711,8 +711,9 @@ func (h *RunBootstrapCoordinatorHandler) awaitHaulerPrice(ctx context.Context, c
 	}
 
 	// With no purchaser to name — a subsequent buy resting on an incidentally-idle probe that is not at
-	// the yard — the scanner picks a free hull instead.
-	h.awaitReadablePrice(ctx, cmd, obs, res, purchaser, "hauler", priceErr)
+	// the yard — the scanner picks a free hull, and is lent nothing: committing the earner is the PIVOT's
+	// decision above, taken against the capital test, never a side effect here.
+	h.awaitReadablePrice(ctx, cmd, obs, res, purchaser, "", "hauler", priceErr)
 }
 
 // firstUnservedSlot returns the first fixed delivery slot (within the ramp's cap) that no existing

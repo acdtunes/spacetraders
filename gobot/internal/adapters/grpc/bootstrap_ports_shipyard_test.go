@@ -71,7 +71,7 @@ func TestHullToSend_NamedPurchaserGoesUnlessItsOwnPositionExcusesTheTrip(t *test
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			send, ok := hullToSend(append([]*navigation.Ship{tc.purchaser}, tc.others...), homeYards(), "FRIGATE-1")
+			send, ok := hullToSend(append([]*navigation.Ship{tc.purchaser}, tc.others...), homeYards(), "FRIGATE-1", "")
 			require.Equal(t, tc.wantSend != "", ok)
 			require.Equal(t, tc.wantSend, send)
 		})
@@ -120,7 +120,73 @@ func TestHullToSend_FreeHullSearchNeverPoachesAndStandsDownOnAHullAtTheYard(t *t
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			send, ok := hullToSend(tc.ships, homeYards(), "")
+			send, ok := hullToSend(tc.ships, homeYards(), "", "")
+			require.Equal(t, tc.wantSend != "", ok)
+			require.Equal(t, tc.wantSend, send)
+		})
+	}
+}
+
+// Once every hull carries a fleet tag the free-hull search is empty by construction, and the yard can
+// never be warmed again. A BORROW is the caller's last resort for exactly that, and it flies only while
+// the LIVE roster still shows the lent hull free — so a tour that resumed since the caller looked is
+// never interrupted (PLAYBOOK §9), a claim is never flown out from under its writer, and a hull that
+// need not be lent is not.
+func TestHullToSend_BorrowedHullFliesOnlyWhileItIsStillFree(t *testing.T) {
+	idleFrigate := func() *navigation.Ship {
+		return shipyardHull(t, "FRIGATE-1", "X1-HQ-A1", tradeFleetTag, commandRole, navigation.NavStatusInOrbit)
+	}
+	touringProbe := shipyardHull(t, "PROBE-2", "X1-HQ-A1", tradeFleetTag, "SATELLITE", navigation.NavStatusInOrbit)
+	claimedFrigate := idleFrigate()
+	require.NoError(t, claimedFrigate.AssignToContainer("trade_fleet_coordinator-1", shared.NewRealClock()))
+
+	cases := []struct {
+		name     string
+		ships    []*navigation.Ship
+		borrow   string
+		wantSend string
+	}{
+		{
+			name:     "every hull tagged and the lent frigate idle between tours: it goes",
+			ships:    []*navigation.Ship{touringProbe, idleFrigate()},
+			borrow:   "FRIGATE-1",
+			wantSend: "FRIGATE-1",
+		},
+		{
+			name:   "mid-tour: never redirected",
+			ships:  []*navigation.Ship{shipyardHull(t, "FRIGATE-1", "X1-HQ-A1", tradeFleetTag, commandRole, navigation.NavStatusInTransit)},
+			borrow: "FRIGATE-1",
+		},
+		{
+			name:   "a live container claim holds it: never flown out from under that writer",
+			ships:  []*navigation.Ship{claimedFrigate},
+			borrow: "FRIGATE-1",
+		},
+		{
+			name:   "not on the roster: fails closed",
+			ships:  []*navigation.Ship{touringProbe},
+			borrow: "FRIGATE-1",
+		},
+		{
+			name:   "a hull already at the yard still stands the whole search down",
+			ships:  []*navigation.Ship{shipyardHull(t, "PROBE-2", "X1-HQ-YARD", tradeFleetTag, "SATELLITE", navigation.NavStatusInOrbit), idleFrigate()},
+			borrow: "FRIGATE-1",
+		},
+		{
+			name:     "a genuinely free hull outranks the borrow — nothing is lent that need not be",
+			ships:    []*navigation.Ship{shipyardHull(t, "PROBE-2", "X1-HQ-A1", "", "SATELLITE", navigation.NavStatusInOrbit), idleFrigate()},
+			borrow:   "FRIGATE-1",
+			wantSend: "PROBE-2",
+		},
+		{
+			name:  "none offered: the wait stands rather than poach a tagged hull",
+			ships: []*navigation.Ship{idleFrigate()},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			send, ok := hullToSend(tc.ships, homeYards(), "", tc.borrow)
 			require.Equal(t, tc.wantSend != "", ok)
 			require.Equal(t, tc.wantSend, send)
 		})

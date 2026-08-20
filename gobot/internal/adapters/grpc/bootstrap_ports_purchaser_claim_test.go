@@ -138,7 +138,7 @@ func TestShipyardScannerRefusesToFlyAHullAnotherContainerIsRunning(t *testing.T)
 	frigate.SetDedicatedFleet(navigation.PurchasingFleet)
 	require.NoError(t, frigate.AssignToContainer("batch_contract_workflow-TORWIND-1-927f57d6", shared.NewRealClock()))
 
-	send, ok := hullToSend([]*navigation.Ship{frigate}, map[string]struct{}{"X1-HQ-YARD": {}}, "TORWIND-1")
+	send, ok := hullToSend([]*navigation.Ship{frigate}, map[string]struct{}{"X1-HQ-YARD": {}}, "TORWIND-1", "")
 
 	require.False(t, ok, "a hull a container is running must never be flown to the yard")
 	require.Empty(t, send)
@@ -149,7 +149,7 @@ func TestShipyardScannerRefusesToFlyAHullAnotherContainerIsRunning(t *testing.T)
 func TestShipyardScannerRefusesAPurchaserMissingFromTheRoster(t *testing.T) {
 	other := newIdleTradeShip(t, "TORWIND-8", 1)
 
-	send, ok := hullToSend([]*navigation.Ship{other}, map[string]struct{}{"X1-HQ-YARD": {}}, "TORWIND-1")
+	send, ok := hullToSend([]*navigation.Ship{other}, map[string]struct{}{"X1-HQ-YARD": {}}, "TORWIND-1", "")
 
 	require.False(t, ok, "ownership that cannot be read cannot be cleared")
 	require.Empty(t, send)
@@ -161,7 +161,7 @@ func TestShipyardScannerStillFliesAFreeNamedPurchaser(t *testing.T) {
 	frigate := newIdleTradeShip(t, "TORWIND-1", 1)
 	frigate.SetDedicatedFleet(navigation.PurchasingFleet) // free: no container claim
 
-	send, ok := hullToSend([]*navigation.Ship{frigate}, map[string]struct{}{"X1-HQ-YARD": {}}, "TORWIND-1")
+	send, ok := hullToSend([]*navigation.Ship{frigate}, map[string]struct{}{"X1-HQ-YARD": {}}, "TORWIND-1", "")
 
 	require.True(t, ok)
 	require.Equal(t, "TORWIND-1", send)

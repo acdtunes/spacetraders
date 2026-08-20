@@ -186,6 +186,11 @@ func TestBootstrap_Pivot_ColdPrice_DedicatesFrigateAndPositionsAtShipyard(t *tes
 	if scanner.calls != 1 || len(scanner.purchasers) != 1 || scanner.purchasers[0] != "FRIGATE-1" {
 		t.Fatalf("cold price must send the freed frigate to the home shipyard BY SYMBOL; calls=%d purchasers=%v", scanner.calls, scanner.purchasers)
 	}
+	// Committing the earner is THIS decision's to take, against the capital test above. The hauler path
+	// therefore lends nothing — the frigate reaches the yard as the dedicated purchaser or not at all.
+	if len(scanner.borrows) != 1 || scanner.borrows[0] != "" {
+		t.Fatalf("the hauler path must never LEND the trading frigate behind the pivot's back; borrows=%v", scanner.borrows)
+	}
 	if acq.buys != 0 {
 		t.Fatalf("cold price must NOT buy this tick (fail closed on the price guard); buys=%d", acq.buys)
 	}

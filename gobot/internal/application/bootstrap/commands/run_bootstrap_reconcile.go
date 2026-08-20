@@ -574,7 +574,9 @@ func (h *RunBootstrapCoordinatorHandler) acquireProbesToTarget(ctx context.Conte
 	// at the yard. Still fails CLOSED (no spend) — a genuinely unreadable price buys nothing.
 	price, yard, readable, err := h.acquirer.PriceCheck(ctx, cmd.PlayerID, probeShipType)
 	if err != nil || !readable {
-		h.awaitReadablePrice(ctx, cmd, obs, res, "", fmt.Sprintf("probe (%d/%d)", obs.ProbeCount, probeTarget), err)
+		// Once the frigate trades and probe #1 tours, no hull is undedicated and the free-hull search is
+		// empty forever — so lend the frigate between tours (a no-cargo errand that re-tags nothing).
+		h.awaitReadablePrice(ctx, cmd, obs, res, "", idleTradeFrigate(obs), fmt.Sprintf("probe (%d/%d)", obs.ProbeCount, probeTarget), err)
 		return
 	}
 
@@ -645,7 +647,7 @@ func (h *RunBootstrapCoordinatorHandler) acquireProbesToTarget(ctx context.Conte
 // purchaser names the committed buy ship when the caller has one, so a tick that sends nothing means
 // it is already there or on its way (still positioning); with no purchaser named, nothing sent means
 // the wait simply continues. subject names what the tick is blocked on, for the heartbeat log.
-func (h *RunBootstrapCoordinatorHandler) awaitReadablePrice(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, obs Observation, res *reconcileResult, purchaser, subject string, priceErr error) {
+func (h *RunBootstrapCoordinatorHandler) awaitReadablePrice(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, obs Observation, res *reconcileResult, purchaser, borrow, subject string, priceErr error) {
 	logger := common.LoggerFromContext(ctx)
 
 	if h.scanner == nil {
@@ -658,7 +660,7 @@ func (h *RunBootstrapCoordinatorHandler) awaitReadablePrice(ctx context.Context,
 		return
 	}
 
-	dispatched, serr := h.scanner.EnsureShipyardReadable(ctx, cmd.PlayerID, obs.HomeSystem, purchaser)
+	dispatched, serr := h.scanner.EnsureShipyardReadable(ctx, cmd.PlayerID, obs.HomeSystem, purchaser, borrow)
 	if serr != nil {
 		res.Blocker = "price_unreadable"
 		logger.Log("WARN", fmt.Sprintf("Bootstrap %s price unreadable and sending a hull to the home shipyard failed — failing closed (no buy): %v", subject, serr), map[string]interface{}{
@@ -688,6 +690,14 @@ func (h *RunBootstrapCoordinatorHandler) awaitReadablePrice(ctx context.Context,
 		"container_id": cmd.ContainerID,
 		"blocker":      "price_unreadable",
 	})
+}
+
+// idleTradeFrigate names the frigate only at an idle-in-trade tick, never mid-tour (PLAYBOOK §9).
+func idleTradeFrigate(obs Observation) string {
+	if !obs.CommandFrigateOnTrade || !obs.CommandFrigateIdle {
+		return ""
+	}
+	return obs.CommandFrigateID
 }
 
 // positioningNote says which hull the tick is waiting on and whether it had to be sent.

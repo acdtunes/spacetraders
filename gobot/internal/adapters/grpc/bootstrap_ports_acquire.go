@@ -359,7 +359,7 @@ type bootstrapShipyardScanner struct {
 // way; and no free hull or no known home shipyard just retries a later tick.
 //
 // It NEVER buys and NEVER weakens the price guard — the reconciler still spends nothing while unreadable.
-func (s *bootstrapShipyardScanner) EnsureShipyardReadable(ctx context.Context, playerID int, homeSystem, purchaser string) (bool, error) {
+func (s *bootstrapShipyardScanner) EnsureShipyardReadable(ctx context.Context, playerID int, homeSystem, purchaser, borrow string) (bool, error) {
 	if homeSystem == "" {
 		return false, nil
 	}
@@ -390,7 +390,7 @@ func (s *bootstrapShipyardScanner) EnsureShipyardReadable(ctx context.Context, p
 	if serr != nil {
 		return false, nil
 	}
-	send, ok := hullToSend(ships, isYard, purchaser)
+	send, ok := hullToSend(ships, isYard, purchaser, borrow)
 	if !ok {
 		return false, nil
 	}
@@ -414,8 +414,9 @@ func (s *bootstrapShipyardScanner) EnsureShipyardReadable(ctx context.Context, p
 // ClaimShip'd by the contract engine — AssignToContainer makes it IsAssigned), not mid-flight, and
 // dedicated to no fleet, so a contract hauler or mfg worker that is momentarily idle is never poached.
 // It prefers the command frigate, the natural cold-start buyer, and stands down entirely once any hull
-// is already at a yard.
-func hullToSend(ships []*navigation.Ship, isYard map[string]struct{}, purchaser string) (string, bool) {
+// is already at a yard. Once every hull carries a tag that search is empty by construction, which is
+// what `borrow` — the caller's named last resort, see borrowedHull — answers.
+func hullToSend(ships []*navigation.Ship, isYard map[string]struct{}, purchaser, borrow string) (string, bool) {
 	atYard := func(sh *navigation.Ship) bool {
 		loc := sh.CurrentLocation()
 		if loc == nil {
@@ -465,7 +466,28 @@ func hullToSend(ships []*navigation.Ship, isYard map[string]struct{}, purchaser 
 		}
 	}
 	if free == nil {
-		return "", false
+		return borrowedHull(ships, borrow)
 	}
 	return free.ShipSymbol(), true
+}
+
+// borrowedHull lends the caller's named hull for the yard trip, and only while the LIVE roster still
+// shows it free: idle (so no container claim or captain reservation is being flown out from under —
+// RULINGS #3/#7) and not mid-flight. That re-read is the point — the caller observed it free a moment
+// ago, and a hull put back on tour since must not be redirected (PLAYBOOK §9). The lend re-tags
+// nothing, so the hull never leaves its fleet; it fails CLOSED on a hull the roster does not carry.
+func borrowedHull(ships []*navigation.Ship, borrow string) (string, bool) {
+	if borrow == "" {
+		return "", false
+	}
+	for _, sh := range ships {
+		if sh == nil || sh.ShipSymbol() != borrow {
+			continue
+		}
+		if !sh.IsIdle() || sh.IsInTransit() {
+			return "", false
+		}
+		return borrow, true
+	}
+	return "", false
 }
