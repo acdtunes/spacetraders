@@ -781,16 +781,18 @@ func TestBootstrap_ColdShipyard_PositionsThenBuysToTarget(t *testing.T) {
 	}
 }
 
-// --- sp-t39j: scanning and contracts run in PARALLEL from hour-0. Coverage no longer
-// gates income — contracts are the RULINGS #1 funding floor, started while probes are still scanning. ---
+// --- sp-t39j: scanning and earning run in PARALLEL. Coverage never gates income — what decides
+// WHEN the contract engine starts is the treasury, not scan progress, and scanning proceeds either way. ---
 
-// The critical parallel pin: a cold, uncovered world (still scanning) STILL launches the contract
-// engine this tick AND buys probes to target — both workstreams act in one reconcile.
-func TestBootstrap_ParallelWorkstreams_ContractsStartAtHour0WhileScanning(t *testing.T) {
+// The critical parallel pin: a cold, uncovered world (still scanning) whose treasury has reached the
+// contract-start threshold STILL launches the contract engine this tick AND buys probes to target —
+// both workstreams act in one reconcile.
+func TestBootstrap_ParallelWorkstreams_ContractsStartAtTheThresholdWhileScanning(t *testing.T) {
 	obs := Observation{
 		HomeSystem: "X1-HQ", ProbeCount: 1, ProbesScouting: 1, HasIdlePurchaser: true,
 		MarketsTotal: 10, MarketsCovered: 0, // coverage 0 → still scanning
-		Treasury: 500000, CommandFrigateID: "FRIGATE-1", BatchContractRunning: false, Readable: true,
+		Treasury:         defaultContractStartTreasuryThreshold, // exactly at the contract-start bar
+		CommandFrigateID: "FRIGATE-1", BatchContractRunning: false, Readable: true,
 	}
 	acq := &fakeAcquirer{price: 40000, yard: "X1-HQ-YARD", readable: true}
 	run := &fakeContractRunner{}
@@ -810,7 +812,7 @@ func TestBootstrap_ParallelWorkstreams_ContractsStartAtHour0WhileScanning(t *tes
 		t.Fatalf("scanning must run in parallel: expected 2 probe buys to target, got %d", acq.buys)
 	}
 	if run.calls != 1 || !res.ContractRun {
-		t.Fatalf("contracts must start at HOUR-0 in parallel with scanning: batch-contract calls=%d ran=%v", run.calls, res.ContractRun)
+		t.Fatalf("at the threshold contracts must start in parallel with scanning: coordinator calls=%d ran=%v", run.calls, res.ContractRun)
 	}
 }
 

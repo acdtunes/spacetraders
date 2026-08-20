@@ -16,31 +16,36 @@ import (
 // in this file next to the const it mirrors. The map's KEY SET is also the contract for which
 // BARE keys resolveBootstrapConfig live-overlays.
 //
-// The cadence is the ONE thing an operator retunes at runtime: every other cold-start value is the
-// shape of the seed itself, fixed in code. This key is the SEPARATE bare family — distinct from the
-// config.yaml-authoritative prefixed bootstrap_* launch keys — so a tune is never cleared by the
-// launch-config rebuild and survives a daemon bounce (RULINGS #2).
+// The cadence and the contract-start treasury threshold are what an operator retunes at runtime:
+// every other cold-start value is the shape of the seed itself, fixed in code. These keys are the
+// SEPARATE bare family — distinct from the config.yaml-authoritative prefixed bootstrap_* launch keys
+// — so a tune is never cleared by the launch-config rebuild and survives a daemon bounce (RULINGS #2).
 // bootstrapOperationType is the ledger label for everything a bootstrap tick spends.
 const bootstrapOperationType = "bootstrap"
 
 func BootstrapTunableDefaults() map[string]int {
 	return map[string]int{
-		"tick_secs": defaultBootstrapTickSeconds,
+		"tick_secs":                         defaultBootstrapTickSeconds,
+		"contract_start_treasury_threshold": int(defaultContractStartTreasuryThreshold),
 	}
 }
 
-// bootstrapRunConfig is the launch command with its cadence default resolved, so the reconcile logic
+// bootstrapRunConfig is the launch command with its defaults resolved, so the reconcile logic
 // never repeats the "<= 0 → default" fallback (the siting resolveConfig idiom).
 type bootstrapRunConfig struct {
 	Disabled bool
 	DryRun   bool
 	Tick     time.Duration
+	// ContractStartTreasury is the FLAT treasury at which the contract operation starts. Deliberately
+	// not netted against any reserve floor — a sequencing threshold, not a spend guard.
+	ContractStartTreasury int64
 }
 
 func resolveBootstrapConfig(cmd *RunBootstrapCoordinatorCommand, live liveconfig.Snapshot) bootstrapRunConfig {
 	c := bootstrapRunConfig{
-		Disabled: cmd.Disabled,
-		Tick:     time.Duration(cmd.TickIntervalSecs) * time.Second,
+		Disabled:              cmd.Disabled,
+		Tick:                  time.Duration(cmd.TickIntervalSecs) * time.Second,
+		ContractStartTreasury: int64(cmd.ContractStartTreasuryThreshold),
 	}
 
 	// Live overlay: a `tune` writes a BARE positive key to the persisted config
@@ -52,10 +57,16 @@ func resolveBootstrapConfig(cmd *RunBootstrapCoordinatorCommand, live liveconfig
 		if v := live.PositiveIntOrZero("tick_secs"); v > 0 {
 			c.Tick = time.Duration(v) * time.Second
 		}
+		if v := live.PositiveIntOrZero("contract_start_treasury_threshold"); v > 0 {
+			c.ContractStartTreasury = int64(v)
+		}
 	}
 
 	if c.Tick <= 0 {
 		c.Tick = defaultBootstrapTickSeconds * time.Second
+	}
+	if c.ContractStartTreasury <= 0 {
+		c.ContractStartTreasury = defaultContractStartTreasuryThreshold
 	}
 	return c
 }
@@ -69,11 +80,11 @@ type reconcileResult struct {
 	// Contract-workstream tallies (Slice 2).
 	TourHulls          int  // probes put on the home market tour this tick
 	HaulersBought      int  // contract haulers actually bought this tick (staged: at most 1)
-	FrigateRetired     bool // the command frigate was retired from contract work this tick
+	FrigateTrading     bool // the command frigate was dedicated to the TRADE fleet this tick (its standing home)
 	ContractRun        bool // batch-contract was launched this tick
-	FrigateLoopStarted bool // the command frigate's continuous contract loop was started this tick
-	FrigatePivoted     bool // the first-hauler pivot fired this tick: frigate loop STOPPED + dedicated the exclusive purchasing ship. With a readable yard price the buy also runs this tick; on a COLD price it is a SEPARATE later tick once the freed frigate is positioned (fault-2)
-	PurchaserReleased  bool // the pivot's purchasing dedication was cleared this tick, handing a stranded frigate back to earning (the buy it was freed for had moved out of reach)
+	FrigateLoopStopped bool // a legacy frigate contract-loop container was stopped this tick (the migration off the retired pre-hauler earner loop)
+	FrigatePivoted     bool // the first-hauler pivot fired this tick: the idle-in-trade frigate was dedicated the exclusive purchasing ship. With a readable yard price the buy also runs this tick; on a COLD price it is a SEPARATE later tick once the freed frigate is positioned (fault-2)
+	PurchaserReleased  bool // the purchasing dedication was handed back to the TRADE fleet this tick — either the cold-start buys finished, or the buy it was freed for moved out of reach
 	TradeHullSeeded    bool // the cold-start hull-routing trade-seed fired this tick: acquisition #2 bought + dedicated to the trade fleet + the trade coordinator ensured
 	PlacementSlots     int  // fixed delivery slots this era resolves — where the ramp spreads its hulls (for the heartbeat)
 
@@ -221,7 +232,7 @@ func (h *RunBootstrapCoordinatorHandler) reconcileOnce(ctx context.Context, cmd 
 			"container_id": cmd.ContainerID,
 			"reason":       obs.Reason,
 		})
-		h.emitHeartbeat(ctx, cmd, PhaseColdStart, obs, res)
+		h.emitHeartbeat(ctx, cmd, cfg, PhaseColdStart, obs, res)
 		return res, nil
 	}
 
@@ -254,15 +265,14 @@ func (h *RunBootstrapCoordinatorHandler) reconcileOnce(ctx context.Context, cmd 
 
 	switch phase {
 	case PhaseColdStart:
-		// Scanning and contract income run TOGETHER, not in sequence. actData drives
-		// probes→target + shipyard readability; actIncome starts the contract
-		// engine at HOUR-0 and stages haulers as their source markets appear (the contract engine holds
-		// an accepted-but-unsourceable contract gracefully — verified — and claims no ship until a
-		// market is known, so it cannot steal the idle hull bootstrap needs to buy probes). Contracts
-		// therefore run from hour 0 (RULINGS #1), never waiting on scanning.
+		// Scanning and earning run TOGETHER, not in sequence. actData drives probes→target + shipyard
+		// readability; actIncome puts the frigate on trade from HOUR-0 and starts the contract engine once
+		// the treasury clears the threshold (that engine holds an accepted-but-unsourceable contract
+		// gracefully and claims no ship until a market is known, so it cannot steal the idle hull the probe
+		// buy needs). Neither workstream ever waits on the other.
 		h.actData(ctx, cmd, obs, &res)
 		scanningBlocker := res.Blocker
-		h.actIncome(ctx, cmd, obs, &res)
+		h.actIncome(ctx, cmd, cfg, obs, &res)
 		// The scanning blocker is the higher-signal heartbeat line (it is the critical path to markets),
 		// so it outranks the contract one; income's shows only when scanning is unblocked.
 		if scanningBlocker != "" {
@@ -289,7 +299,7 @@ func (h *RunBootstrapCoordinatorHandler) reconcileOnce(ctx context.Context, cmd 
 	// dry-runs record nothing.
 	bridge.recordProbeBuys(res.Purchased)
 
-	h.emitHeartbeat(ctx, cmd, phase, obs, res)
+	h.emitHeartbeat(ctx, cmd, cfg, phase, obs, res)
 	return res, nil
 }
 
@@ -702,11 +712,11 @@ func buyBlockNote(affordable bool) string {
 
 // emitHeartbeat writes the per-tick progress line (phase · delta done · next action · blockers) so
 // a wedged reconciler is visible, never a silent stall (captain L61, spec §Observability).
-func (h *RunBootstrapCoordinatorHandler) emitHeartbeat(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, phase Phase, obs Observation, res reconcileResult) {
+func (h *RunBootstrapCoordinatorHandler) emitHeartbeat(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, phase Phase, obs Observation, res reconcileResult) {
 	logger := common.LoggerFromContext(ctx)
 
-	delta := fmt.Sprintf("bought=%d tour_hulls=%d haulers_bought=%d trade_seeded=%v frigate_retired=%v batch_contract=%v frigate_loop=%v purchaser_released=%v construction_started=%v mfg_ensured=%v mfg_bounced=%v workers_released=%d gate_workers_bought=%d construction_hulls_to_trade=%d handoff=%v", res.Purchased, res.TourHulls, res.HaulersBought, res.TradeHullSeeded, res.FrigateRetired, res.ContractRun, res.FrigateLoopStarted, res.PurchaserReleased, res.ConstructionStartRan, res.MfgEnsured, res.MfgBounced, res.WorkersReleased, res.GateWorkersBought, res.ConstructionHullsToTrade, res.HandoffLaunched)
-	next := h.nextAction(phase, obs)
+	delta := fmt.Sprintf("bought=%d tour_hulls=%d haulers_bought=%d trade_seeded=%v frigate_trading=%v batch_contract=%v frigate_loop_stopped=%v purchaser_released=%v construction_started=%v mfg_ensured=%v mfg_bounced=%v workers_released=%d gate_workers_bought=%d construction_hulls_to_trade=%d handoff=%v", res.Purchased, res.TourHulls, res.HaulersBought, res.TradeHullSeeded, res.FrigateTrading, res.ContractRun, res.FrigateLoopStopped, res.PurchaserReleased, res.ConstructionStartRan, res.MfgEnsured, res.MfgBounced, res.WorkersReleased, res.GateWorkersBought, res.ConstructionHullsToTrade, res.HandoffLaunched)
+	next := h.nextAction(cfg, phase, obs)
 	blockers := res.Blocker
 	if blockers == "" {
 		blockers = "none"
@@ -714,39 +724,39 @@ func (h *RunBootstrapCoordinatorHandler) emitHeartbeat(ctx context.Context, cmd 
 
 	logger.Log("INFO", fmt.Sprintf("Bootstrap heartbeat: phase=%s probes=%d/%d scouting=%d coverage=%d/%d (%.0f%%) haulers=%d/%d slots=%d income/hr=%.0f treasury=%d gate_site=%s construction=%.0f%% gate_workers=%d/%d · %s · next=%q · blockers=%s",
 		phase, obs.ProbeCount, probeTarget, obs.ProbesScouting, obs.MarketsCovered, obs.MarketsTotal, obs.CoverageFraction()*100, len(obs.Haulers), haulerTarget, res.PlacementSlots, obs.IncomePerHour, obs.Treasury, gateSiteOrNone(obs.GateSite), obs.ConstructionPercent, obs.GateWorkers, res.DesiredWorkers, delta, next, blockers), map[string]interface{}{
-		"action":             "bootstrap_heartbeat",
-		"container_id":       cmd.ContainerID,
-		"phase":              string(phase),
-		"probes":             obs.ProbeCount,
-		"probe_target":       probeTarget,
-		"probes_scouting":    obs.ProbesScouting,
-		"markets_covered":    obs.MarketsCovered,
-		"markets_total":      obs.MarketsTotal,
-		"haulers":            len(obs.Haulers),
-		"hauler_target":      haulerTarget,
-		"trade_hulls":        obs.TradeHullCount,
-		"placement_slots":    res.PlacementSlots,
-		"income_per_hour":    obs.IncomePerHour,
-		"treasury":           obs.Treasury,
-		"purchased":          res.Purchased,
-		"haulers_bought":     res.HaulersBought,
-		"trade_seeded":       res.TradeHullSeeded,
-		"frigate_retired":    res.FrigateRetired,
-		"batch_contract":     res.ContractRun,
-		"frigate_loop":       res.FrigateLoopStarted,
-		"purchaser_released": res.PurchaserReleased,
-		"gate_site":          obs.GateSite,
-		"construction_pct":   obs.ConstructionPercent,
-		"gate_workers":       obs.GateWorkers,
-		"desired_workers":    res.DesiredWorkers,
-		"workers_released":   res.WorkersReleased,
-		"handoff":            res.HandoffLaunched,
-		"blocker":            blockers,
+		"action":               "bootstrap_heartbeat",
+		"container_id":         cmd.ContainerID,
+		"phase":                string(phase),
+		"probes":               obs.ProbeCount,
+		"probe_target":         probeTarget,
+		"probes_scouting":      obs.ProbesScouting,
+		"markets_covered":      obs.MarketsCovered,
+		"markets_total":        obs.MarketsTotal,
+		"haulers":              len(obs.Haulers),
+		"hauler_target":        haulerTarget,
+		"trade_hulls":          obs.TradeHullCount,
+		"placement_slots":      res.PlacementSlots,
+		"income_per_hour":      obs.IncomePerHour,
+		"treasury":             obs.Treasury,
+		"purchased":            res.Purchased,
+		"haulers_bought":       res.HaulersBought,
+		"trade_seeded":         res.TradeHullSeeded,
+		"frigate_trading":      res.FrigateTrading,
+		"batch_contract":       res.ContractRun,
+		"frigate_loop_stopped": res.FrigateLoopStopped,
+		"purchaser_released":   res.PurchaserReleased,
+		"gate_site":            obs.GateSite,
+		"construction_pct":     obs.ConstructionPercent,
+		"gate_workers":         obs.GateWorkers,
+		"desired_workers":      res.DesiredWorkers,
+		"workers_released":     res.WorkersReleased,
+		"handoff":              res.HandoffLaunched,
+		"blocker":              blockers,
 	})
 }
 
 // nextAction names the single next thing the reconciler intends, for the heartbeat.
-func (h *RunBootstrapCoordinatorHandler) nextAction(phase Phase, obs Observation) string {
+func (h *RunBootstrapCoordinatorHandler) nextAction(cfg bootstrapRunConfig, phase Phase, obs Observation) string {
 	switch phase {
 	case PhaseColdStart:
 		// Scanning and contracts run together, so this walks both workstreams' outstanding
@@ -757,14 +767,14 @@ func (h *RunBootstrapCoordinatorHandler) nextAction(phase Phase, obs Observation
 		if obs.ProbeCount > 0 && obs.ProbesScouting < obs.ProbeCount {
 			return "probes idle — start a market tour on one (`spacetraders scout tour`) to grow coverage"
 		}
-		if obs.CommandFrigateOnContract {
-			return "retire the command frigate from contract work"
+		if obs.CommandFrigateID != "" && !obs.CommandFrigateOnTrade && !obs.CommandFrigatePurchasing {
+			return "put the command frigate in the trade fleet (its standing home) at its next idle tick"
+		}
+		if !contractOpsWarranted(obs, cfg.ContractStartTreasury) {
+			return fmt.Sprintf("frigate trading; hold the contract operation until treasury %d reaches the contract-start threshold %d", obs.Treasury, cfg.ContractStartTreasury)
 		}
 		if !obs.BatchContractRunning {
-			return "launch batch-contract on the contract fleet"
-		}
-		if obs.CommandFrigateID != "" && !obs.FrigateContractLoopRunning && len(obs.Haulers) == 0 && !obs.CommandFrigatePurchasing {
-			return "start the command frigate's continuous contract loop (pre-hauler sole earner)"
+			return "launch the contract-fleet coordinator (the contract operation starts)"
 		}
 		if len(obs.Haulers) < haulerTarget {
 			return fmt.Sprintf("buy contract hauler %d/%d (staged, capital-gated, placed on a fixed delivery slot)", len(obs.Haulers)+1, haulerTarget)

@@ -66,6 +66,7 @@ func (s *DaemonServer) BootstrapCoordinator(ctx context.Context, playerID int, a
 var bootstrapConfigKeys = []string{
 	"bootstrap_disabled",
 	"bootstrap_tick_secs",
+	"bootstrap_contract_start_treasury_threshold",
 }
 
 // resolveBootstrapConfig makes config.yaml the single LIVE source of truth for the bootstrap
@@ -94,6 +95,9 @@ func (s *DaemonServer) injectBootstrapConfig(config map[string]interface{}) {
 	if b.TickSeconds != 0 {
 		config["bootstrap_tick_secs"] = b.TickSeconds
 	}
+	if b.ContractStartTreasuryThreshold != 0 {
+		config["bootstrap_contract_start_treasury_threshold"] = b.ContractStartTreasuryThreshold
+	}
 }
 
 // buildBootstrapCommand rebuilds the standing bootstrap command from a persisted launch
@@ -108,7 +112,8 @@ func buildBootstrapCommand(cfg *configReader, playerID int, containerID string) 
 		ContainerID: containerID,
 		AgentSymbol: cfg.OptionalString("agent_symbol"),
 
-		Disabled:         cfg.OptionalBool("bootstrap_disabled"),
-		TickIntervalSecs: cfg.OptionalInt("bootstrap_tick_secs", 0),
+		Disabled:                       cfg.OptionalBool("bootstrap_disabled"),
+		TickIntervalSecs:               cfg.OptionalInt("bootstrap_tick_secs", 0),
+		ContractStartTreasuryThreshold: cfg.OptionalInt("bootstrap_contract_start_treasury_threshold", 0),
 	}
 }

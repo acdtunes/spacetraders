@@ -18,9 +18,10 @@ type Phase string
 
 const (
 	// PhaseColdStart is the cold start, and it drives TWO PARALLEL workstreams every tick: scanning
-	// (buy probes to target so market data can flow) and contract income
-	// (retire the frigate, run batch-contract, stage the hub haulers). Each self-guards to a no-op
-	// once its own work is done, so one finishing never holds the other back.
+	// (buy probes to target so market data can flow) and earning (put the frigate in the trade fleet,
+	// then — once treasury clears the contract-start threshold — run the contract coordinator and stage
+	// the hub haulers). Each self-guards to a no-op once its own work is done, so one finishing never
+	// holds the other back.
 	PhaseColdStart Phase = "COLDSTART"
 	// PhaseGate is jump-gate construction: start the construction pipeline, ensure the executor
 	// has adopted it, and size the gate workforce until the site is complete.
@@ -76,19 +77,29 @@ type Observation struct {
 	// projected. It is OBSERVABILITY ONLY: it drives no phase transition, because a single contract payout
 	// swings it from net-negative to a false all-clear in one tick.
 	IncomePerHour float64
-	// CommandFrigateID is the command frigate's ship symbol — the hull retired from contract work (a
-	// poor contract worker: low fuel/cargo). "" when no command hull is resolved.
+	// CommandFrigateID is the command frigate's ship symbol — the hull that trades and, at the
+	// first-hauler pivot, buys. "" when no command hull is resolved.
 	CommandFrigateID string
 	// CommandFrigateOnContract reports whether the command frigate currently carries the "contract"
 	// fleet dedication (so the contract coordinator's dedicated pool would draft it). true ⇒ retire it
 	// (clear the tag); false ⇒ already retired (the idempotency guard).
 	CommandFrigateOnContract bool
 	// CommandFrigatePurchasing reports whether the command frigate carries the "purchasing" dedication —
-	// the EXCLUSIVE purchasing-ship role set at the first-hauler pivot. Once true the frigate is
-	// the protected standing buy ship: the pre-hauler contract loop must NEVER (re)start on it (the step-3
-	// gate reads this, so the pivot is durable across restarts even before a hauler is observed), and it
-	// is off-limits to the contract op (never re-drafted).
+	// the EXCLUSIVE purchasing-ship role set at the first-hauler pivot. Once true nothing re-tags it until
+	// its buys land (so an in-flight purchase survives a restart, even before a hauler is observed), and
+	// it is off-limits to the contract op. It also latches the contract-start threshold against the
+	// treasury dip its own buys cause.
 	CommandFrigatePurchasing bool
+	// CommandFrigateOnTrade reports whether the command frigate carries the "trade" fleet dedication —
+	// its STANDING home in the cold-start design: the frigate tours under the trade-fleet coordinator from
+	// tick 1 and returns to it after its cold-start buys. false ⇒ dedicate it (the idempotency guard).
+	CommandFrigateOnTrade bool
+	// CommandFrigateIdle reports whether the command frigate is genuinely free RIGHT NOW — idle (no
+	// container claim, no captain reservation) and not still flying. Same expression as
+	// GateWorkerSnapshot.Idle, and the same partition the trade-fleet coordinator's relaunch logic draws.
+	// With CommandFrigateOnTrade it is the "idle in trade" signal the first-hauler pivot fires off
+	// (PLAYBOOK §9). Defaults false on an unresolved frigate ⇒ fail-safe (no re-dedication, no pivot).
+	CommandFrigateIdle bool
 	// Haulers is the contract-dedicated hauler pool NOW — each with the waypoint it is placed on (or
 	// heading to). Its length is the staged-buy count guard (buy while below haulerTarget); the waypoints
 	// are the "slot already served" placement guard.
@@ -98,12 +109,12 @@ type Observation struct {
 	// relaunch a running coordinator).
 	BatchContractRunning bool
 	// FrigateContractLoopRunning reports whether the command frigate's OWN continuous single-hull
-	// contract loop is already running — a CONTRACT_WORKFLOW loop container (batch-contract
-	// --loop, iterations=-1) on the frigate. This is the earner-signal guard for the
-	// pre-hauler frigate loop: bootstrap starts it exactly once and never re-starts a running loop.
-	// It is DISTINCT from BatchContractRunning, which detects the contract_fleet_coordinator TYPE and
-	// does NOT see this per-hull loop container: the two are separate earners, so the
-	// loop needs its own signal. false ⇒ no frigate loop yet (the fresh cold-start default).
+	// contract loop is running — a CONTRACT_WORKFLOW loop container (batch-contract --loop,
+	// iterations=-1) on the frigate. The frigate earns in TRADE now, so this signals only a loop an
+	// earlier deploy left running: it is stopped once, at a cargo-empty safe point, because an infinite
+	// loop never ends by itself and would hold the hull's claim forever. It is DISTINCT from
+	// BatchContractRunning, which detects the contract_fleet_coordinator TYPE and does NOT see this
+	// per-hull loop container. false ⇒ no frigate loop (the fresh cold-start default).
 	FrigateContractLoopRunning bool
 	// FrigateCargoEmpty reports whether the command frigate currently carries NO cargo — the SAFE POINT
 	// for the first-hauler pivot. Stopping the frigate's contract loop mid-delivery would

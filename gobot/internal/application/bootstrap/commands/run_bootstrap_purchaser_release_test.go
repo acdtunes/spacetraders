@@ -5,46 +5,46 @@ import (
 	"testing"
 )
 
-// THE STRANDED PURCHASER. The first-hauler pivot stops the pre-hauler sole earner and dedicates it the
-// exclusive buy ship on the evidence that hauler #1 is within reach. When the ask then sits OUTSIDE the
-// working-capital floor the fleet has no earner at all: the loop is stopped, the treasury is frozen at
-// whatever it held, and the ask can therefore never come within reach. Clearing the dedication is the
-// whole cure — the pre-hauler loop gate reads it and restarts the earner on its own next tick.
+// THE STRANDED PURCHASER. The first-hauler pivot takes the frigate out of the trade fleet and dedicates
+// it the exclusive buy ship on the evidence that hauler #1 is within reach. When the ask then sits
+// OUTSIDE the working-capital floor the frigate is neither trading nor buying: it stands idle-dedicated
+// while the treasury is frozen at whatever it held, so the ask can never come within reach. Handing it
+// back to the TRADE fleet is the whole cure — it resumes touring, earns, and re-pivots by itself once the
+// treasury clears the floor.
 //
 // Reproduced on staging: treasury pinned at 423_434 for ~5 hours, income/hr decayed to 0, 14 contracts
 // fulfilled and then nothing.
 
-// strandedObs is that wedge: hauler #1 never bought, the frigate carrying the purchasing dedication with
-// its loop stopped, and a treasury that cannot reach the ask (423_434 − 363_473 = 59_961, under the 150k
-// working-capital floor).
+// strandedObs is that wedge: hauler #1 never bought, the frigate carrying the purchasing dedication out
+// of the trade fleet, and a treasury that cannot reach the ask (423_434 − 363_473 = 59_961, under the
+// 150k working-capital floor).
 func strandedObs() Observation {
 	obs := pivotObs()
-	obs.FrigateContractLoopRunning = false // the pivot stopped it
-	obs.CommandFrigatePurchasing = true    // ...and dedicated the frigate the exclusive buy ship
+	obs.CommandFrigateOnTrade = false   // the pivot took it out of trade
+	obs.CommandFrigatePurchasing = true // ...and dedicated it the exclusive buy ship
 	obs.Treasury = 423_434
 	return obs
 }
 
-// The wedge itself: the dedication is cleared, by symbol, and the tick spends nothing and re-dedicates
-// nothing. Clearing the tag is the entire action.
-func TestBootstrap_StrandedPurchaser_ReleasedBackToEarning(t *testing.T) {
+// The wedge itself: the frigate is handed back to the TRADE fleet, by symbol, and the tick spends nothing
+// and re-dedicates nothing.
+func TestBootstrap_StrandedPurchaser_ReleasedBackToTrade(t *testing.T) {
 	ret := &fakeRetirer{}
 	acq := &fakeHaulerAcquirer{price: 363_473, yard: "Y", readable: true} // parked at the yard: the ask reads
-	loop := &fakeFrigateLoop{}
-	h := pivotHandler(strandedObs(), ret, acq, loop)
+	h := pivotHandler(strandedObs(), ret, acq, &fakeFrigateLoop{})
 
 	res, err := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
 	if err != nil {
 		t.Fatalf("reconcileOnce: %v", err)
 	}
-	if len(ret.ships) != 1 || ret.ships[0] != "FRIGATE-1" {
-		t.Fatalf("a stranded purchasing frigate must have its dedication cleared, by symbol; ships=%v (blocker=%q)", ret.ships, res.Blocker)
+	if len(ret.tradeDedications) != 1 || ret.tradeDedications[0] != "FRIGATE-1" {
+		t.Fatalf("a stranded purchasing frigate must be handed back to the trade fleet, by symbol; trade=%v (blocker=%q)", ret.tradeDedications, res.Blocker)
 	}
 	if !res.PurchaserReleased {
 		t.Fatalf("res.PurchaserReleased must record the release")
 	}
-	if acq.buys != 0 || len(ret.dedications) != 0 || loop.stopCalls != 0 {
-		t.Fatalf("the release must spend nothing, re-dedicate nothing and stop nothing; buys=%d dedications=%v stopCalls=%d", acq.buys, ret.dedications, loop.stopCalls)
+	if acq.buys != 0 || len(ret.dedications) != 0 {
+		t.Fatalf("the release must spend nothing and re-dedicate nothing; buys=%d dedications=%v", acq.buys, ret.dedications)
 	}
 }
 
@@ -68,15 +68,12 @@ func TestBootstrap_StrandedPurchaser_NotReleasedOutsideTheWedge(t *testing.T) {
 			name: "no ask on record", price: 363_473, readable: false,
 		},
 		{
-			name: "a hauler is already earning", price: 363_473, readable: true,
+			// The strand is a PURCHASER's wedge; a frigate that is already trading has nothing to release.
+			name: "the frigate is already trading", price: 363_473, readable: true,
 			mutate: func(o *Observation) {
-				o.Haulers = []HaulerSnapshot{{Symbol: "H1", Waypoint: "X1-HUBA"}}
-				o.TradeHullCount = 1
+				o.CommandFrigatePurchasing = false
+				o.CommandFrigateOnTrade = true
 			},
-		},
-		{
-			name: "the frigate is still on its contract loop", price: 363_473, readable: true,
-			mutate: func(o *Observation) { o.FrigateContractLoopRunning = true },
 		},
 	}
 	for _, tc := range cases {
@@ -93,16 +90,16 @@ func TestBootstrap_StrandedPurchaser_NotReleasedOutsideTheWedge(t *testing.T) {
 			if err != nil {
 				t.Fatalf("reconcileOnce: %v", err)
 			}
-			if res.PurchaserReleased || len(ret.ships) != 0 {
-				t.Fatalf("the purchasing dedication must stand; PurchaserReleased=%v cleared=%v (blocker=%q)", res.PurchaserReleased, ret.ships, res.Blocker)
+			if res.PurchaserReleased || len(ret.tradeDedications) != 0 {
+				t.Fatalf("the purchasing dedication must stand; PurchaserReleased=%v handed_back=%v (blocker=%q)", res.PurchaserReleased, ret.tradeDedications, res.Blocker)
 			}
 		})
 	}
 }
 
-// A failed clear reports NO release and leaves the frigate dedicated, so the next tick simply tries again.
-func TestBootstrap_StrandedPurchaser_ClearFails_ReportsNoRelease(t *testing.T) {
-	ret := &fakeRetirer{err: errors.New("assign boom")}
+// A failed hand-back reports NO release and leaves the frigate dedicated, so the next tick simply tries again.
+func TestBootstrap_StrandedPurchaser_HandBackFails_ReportsNoRelease(t *testing.T) {
+	ret := &fakeRetirer{tradeErr: errors.New("assign boom")}
 	acq := &fakeHaulerAcquirer{price: 363_473, yard: "Y", readable: true}
 	h := pivotHandler(strandedObs(), ret, acq, &fakeFrigateLoop{})
 
@@ -112,10 +109,10 @@ func TestBootstrap_StrandedPurchaser_ClearFails_ReportsNoRelease(t *testing.T) {
 		t.Fatalf("reconcileOnce: %v", err)
 	}
 	if res.PurchaserReleased {
-		t.Fatalf("a failed clear must NOT be reported as a release")
+		t.Fatalf("a failed hand-back must NOT be reported as a release")
 	}
 	if _, ok := log.find("bootstrap_purchaser_release_error"); !ok {
-		t.Fatalf("a failed clear must surface loudly, never silently")
+		t.Fatalf("a failed hand-back must surface loudly, never silently")
 	}
 }
 
@@ -137,7 +134,6 @@ func TestBootstrap_StrandedPurchaser_ReleaseAndPivotReachAFixedPoint(t *testing.
 	}
 	acq := &fakeHaulerAcquirer{price: 363_473, yard: "X1-YARD", readable: true, world: world}
 	ret := &fakeRetirer{world: world}
-	loop := &fakeFrigateLoop{world: world}
 	scanner := &fakeScanner{dispatched: true, readyHaul: acq, world: world}
 
 	h := NewRunBootstrapCoordinatorHandler(nil)
@@ -147,7 +143,7 @@ func TestBootstrap_StrandedPurchaser_ReleaseAndPivotReachAFixedPoint(t *testing.
 	h.SetFrigateRetirer(ret)
 	h.SetHaulerAcquirer(acq)
 	h.SetContractRunner(&fakeContractRunner{world: world})
-	h.SetFrigateContractLoopStarter(loop)
+	h.SetHandoffLauncher(&fakeHandoff{})
 	h.SetShipyardScanner(scanner)
 
 	tick := func(t *testing.T, label string) reconcileResult {
@@ -159,43 +155,41 @@ func TestBootstrap_StrandedPurchaser_ReleaseAndPivotReachAFixedPoint(t *testing.
 		return res
 	}
 
-	// Wedged: parked at the yard with the ask out of reach → the dedication is cleared.
+	// Wedged: parked at the yard with the ask out of reach → the frigate goes back to trade.
 	if res := tick(t, "wedged tick"); !res.PurchaserReleased {
 		t.Fatalf("the wedged tick must release the frigate (blocker=%q)", res.Blocker)
 	}
-	if world.snapshot().CommandFrigatePurchasing {
-		t.Fatalf("the purchasing dedication must be gone after the release")
+	snap := world.snapshot()
+	if snap.CommandFrigatePurchasing || !snap.CommandFrigateOnTrade {
+		t.Fatalf("the released frigate must be back in the trade fleet; purchasing=%v trade=%v", snap.CommandFrigatePurchasing, snap.CommandFrigateOnTrade)
 	}
 
-	// The frigate leaves for contracts, so the yard stops pricing. Every later tick weighs the ask the
+	// The frigate leaves for its tours, so the yard stops pricing. Every later tick weighs the ask the
 	// readable read above put on record — nothing is planted by hand.
 	acq.readable = false
 
-	// Earning, ask still out of reach: the loop restarts and the pivot HOLDS tick after tick. This is the
-	// anti-oscillation property — a release that led straight back to a pivot would free the earner again.
+	// Trading, ask still out of reach: the pivot HOLDS tick after tick. This is the anti-oscillation
+	// property — a release that led straight back to a pivot would take the earner out again.
 	for i := 0; i < 4; i++ {
 		tick(t, "earning tick")
-		if loop.stopCalls != 0 {
-			t.Fatalf("the pivot must not re-free the frigate the release just handed back; stopCalls=%d after earning tick %d", loop.stopCalls, i)
+		if len(ret.dedications) != 0 {
+			t.Fatalf("the pivot must not re-take the frigate the release just handed back; dedications=%v after earning tick %d", ret.dedications, i)
 		}
-		if len(ret.ships) != 1 {
-			t.Fatalf("the release must fire exactly once; cleared=%v after earning tick %d", ret.ships, i)
+		if len(ret.tradeDedications) != 1 {
+			t.Fatalf("the release must fire exactly once; handed_back=%v after earning tick %d", ret.tradeDedications, i)
 		}
-	}
-	if loop.calls != 1 {
-		t.Fatalf("the released frigate must be put back on its earning loop exactly once, got %d starts", loop.calls)
 	}
 
 	// The earner does its job: the treasury clears the ask plus the working-capital floor.
 	world.earn(500_000)
 
-	// Recovered: the pivot fires ONCE against a cold yard — frigate freed, dedicated, sent to price the hull.
+	// Recovered: the pivot fires ONCE against a cold yard — frigate dedicated, sent to price the hull.
 	if res := tick(t, "recovered tick"); !res.FrigatePivoted {
 		t.Fatalf("a recovered treasury must let the pivot fire (blocker=%q)", res.Blocker)
 	}
 
-	// The ping-pong tick: dedicated, no hauler, no loop — the wedge's exact shape, but the ask is within
-	// reach now, so the frigate stays committed and buys.
+	// The ping-pong tick: dedicated, no hauler — the wedge's exact shape, but the ask is within reach now,
+	// so the frigate stays committed and buys.
 	res := tick(t, "committed tick")
 	if res.PurchaserReleased {
 		t.Fatalf("a purchaser that is about to buy must NEVER be released — that is the ping-pong")
@@ -204,9 +198,8 @@ func TestBootstrap_StrandedPurchaser_ReleaseAndPivotReachAFixedPoint(t *testing.
 		t.Fatalf("the committed purchaser must complete the buy; bought=%d (blocker=%q)", res.HaulersBought, res.Blocker)
 	}
 
-	if len(ret.ships) != 1 || loop.calls != 1 || loop.stopCalls != 1 || len(ret.dedications) != 1 {
-		t.Fatalf("each transition must happen exactly once across the arc; released=%v loop_starts=%d loop_stops=%d dedications=%v",
-			ret.ships, loop.calls, loop.stopCalls, ret.dedications)
+	if len(ret.tradeDedications) != 1 || len(ret.dedications) != 1 {
+		t.Fatalf("each transition must happen exactly once across the arc; handed_back=%v dedications=%v", ret.tradeDedications, ret.dedications)
 	}
 	if acq.buys != 1 || len(world.snapshot().Haulers) != 1 {
 		t.Fatalf("the arc must end with hauler #1 bought; buys=%d haulers=%d", acq.buys, len(world.snapshot().Haulers))

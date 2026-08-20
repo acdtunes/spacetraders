@@ -34,6 +34,17 @@ func (r *bootstrapFrigateRetirer) DedicateAsPurchaser(ctx context.Context, playe
 	return r.shipRepo.AssignFleet(ctx, shipSymbol, navigation.PurchasingFleet, pid)
 }
 
+// DedicateAsTrade tags the frigate dedicated_fleet="trade" — its standing home, so the trade-fleet
+// coordinator picks it up and tours it. Same single fleet-assign write path as DedicateAsPurchaser,
+// destination tag swapped; idempotent at the repo, and the reconciler guards on the observation too.
+func (r *bootstrapFrigateRetirer) DedicateAsTrade(ctx context.Context, playerID int, shipSymbol string) error {
+	pid, err := shared.NewPlayerID(playerID)
+	if err != nil {
+		return err
+	}
+	return r.shipRepo.AssignFleet(ctx, shipSymbol, tradeFleetTag, pid)
+}
+
 // bootstrapContractRunner launches the contract fleet coordinator.
 type bootstrapContractRunner struct{ server *DaemonServer }
 
@@ -74,11 +85,11 @@ func (r *bootstrapFrigateContractLoop) StartLoop(ctx context.Context, playerID i
 	return nil
 }
 
-// StopLoop stops the command frigate's continuous contract-loop container (first-hauler pivot):
-// it finds the frigate's CONTRACT_WORKFLOW (iterations=-1) container and StopContainer's it, which
-// gracefully cancels the loop goroutine and RELEASES the frigate's work-claim so it goes idle to serve
-// as the purchaser. Idempotent: no loop found ⇒ nil (the frigate is already free). The reconciler gates
-// the pivot on obs.FrigateContractLoopRunning, so StopLoop is invoked only when a loop is observed.
+// StopLoop stops the command frigate's continuous contract-loop container: it finds the frigate's
+// CONTRACT_WORKFLOW (iterations=-1) container and StopContainer's it, which gracefully cancels the loop
+// goroutine and RELEASES the frigate's work-claim so it goes idle and can take up trade. Idempotent: no
+// loop found ⇒ nil (the frigate is already free). The reconciler gates on obs.FrigateContractLoopRunning,
+// so StopLoop is invoked only when a loop is observed.
 func (r *bootstrapFrigateContractLoop) StopLoop(ctx context.Context, playerID int, frigateSymbol string) error {
 	id, err := findFrigateContractLoopID(ctx, r.server.containerRepo, playerID, frigateSymbol)
 	if err != nil {

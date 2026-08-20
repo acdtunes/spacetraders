@@ -30,10 +30,11 @@ func graduationIncomeHandler(obs Observation, ret *fakeRetirer, acq *fakeHaulerA
 func graduationIncomeObs() Observation {
 	obs := incomeObs() // coverage met, no economic signal → COLDSTART
 	obs.CommandFrigateID = "FRIGATE-1"
-	obs.CommandFrigateOnContract = true // would retire
-	obs.ProbeCount = 3                  // >= default probe_target → frigate loop eligible
-	obs.FrigateContractLoopRunning = false
-	obs.BatchContractRunning = false // would launch batch-contract
+	obs.CommandFrigateOnTrade = true // idle in trade → the first-hauler pivot would fire
+	obs.CommandFrigateIdle = true
+	obs.FrigateCargoEmpty = true
+	obs.ProbeCount = 3
+	obs.BatchContractRunning = false // would launch the contract-fleet coordinator
 	// Haulers empty + hubs present + idle purchaser + treasury → would buy a hauler.
 	return obs
 }
@@ -57,10 +58,10 @@ func TestBootstrap_Income_ContractGraduated_NoContractActions(t *testing.T) {
 	if res.Phase != PhaseColdStart {
 		t.Fatalf("expected COLDSTART phase, got %s", res.Phase)
 	}
-	if ret.calls != 0 || run.calls != 0 || loop.calls != 0 || acq.buys != 0 {
-		t.Fatalf("graduated: NO contract action may fire — retire=%d batch=%d frigate_loop=%d hauler_buys=%d", ret.calls, run.calls, loop.calls, acq.buys)
+	if len(ret.dedications) != 0 || run.calls != 0 || loop.stopCalls != 0 || acq.buys != 0 {
+		t.Fatalf("graduated: NO contract action may fire — pivot=%v batch=%d loop_stops=%d hauler_buys=%d", ret.dedications, run.calls, loop.stopCalls, acq.buys)
 	}
-	if res.ContractRun || res.FrigateLoopStarted || res.HaulersBought != 0 || res.FrigateRetired {
+	if res.ContractRun || res.FrigatePivoted || res.HaulersBought != 0 || res.FrigateTrading {
 		t.Fatalf("graduated: reconcileResult must show no contract effect, got %+v", res)
 	}
 	if res.Blocker != "contract_graduated" {
@@ -83,14 +84,11 @@ func TestBootstrap_Income_NotGraduated_RunsContractsAsToday(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reconcileOnce: %v", err)
 	}
-	if ret.calls != 1 {
-		t.Fatalf("un-graduated: the tagged frigate is retired, got calls=%d", ret.calls)
-	}
 	if run.calls != 1 || !res.ContractRun {
-		t.Fatalf("un-graduated: batch-contract launches (the funding floor), got calls=%d ran=%v", run.calls, res.ContractRun)
+		t.Fatalf("un-graduated: the contract-fleet coordinator launches (the funding floor), got calls=%d ran=%v", run.calls, res.ContractRun)
 	}
-	if loop.calls != 1 || !res.FrigateLoopStarted {
-		t.Fatalf("un-graduated: the frigate sole-earner loop starts, got calls=%d started=%v", loop.calls, res.FrigateLoopStarted)
+	if !res.FrigatePivoted || len(ret.dedications) != 1 {
+		t.Fatalf("un-graduated: the idle-in-trade frigate pivots to buy hauler #1, got pivoted=%v dedications=%v", res.FrigatePivoted, ret.dedications)
 	}
 	if acq.buys != 1 {
 		t.Fatalf("un-graduated: a contract hauler is bought, got buys=%d", acq.buys)

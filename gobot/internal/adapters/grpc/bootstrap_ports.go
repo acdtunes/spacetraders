@@ -85,9 +85,8 @@ func NewBootstrapCoordinatorHandler(
 	h.SetShipyardScanner(&bootstrapShipyardScanner{med: med, shipRepo: shipRepo, waypointRepo: waypointRepo})
 	h.SetFrigateRetirer(&bootstrapFrigateRetirer{shipRepo: shipRepo})
 	h.SetContractRunner(&bootstrapContractRunner{server: server})
-	// sp-rype: the pre-hauler frigate sole-earner contract loop (sp-ehg9 batch-contract --loop). After the
-	// frigate finishes its hour-0 shipyard run + probe buy it runs contracts as the sole earner instead of
-	// parking idle at the yard — the fix for the cold-start income stall.
+	// The frigate contract-loop primitive. Bootstrap drives only its STOP half, to clear a loop container
+	// an earlier deploy left holding the frigate's claim.
 	h.SetFrigateContractLoopStarter(&bootstrapFrigateContractLoop{server: server})
 	h.SetMetricsSink(&bootstrapMetricsSink{})
 	// The per-tick live-config reader makes every bootstrap knob honor

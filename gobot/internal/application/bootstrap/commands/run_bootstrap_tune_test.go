@@ -44,7 +44,8 @@ func (f *fakeLiveConfig) set(s liveconfig.Snapshot) {
 func TestBootstrapTunableDefaults_MirrorsCoordinatorConsts(t *testing.T) {
 	got := BootstrapTunableDefaults()
 	want := map[string]int{
-		"tick_secs": defaultBootstrapTickSeconds, // 45 (sp-lgo3: short cold-start cadence)
+		"tick_secs":                         defaultBootstrapTickSeconds,                // 45 (sp-lgo3: short cold-start cadence)
+		"contract_start_treasury_threshold": int(defaultContractStartTreasuryThreshold), // 500000 (the contract operation's start bar)
 	}
 	if len(got) != len(want) {
 		t.Fatalf("tunable defaults size: got %d want %d (%v)", len(got), len(want), got)
@@ -133,6 +134,54 @@ func TestBootstrap_LiveRetune_TickSecs_LandsNextTick_NoRestart(t *testing.T) {
 	}
 	if cmd.TickIntervalSecs != 0 {
 		t.Fatalf("no restart happened: launch cmd.TickIntervalSecs must remain 0, got %d", cmd.TickIntervalSecs)
+	}
+}
+
+// The contract-start threshold follows the SAME two-family discipline as the cadence: an absent bare
+// key keeps the launch value, a present one overlays it for the tick, and an all-zero launch resolves
+// to the documented default.
+func TestBootstrap_ResolveConfig_ContractStartThreshold_LaunchDefaultAndOverlay(t *testing.T) {
+	if got := resolveBootstrapConfig(baseCmd(), nil).ContractStartTreasury; got != defaultContractStartTreasuryThreshold {
+		t.Fatalf("an all-zero launch must resolve the documented default, got %d", got)
+	}
+	cmd := baseCmd()
+	cmd.ContractStartTreasuryThreshold = 250_000
+	for name, live := range map[string]liveconfig.Snapshot{
+		"absent": {},
+		"zeroed": {"contract_start_treasury_threshold": 0},
+		"noise":  {"bootstrap_contract_start_treasury_threshold": 900_000},
+	} {
+		if got := resolveBootstrapConfig(cmd, live).ContractStartTreasury; got != 250_000 {
+			t.Errorf("%s bare key must leave the launch threshold at 250000, got %d", name, got)
+		}
+	}
+	if got := resolveBootstrapConfig(cmd, liveconfig.Snapshot{"contract_start_treasury_threshold": 900_000}).ContractStartTreasury; got != 900_000 {
+		t.Fatalf("the bare tune must beat the launch value, got %d", got)
+	}
+}
+
+// THE acceptance (coordinator side) for the new knob: a live retune lands on the NEXT tick with NO
+// restart, driven through the two calls reconcileOnce itself makes each tick.
+func TestBootstrap_LiveRetune_ContractStartThreshold_LandsNextTick_NoRestart(t *testing.T) {
+	live := &fakeLiveConfig{snap: liveconfig.Snapshot{}}
+	h := NewRunBootstrapCoordinatorHandler(nil)
+	h.SetLiveConfigReader(live)
+	ctx := ctxWithLogger(&capturingLogger{})
+	cmd := baseCmd()
+
+	thresholdNow := func() int64 {
+		return resolveBootstrapConfig(cmd, h.liveConfigSnapshot(ctx, cmd)).ContractStartTreasury
+	}
+
+	if got := thresholdNow(); got != defaultContractStartTreasuryThreshold {
+		t.Fatalf("tick1: an untuned column must run at the default threshold, got %d", got)
+	}
+	live.set(liveconfig.Snapshot{"contract_start_treasury_threshold": 1_250_000})
+	if got := thresholdNow(); got != 1_250_000 {
+		t.Fatalf("tick2: the live tune must govern the very next tick, got %d", got)
+	}
+	if cmd.ContractStartTreasuryThreshold != 0 {
+		t.Fatalf("no restart happened: launch cmd.ContractStartTreasuryThreshold must remain 0, got %d", cmd.ContractStartTreasuryThreshold)
 	}
 }
 

@@ -110,6 +110,10 @@ func observeFleetShape(ships []*navigation.Ship, obs *bootstrapCmd.Observation) 
 			// lose on a loop stop); the pre-hauler loop must never restart on a purchasing frigate.
 			obs.FrigateCargoEmpty = s.CargoUnits() == 0
 			obs.CommandFrigatePurchasing = s.DedicatedFleet() == navigation.PurchasingFleet
+			// Idle-and-not-flying is the honest free tick the re-dedication and the first-hauler pivot
+			// both wait for (same expression as the gate-worker release below).
+			obs.CommandFrigateOnTrade = s.DedicatedFleet() == tradeFleetTag
+			obs.CommandFrigateIdle = s.IsIdle() && !s.IsInTransit()
 		} else if s.DedicatedFleet() == contractFleetTag {
 			obs.Haulers = append(obs.Haulers, bootstrapCmd.HaulerSnapshot{Symbol: s.ShipSymbol(), Waypoint: wp})
 		} else if s.DedicatedFleet() == tradeFleetTag {

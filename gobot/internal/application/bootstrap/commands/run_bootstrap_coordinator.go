@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	// defaultBootstrapTickSeconds is the cold-start reconcile cadence — the ONE live-tunable knob
+	// defaultBootstrapTickSeconds is the cold-start reconcile cadence — a live-tunable knob
 	// (tick_secs, bounds 10..86400, no restart). SHORT on purpose: bootstrap runs ONLY during
 	// cold start — 1 frigate + 1-3 probes make <0.1 req/s vs the 2 req/s ACCOUNT limit (20x+ headroom)
 	// and it exits at EXPANSION (gate built) before the fleet is ever large, so a fast tick carries zero
@@ -22,6 +22,13 @@ const (
 	// time → higher rank) with ample headroom, made SAFE against the fresh-buy over-buy a short tick
 	// would otherwise expose by the count-sync bridge.
 	defaultBootstrapTickSeconds = 45
+
+	// defaultContractStartTreasuryThreshold is the treasury the fleet must hold before the CONTRACT
+	// OPERATION starts (contract_start_treasury_threshold — config.yaml [bootstrap] + live-tunable).
+	// Below it the command frigate trades and nothing contract-side is launched or bought. A FLAT
+	// reading, deliberately NOT netted against the reserve floor — different arithmetic from
+	// gateSurplusFloor's GATE-entry surplus. SEQUENCING only, never a spend guard (RULINGS #1/#4).
+	defaultContractStartTreasuryThreshold int64 = 500_000
 
 	// The cold-start SIZES. Bootstrap seeds a fixed, known-good shape and the standing coordinators own
 	// everything above it, so these are the shape itself — not per-run knobs.
@@ -217,6 +224,11 @@ type FrigateRetirer interface {
 	// a foreign dedication in the reconciler / contract-fleet / autosizer selection paths, RULINGS #7).
 	// Reuses the single fleet-assign write path (AssignShipFleet with Fleet="purchasing").
 	DedicateAsPurchaser(ctx context.Context, playerID int, shipSymbol string) error
+	// DedicateAsTrade tags the frigate into the TRADE fleet (dedicated_fleet=trade) — its standing home:
+	// the frigate tours under the trade-fleet coordinator from tick 1 and is handed back to it after its
+	// cold-start buys, so it never stands by idle-dedicated. Same single fleet-assign write path as
+	// DedicateAsPurchaser with the destination tag swapped, and idempotent at the repo.
+	DedicateAsTrade(ctx context.Context, playerID int, shipSymbol string) error
 }
 
 // HaulerAcquirer price-checks and buys ONE light hauler, then dedicates it to the contract fleet and
@@ -249,22 +261,16 @@ type ContractRunner interface {
 	StartBatchContract(ctx context.Context, playerID int) error
 }
 
-// FrigateContractLoopStarter starts the command frigate's OWN continuous single-hull contract loop
-// reusing the batch-contract --loop primitive (DaemonServer.BatchContractWorkflow
-// with iterations=-1). This is the pre-hauler frigate EARNER: after the frigate finishes its hour-0
-// shipyard run + probe buy it must run contracts as the sole earner rather than park idle at the yard
-// (the contract_fleet_coordinator does not keep the frigate earning). The
-// reconciler calls StartLoop only when provisioning is done AND no loop is already running
-// (obs.FrigateContractLoopRunning), so the start is idempotent; the daemon's per-player
-// single-CONTRACT_WORKFLOW guard is the atomic backstop, so a duplicate start is a benign no-op. Unset
-// (nil) ⇒ the frigate-earner action is a logged skip.
+// FrigateContractLoopStarter drives the command frigate's OWN continuous single-hull contract loop
+// (DaemonServer.BatchContractWorkflow with iterations=-1). The frigate EARNS IN TRADE now, so bootstrap
+// never STARTS this loop; only StopLoop is driven, to clear a loop container an earlier deploy left
+// running (an infinite loop never ends by itself and would hold the hull's claim forever). StartLoop
+// remains the primitive's other half for any caller that needs it. Unset (nil) ⇒ a logged skip.
 type FrigateContractLoopStarter interface {
 	StartLoop(ctx context.Context, playerID int, frigateSymbol string) error
 	// StopLoop stops the frigate's continuous contract-loop container (StopContainer), releasing the
-	// frigate's work-claim so it goes idle — the first-hauler pivot the design already
-	// documents (BatchContractWorkflow: "stops the returned container at the first-hauler pivot"). The
-	// freed frigate then executes the hauler buy and is retired to the exclusive purchasing role; the
-	// loop-start is gated on len(Haulers)==0 so it never restarts post-pivot. Idempotent (stopping an
+	// frigate's work-claim so it goes idle and can take up trade. The reconciler drives it only at a
+	// cargo-empty safe point, so no accepted contract's cargo is abandoned. Idempotent (stopping an
 	// absent loop is a benign no-op).
 	StopLoop(ctx context.Context, playerID int, frigateSymbol string) error
 }
@@ -365,6 +371,11 @@ type RunBootstrapCoordinatorCommand struct {
 
 	// TickIntervalSecs is the reconcile cadence, live-overlaid each tick by the tick_secs tune.
 	TickIntervalSecs int
+
+	// ContractStartTreasuryThreshold is the flat treasury the contract operation waits for before it
+	// starts, live-overlaid each tick by the contract_start_treasury_threshold tune. 0/absent ⇒ the
+	// documented default.
+	ContractStartTreasuryThreshold int
 }
 
 // RunBootstrapCoordinatorResponse reports reconcile progress, observed on context cancellation
@@ -493,9 +504,9 @@ func (h *RunBootstrapCoordinatorHandler) SetHaulerAcquirer(a HaulerAcquirer) { h
 // haulers are placed but batch-contract is not driven (surfaced loudly).
 func (h *RunBootstrapCoordinatorHandler) SetContractRunner(c ContractRunner) { h.contractRun = c }
 
-// SetFrigateContractLoopStarter wires the pre-hauler frigate sole-earner contract loop (sp-rype;
-// reuses the sp-ehg9 batch-contract --loop primitive). Unset → the frigate is provisioned but never put
-// on its earning loop, so it would park idle after the probe buy (surfaced loudly as a logged skip).
+// SetFrigateContractLoopStarter wires the frigate contract-loop primitive. The reconciler drives only
+// its STOP half — clearing a loop container an earlier deploy left running. Unset → a legacy loop cannot
+// be cleared and keeps its claim on the frigate (surfaced loudly as a logged skip).
 func (h *RunBootstrapCoordinatorHandler) SetFrigateContractLoopStarter(s FrigateContractLoopStarter) {
 	h.frigateLoop = s
 }

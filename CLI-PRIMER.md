@@ -197,8 +197,14 @@ sourcing is the construction pipeline's, above.
   phase every tick (never a stored cursor), acts on the delta behind guards. Three phases only —
   **COLDSTART → GATE → EXPANSION** (see `MECHANICS.md` §6.1 for what each keys on). **Live by
   default** and boot-standing, so it needs no manual start; the verb exists for a manual
-  (re)launch. Config is `config.yaml [bootstrap]` — exactly two keys, `bootstrap_disabled` and
-  `tick_seconds` — plus the live `tune --operation bootstrap tick_secs`.
+  (re)launch. Config is `config.yaml [bootstrap]` — exactly three keys, `bootstrap_disabled`,
+  `tick_seconds` and `contract_start_treasury_threshold` — plus the live
+  `tune --operation bootstrap tick_secs|contract_start_treasury_threshold`. The threshold is the FLAT
+  treasury at which the CONTRACT OPERATION starts (default 500000): below it the command frigate trades
+  under the trade-fleet coordinator and nothing contract-side is launched or bought; at/above it the
+  contract-fleet coordinator comes up and the hauler ramp begins. It is NOT netted against the reserve
+  floor — a different reading from the GATE-entry surplus bar — and it is sequencing only: every buy
+  still passes the untouched working-capital floor.
 
 ### Tuning
 - **tune** — read or write a RUNNING container's live knobs, no restart. See §3.2.
@@ -232,7 +238,7 @@ That is exactly what makes an out-of-date table here dangerous.
 | `market_scan` / `shipyard_scan` | the fleet's ONE shared market / shipyard read budget (`budget_req_per_sec`, `value_clamp_r`) | BOOT |
 | `sensing` | probe-sensing's `goods_whitelist` — a STRING, which is why it is not a `tune` key | **B** |
 | `scouting` | scouting-subsystem knobs (tour-start jitter, reposition bounds, shipyard rescan TTL, gate reconcile) | **B** |
-| `bootstrap` | cold-start: exactly `bootstrap_disabled` and `tick_seconds` | **B** |
+| `bootstrap` | cold-start: exactly `bootstrap_disabled`, `tick_seconds` and `contract_start_treasury_threshold` | **B** |
 | `worker_rebalancer` | **INERT** — the coordinator was retired; the section is still parsed and drives nothing | — |
 | `ship_resync` | ship-state resync cadence (`interval_seconds`, `jitter_seconds`) | BOOT/A |
 
@@ -303,7 +309,7 @@ print every supported one.)
 | **contractscaler** | `contract_fleet_max_hulls` [0,16] | the contract fleet's ceiling — and the number bootstrap's GATE-entry bar reads as the scaler target |
 | **contract** | `min_home_contract_workers` [0,200] | contract worker reserve |
 | **autooutfit** | `min_telemetry_samples` [1,1000], `price_ceiling` [0,5M], `max_installs_per_tick` [1,20], `payback_horizon_hours` [1,8760], `max_treasury_fraction_pct` [1,100] | auto-outfit upgrade gating |
-| **bootstrap** | `tick_secs` [10,86400] | the cold-start reconcile cadence |
+| **bootstrap** | `tick_secs` [10,86400], `contract_start_treasury_threshold` [0,100M] | the cold-start reconcile cadence, and the flat treasury at which the contract operation starts (below it the frigate trades and nothing contract-side runs; default 500000, not netted against the reserve floor) |
 | **tour** | `market_data_max_age_minutes` [1,43200] | the market-freshness FLOOR on the trade path (see below). Aliased `tour`, not `tradefleet`, because it governs what a TOUR will still price off |
 
 Coordinators with **no** tune surface: opportunity-relocator, long-haul arb (its code comments

@@ -16,6 +16,11 @@ type fakeRetirer struct {
 	dedications []string // Ships dedicated as the exclusive purchasing ship
 	dedicateErr error
 	world       *incomeWorld // mutated on a successful retire (frigate untagged)
+
+	// The TRADE dedication: the frigate's standing home. Records every ship handed to the trade fleet
+	// (order = call order) so a test can prove the frigate is put to work and later released back to it.
+	tradeDedications []string
+	tradeErr         error
 }
 
 func (f *fakeRetirer) RetireFromContract(ctx context.Context, playerID int, shipSymbol string) error {
@@ -37,6 +42,17 @@ func (f *fakeRetirer) DedicateAsPurchaser(ctx context.Context, playerID int, shi
 	}
 	if f.world != nil {
 		f.world.dedicatePurchasing()
+	}
+	return nil
+}
+
+func (f *fakeRetirer) DedicateAsTrade(ctx context.Context, playerID int, shipSymbol string) error {
+	f.tradeDedications = append(f.tradeDedications, shipSymbol)
+	if f.tradeErr != nil {
+		return f.tradeErr
+	}
+	if f.world != nil {
+		f.world.dedicateTrade()
 	}
 	return nil
 }
@@ -173,6 +189,8 @@ type incomeWorld struct {
 	frigateLoopRunning       bool // sp-rype: the frigate's own contract loop is running (earner-signal)
 	frigateCargoEmpty        bool // The frigate carries no contract cargo (the pivot safe point)
 	commandFrigatePurchasing bool // The frigate is the exclusive purchasing ship (post-pivot)
+	frigateOnTrade           bool // The frigate carries the 'trade' dedication (its standing home)
+	frigateIdle              bool // The frigate is genuinely free right now (idle, not in transit)
 	tradeHullCount           int  // sp-192k4: 'trade'-dedicated hulls now — the observable trade-seeded signal
 }
 
@@ -192,6 +210,8 @@ func (w *incomeWorld) snapshot() Observation {
 		FrigateContractLoopRunning: w.frigateLoopRunning,
 		FrigateCargoEmpty:          w.frigateCargoEmpty,
 		CommandFrigatePurchasing:   w.commandFrigatePurchasing,
+		CommandFrigateOnTrade:      w.frigateOnTrade,
+		CommandFrigateIdle:         w.frigateIdle,
 		TradeHullCount:             w.tradeHullCount,
 		Haulers:                    append([]HaulerSnapshot(nil), w.haulers...),
 		ContractPlacementSlots:     append([]string(nil), w.placementSlots...),
@@ -220,6 +240,19 @@ func (w *incomeWorld) dedicatePurchasing() {
 	defer w.mu.Unlock()
 	w.commandFrigatePurchasing = true
 	w.frigateOnContract = false
+	w.frigateOnTrade = false
+}
+
+// dedicateTrade models the fleet-assign behind DedicateAsTrade: the frigate lands in the trade fleet,
+// clearing whichever tag it carried. It also stands the hull idle — a freshly re-tagged frigate holds no
+// claim until the trade coordinator gives it one, which is what the pivot's idle-in-trade signal reads.
+func (w *incomeWorld) dedicateTrade() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.frigateOnTrade = true
+	w.frigateOnContract = false
+	w.commandFrigatePurchasing = false
+	w.frigateIdle = true
 }
 
 // retireFrigate models the fleet unassign behind RetireFromContract: it writes an EMPTY dedication, so
@@ -321,38 +354,41 @@ func TestBootstrap_ContractShape_IsFixed(t *testing.T) {
 	}
 }
 
-// --- frigate retirement: retire when tagged, skip when already retired ---
+// --- the frigate's standing home: dedicate it TRADE when it is free and carries another tag, skip
+// when it is already trading ---
 
-func TestBootstrap_Income_RetiresTaggedFrigate(t *testing.T) {
+func TestBootstrap_Income_DedicatesTheFreeFrigateToTrade(t *testing.T) {
 	obs := incomeObs()
 	obs.CommandFrigateID = "FRIGATE-1"
-	obs.CommandFrigateOnContract = true
-	obs.BatchContractRunning = true         // isolate: don't also launch batch-contract
+	obs.CommandFrigateOnContract = true // a stale contract tag from an earlier era
+	obs.CommandFrigateIdle = true
+	obs.BatchContractRunning = true         // isolate: don't also launch the contract coordinator
 	obs.Haulers = make([]HaulerSnapshot, 4) // isolate: cap met, no buy
 	obs.TradeHullCount = 1                  // Post-seed state — isolate from the trade-seed detour
 	ret := &fakeRetirer{}
 	h := newIncomeHandler(obs, ret, &fakeHaulerAcquirer{price: 300000, yard: "Y", readable: true}, &fakeContractRunner{})
 	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
-	if ret.calls != 1 || len(ret.ships) != 1 || ret.ships[0] != "FRIGATE-1" {
-		t.Fatalf("tagged frigate must be retired once by symbol, got calls=%d ships=%v", ret.calls, ret.ships)
+	if len(ret.tradeDedications) != 1 || ret.tradeDedications[0] != "FRIGATE-1" {
+		t.Fatalf("a free frigate carrying another tag must be dedicated TRADE once, by symbol, got %v", ret.tradeDedications)
 	}
-	if !res.FrigateRetired {
-		t.Fatalf("res.FrigateRetired should be true")
+	if !res.FrigateTrading {
+		t.Fatalf("res.FrigateTrading should be true")
 	}
 }
 
-func TestBootstrap_Income_SkipsUntaggedFrigate(t *testing.T) {
+func TestBootstrap_Income_SkipsAlreadyTradingFrigate(t *testing.T) {
 	obs := incomeObs()
 	obs.CommandFrigateID = "FRIGATE-1"
-	obs.CommandFrigateOnContract = false // already retired
+	obs.CommandFrigateOnTrade = true // already in its standing home
+	obs.CommandFrigateIdle = true
 	obs.BatchContractRunning = true
 	obs.Haulers = make([]HaulerSnapshot, 4)
 	obs.TradeHullCount = 1 // Post-seed state — isolate from the trade-seed detour
 	ret := &fakeRetirer{}
 	h := newIncomeHandler(obs, ret, &fakeHaulerAcquirer{price: 300000, yard: "Y", readable: true}, &fakeContractRunner{})
 	h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
-	if ret.calls != 0 {
-		t.Fatalf("untagged frigate must not be retired again, got %d calls", ret.calls)
+	if len(ret.tradeDedications) != 0 {
+		t.Fatalf("a frigate already in the trade fleet must not be re-tagged, got %v", ret.tradeDedications)
 	}
 }
 
@@ -600,162 +636,14 @@ func TestBootstrap_ColdStartToGate_Crossover_NoContractAct(t *testing.T) {
 	}
 }
 
-// --- frigate sole-earner contract loop (sp-rype): once provisioning is done, the frigate is put on its
-// own continuous contract loop so it EARNS instead of parking idle at the shipyard after the probe buy.
-// Guarded on provisioning-done + not-already-looping (the earner-signal), nil-safe, dry-run-silent. ---
+// --- Earning acceptance: from a provisioned fixture over the contract-start threshold, the arc puts the
+// frigate in the trade fleet, launches the contract coordinator, and stages the fixed hauler target one
+// per tick, spread across distinct slots. ---
 
-// frigateLoopObs is a provisioned cold-start observation with the frigate present and no loop yet running —
-// the state in which the frigate must be put on its earning loop. Batch-contract "running" and the
-// hauler cap "met" isolate the assertion to the frigate-loop action.
-func frigateLoopObs() Observation {
-	obs := incomeObs()
-	obs.ProbeCount = 3 // provisioning done (default probe_target 3)
-	obs.CommandFrigateID = "FRIGATE-1"
-	obs.FrigateContractLoopRunning = false
-	obs.BatchContractRunning = true // isolate: don't also launch the coordinator
-	// The frigate loop is the PRE-hauler earner — it starts only at 0 haulers. The staged buy
-	// therefore also runs on this fixture; it is left fully affordable and placeable so it completes
-	// without raising a blocker of its own, isolating these pins to the loop-start action.
-	obs.Haulers = nil
-	return obs
-}
-
-func TestBootstrap_Income_StartsFrigateLoopWhenProvisioned(t *testing.T) {
-	loop := &fakeFrigateLoop{}
-	h := newIncomeHandler(frigateLoopObs(), &fakeRetirer{}, &fakeHaulerAcquirer{price: 300000, yard: "Y", readable: true}, &fakeContractRunner{})
-	h.SetFrigateContractLoopStarter(loop)
-	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
-	if loop.calls != 1 || len(loop.ships) != 1 || loop.ships[0] != "FRIGATE-1" {
-		t.Fatalf("a provisioned frigate must be put on its contract loop once, by symbol; got calls=%d ships=%v (blocker=%q)", loop.calls, loop.ships, res.Blocker)
-	}
-	if !res.FrigateLoopStarted {
-		t.Fatalf("res.FrigateLoopStarted should be true")
-	}
-}
-
-// earner-signal recognition: a frigate loop already running must NOT be re-started (no double-start,
-// no double-claim). This is exactly the obs.BatchContractRunning-blind-spot the sp-rype signal closes.
-func TestBootstrap_Income_SkipsFrigateLoopWhenAlreadyRunning(t *testing.T) {
-	obs := frigateLoopObs()
-	obs.FrigateContractLoopRunning = true // the earner-signal: the loop already runs
-	loop := &fakeFrigateLoop{}
-	h := newIncomeHandler(obs, &fakeRetirer{}, &fakeHaulerAcquirer{price: 300000, yard: "Y", readable: true}, &fakeContractRunner{})
-	h.SetFrigateContractLoopStarter(loop)
-	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
-	if loop.calls != 0 {
-		t.Fatalf("a running frigate loop must NOT be re-started, got %d calls", loop.calls)
-	}
-	if res.FrigateLoopStarted {
-		t.Fatalf("res.FrigateLoopStarted should be false when the loop is already running")
-	}
-}
-
-// juggle order: buy the initial probes FIRST, THEN earn — the loop must not start while the
-// frigate is still needed as the probe buyer (probes below target).
-func TestBootstrap_Income_SkipsFrigateLoopBeforeProvisioned(t *testing.T) {
-	obs := frigateLoopObs()
-	obs.ProbeCount = 1 // provisioning NOT done — the frigate is still the probe purchaser
-	loop := &fakeFrigateLoop{}
-	h := newIncomeHandler(obs, &fakeRetirer{}, &fakeHaulerAcquirer{price: 300000, yard: "Y", readable: true}, &fakeContractRunner{})
-	h.SetFrigateContractLoopStarter(loop)
-	h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
-	if loop.calls != 0 {
-		t.Fatalf("the frigate must finish provisioning (probes<target) before earning; got %d loop starts", loop.calls)
-	}
-}
-
-// no frigate ID resolved ⇒ cannot start a loop (fail-closed, no guess).
-func TestBootstrap_Income_SkipsFrigateLoopWithoutFrigateID(t *testing.T) {
-	obs := frigateLoopObs()
-	obs.CommandFrigateID = "" // frigate unresolved
-	loop := &fakeFrigateLoop{}
-	h := newIncomeHandler(obs, &fakeRetirer{}, &fakeHaulerAcquirer{price: 300000, yard: "Y", readable: true}, &fakeContractRunner{})
-	h.SetFrigateContractLoopStarter(loop)
-	h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
-	if loop.calls != 0 {
-		t.Fatalf("no resolved frigate ID: must not start a loop, got %d calls", loop.calls)
-	}
-}
-
-// nil-safe: no starter wired ⇒ a logged skip surfaced as a blocker, never a panic (matches the other
-// contract collaborators' nil contract).
-func TestBootstrap_Income_FrigateLoopNilSafe(t *testing.T) {
-	h := newIncomeHandler(frigateLoopObs(), &fakeRetirer{}, &fakeHaulerAcquirer{price: 300000, yard: "Y", readable: true}, &fakeContractRunner{})
-	// deliberately NO SetFrigateContractLoopStarter
-	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd()) // must not panic
-	if res.FrigateLoopStarted {
-		t.Fatalf("no starter wired: FrigateLoopStarted must be false")
-	}
-	if res.Blocker != "no_frigate_loop_starter" {
-		t.Fatalf("nil frigate-loop starter should surface blocker no_frigate_loop_starter, got %q", res.Blocker)
-	}
-}
-
-// the sp-rype stall reproduction: the frigate has finished its hour-0 shipyard run + probe buy (probes at
-// target, scouting), so the arc is COLDSTART-labeled even though the home system is barely scanned (20%
-// coverage — coverage no longer gates the label). The frigate must start EARNING rather than park idle at
-// the yard — the fix for "sole earner dead, income never flows".
-func TestBootstrap_Income_StartsFrigateLoopAtLowCoverage(t *testing.T) {
-	obs := Observation{
-		HomeSystem: "X1-HQ", ProbeCount: 3, ProbesScouting: 3, HasIdlePurchaser: true,
-		Treasury: 120000, MarketsTotal: 10, MarketsCovered: 2, // 20% coverage — no economic signal → COLDSTART
-		CommandFrigateID: "FRIGATE-1", FrigateContractLoopRunning: false, Readable: true,
-	}
-	loop := &fakeFrigateLoop{}
-	h := newIncomeHandler(obs, &fakeRetirer{}, &fakeHaulerAcquirer{price: 300000, yard: "Y", readable: true}, &fakeContractRunner{})
-	h.SetFrigateContractLoopStarter(loop)
-	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
-	if res.Phase != PhaseColdStart {
-		t.Fatalf("provisioned probes must derive COLDSTART regardless of coverage (20%%), got %s", res.Phase)
-	}
-	if loop.calls != 1 || loop.ships[0] != "FRIGATE-1" {
-		t.Fatalf("a provisioned frigate must start earning (contract loop), got calls=%d ships=%v", loop.calls, loop.ships)
-	}
-	if !res.FrigateLoopStarted {
-		t.Fatalf("res.FrigateLoopStarted should be true for a provisioned frigate")
-	}
-}
-
-// idempotent across ticks: the loop is started exactly once — after it starts, the observed
-// earner-signal (FrigateContractLoopRunning) keeps every later tick from re-starting it.
-func TestBootstrap_Income_FrigateLoopStartedExactlyOnce(t *testing.T) {
+func TestBootstrap_IncomeAcceptance_TradesLaunchesRampsHaulers(t *testing.T) {
 	world := &incomeWorld{
 		treasury: 3000000, homeSystem: "X1", marketsTotal: 10, marketsCovered: 10,
-		frigateID: "FRIGATE-1", frigateOnContract: false, batchRunning: true,
-		probeCount:    3, // provisioned
-		incomePerHour: 0, hasPurchaser: true,
-		// The pre-hauler loop starts only at 0 haulers; leave NO viable hubs (markets/goods unset)
-		// so the hauler-buy step is not "needed" — isolating the frigate-loop lifecycle across ticks.
-	}
-	loop := &fakeFrigateLoop{world: world}
-	h := NewRunBootstrapCoordinatorHandler(nil)
-	h.SetShipRefresher(&fakeRefresher{})
-	h.SetWorldObserver(&fakeIncomeObserver{world: world})
-	h.SetProbeAcquirer(&fakeAcquirer{price: 40000, yard: "Y", readable: true})
-	h.SetFrigateRetirer(&fakeRetirer{})
-	h.SetHaulerAcquirer(&fakeHaulerAcquirer{price: 300000, yard: "Y", readable: true})
-	h.SetContractRunner(&fakeContractRunner{})
-	h.SetFrigateContractLoopStarter(loop)
-	for i := 0; i < 5; i++ {
-		if _, err := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd()); err != nil {
-			t.Fatalf("tick %d: %v", i, err)
-		}
-	}
-	if loop.calls != 1 {
-		t.Fatalf("frigate loop must be started exactly once across ticks (idempotent on the earner-signal), got %d", loop.calls)
-	}
-	if !world.snapshot().FrigateContractLoopRunning {
-		t.Fatalf("the frigate loop should be observed running after start")
-	}
-}
-
-// --- Contract acceptance (Slice 2): from a provisioned fixture, the arc retires the frigate, launches
-// batch-contract, and stages the fixed hauler target one per tick, spread across distinct slots. ---
-
-func TestBootstrap_IncomeAcceptance_RetiresLaunchesRampsHaulers(t *testing.T) {
-	world := &incomeWorld{
-		treasury: 3000000, homeSystem: "X1", marketsTotal: 10, marketsCovered: 10,
-		frigateID: "FRIGATE-1", frigateOnContract: true, batchRunning: false,
+		frigateID: "FRIGATE-1", frigateOnContract: true, frigateIdle: true, batchRunning: false,
 		probeCount:     3, // provisioned (probe_target 3) → COLDSTART-labeled
 		placementSlots: incomeSlots(),
 		incomePerHour:  0, hasPurchaser: true,
@@ -784,21 +672,21 @@ func TestBootstrap_IncomeAcceptance_RetiresLaunchesRampsHaulers(t *testing.T) {
 		}
 	}
 	final := world.snapshot()
-	if final.CommandFrigateOnContract {
-		t.Fatalf("acceptance: frigate should be retired from contracts")
+	if final.CommandFrigateOnContract || !final.CommandFrigateOnTrade {
+		t.Fatalf("acceptance: the frigate must end up EARNING in the trade fleet, off the contract tag; contract=%v trade=%v", final.CommandFrigateOnContract, final.CommandFrigateOnTrade)
 	}
 	if !final.BatchContractRunning {
-		t.Fatalf("acceptance: batch-contract should be running")
+		t.Fatalf("acceptance: the contract coordinator should be running")
 	}
 	// The ramp climbs to the fixed hauler target, one hull per distinct slot.
 	if len(final.Haulers) != haulerTarget {
 		t.Fatalf("acceptance: expected %d haulers (the fixed target), got %d", haulerTarget, len(final.Haulers))
 	}
-	if ret.calls != 1 {
-		t.Fatalf("acceptance: frigate retired exactly once, got %d", ret.calls)
+	if len(ret.tradeDedications) != 1 {
+		t.Fatalf("acceptance: the frigate is put in the trade fleet exactly once, got %v", ret.tradeDedications)
 	}
 	if run.calls != 1 {
-		t.Fatalf("acceptance: batch-contract launched exactly once, got %d", run.calls)
+		t.Fatalf("acceptance: the contract coordinator launched exactly once, got %d", run.calls)
 	}
 	seen := map[string]bool{}
 	for _, hp := range acq.placedOn {

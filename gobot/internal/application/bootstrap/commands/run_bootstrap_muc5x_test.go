@@ -18,14 +18,14 @@ import "testing"
 // mucUnaffordableObs is the live deadlock (TORWIND_DEV12): a cold-start cold-start pivot observation with the
 // hauler price UNREADABLE (cold yard) and the treasury set so treasury − price is far below the 150k floor.
 func mucUnaffordableObs() Observation {
-	obs := pivotObs()      // 0 haulers, frigate on its loop, cargo empty, no idle purchaser, viable hubs
+	obs := pivotObs()      // 0 haulers, frigate idle in trade, cargo empty, no idle purchaser, viable hubs
 	obs.Treasury = 127_060 // 127_060 − 363_473 = −236_413 ≪ 150k floor ⇒ UNAFFORDABLE
 	return obs
 }
 
-// UNAFFORDABLE + a last ask on record ⇒ the frigate is NEVER freed: no loop stop, no purchasing dedication,
-// no hull sent. It stays on its contract loop earning; the buy blocks capital_gate and retries. This is
-// the invariant the deadlock violated (frigate freed while permanently unaffordable → no earner left).
+// UNAFFORDABLE + a last ask on record ⇒ the frigate is NEVER taken: no purchasing dedication, no hull
+// sent. It stays in the trade fleet earning; the buy blocks capital_gate and retries. This is the
+// invariant the deadlock violated (frigate taken while permanently unaffordable → no earner left).
 func TestBootstrap_Muc5x_ColdPrice_UnaffordableCached_KeepsFrigateEarning(t *testing.T) {
 	ret := &fakeRetirer{}
 	// Presence-gated: unreadable at the yard, but it last asked 363_473 (a hull read it earlier).
@@ -38,11 +38,8 @@ func TestBootstrap_Muc5x_ColdPrice_UnaffordableCached_KeepsFrigateEarning(t *tes
 	if err != nil {
 		t.Fatalf("reconcileOnce: %v", err)
 	}
-	if loop.stopCalls != 0 {
-		t.Fatalf("INVARIANT: an unaffordable hauler must NOT stop the frigate's earning loop; stopCalls=%d (blocker=%q)", loop.stopCalls, res.Blocker)
-	}
 	if len(ret.dedications) != 0 {
-		t.Fatalf("an unaffordable hauler must NOT dedicate the frigate as purchaser (it is not freed); dedications=%v", ret.dedications)
+		t.Fatalf("INVARIANT: an unaffordable hauler must NOT take the frigate out of the trade fleet; dedications=%v (blocker=%q)", ret.dedications, res.Blocker)
 	}
 	if scanner.calls != 0 {
 		t.Fatalf("an unaffordable hauler must send NO hull to the yard (the frigate is untouched); scanner calls=%d purchasers=%v", scanner.calls, scanner.purchasers)
@@ -51,17 +48,17 @@ func TestBootstrap_Muc5x_ColdPrice_UnaffordableCached_KeepsFrigateEarning(t *tes
 		t.Fatalf("an unaffordable hauler must not buy; buys=%d", acq.buys)
 	}
 	if res.FrigatePivoted {
-		t.Fatalf("no pivot may be recorded when the frigate is held (not freed)")
+		t.Fatalf("no pivot may be recorded when the frigate is held (left trading)")
 	}
 	if res.Blocker != "capital_gate" {
 		t.Fatalf("an unaffordable cached first-hauler must block capital_gate (frigate keeps earning), got %q", res.Blocker)
 	}
 }
 
-// AFFORDABLE + a last ask on record ⇒ the pivot FREES the frigate (stop loop + dedicate purchaser) and
-// sends it to the yard by name. Proves the guard only tightens the unaffordable case and never blocks a
-// legitimate free.
-func TestBootstrap_Muc5x_ColdPrice_AffordableCached_FreesAndPositionsAsBefore(t *testing.T) {
+// AFFORDABLE + a last ask on record ⇒ the pivot TAKES the frigate (dedicate purchaser) and sends it to
+// the yard by name. Proves the guard only tightens the unaffordable case and never blocks a legitimate
+// take.
+func TestBootstrap_Muc5x_ColdPrice_AffordableCached_TakesAndPositionsAsBefore(t *testing.T) {
 	ret := &fakeRetirer{}
 	acq := &fakeHaulerAcquirer{price: 300_000, yard: "Y", readable: false, lastAsk: 300_000}
 	loop := &fakeFrigateLoop{}
@@ -73,14 +70,11 @@ func TestBootstrap_Muc5x_ColdPrice_AffordableCached_FreesAndPositionsAsBefore(t 
 	if err != nil {
 		t.Fatalf("reconcileOnce: %v", err)
 	}
-	if loop.stopCalls != 1 || len(loop.stopped) != 1 || loop.stopped[0] != "FRIGATE-1" {
-		t.Fatalf("an affordable last ask must FREE the frigate; stopCalls=%d stopped=%v (blocker=%q)", loop.stopCalls, loop.stopped, res.Blocker)
-	}
 	if len(ret.dedications) != 1 || ret.dedications[0] != "FRIGATE-1" {
-		t.Fatalf("an affordable last ask must dedicate the frigate as purchaser; dedications=%v", ret.dedications)
+		t.Fatalf("an affordable last ask must dedicate the frigate as purchaser; dedications=%v (blocker=%q)", ret.dedications, res.Blocker)
 	}
 	if scanner.calls != 1 || len(scanner.purchasers) != 1 || scanner.purchasers[0] != "FRIGATE-1" {
-		t.Fatalf("an affordable last ask must send the freed frigate by name; calls=%d purchasers=%v", scanner.calls, scanner.purchasers)
+		t.Fatalf("an affordable last ask must send the taken frigate by name; calls=%d purchasers=%v", scanner.calls, scanner.purchasers)
 	}
 	if !res.FrigatePivoted || res.Blocker != "positioning_purchaser_at_shipyard" {
 		t.Fatalf("an affordable last ask must record the pivot + position; FrigatePivoted=%v blocker=%q", res.FrigatePivoted, res.Blocker)
@@ -88,10 +82,10 @@ func TestBootstrap_Muc5x_ColdPrice_AffordableCached_FreesAndPositionsAsBefore(t 
 }
 
 // NO ask on record yet (a first-ever cold start, before any yard has priced a hauler) ⇒ the guard is
-// INERT: the free proceeds, and the frigate goes to find out what the hull costs. The guard only tightens
+// INERT: the take proceeds, and the frigate goes to find out what the hull costs. The guard only tightens
 // on a POSITIVE ask, so absent evidence never changes behavior — the cold start must never wedge the
 // other way and leave hauler #1 unbought.
-func TestBootstrap_Muc5x_ColdPrice_NoCache_ProceedsToFreeAsBefore(t *testing.T) {
+func TestBootstrap_Muc5x_ColdPrice_NoCache_ProceedsToTakeAsBefore(t *testing.T) {
 	ret := &fakeRetirer{}
 	acq := &fakeHaulerAcquirer{price: 363_473, yard: "Y", readable: false} // no lastAsk: the yard has never priced
 	loop := &fakeFrigateLoop{}
@@ -99,11 +93,11 @@ func TestBootstrap_Muc5x_ColdPrice_NoCache_ProceedsToFreeAsBefore(t *testing.T) 
 	h := pivotHandlerScanned(mucUnaffordableObs(), ret, acq, loop, scanner)
 
 	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
-	if loop.stopCalls != 1 || scanner.calls != 1 || scanner.purchasers[0] != "FRIGATE-1" {
-		t.Fatalf("with no ask on record the free must proceed; stopCalls=%d calls=%d purchasers=%v (blocker=%q)", loop.stopCalls, scanner.calls, scanner.purchasers, res.Blocker)
+	if len(ret.dedications) != 1 || scanner.calls != 1 || scanner.purchasers[0] != "FRIGATE-1" {
+		t.Fatalf("with no ask on record the take must proceed; dedications=%v calls=%d purchasers=%v (blocker=%q)", ret.dedications, scanner.calls, scanner.purchasers, res.Blocker)
 	}
 	if !res.FrigatePivoted || res.Blocker != "positioning_purchaser_at_shipyard" {
-		t.Fatalf("with no ask on record the pivot's free step must fire + send the frigate; FrigatePivoted=%v blocker=%q", res.FrigatePivoted, res.Blocker)
+		t.Fatalf("with no ask on record the pivot's take step must fire + send the frigate; FrigatePivoted=%v blocker=%q", res.FrigatePivoted, res.Blocker)
 	}
 }
 

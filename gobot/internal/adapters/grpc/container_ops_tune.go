@@ -193,9 +193,11 @@ func tunableKnobsByContainerType() map[string]map[string]TuneBound {
 		// BARE family — NOT the prefixed bootstrap_* launch keys, which resolveBootstrapConfig
 		// clears+reinjects from config.yaml on every rebuild. A bare tune therefore survives a daemon bounce
 		// (the coordinator's per-tick liveconfig reader keeps applying it) instead of being wiped. The
-		// cold-start SHAPE is fixed in the coordinator, so the cadence is the only runtime lever.
+		// cold-start SHAPE is fixed in the coordinator, so the cadence and the contract-start treasury
+		// threshold are the runtime levers.
 		string(container.ContainerTypeBootstrapCoordinator): {
-			"tick_secs": {Type: "int", Min: 10, Max: 86_400, Default: bootstrap["tick_secs"], Unit: "seconds", Applies: TuneAppliesLive, Description: "reconcile cadence — kept SHORT because bootstrap runs only at cold start (<0.1 req/s, 20x+ API headroom) and a fast tick cuts poll-latency dead time before the gate (default 45s; sp-lgo3)"},
+			"tick_secs":                         {Type: "int", Min: 10, Max: 86_400, Default: bootstrap["tick_secs"], Unit: "seconds", Applies: TuneAppliesLive, Description: "reconcile cadence — kept SHORT because bootstrap runs only at cold start (<0.1 req/s, 20x+ API headroom) and a fast tick cuts poll-latency dead time before the gate (default 45s; sp-lgo3)"},
+			"contract_start_treasury_threshold": {Type: "int", Min: 0, Max: 100_000_000, Default: bootstrap["contract_start_treasury_threshold"], Unit: "credits", Applies: TuneAppliesLive, Description: "FLAT treasury at which the CONTRACT OPERATION starts during cold start: below it the command frigate trades under the trade-fleet coordinator and nothing contract-side is launched or bought; at/above it the contract-fleet coordinator comes up and the hauler ramp begins (default 500000). Deliberately NOT netted against the reserve floor — a different reading from the GATE-entry surplus bar. SEQUENCING only, never a spend guard: every buy still passes the untouched 150k working-capital floor, and once contract ops are under way a treasury dip never stands them back down (RULINGS #1/#4)"},
 		},
 	}
 }

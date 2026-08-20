@@ -641,6 +641,16 @@ bootstrap:
   # `spacetraders tune --operation bootstrap tick_secs <n>`.
   # tick_seconds: 45
 
+  # The FLAT treasury (whole credits) at which the CONTRACT OPERATION starts (0 => 500000). Below it
+  # the command frigate is dedicated 'trade' and toured by the trade-fleet coordinator, and nothing
+  # contract-side is launched or bought; at/above it the contract-fleet coordinator comes up and the
+  # hauler ramp begins. Deliberately NOT netted against the reserve floor — a different reading from
+  # the GATE-entry surplus bar. It sequences WHEN the operation starts and is never a spend guard:
+  # every buy still passes the untouched working-capital floor, and once the operation is under way a
+  # treasury dip never stands it back down. Also live-tunable with no restart:
+  # `spacetraders tune --operation bootstrap contract_start_treasury_threshold <credits>`.
+  # contract_start_treasury_threshold: 500000
+
 # Capacity reconciler (epic st-7zk): the standing declarative engine that drives the
 # contract-delivery machine's ACTUAL capacity topology toward a computed DESIRED topology
 # (SENSE -> PLAN -> DIFF -> GOVERN -> CONVERGE), maximizing per-hull-sustained $/hr with
