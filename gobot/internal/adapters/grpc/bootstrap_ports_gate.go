@@ -450,10 +450,10 @@ func (a *bootstrapGateWorkerAcquirer) BuyForConstruction(ctx context.Context, pl
 type bootstrapHandoffLauncher struct{ server *DaemonServer }
 
 // LaunchContractScaler launches the standing dedicated contract auto-scaler during the cold-start
-// scaling window (unconditional). Idempotent on its own container type — this running check IS
-// where the once-only guarantee lives, so a per-tick re-call never double-launches a second ramp loop
-// fighting the first over the same treasury cushion. The coordinator then survives restarts via the
-// persisted-container recovery idiom (launched once, runs forever).
+// scaling window (the caller gates it on the contract-start threshold). Idempotent on its own
+// container type — this running check IS where the once-only guarantee lives, so a per-tick re-call
+// never double-launches a second ramp loop fighting the first over the same treasury cushion. It
+// then survives restarts via the persisted-container recovery idiom (launched once, runs forever).
 func (h *bootstrapHandoffLauncher) LaunchContractScaler(ctx context.Context, playerID int, agentSymbol string) error {
 	running, err := containerTypeRunning(ctx, h.server.containerRepo, playerID, container.ContainerTypeContractScaler)
 	if err != nil {

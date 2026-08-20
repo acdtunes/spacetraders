@@ -7,13 +7,14 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/liveconfig"
 )
 
-// The dedicated contract auto-scaler is ensured (unconditional) during the cold-start window so
-// it ramps the exclusive contract fleet behind the 200000 cushion. The once-only guarantee lives in the
-// LAUNCHER, which skips a coordinator already RUNNING/PENDING — bootstrap holds no arbitration state.
+// The dedicated contract auto-scaler is ensured during the cold-start window, once the contract-start
+// treasury gate passes, so it ramps the exclusive contract fleet behind the 200000 cushion. The
+// once-only guarantee lives in the LAUNCHER, which skips a coordinator already RUNNING/PENDING —
+// bootstrap holds no arbitration state. The gate itself is pinned in run_bootstrap_contract_start_test.go.
 
-// contractScalerColdStartObs is a cold-start observation (haulers at desired, autosizer running so the early
-// autosizer launch is an idempotent no-op). The 3 contract haulers put it in the POST-trade-seed state via
-// sjvvColdStartObs (TradeHullCount=1).
+// contractScalerColdStartObs is a cold-start observation with the contract operation already under way
+// (haulers at desired, autosizer running so the early autosizer launch is an idempotent no-op). The 3
+// contract haulers put it in the POST-trade-seed state via sjvvColdStartObs (TradeHullCount=1).
 func contractScalerColdStartObs() Observation {
 	return sjvvColdStartObs(true, 3) // 3 haulers = desired → no hauler buy; autosizer "running" → no autosizer launch
 }

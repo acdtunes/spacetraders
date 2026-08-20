@@ -33,8 +33,12 @@ const tradeFleetTag = "trade"
 // Each action is guarded "already done / in-flight?" against the FRESH observation, so re-evaluation —
 // including the first tick after a restart — never double-acts or double-buys.
 func (h *RunBootstrapCoordinatorHandler) actIncome(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, obs Observation, res *reconcileResult) {
+	// (1) The frigate EARNS IN TRADE from tick 1, ahead of the graduation stop — trade is not contract income.
+	h.ensureFrigateTrading(ctx, cmd, obs, res)
+	h.ensureTradeCoordinator(ctx, cmd)
+
 	// CONTRACT GRADUATION: a graduated player has DURABLY retired contracts as the funding
-	// floor (the operator's manual, era-scoped decision). This whole workstream is contract-income
+	// floor (the operator's manual, era-scoped decision). The rest of this workstream is contract-income
 	// — the contract coordinator, the staged hauler buys — so when graduated it does
 	// NOTHING: bootstrap never (re)starts or maintains a contract earner, even after a boot-standing
 	// relaunch. Fail-OPEN (obs.ContractGraduated defaults false on a fresh era / read miss) ⇒ byte-identical
@@ -48,10 +52,6 @@ func (h *RunBootstrapCoordinatorHandler) actIncome(ctx context.Context, cmd *Run
 		})
 		return
 	}
-
-	// (1) The frigate EARNS IN TRADE from tick 1, independent of the probe ramp.
-	h.ensureFrigateTrading(ctx, cmd, obs, res)
-	h.ensureTradeCoordinator(ctx, cmd)
 
 	// (2) The tick CONTINUES past the hand-back: freeing a tag conflicts with nothing below it (the
 	// acquisition steps that read the purchasing dedication all require ZERO haulers, which this

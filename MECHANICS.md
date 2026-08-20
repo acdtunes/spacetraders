@@ -90,7 +90,7 @@ fresh deploy does. Source of truth for boot arming:
 | Arming | Coordinators | Trigger |
 |---|---|---|
 | **Boot-standing** (auto, every daemon boot, idempotent) — exactly FOUR | Construction, Probe-sensing, Bootstrap, Opportunity-relocator | `ensureBootStandingCoordinators` at daemon `Start()` |
-| **Bootstrap-launched** (started by the bootstrap coordinator from a derived phase, not by an operator) | Contract-scaler (every COLDSTART tick), Contract-fleet (COLDSTART), Trade-fleet (every EXPANSION tick), Fleet-growth (EXPANSION hand-off) | `ensureContractScalerEarly` / `ensureBatchContract` (`run_bootstrap_reconcile.go`, `run_bootstrap_income.go`); `ensureTradeFleetCoordinator` / `launchHandoff → LaunchStandingCoordinators` (`run_bootstrap_gate.go`) |
+| **Bootstrap-launched** (started by the bootstrap coordinator from a derived phase, not by an operator) | Contract-scaler + Contract-fleet (COLDSTART, once treasury clears `contract_start_treasury_threshold`), Trade-fleet (every COLDSTART tick, and every EXPANSION tick), Fleet-growth (EXPANSION hand-off) | `ensureContractScalerEarly` / `ensureBatchContract` (`run_bootstrap_reconcile.go`, `run_bootstrap_income.go`); `ensureTradeFleetCoordinator` / `launchHandoff → LaunchStandingCoordinators` (`run_bootstrap_gate.go`) |
 | **Captain-launched** (a CLI verb; re-adopts across restart via persisted config) | Contract-fleet, Trade-fleet, Fleet-growth, Long-haul-arb, Auto-outfit, Gas, Stocker, Warehouse | `contract start`, `workflow trade-fleet-coordinator`, `workflow fleet-growth`, `workflow long-haul-coordinator`, `workflow auto-outfit`, `operations start`, `workflow stocker --standing`, `workflow warehouse` |
 
 Note the middle row: four coordinators are reachable from BOTH a bootstrap phase and an operator
@@ -178,11 +178,12 @@ COLDSTART ───────────────────────�
 Bootstrap: two workstreams together   Bootstrap: build         Bootstrap: hand off + exit
   scanning: buy to 3 probes,            construction start       launch fleet-growth
     start the home market tour          adopt the executor       ensure trade-fleet
-  income: contract-fleet coordinator,   buy up to 4 gate         re-tag idle gate hulls
-    frigate loop, staged hauler buys      workers (the             to `trade`, then Done
-    (RULINGS #1: contracts from hour 0)   contract fleet is
-  + ensure the contract scaler            EXCLUSIVE, never
-                                          repurposed)
+  income: frigate → `trade` + ensure    buy up to 4 gate         re-tag idle gate hulls
+    the trade coordinator (tick 1)        workers (the             to `trade`, then Done
+    then, once treasury clears the        contract fleet is
+    contract-start threshold:             EXCLUSIVE, never
+    contract-fleet coordinator +          repurposed)
+    contract scaler + staged buys
 
 Boot-standing (launched at EVERY daemon boot, all phases):
   Construction coordinator ─┐  the gate-supply drain (idle until a pipeline exists)
@@ -246,19 +247,25 @@ to nothing.
 - **Logic.** The cold-start SHAPE is fixed in code, not configured — "these are the shape
   itself, not per-run knobs" (`run_bootstrap_coordinator.go`): `probeTarget 3`,
   `haulerTarget 4`, `gateWorkerTarget 4`, ship types `SHIP_PROBE` / `SHIP_LIGHT_HAULER`. The
-  ONLY launch-config values are `bootstrap_disabled` and the tick (default 45s).
+  ONLY launch-config values are `bootstrap_disabled`, the tick (default 45s) and
+  `contract_start_treasury_threshold` (default 500000).
   - **COLDSTART** runs two workstreams TOGETHER, not in sequence (contracts from hour 0,
     RULINGS #1). *Scanning* (`actData`): buy to `probeTarget` in ONE tick — a loop over a single
     price check, each iteration gating `remaining − price ≥ ImmutableReserveFloor` against a
     treasury decremented per buy; a cold/unreadable yard sends a hull there and buys nothing.
     Then start/re-cut the home market tour — the same `ScoutMarkets` path behind
     `workflow scout-markets`, producing `SCOUT` containers, not the retired probe-holding sweep.
-    *Income* (`actIncome`): hard-skipped entirely when the player is contract-GRADUATED; else
-    retire the command frigate from the `contract` tag, ensure the contract-fleet coordinator,
-    run the frigate's continuous contract loop (gated on `probes ≥ 3 && haulers == 0`), and
-    stage hull buys — **#1 contract, #2 TRADE, #3+ contract up to `haulerTarget`**, each gated
-    `treasury − price ≥ contractWorkingCapitalFloor (150000)`. Every COLDSTART tick also ensures
-    the contract scaler.
+    *Income* (`actIncome`): dedicate the command frigate `trade` at an idle tick and ensure the
+    trade-fleet coordinator — every tick, including a contract-GRADUATED one, since trade is not
+    contract income. The rest is the CONTRACT workstream, skipped entirely when graduated and
+    otherwise held behind the flat `contract_start_treasury_threshold` (default 500000): ensure
+    the contract-fleet coordinator, hand a finished/stranded purchasing frigate back to trade,
+    and stage hull buys — **#1 contract, #2 TRADE, #3+ contract up to `haulerTarget`**, each
+    gated `treasury − price ≥ contractWorkingCapitalFloor (150000)`, hull #1 bought by pivoting
+    the idle-in-trade frigate to the exclusive `purchasing` tag and released back to `trade` once
+    the trade seed lands. The contract scaler is ensured on the SAME treasury gate. The gate defers
+    only the START: once the operation is under way (coordinator running, a hauler owned, or the
+    frigate mid-purchase) it latches open, so a treasury dip never stands it down (RULINGS #1).
   - **GATE** (`actGate`): no gate site ⇒ blocker `no_gate_site`; not started ⇒ `construction
     start` and return for that tick; then adopt the construction executor (`EnsureRunning`, or
     `BounceForAdoption` if it is running unadopted); then size gate workers to
@@ -272,13 +279,14 @@ to nothing.
 - **Armed.** Boot-standing (`daemon_boot_standing.go`), live by default — an absent config boots
   LIVE, pinned by test. There is no `dry_run` config key: the `DryRun` struct field is never set
   by `resolveBootstrapConfig` and is reachable only from in-package tests.
-- **Hands off.** Launches the contract scaler + contract-fleet coordinator in COLDSTART, starts
-  the construction pipeline in GATE, launches fleet-growth + trade-fleet in EXPANSION. Spawns
+- **Hands off.** Launches the trade-fleet coordinator in COLDSTART (from tick 1) and the contract
+  scaler + contract-fleet coordinator once COLDSTART's treasury gate passes, starts the
+  construction pipeline in GATE, launches fleet-growth + trade-fleet in EXPANSION. Spawns
   `CONTRACT_WORKFLOW`-bearing work indirectly through those coordinators, and `SCOUT` containers
   through the home market tour.
 - **Knobs.** `config.yaml [bootstrap]`: `bootstrap_disabled`, `tick_seconds` (injected as the
-  container key `bootstrap_tick_secs`). Live: `tune --operation bootstrap tick_secs` — the only
-  tunable key it has.
+  container key `bootstrap_tick_secs`), `contract_start_treasury_threshold`. Live:
+  `tune --operation bootstrap tick_secs|contract_start_treasury_threshold`.
 - **Source.** `internal/application/bootstrap/commands/run_bootstrap_{coordinator,reconcile,income,gate}.go`,
   `bootstrap_types.go`; ports `internal/adapters/grpc/bootstrap_ports.go`,
   `bootstrap_ports_gate.go`, `bootstrap_home_tour.go`, `container_ops_bootstrap.go`.
@@ -488,10 +496,11 @@ to nothing.
   (200000)` ⇒ stop**. There is no reserve floor beyond the cushion, no treasury-fraction ceiling,
   no price ceiling. The cushion is a compile-time const with no config/tune seam. The ceiling by
   contrast fails OPEN to the default 3 — it is a throttle, not a money guard.
-- **Armed.** No CLI verb at all. `ensureContractScalerEarly` runs on **every COLDSTART tick** and
-  is unconditional within that phase — the gate is the derived phase itself, plus a wired
-  launcher; idempotency lives in the launcher's `containerTypeRunning` check. Deliberately not
-  run in GATE/EXPANSION. It is "default-off" in the sense that a bare deploy starts nothing —
+- **Armed.** No CLI verb at all. `ensureContractScalerEarly` runs on **every COLDSTART tick whose
+  contract-start treasury gate passes** (`contract_start_treasury_threshold`, default 500000, or
+  the operation already under way) — the gate is the derived phase plus that threshold, plus a
+  wired launcher; idempotency lives in the launcher's `containerTypeRunning` check. Deliberately
+  not run in GATE/EXPANSION. It is "default-off" in the sense that a bare deploy starts nothing —
   not in the sense that it starts disabled.
 - **Hands off.** Spawns depot elements indirectly through the grower: `GrowWarehouse` →
   `WAREHOUSE`, `GrowStocker` → a standing continuous `STOCKER`. Both are gated on
@@ -534,8 +543,8 @@ to nothing.
   `internal/application/contract/sourcing_optimizer.go`.
   - **`batch-contract`** (`workflow batch-contract --ship X [--loop]`) is NOT a coordinator: it
     is the single-hull `CONTRACT_WORKFLOW` worker with an iterations selector (`1` = one
-    contract; `-1` = continuous single-hull loop). Used by the captain and by the bootstrap
-    frigate sole-earner loop.
+    contract; `-1` = continuous single-hull loop). Used by the captain. Bootstrap never STARTS it
+    (the frigate trades instead) — it only stops a legacy loop an earlier deploy left running.
   - **Contract-hub coordinator** (`run_contract_hub_coordinator{,_score,_gate}.go`) is the
     contract analogue of a placement brain — it scores WHERE contract haulers are homed (EWMA
     demand × greedy max-coverage facility-location, `MaxHaulersPerHub = 3`). It is **built and

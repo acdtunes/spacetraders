@@ -69,6 +69,39 @@ func TestBootstrap_Income_ContractGraduated_NoContractActions(t *testing.T) {
 	}
 }
 
+// GRADUATED, the TRADE side: graduation retires CONTRACTS, not the command hull. The frigate is still
+// put in the trade fleet and the trade coordinator still ensured, so a graduated fleet's command hull
+// earns from tick 1 instead of sitting idle — the same standing home every other cold-start tick gives it.
+func TestBootstrap_Income_ContractGraduated_FrigateStillTradesAndIsToured(t *testing.T) {
+	obs := graduationIncomeObs()
+	obs.ContractGraduated = true
+	obs.CommandFrigateOnTrade = false // fresh era / a stale tag: the trade dedication has not landed yet
+	ret := &fakeRetirer{}
+	acq := &fakeHaulerAcquirer{price: 300000, yard: "Y", readable: true}
+	run := &fakeContractRunner{}
+	ho := &fakeHandoff{}
+	h := graduationIncomeHandler(obs, ret, acq, run, &fakeFrigateLoop{})
+	h.SetHandoffLauncher(ho)
+
+	res, err := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
+	if err != nil {
+		t.Fatalf("reconcileOnce: %v", err)
+	}
+	if len(ret.tradeDedications) != 1 || ret.tradeDedications[0] != "FRIGATE-1" || !res.FrigateTrading {
+		t.Fatalf("graduated: the frigate must still be dedicated TRADE; trade=%v FrigateTrading=%v", ret.tradeDedications, res.FrigateTrading)
+	}
+	if ho.tradeCoord < 1 {
+		t.Fatalf("graduated: the trade-fleet coordinator must still be ensured so the frigate actually tours, got %d", ho.tradeCoord)
+	}
+	// The CONTRACT workstream is still fully off, and the heartbeat still says why.
+	if run.calls != 0 || acq.buys != 0 || len(ret.dedications) != 0 {
+		t.Fatalf("graduated: no contract action may fire — batch=%d buys=%d pivot=%v", run.calls, acq.buys, ret.dedications)
+	}
+	if res.Blocker != "contract_graduated" {
+		t.Fatalf("graduated: expected blocker=contract_graduated, got %q", res.Blocker)
+	}
+}
+
 // NOT GRADUATED (baseline / byte-identical): the same observation runs the full contract workstream —
 // proving the graduation flag is exactly what suppresses it. All four contract actions fire.
 func TestBootstrap_Income_NotGraduated_RunsContractsAsToday(t *testing.T) {

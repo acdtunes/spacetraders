@@ -101,9 +101,9 @@ type reconcileResult struct {
 	ConstructionHullsToTrade int  // gate construction hulls re-dedicated to the TRADE fleet this tick: the gate is built, so its workers stop earning until they are put back to work
 	Done                     bool // terminal: COMPLETE reached and handed off — the reconcile loop may exit
 
-	// The dedicated contract auto-scaler was ensured this tick (unconditional in the cold-start window).
-	// Test-only observability — deliberately NOT in the heartbeat delta; the ensure surfaces its own
-	// INFO line.
+	// The dedicated contract auto-scaler was ensured this tick (cold-start window, contract-start gate
+	// passed). Test-only observability — deliberately NOT in the heartbeat delta; the ensure surfaces its
+	// own INFO line.
 	ContractScalerLaunchedEarly bool
 }
 
@@ -284,12 +284,12 @@ func (h *RunBootstrapCoordinatorHandler) reconcileOnce(ctx context.Context, cmd 
 		h.actExpansion(ctx, cmd, cfg, obs, &res)
 	}
 
-	// During the cold-start SCALING window, ensure the standing dedicated contract auto-scaler so it ramps
-	// the exclusive contract fleet behind the 200000 cushion. THIS IS WHAT KEEPS CONTRACT HULL BUYING ALIVE
-	// DURING BOOTSTRAP: the scaler owns contract-fleet capacity everywhere else and it owns it here too,
-	// so cold start scales the contract op through one buyer rather than two. Deliberately NOT run in
-	// GATE/EXPANSION: GATE repurposes haulers to construction, and EXPANSION performs the hand-off.
-	if phase == PhaseColdStart {
+	// During the cold-start SCALING window, ensure the standing dedicated contract auto-scaler — THE THING
+	// THAT KEEPS CONTRACT HULL BUYING ALIVE DURING BOOTSTRAP: it owns contract-fleet capacity everywhere
+	// else and owns it here too. NOT in GATE/EXPANSION (GATE repurposes haulers, EXPANSION hands off), and
+	// NOT below the contract-start gate: it is the contract fleet's OTHER buyer and its own 200000 cushion
+	// clears far under that bar, so an ungated ensure spends exactly the capex the threshold defers.
+	if phase == PhaseColdStart && contractOpsWarranted(obs, cfg.ContractStartTreasury) {
 		h.ensureContractScalerEarly(ctx, cmd, &res)
 	}
 
@@ -501,7 +501,7 @@ func homeTourIsUndersized(obs Observation) bool {
 
 // ensureContractScalerEarly ensures the standing dedicated contract auto-scaler is running DURING the
 // cold-start scaling window so it ramps the exclusive contract fleet behind the 200000 cushion. The
-// caller has already checked we are in the cold-start window.
+// caller has already checked the cold-start window AND the contract-start gate.
 //   - IDEMPOTENCY lives in the LAUNCHER, which skips a coordinator already RUNNING/PENDING, so calling
 //     it every cold-start tick never double-launches a second ramp loop;
 //   - is nil-safe (no launcher wired ⇒ logged skip);

@@ -181,8 +181,9 @@ as the map being right and the doc you read being old.
 - **workflow auto-outfit** — installs the highest-marginal-value module on the most saturated
   hull, guarded. Deploy-inert: it runs only when explicitly started.
 - The **contract-scaler** — the contract fleet's capacity owner — has NO CLI verb. It is launched
-  by the bootstrap coordinator during cold start and tuned via `tune --operation contractscaler`
-  (`contract_fleet_max_hulls`).
+  by the bootstrap coordinator during cold start, once treasury clears
+  `contract_start_treasury_threshold` (Bootstrap, below), and tuned via
+  `tune --operation contractscaler` (`contract_fleet_max_hulls`).
 
 ### Extraction
 - **operations** — gas extraction: `start --system --gas --siphons S1,S2 --storage ST1`,
@@ -202,9 +203,9 @@ sourcing is the construction pipeline's, above.
   `tune --operation bootstrap tick_secs|contract_start_treasury_threshold`. The threshold is the FLAT
   treasury at which the CONTRACT OPERATION starts (default 500000): below it the command frigate trades
   under the trade-fleet coordinator and nothing contract-side is launched or bought; at/above it the
-  contract-fleet coordinator comes up and the hauler ramp begins. It is NOT netted against the reserve
-  floor — a different reading from the GATE-entry surplus bar — and it is sequencing only: every buy
-  still passes the untouched working-capital floor.
+  contract-fleet coordinator AND the contract-scaler come up and the hauler ramp begins. It is NOT
+  netted against the reserve floor — a different reading from the GATE-entry surplus bar — and it is
+  sequencing only: every buy still passes the untouched working-capital floor.
 
 ### Tuning
 - **tune** — read or write a RUNNING container's live knobs, no restart. See §3.2.

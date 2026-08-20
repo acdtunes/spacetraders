@@ -141,6 +141,77 @@ func TestBootstrap_FrigateContractLoop_NeverStarted(t *testing.T) {
 	}
 }
 
+// --- (1b) THE CONTRACT SCALER WAITS ON THE SAME GATE ---
+//
+// The scaler is the contract fleet's OTHER buyer: once running it autonomously buys contract-fleet hulls
+// behind its own 200000 cushion, which a treasury far under this threshold already clears. Launching it
+// below the bar would spend exactly the capex the threshold defers — and its hulls carry the contract
+// fleet tag, which would then latch the whole contract workstream open. So the ensure reads the SAME gate
+// the rest of the operation does: sequencing only, no money guard is touched either way (RULINGS #4/#6).
+
+func TestBootstrap_BelowThreshold_ContractScalerIsNotLaunched(t *testing.T) {
+	obs := tradeIdleObs()
+	obs.Treasury = defaultContractStartTreasuryThreshold - 1
+	ho := &fakeHandoff{}
+	h := tradeIdleHandler(obs, &fakeRetirer{}, &fakeHaulerAcquirer{price: 300_000, yard: "Y", readable: true}, &fakeContractRunner{}, ho, &fakeFrigateLoop{})
+
+	res, err := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
+	if err != nil {
+		t.Fatalf("reconcileOnce: %v", err)
+	}
+	if res.Phase != PhaseColdStart {
+		t.Fatalf("expected COLDSTART, got %s", res.Phase)
+	}
+	if ho.contractScaler != 0 || res.ContractScalerLaunchedEarly {
+		t.Fatalf("below the threshold the contract scaler must NOT be launched — it buys contract hulls behind its own 200000 cushion, well under this bar (launches=%d early=%v)", ho.contractScaler, res.ContractScalerLaunchedEarly)
+	}
+	if ho.tradeCoord < 1 {
+		t.Fatalf("the TRADE side is unaffected by the contract gate: the trade coordinator must still be ensured, got %d", ho.tradeCoord)
+	}
+}
+
+func TestBootstrap_AtThreshold_ContractScalerIsEnsured(t *testing.T) {
+	obs := tradeIdleObs()
+	obs.Treasury = defaultContractStartTreasuryThreshold // exactly at the bar
+	ho := &fakeHandoff{}
+	h := tradeIdleHandler(obs, &fakeRetirer{}, &fakeHaulerAcquirer{price: 300_000, yard: "Y", readable: true}, &fakeContractRunner{}, ho, &fakeFrigateLoop{})
+
+	res, err := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
+	if err != nil {
+		t.Fatalf("reconcileOnce: %v", err)
+	}
+	if ho.contractScaler != 1 || !res.ContractScalerLaunchedEarly {
+		t.Fatalf("at the threshold the contract scaler must be ensured — it owns contract-fleet capacity (launches=%d early=%v)", ho.contractScaler, res.ContractScalerLaunchedEarly)
+	}
+}
+
+// The same latch the rest of the workstream uses: an operation already under way keeps its scaler
+// ensured through the treasury dip its own hull buys cause (RULINGS #1 — never stand running work down).
+func TestBootstrap_BelowThreshold_ContractOpsUnderway_ScalerStillEnsured(t *testing.T) {
+	cases := map[string]func(*Observation){
+		"the coordinator is running": func(o *Observation) { o.BatchContractRunning = true },
+		"a hauler is already owned": func(o *Observation) {
+			o.Haulers = []HaulerSnapshot{{Symbol: "H1", Waypoint: "X1-HUBA"}}
+			o.TradeHullCount = 1
+		},
+		"the frigate is mid-purchase": func(o *Observation) { o.CommandFrigatePurchasing = true },
+	}
+	for name, mutate := range cases {
+		t.Run(name, func(t *testing.T) {
+			obs := tradeIdleObs()
+			obs.Treasury = 460_000 // below the start threshold
+			mutate(&obs)
+			ho := &fakeHandoff{}
+			h := tradeIdleHandler(obs, &fakeRetirer{}, &fakeHaulerAcquirer{price: 300_000, yard: "Y", readable: true}, &fakeContractRunner{}, ho, &fakeFrigateLoop{})
+
+			res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
+			if ho.contractScaler != 1 || !res.ContractScalerLaunchedEarly {
+				t.Fatalf("an operation already under way must keep its capacity owner ensured (launches=%d early=%v)", ho.contractScaler, res.ContractScalerLaunchedEarly)
+			}
+		})
+	}
+}
+
 // --- (2) AT/ABOVE the threshold: contract ops start, and the pivot fires off IDLE-IN-TRADE ---
 
 func TestBootstrap_AtThreshold_StartsContractOpsAndPivotsOffIdleInTrade(t *testing.T) {
@@ -425,6 +496,31 @@ func TestBootstrap_LegacyFrigateLoop_StoppedAtTheCargoEmptySafePoint(t *testing.
 	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
 	if loop.stopCalls != 1 || len(loop.stopped) != 1 || loop.stopped[0] != "FRIGATE-1" || !res.FrigateLoopStopped {
 		t.Fatalf("a legacy frigate contract loop must be stopped once, by symbol; stopCalls=%d stopped=%v stopped_flag=%v", loop.stopCalls, loop.stopped, res.FrigateLoopStopped)
+	}
+}
+
+// The migration is part of the CONTRACT workstream, so below the threshold the legacy loop is LEFT
+// RUNNING: no contract-fleet coordinator is up to re-adopt the contracts it is working, so stopping it
+// there would strand them (RULINGS #1). It keeps earning until the operation starts and retires it.
+func TestBootstrap_BelowThreshold_LegacyFrigateLoop_LeftRunning(t *testing.T) {
+	obs := tradeIdleObs()
+	obs.Treasury = defaultContractStartTreasuryThreshold - 1
+	obs.BatchContractRunning = false
+	obs.CommandFrigateOnTrade = false
+	obs.CommandFrigateIdle = false // the loop container holds the claim
+	obs.FrigateContractLoopRunning = true
+	loop, ret := &fakeFrigateLoop{}, &fakeRetirer{}
+	h := tradeIdleHandler(obs, ret, &fakeHaulerAcquirer{price: 300_000, yard: "Y", readable: true}, &fakeContractRunner{}, &fakeHandoff{}, loop)
+
+	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
+	if loop.stopCalls != 0 {
+		t.Fatalf("below the threshold the legacy loop must be left earning — nothing would take over its contracts, got %d stops", loop.stopCalls)
+	}
+	if len(ret.tradeDedications) != 0 {
+		t.Fatalf("a frigate the loop still claims is not free, so it must not be re-tagged either, got %v", ret.tradeDedications)
+	}
+	if res.Blocker != "contract_start_deferred" {
+		t.Fatalf("the deferral must still be what the heartbeat shows, got %q", res.Blocker)
 	}
 }
 

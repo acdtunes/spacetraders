@@ -345,7 +345,7 @@ type GateWorkerAcquirer interface {
 type HandoffLauncher interface {
 	LaunchStandingCoordinators(ctx context.Context, playerID int, agentSymbol string) error
 	// LaunchContractScaler launches the standing dedicated contract auto-scaler during the cold-start
-	// scaling window (unconditional in the cold-start window). Idempotent (skips when one is
+	// scaling window, once the contract-start gate passes. Idempotent (skips when one is
 	// already RUNNING/PENDING), so a re-run never double-launches.
 	LaunchContractScaler(ctx context.Context, playerID int, agentSymbol string) error
 	// LaunchTradeFleetCoordinator launches the standing trade-fleet coordinator at the cold-start trade-seed
