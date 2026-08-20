@@ -11,6 +11,8 @@
 // persisted enum), and ACTS on the delta with each action guarded "already done / in-flight?".
 package commands
 
+import "time"
+
 // Phase is the bootstrap arc phase. It is ALWAYS derived from the current observation (fleet,
 // construction, treasury) and NEVER read back from storage — a persisted enum can desync from the
 // live world, which is the whole failure mode a reconciler exists to avoid (spec §Architecture).
@@ -100,6 +102,13 @@ type Observation struct {
 	// With CommandFrigateOnTrade it is the "idle in trade" signal the first-hauler pivot fires off
 	// (PLAYBOOK §9). Defaults false on an unresolved frigate ⇒ fail-safe (no re-dedication, no pivot).
 	CommandFrigateIdle bool
+	// CommandFrigateLastRunStart / CommandFrigateLastRunEnd are the claim and release times of the
+	// frigate's LAST container run, read straight off the persisted ship assignment (zero ⇒ no run on
+	// record). They are the whole cross-tick channel for the starved-trade contract fallback (RULINGS
+	// #2, nothing held in memory): a run too short to have traded that is STILL parked is a tour the
+	// trade-fleet coordinator has escalated on, not one it is about to relaunch.
+	CommandFrigateLastRunStart time.Time
+	CommandFrigateLastRunEnd   time.Time
 	// Haulers is the contract-dedicated hauler pool NOW — each with the waypoint it is placed on (or
 	// heading to). Its length is the staged-buy count guard (buy while below haulerTarget); the waypoints
 	// are the "slot already served" placement guard.

@@ -18,8 +18,11 @@ import "testing"
 // mucUnaffordableObs is the live deadlock (TORWIND_DEV12): a cold-start cold-start pivot observation with the
 // hauler price UNREADABLE (cold yard) and the treasury set so treasury − price is far below the 150k floor.
 func mucUnaffordableObs() Observation {
-	obs := pivotObs()      // 0 haulers, frigate idle in trade, cargo empty, no idle purchaser, viable hubs
-	obs.Treasury = 127_060 // 127_060 − 363_473 = −236_413 ≪ 150k floor ⇒ UNAFFORDABLE
+	obs := pivotObs() // 0 haulers, frigate idle in trade, cargo empty, no idle purchaser, viable hubs
+	// 527_060 − 763_473 = −236_413 ≪ 150k floor ⇒ UNAFFORDABLE. Both numbers sit 400k above the live
+	// figures this bead was written from, purely so the treasury also clears the contract-START threshold:
+	// the capital gate is what these tests are about, and the sequencing gate must not answer first.
+	obs.Treasury = 527_060
 	return obs
 }
 
@@ -28,8 +31,8 @@ func mucUnaffordableObs() Observation {
 // invariant the deadlock violated (frigate taken while permanently unaffordable → no earner left).
 func TestBootstrap_Muc5x_ColdPrice_UnaffordableCached_KeepsFrigateEarning(t *testing.T) {
 	ret := &fakeRetirer{}
-	// Presence-gated: unreadable at the yard, but it last asked 363_473 (a hull read it earlier).
-	acq := &fakeHaulerAcquirer{price: 363_473, yard: "Y", readable: false, lastAsk: 363_473}
+	// Presence-gated: unreadable at the yard, but it last asked 763_473 (a hull read it earlier).
+	acq := &fakeHaulerAcquirer{price: 763_473, yard: "Y", readable: false, lastAsk: 763_473}
 	loop := &fakeFrigateLoop{}
 	scanner := &fakeScanner{dispatched: true}
 	h := pivotHandlerScanned(mucUnaffordableObs(), ret, acq, loop, scanner)
@@ -138,7 +141,7 @@ func TestBootstrap_Muc5x_SeedFeedsPivotGuard_EndToEnd(t *testing.T) {
 		HasIdlePurchaser: true, Treasury: 2_000_000, BatchContractRunning: true, Readable: true,
 	}
 	probeAcq := &fakeAcquirer{price: 40_000, yard: "X1-HQ-YARD", readable: true}
-	haulAcq := &fakeHaulerAcquirer{price: 363_473, yard: "X1-HQ-YARD", readable: true}
+	haulAcq := &fakeHaulerAcquirer{price: 763_473, yard: "X1-HQ-YARD", readable: true}
 	ret := &fakeRetirer{}
 	loop := &fakeFrigateLoop{}
 	scanner := &fakeScanner{dispatched: true}

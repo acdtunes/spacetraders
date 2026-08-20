@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 )
@@ -13,6 +14,27 @@ import (
 // coordinator, contract coordinator, and contract scaler stay phase-BLIND (all the phase logic lives here).
 const tradeFleetTag = "trade"
 
+// The STARVED-TRADE CONTRACT FALLBACK's three bounds (sp-bvf20). A cold-start economy exhausts its few
+// profitable lanes fast and pre-gate the hull cannot reposition out, so a starved frigate would otherwise
+// idle-retry a dead system for hours. Internal classification thresholds, not operational knobs: each is
+// pinned to the trade-fleet coordinator's own relaunch ladder, and that interlock is the point.
+const (
+	// frigateStarvedTourMax is the fast-fail line: a tour shorter than this never really traded. It
+	// mirrors minProductiveTourDuration — the same classification driving the coordinator's cooldown
+	// escalation, which is exactly the exit this fallback answers.
+	frigateStarvedTourMax = 90 * time.Second
+
+	// frigateStarvedDwell is how long the frigate stays parked before contracts may have it. ABOVE the
+	// coordinator's 180s base cooldown on purpose: a hull merely between normal tours is relaunched long
+	// before this, so only one the coordinator has ESCALATED is ever offered.
+	frigateStarvedDwell = 300 * time.Second
+
+	// frigateContractFallbackWindow is how long the released frigate stays untagged and visible to the
+	// contract pool. It LAPSES so a fallback nobody took hands the hull back rather than stranding it,
+	// closing at the coordinator's 600s backoff ceiling — trade has it back before its next relaunch.
+	frigateContractFallbackWindow = 300 * time.Second
+)
+
 // actIncome runs the EARNING workstream: the frigate trades from tick 1, and the contract operation
 // starts once the treasury clears the contract-start threshold. Independently-guarded, idempotent
 // actions on the observed delta, ordered so the fleet earns from tick 1 and never deadlocks:
@@ -20,12 +42,16 @@ const tradeFleetTag = "trade"
 //  1. Keep the command frigate EARNING IN TRADE (its standing home) once probes reach target, and the
 //     trade coordinator up regardless.
 //  2. Hand the purchasing frigate back to trade once its cold-start buys have landed.
-//  3. THE CONTRACT-START GATE: below the threshold nothing contract-side is launched or bought. The
-//     gate defers WHEN the operation starts and never withdraws work already running (RULINGS #1).
-//  4. Stop a LEGACY frigate contract loop left by an earlier deploy, at a cargo-empty safe point.
-//  5. Run the contract fleet coordinator — what "start the contract operation" means.
-//  6. Hand a STRANDED purchasing frigate back to trade, so it earns and re-pivots later.
-//  7. Staged, capital-gated hull acquisition, ROUTED BY ORDER: #1 → the contract fleet, #2 → the TRADE
+//  3. Run the contract fleet coordinator — from tick 1, because the ENGINE costs nothing and is inert
+//     until something offers it a hull (below the threshold there are no haulers, and the frigate is
+//     trade-tagged, so its pool is empty by construction).
+//  4. Hand the frigate to that engine when trade is locally STARVED — the whole point of running it
+//     early. Zero-capital, so it belongs above the gate.
+//  5. THE CONTRACT-START GATE, now CAPITAL only: below the threshold nothing contract-side is BOUGHT.
+//     The gate defers WHEN the operation spends and never withdraws work already running (RULINGS #1).
+//  6. Stop a LEGACY frigate contract loop left by an earlier deploy, at a cargo-empty safe point.
+//  7. Hand a STRANDED purchasing frigate back to trade, so it earns and re-pivots later.
+//  8. Staged, capital-gated hull acquisition, ROUTED BY ORDER: #1 → the contract fleet, #2 → the TRADE
 //     fleet (held until the first contract hull exists), #3… → contract again. The ramp climbs to the
 //     fixed Phase-1 hauler target, one hull per tick, each on a distinct delivery slot; the COUNT guard
 //     (haulers < haulerTarget) is the double-buy protection. The trade hull does not count toward the
@@ -60,11 +86,23 @@ func (h *RunBootstrapCoordinatorHandler) actIncome(ctx context.Context, cmd *Run
 	// step's own guard excludes), and a hand-back that could not land must never hold the ramp.
 	h.releaseFinishedPurchaser(ctx, cmd, obs, res)
 
-	// (3) THE CONTRACT-START GATE — NEW work only: once the operation is under way, a treasury dip
+	// (3) The contract ENGINE, from tick 1 and ABOVE the capital gate. Launching it buys nothing; it
+	// only makes the operation available to pick up idle capacity, and with no haulers owned and the
+	// frigate trade-tagged its candidate pool is empty, so an early launch is a genuine no-op until
+	// step (4) offers it the starved frigate. Idempotent via the running observation.
+	if !obs.BatchContractRunning {
+		h.ensureBatchContract(ctx, cmd, res)
+	}
+
+	// (4) STARVED TRADE → CONTRACT WORK. Also zero-capital (it writes one dedication), so it sits
+	// above the gate: a cold-start fleet is exactly the one that needs it.
+	h.releaseStarvedFrigateToContract(ctx, cmd, cfg, obs, res)
+
+	// (5) THE CONTRACT-START GATE — NEW SPEND only: once the operation is under way, a treasury dip
 	// (including the one its own hull buys cause) never stands it back down.
 	if !contractOpsWarranted(obs, cfg.ContractStartTreasury) {
 		res.Blocker = "contract_start_deferred"
-		common.LoggerFromContext(ctx).Log("INFO", fmt.Sprintf("Bootstrap contract operation DEFERRED: treasury=%d below the contract-start threshold=%d (flat, not netted) — the command frigate trades and nothing contract-side is launched or bought this tick", obs.Treasury, cfg.ContractStartTreasury), map[string]interface{}{
+		common.LoggerFromContext(ctx).Log("INFO", fmt.Sprintf("Bootstrap contract CAPITAL deferred: treasury=%d below the contract-start threshold=%d (flat, not netted) — the contract engine runs (it spends nothing) and the frigate falls back to it when trade starves, but no hull is bought or scaled this tick", obs.Treasury, cfg.ContractStartTreasury), map[string]interface{}{
 			"action":       "bootstrap_contract_start_deferred",
 			"container_id": cmd.ContainerID,
 			"treasury":     obs.Treasury,
@@ -73,24 +111,18 @@ func (h *RunBootstrapCoordinatorHandler) actIncome(ctx context.Context, cmd *Run
 		return
 	}
 
-	// (4) A frigate contract loop from an earlier deploy still holds the hull; stop it once so it
+	// (6) A frigate contract loop from an earlier deploy still holds the hull; stop it once so it
 	// returns to trade (never mid-delivery — that would abandon accepted contract cargo).
 	if obs.FrigateContractLoopRunning && obs.CommandFrigateID != "" && obs.FrigateCargoEmpty {
 		h.stopLegacyFrigateLoop(ctx, cmd, obs, res)
 	}
 
-	// (5) Drive the contract fleet coordinator so the contract operation earns — only if not already
-	// running (idempotent). This is what "start the contract operation" means.
-	if !obs.BatchContractRunning {
-		h.ensureBatchContract(ctx, cmd, res)
-	}
-
-	// (6) Hand a STRANDED purchasing frigate back to trade, so it earns again and re-pivots later.
+	// (7) Hand a STRANDED purchasing frigate back to trade, so it earns again and re-pivots later.
 	if h.releaseStrandedPurchaser(ctx, cmd, obs, res) {
 		return
 	}
 
-	// (7) Staged hull acquisition. The target is the FIXED Phase-1 hauler count — a constant of the plan,
+	// (8) Staged hull acquisition. The target is the FIXED Phase-1 hauler count — a constant of the plan,
 	// never a per-tick reading of markets or of whatever contract is live, so the ramp climbs to one size
 	// and stays there instead of resizing under it. The count guard is the double-buy protection; the
 	// era's fixed delivery slots decide only WHERE each hull lands.
@@ -98,7 +130,7 @@ func (h *RunBootstrapCoordinatorHandler) actIncome(ctx context.Context, cmd *Run
 	desired := haulerTarget
 	contractHaulers := len(obs.Haulers)
 
-	// (7a) HULL-ROUTING: route cold-start light-hull acquisitions by order — #1 →
+	// (8a) HULL-ROUTING: route cold-start light-hull acquisitions by order — #1 →
 	// contract, #2 → TRADE, #3… → contract. Once the FIRST contract hull exists and no trade hull does yet,
 	// seed ONE trade-dedicated hull + ensure the trade coordinator, then RETURN so THIS tick's acquisition
 	// is the trade seed, not a 2nd contract hauler. The trade hull EXISTING (obs.TradeHullCount) is the
@@ -110,7 +142,7 @@ func (h *RunBootstrapCoordinatorHandler) actIncome(ctx context.Context, cmd *Run
 		return
 	}
 
-	// (7b) Staged contract-hauler acquisition — HELD at 1 contract hull until the trade hull is seeded
+	// (8b) Staged contract-hauler acquisition — HELD at 1 contract hull until the trade hull is seeded
 	// (the (contractHaulers == 0 || TradeHullCount >= 1) guard), so acquisition #2 is the trade seed above:
 	// contractHaulers==0 still buys contract #1 unchanged; once a trade hull exists contract buying resumes
 	// for #3…, capped at the fixed hauler target.
@@ -119,13 +151,102 @@ func (h *RunBootstrapCoordinatorHandler) actIncome(ctx context.Context, cmd *Run
 	}
 }
 
-// contractOpsUnderway reports whether the contract operation has ALREADY started, read entirely from the
-// live world: its coordinator is running, it owns a hauler, or the frigate is committed mid-purchase for
-// it. This LATCHES the threshold — without it the pivot's own hull buy, which legitimately spends the
-// treasury back under the bar, would read as "not started yet" next tick and stand the operation down
-// mid-flight (RULINGS #1). Nothing is stored, so a restart re-derives the same answer (RULINGS #2).
+// contractOpsUnderway reports whether the contract operation has already SPENT, read entirely from the
+// live world: it owns a hauler, or the frigate is committed mid-purchase for it. This LATCHES the
+// threshold — without it the pivot's own hull buy, which legitimately spends the treasury back under the
+// bar, would read as "not started yet" next tick and stand the operation down mid-flight (RULINGS #1).
+// Nothing is stored, so a restart re-derives the same answer (RULINGS #2).
+//
+// A RUNNING coordinator is deliberately NOT evidence. It was, while the launch itself sat behind the
+// threshold; now the engine is boot-standing (actIncome step 3), so "running" says nothing about capital
+// and counting it would hold the gate open from tick 1 at zero treasury. Both remaining terms are real
+// spend that already happened, which is the only thing the latch was ever protecting (RULINGS #4).
 func contractOpsUnderway(obs Observation) bool {
-	return obs.BatchContractRunning || len(obs.Haulers) > 0 || obs.CommandFrigatePurchasing
+	return len(obs.Haulers) > 0 || obs.CommandFrigatePurchasing
+}
+
+// frigateTradeTourStarved reports whether the frigate's LAST run came back starved — too short to have
+// traded — using the same fast-fail line the trade-fleet coordinator scores its own relaunch backoff on.
+// Derived per tick from the two persisted assignment timestamps, so a restart re-derives it (RULINGS #2).
+// No run on record is no evidence, and no evidence is not starvation.
+func frigateTradeTourStarved(obs Observation) bool {
+	if obs.CommandFrigateLastRunStart.IsZero() || obs.CommandFrigateLastRunEnd.IsZero() {
+		return false
+	}
+	return obs.CommandFrigateLastRunEnd.Sub(obs.CommandFrigateLastRunStart) < frigateStarvedTourMax
+}
+
+// frigateContractFallbackOpen reports whether the starved frigate's contract-fallback window is open
+// right now: it came back from a starved run AND has stayed parked past the dwell, so the trade
+// coordinator has demonstrably ESCALATED rather than simply relaunched it. Both bootstrap steps that
+// touch the tag read this ONE predicate, which is what makes them incapable of fighting each other —
+// the release fires only while it is open, the trade re-dedication holds off only while it is open.
+func frigateContractFallbackOpen(obs Observation, now time.Time) bool {
+	if !frigateTradeTourStarved(obs) {
+		return false
+	}
+	parked := now.Sub(obs.CommandFrigateLastRunEnd)
+	return parked >= frigateStarvedDwell && parked < frigateStarvedDwell+frigateContractFallbackWindow
+}
+
+// releaseStarvedFrigateToContract hands the frigate to the contract engine when trade is locally starved,
+// by CLEARING its trade tag and nothing else. That one write is the whole mechanism: the existing
+// last-resort admission (ship_pool_manager.go, RULINGS #7) takes the command hull only when it carries NO
+// dedication and no regular hauler is idle, so an untagged frigate is picked up on the engine's own next
+// pass under its own unmodified rules. This is not a second contract path — it only makes the hull
+// visible to the one that exists.
+//
+// It fires at an honest free tick only: idle, not flying (never mid-tour, PLAYBOOK §9), and cargo-empty,
+// since a laden frigate sells its hold on its next tour and the pool's unrelated-cargo filter would
+// refuse it anyway. Writing a dedication commands and stops nothing, so no accepted contract and no
+// running tour is abandoned (RULINGS #1), and it spends nothing (RULINGS #4).
+func (h *RunBootstrapCoordinatorHandler) releaseStarvedFrigateToContract(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, obs Observation, res *reconcileResult) {
+	if obs.CommandFrigateID == "" || !obs.CommandFrigateOnTrade || !obs.CommandFrigateIdle || !obs.FrigateCargoEmpty {
+		return
+	}
+	if !frigateContractFallbackOpen(obs, h.clock.Now()) {
+		return
+	}
+
+	// Capital ops outrank one opportunistic leg: while the operation is funded and still hull-less the
+	// frigate is the first-hauler pivot's purchaser, so leave it where the pivot expects to find it.
+	if contractOpsWarranted(obs, cfg.ContractStartTreasury) && len(obs.Haulers) == 0 {
+		return
+	}
+
+	logger := common.LoggerFromContext(ctx)
+	if h.retirer == nil {
+		res.Blocker = "no_retirer"
+		logger.Log("WARN", "Bootstrap needs to release the starved command frigate to contract work but no retirer wired — it would keep idle-retrying a starved system", map[string]interface{}{
+			"action":       "bootstrap_income_blocked",
+			"container_id": cmd.ContainerID,
+			"blocker":      "no_retirer",
+		})
+		return
+	}
+	if err := h.retirer.RetireFromContract(ctx, cmd.PlayerID, obs.CommandFrigateID); err != nil {
+		res.Blocker = "frigate_fallback_release_error"
+		logger.Log("ERROR", fmt.Sprintf("Bootstrap could not clear the starved command frigate %s's trade tag — it stays in a starved trade fleet; retry next tick: %v", obs.CommandFrigateID, err), map[string]interface{}{
+			"action":       "bootstrap_frigate_fallback_release_error",
+			"container_id": cmd.ContainerID,
+			"ship":         obs.CommandFrigateID,
+		})
+		return
+	}
+	res.FrigateContractFallback = true
+	parked := h.clock.Now().Sub(obs.CommandFrigateLastRunEnd)
+	logger.Log("INFO", fmt.Sprintf("Bootstrap released the command frigate %s from the TRADE fleet to CONTRACT work: its last tour ran %s (under the %s fast-fail line — it never traded) and it has sat parked %s since, so trade here is starved. Untagged, it is now visible to the contract coordinator's last-resort admission; it returns to trade when the leg ends or in %s if nothing takes it",
+		obs.CommandFrigateID,
+		obs.CommandFrigateLastRunEnd.Sub(obs.CommandFrigateLastRunStart).Truncate(time.Second),
+		frigateStarvedTourMax, parked.Truncate(time.Second),
+		(frigateStarvedDwell+frigateContractFallbackWindow-parked).Truncate(time.Second)), map[string]interface{}{
+		"action":            "bootstrap_frigate_contract_fallback",
+		"container_id":      cmd.ContainerID,
+		"ship":              obs.CommandFrigateID,
+		"last_tour_secs":    int(obs.CommandFrigateLastRunEnd.Sub(obs.CommandFrigateLastRunStart).Seconds()),
+		"parked_secs":       int(parked.Seconds()),
+		"fallback_max_secs": int((frigateStarvedDwell + frigateContractFallbackWindow).Seconds()),
+	})
 }
 
 // contractOpsWarranted reports whether the contract operation may act this tick. The treasury comparison
@@ -166,6 +287,19 @@ func (h *RunBootstrapCoordinatorHandler) ensureFrigateTrading(ctx context.Contex
 			"ship":         obs.CommandFrigateID,
 			"probes":       obs.ProbeCount,
 			"probe_target": probeTarget,
+		})
+		return
+	}
+
+	// HOLD while the starved-trade fallback window is open. The frigate was untagged ON PURPOSE — an
+	// undedicated command hull is the only shape the last-resort admission accepts — so re-tagging it here
+	// would take it back before the contract coordinator's own next pass ran, and the two steps would trade
+	// the tag forever. It lapses, so this defers the re-dedication, never drops it.
+	if frigateContractFallbackOpen(obs, h.clock.Now()) {
+		logger.Log("INFO", fmt.Sprintf("Bootstrap holding the command frigate %s OUT of the trade fleet: trade here is starved and it is offered to the contract coordinator's last-resort pool; it returns to trade when that leg ends or when the window lapses", obs.CommandFrigateID), map[string]interface{}{
+			"action":       "bootstrap_frigate_trade_held_for_contract",
+			"container_id": cmd.ContainerID,
+			"ship":         obs.CommandFrigateID,
 		})
 		return
 	}

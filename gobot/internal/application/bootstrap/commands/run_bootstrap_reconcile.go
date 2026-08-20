@@ -78,15 +78,16 @@ type reconcileResult struct {
 	Blocker   string // the one guard that blocked the highest-priority action (for the heartbeat)
 
 	// Contract-workstream tallies (Slice 2).
-	TourHulls          int  // probes put on the home market tour this tick
-	HaulersBought      int  // contract haulers actually bought this tick (staged: at most 1)
-	FrigateTrading     bool // the command frigate was dedicated to the TRADE fleet this tick (its standing home)
-	ContractRun        bool // batch-contract was launched this tick
-	FrigateLoopStopped bool // a legacy frigate contract-loop container was stopped this tick (the migration off the retired pre-hauler earner loop)
-	FrigatePivoted     bool // the first-hauler pivot fired this tick: the idle-in-trade frigate was dedicated the exclusive purchasing ship. With a readable yard price the buy also runs this tick; on a COLD price it is a SEPARATE later tick once the freed frigate is positioned (fault-2)
-	PurchaserReleased  bool // the purchasing dedication was handed back to the TRADE fleet this tick — either the cold-start buys finished, or the buy it was freed for moved out of reach
-	TradeHullSeeded    bool // the cold-start hull-routing trade-seed fired this tick: acquisition #2 bought + dedicated to the trade fleet + the trade coordinator ensured
-	PlacementSlots     int  // fixed delivery slots this era resolves — where the ramp spreads its hulls (for the heartbeat)
+	TourHulls               int  // probes put on the home market tour this tick
+	HaulersBought           int  // contract haulers actually bought this tick (staged: at most 1)
+	FrigateTrading          bool // the command frigate was dedicated to the TRADE fleet this tick (its standing home)
+	ContractRun             bool // batch-contract was launched this tick
+	FrigateLoopStopped      bool // a legacy frigate contract-loop container was stopped this tick (the migration off the retired pre-hauler earner loop)
+	FrigatePivoted          bool // the first-hauler pivot fired this tick: the idle-in-trade frigate was dedicated the exclusive purchasing ship. With a readable yard price the buy also runs this tick; on a COLD price it is a SEPARATE later tick once the freed frigate is positioned (fault-2)
+	PurchaserReleased       bool // the purchasing dedication was handed back to the TRADE fleet this tick — either the cold-start buys finished, or the buy it was freed for moved out of reach
+	FrigateContractFallback bool // trade is locally starved, so the frigate's trade tag was cleared this tick — the contract pool's existing last-resort admission can now see it
+	TradeHullSeeded         bool // the cold-start hull-routing trade-seed fired this tick: acquisition #2 bought + dedicated to the trade fleet + the trade coordinator ensured
+	PlacementSlots          int  // fixed delivery slots this era resolves — where the ramp spreads its hulls (for the heartbeat)
 
 	// GATE tallies.
 	ConstructionStartRan bool // `construction start` ran this tick (created/resumed the pipeline)
@@ -725,7 +726,7 @@ func buyBlockNote(affordable bool) string {
 func (h *RunBootstrapCoordinatorHandler) emitHeartbeat(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, phase Phase, obs Observation, res reconcileResult) {
 	logger := common.LoggerFromContext(ctx)
 
-	delta := fmt.Sprintf("bought=%d tour_hulls=%d haulers_bought=%d trade_seeded=%v frigate_trading=%v batch_contract=%v frigate_loop_stopped=%v purchaser_released=%v construction_started=%v mfg_ensured=%v mfg_bounced=%v workers_released=%d gate_workers_bought=%d construction_hulls_to_trade=%d handoff=%v", res.Purchased, res.TourHulls, res.HaulersBought, res.TradeHullSeeded, res.FrigateTrading, res.ContractRun, res.FrigateLoopStopped, res.PurchaserReleased, res.ConstructionStartRan, res.MfgEnsured, res.MfgBounced, res.WorkersReleased, res.GateWorkersBought, res.ConstructionHullsToTrade, res.HandoffLaunched)
+	delta := fmt.Sprintf("bought=%d tour_hulls=%d haulers_bought=%d trade_seeded=%v frigate_trading=%v frigate_contract_fallback=%v batch_contract=%v frigate_loop_stopped=%v purchaser_released=%v construction_started=%v mfg_ensured=%v mfg_bounced=%v workers_released=%d gate_workers_bought=%d construction_hulls_to_trade=%d handoff=%v", res.Purchased, res.TourHulls, res.HaulersBought, res.TradeHullSeeded, res.FrigateTrading, res.FrigateContractFallback, res.ContractRun, res.FrigateLoopStopped, res.PurchaserReleased, res.ConstructionStartRan, res.MfgEnsured, res.MfgBounced, res.WorkersReleased, res.GateWorkersBought, res.ConstructionHullsToTrade, res.HandoffLaunched)
 	next := h.nextAction(cfg, phase, obs)
 	blockers := res.Blocker
 	if blockers == "" {
@@ -734,34 +735,35 @@ func (h *RunBootstrapCoordinatorHandler) emitHeartbeat(ctx context.Context, cmd 
 
 	logger.Log("INFO", fmt.Sprintf("Bootstrap heartbeat: phase=%s probes=%d/%d scouting=%d coverage=%d/%d (%.0f%%) haulers=%d/%d slots=%d income/hr=%.0f treasury=%d gate_site=%s construction=%.0f%% gate_workers=%d/%d · %s · next=%q · blockers=%s",
 		phase, obs.ProbeCount, probeTarget, obs.ProbesScouting, obs.MarketsCovered, obs.MarketsTotal, obs.CoverageFraction()*100, len(obs.Haulers), haulerTarget, res.PlacementSlots, obs.IncomePerHour, obs.Treasury, gateSiteOrNone(obs.GateSite), obs.ConstructionPercent, obs.GateWorkers, res.DesiredWorkers, delta, next, blockers), map[string]interface{}{
-		"action":               "bootstrap_heartbeat",
-		"container_id":         cmd.ContainerID,
-		"phase":                string(phase),
-		"probes":               obs.ProbeCount,
-		"probe_target":         probeTarget,
-		"probes_scouting":      obs.ProbesScouting,
-		"markets_covered":      obs.MarketsCovered,
-		"markets_total":        obs.MarketsTotal,
-		"haulers":              len(obs.Haulers),
-		"hauler_target":        haulerTarget,
-		"trade_hulls":          obs.TradeHullCount,
-		"placement_slots":      res.PlacementSlots,
-		"income_per_hour":      obs.IncomePerHour,
-		"treasury":             obs.Treasury,
-		"purchased":            res.Purchased,
-		"haulers_bought":       res.HaulersBought,
-		"trade_seeded":         res.TradeHullSeeded,
-		"frigate_trading":      res.FrigateTrading,
-		"batch_contract":       res.ContractRun,
-		"frigate_loop_stopped": res.FrigateLoopStopped,
-		"purchaser_released":   res.PurchaserReleased,
-		"gate_site":            obs.GateSite,
-		"construction_pct":     obs.ConstructionPercent,
-		"gate_workers":         obs.GateWorkers,
-		"desired_workers":      res.DesiredWorkers,
-		"workers_released":     res.WorkersReleased,
-		"handoff":              res.HandoffLaunched,
-		"blocker":              blockers,
+		"action":                    "bootstrap_heartbeat",
+		"container_id":              cmd.ContainerID,
+		"phase":                     string(phase),
+		"probes":                    obs.ProbeCount,
+		"probe_target":              probeTarget,
+		"probes_scouting":           obs.ProbesScouting,
+		"markets_covered":           obs.MarketsCovered,
+		"markets_total":             obs.MarketsTotal,
+		"haulers":                   len(obs.Haulers),
+		"hauler_target":             haulerTarget,
+		"trade_hulls":               obs.TradeHullCount,
+		"placement_slots":           res.PlacementSlots,
+		"income_per_hour":           obs.IncomePerHour,
+		"treasury":                  obs.Treasury,
+		"purchased":                 res.Purchased,
+		"haulers_bought":            res.HaulersBought,
+		"trade_seeded":              res.TradeHullSeeded,
+		"frigate_trading":           res.FrigateTrading,
+		"frigate_contract_fallback": res.FrigateContractFallback,
+		"batch_contract":            res.ContractRun,
+		"frigate_loop_stopped":      res.FrigateLoopStopped,
+		"purchaser_released":        res.PurchaserReleased,
+		"gate_site":                 obs.GateSite,
+		"construction_pct":          obs.ConstructionPercent,
+		"gate_workers":              obs.GateWorkers,
+		"desired_workers":           res.DesiredWorkers,
+		"workers_released":          res.WorkersReleased,
+		"handoff":                   res.HandoffLaunched,
+		"blocker":                   blockers,
 	})
 }
 
@@ -780,11 +782,14 @@ func (h *RunBootstrapCoordinatorHandler) nextAction(cfg bootstrapRunConfig, phas
 		if obs.CommandFrigateID != "" && !obs.CommandFrigateOnTrade && !obs.CommandFrigatePurchasing {
 			return "put the command frigate in the trade fleet (its standing home) at its next idle tick"
 		}
-		if !contractOpsWarranted(obs, cfg.ContractStartTreasury) {
-			return fmt.Sprintf("frigate trading; hold the contract operation until treasury %d reaches the contract-start threshold %d", obs.Treasury, cfg.ContractStartTreasury)
-		}
 		if !obs.BatchContractRunning {
-			return "launch the contract-fleet coordinator (the contract operation starts)"
+			return "launch the contract-fleet coordinator (the engine, zero-capital: it makes contract work available when trade starves)"
+		}
+		if frigateContractFallbackOpen(obs, h.clock.Now()) {
+			return "trade is locally starved — the frigate is offered to the contract coordinator's last-resort pool until the window lapses"
+		}
+		if !contractOpsWarranted(obs, cfg.ContractStartTreasury) {
+			return fmt.Sprintf("frigate trading; hold contract CAPITAL until treasury %d reaches the contract-start threshold %d", obs.Treasury, cfg.ContractStartTreasury)
 		}
 		if len(obs.Haulers) < haulerTarget {
 			return fmt.Sprintf("buy contract hauler %d/%d (staged, capital-gated, placed on a fixed delivery slot)", len(obs.Haulers)+1, haulerTarget)

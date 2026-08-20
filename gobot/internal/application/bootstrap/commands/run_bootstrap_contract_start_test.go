@@ -63,8 +63,11 @@ func TestBootstrap_BelowThreshold_FrigateTradesAndNoContractOpsStart(t *testing.
 	if ho.tradeCoord < 1 {
 		t.Fatalf("below the threshold the trade-fleet coordinator must be ensured so the frigate actually tours, got %d", ho.tradeCoord)
 	}
-	if run.calls != 0 {
-		t.Fatalf("below the threshold the contract-fleet coordinator must NOT launch, got %d", run.calls)
+	// The ENGINE runs from tick 1 (sp-bvf20): it spends nothing, and with no haulers owned and the
+	// frigate trade-tagged its candidate pool is empty, so it is inert until trade actually starves.
+	// The threshold gates CAPITAL, which the assertions below pin.
+	if run.calls != 1 {
+		t.Fatalf("the contract-fleet coordinator must be up from tick 1 (zero-capital), got %d", run.calls)
 	}
 	if acq.buys != 0 || acq.dedicateBuys != 0 || acq.priceChks != 0 {
 		t.Fatalf("below the threshold nothing is bought and no yard is priced; buys=%d seeds=%d priceChks=%d", acq.buys, acq.dedicateBuys, acq.priceChks)
@@ -187,9 +190,10 @@ func TestBootstrap_AtThreshold_ContractScalerIsEnsured(t *testing.T) {
 
 // The same latch the rest of the workstream uses: an operation already under way keeps its scaler
 // ensured through the treasury dip its own hull buys cause (RULINGS #1 — never stand running work down).
+// A RUNNING coordinator is deliberately NOT one of these cases (sp-bvf20): the engine is boot-standing
+// now, so "running" is no evidence of spend and must not drag the spending scaler up with it.
 func TestBootstrap_BelowThreshold_ContractOpsUnderway_ScalerStillEnsured(t *testing.T) {
 	cases := map[string]func(*Observation){
-		"the coordinator is running": func(o *Observation) { o.BatchContractRunning = true },
 		"a hauler is already owned": func(o *Observation) {
 			o.Haulers = []HaulerSnapshot{{Symbol: "H1", Waypoint: "X1-HUBA"}}
 			o.TradeHullCount = 1
@@ -394,9 +398,10 @@ func TestBootstrap_MidPurchaseBelowThreshold_IsNeverInterrupted(t *testing.T) {
 
 // --- THE LATCH: contract ops already under way survive a treasury under the threshold ---
 
+// The latch is SPEND evidence only (sp-bvf20): a hull owned, or a frigate committed mid-purchase. A
+// running coordinator no longer qualifies — it is up from tick 1 and says nothing about capital.
 func TestBootstrap_ContractOpsUnderway_SurviveATreasuryDip(t *testing.T) {
 	cases := map[string]func(*Observation){
-		"the coordinator is running": func(o *Observation) { o.BatchContractRunning = true },
 		"a hauler is already owned": func(o *Observation) {
 			o.Haulers = []HaulerSnapshot{{Symbol: "H1", Waypoint: "X1-HUBA"}}
 			o.TradeHullCount = 1
@@ -432,8 +437,13 @@ func TestBootstrap_RestartSafety_ReDerivesAtEveryPoint(t *testing.T) {
 		ret, acq, run := &fakeRetirer{}, &fakeHaulerAcquirer{price: 300_000, yard: "Y", readable: true}, &fakeContractRunner{}
 		h := tradeIdleHandler(obs, ret, acq, run, &fakeHandoff{}, &fakeFrigateLoop{})
 		h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
-		if len(ret.tradeDedications) != 0 || len(ret.dedications) != 0 || acq.buys != 0 || run.calls != 0 {
-			t.Fatalf("a restart mid-tour below the threshold must touch nothing; trade=%v purchasing=%v buys=%d launches=%d", ret.tradeDedications, ret.dedications, acq.buys, run.calls)
+		// The engine ensure is the one thing a restart DOES redo (it is idempotent and free); no hull is
+		// touched and nothing is bought, which is what "mid-tour below the threshold" must guarantee.
+		if len(ret.tradeDedications) != 0 || len(ret.dedications) != 0 || len(ret.ships) != 0 || acq.buys != 0 {
+			t.Fatalf("a restart mid-tour below the threshold must touch no hull; trade=%v purchasing=%v retires=%v buys=%d", ret.tradeDedications, ret.dedications, ret.ships, acq.buys)
+		}
+		if run.calls != 1 {
+			t.Fatalf("the zero-capital engine ensure is idempotent and must still run on a restart, got %d", run.calls)
 		}
 	})
 
@@ -572,8 +582,10 @@ func TestBootstrap_ContractStartThreshold_IsLiveTunable(t *testing.T) {
 	h.SetLiveConfigReader(&fakeLiveConfig{snap: liveconfig.Snapshot{"contract_start_treasury_threshold": 1_000_000}})
 
 	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
-	if run.calls != 0 || acq.buys != 0 {
-		t.Fatalf("a live-tuned threshold must govern the very next tick: launches=%d buys=%d", run.calls, acq.buys)
+	// The tuned threshold governs CAPITAL: nothing is bought. The zero-capital engine ensure is not
+	// threshold-gated at all, so it still runs.
+	if acq.buys != 0 || acq.dedicateBuys != 0 {
+		t.Fatalf("a live-tuned threshold must govern the very next tick's spend: buys=%d seeds=%d", acq.buys, acq.dedicateBuys)
 	}
 	if res.Blocker != "contract_start_deferred" {
 		t.Fatalf("expected the deferral blocker under the tuned threshold, got %q", res.Blocker)

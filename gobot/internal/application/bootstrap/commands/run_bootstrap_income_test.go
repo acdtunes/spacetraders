@@ -448,9 +448,10 @@ func TestBootstrap_Income_BuysHaulerOnFirstSlot(t *testing.T) {
 
 func TestBootstrap_Income_CapitalGateBlocksHauler(t *testing.T) {
 	obs := incomeObs()
-	obs.Treasury = 150000 // cushion = 150000−300000 = −150000, below the 50k working-capital floor → blocked
-	obs.BatchContractRunning = true
-	acq := &fakeHaulerAcquirer{price: 300000, yard: "Y", readable: true}
+	// cushion = 600000−750000 = −150000, far below the working-capital floor → blocked. The treasury
+	// clears the contract-START threshold on its own, so the CAPITAL gate is what answers here.
+	obs.Treasury = 600000
+	acq := &fakeHaulerAcquirer{price: 750000, yard: "Y", readable: true}
 	h := newIncomeHandler(obs, &fakeRetirer{}, acq, &fakeContractRunner{})
 	log := &capturingLogger{}
 	res, _ := h.reconcileOnce(ctxWithLogger(log), baseCmd())
@@ -464,7 +465,7 @@ func TestBootstrap_Income_CapitalGateBlocksHauler(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected a hauler buy-decision line with the guardrail arithmetic")
 	}
-	for _, want := range []string{"price=300000", "treasury=150000", "floor=", "cushion=", "slot=X1-HUBA"} {
+	for _, want := range []string{"price=750000", "treasury=600000", "floor=", "cushion=", "slot=X1-HUBA"} {
 		if !strings.Contains(dl.msg, want) {
 			t.Fatalf("hauler decision line missing %q: %s", want, dl.msg)
 		}
@@ -477,12 +478,13 @@ func TestBootstrap_Income_CapitalGateBlocksHauler(t *testing.T) {
 // treasury to grow past ~2× the hauler price (PLAYBOOK §3). ---
 
 func TestBootstrap_Income_WorkingCapitalFloor_BuysAsSoonAsCushionClears(t *testing.T) {
-	const price = int64(300000)
+	const price = int64(600000)
 	obs := incomeObs()
-	obs.BatchContractRunning = true // isolate the buy
 	// treasury = price + floor + 1 → the cushion clears the floor by 1 credit, so the buy IS made. This
-	// treasury is far below 2×price (600000), so the OLD proportional gate (cap = reserve_margin×treasury
-	// = 0.5×350001 = 175000 < price) would have BLOCKED it — the exact ~2×price delay sp-acv5 removes.
+	// treasury is far below 2×price (1200000), so the OLD proportional gate (cap = reserve_margin×treasury
+	// = 0.5×750001 = 375000 < price) would have BLOCKED it — the exact ~2×price delay sp-acv5 removes.
+	// The price is sized so the treasury also clears the contract-START threshold: this test is about the
+	// working-capital floor, so the sequencing gate must not be what answers.
 	obs.Treasury = price + contractWorkingCapitalFloor + 1
 	acq := &fakeHaulerAcquirer{price: price, yard: "X1-YARD", readable: true}
 	h := newIncomeHandler(obs, &fakeRetirer{}, acq, &fakeContractRunner{})
@@ -494,9 +496,8 @@ func TestBootstrap_Income_WorkingCapitalFloor_BuysAsSoonAsCushionClears(t *testi
 }
 
 func TestBootstrap_Income_WorkingCapitalFloor_BlocksWhenCushionShort(t *testing.T) {
-	const price = int64(300000)
+	const price = int64(600000)
 	obs := incomeObs()
-	obs.BatchContractRunning = true
 	// treasury = price + floor − 1 → the buy would leave 1 credit LESS than the floor. RULINGS #4
 	// fail-closed: do NOT buy (the contract operation must retain its working-capital cushion).
 	obs.Treasury = price + contractWorkingCapitalFloor - 1

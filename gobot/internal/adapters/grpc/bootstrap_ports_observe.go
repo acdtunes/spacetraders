@@ -114,6 +114,11 @@ func observeFleetShape(ships []*navigation.Ship, obs *bootstrapCmd.Observation) 
 			// both wait for (same expression as the gate-worker release below).
 			obs.CommandFrigateOnTrade = s.DedicatedFleet() == tradeFleetTag
 			obs.CommandFrigateIdle = s.IsIdle() && !s.IsInTransit()
+			// Last run off the persisted assignment — the two fields the trade coordinator scores "unproductive" on.
+			if a := s.Assignment(); a != nil && a.ReleasedAt() != nil {
+				obs.CommandFrigateLastRunStart = a.AssignedAt()
+				obs.CommandFrigateLastRunEnd = *a.ReleasedAt()
+			}
 		} else if s.DedicatedFleet() == contractFleetTag {
 			obs.Haulers = append(obs.Haulers, bootstrapCmd.HaulerSnapshot{Symbol: s.ShipSymbol(), Waypoint: wp})
 		} else if s.DedicatedFleet() == tradeFleetTag {
