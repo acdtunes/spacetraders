@@ -284,12 +284,12 @@ func (h *RunBootstrapCoordinatorHandler) reconcileOnce(ctx context.Context, cmd 
 		h.actExpansion(ctx, cmd, cfg, obs, &res)
 	}
 
-	// During the cold-start SCALING window, ensure the standing dedicated contract auto-scaler — THE THING
-	// THAT KEEPS CONTRACT HULL BUYING ALIVE DURING BOOTSTRAP: it owns contract-fleet capacity everywhere
-	// else and owns it here too. NOT in GATE/EXPANSION (GATE repurposes haulers, EXPANSION hands off), and
-	// NOT below the contract-start gate: it is the contract fleet's OTHER buyer and its own 200000 cushion
-	// clears far under that bar, so an ungated ensure spends exactly the capex the threshold defers.
-	if phase == PhaseColdStart && contractOpsWarranted(obs, cfg.ContractStartTreasury) {
+	// Ensure the standing dedicated contract auto-scaler during the cold-start SCALING window — THE THING that keeps
+	// contract hull buying alive during bootstrap: it owns contract-fleet capacity everywhere else and owns it here
+	// too. NOT in GATE/EXPANSION (GATE repurposes haulers, EXPANSION hands off); NOT below the contract-start gate
+	// (its own 200000 cushion clears far under that bar, so an ungated ensure spends exactly the capex the threshold
+	// defers); and NOT for a graduated player — actIncome already withholds the whole contract workstream from them.
+	if phase == PhaseColdStart && contractOpsWarranted(obs, cfg.ContractStartTreasury) && !obs.ContractGraduated {
 		h.ensureContractScalerEarly(ctx, cmd, &res)
 	}
 

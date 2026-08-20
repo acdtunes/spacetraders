@@ -58,6 +58,39 @@ func TestBootstrap_ContractScaler_NotLaunchedDuringGate(t *testing.T) {
 	}
 }
 
+// A contract-graduated player never gets the scaler ensured, even with contractOpsWarranted true —
+// the same opt-out actIncome already applies to the rest of the contract workstream.
+func TestBootstrap_ContractScaler_GraduatedPlayer_NotEnsured(t *testing.T) {
+	obs := contractScalerColdStartObs()
+	obs.ContractGraduated = true
+	ho := &fakeHandoff{}
+	h := sjvvHandler(obs, &fakeLiveConfig{snap: liveconfig.Snapshot{}}, ho, &fakeHaulerAcquirer{price: 300000, yard: "Y", readable: true})
+
+	res, err := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
+	if err != nil {
+		t.Fatalf("reconcileOnce: %v", err)
+	}
+	if ho.contractScaler != 0 || res.ContractScalerLaunchedEarly {
+		t.Fatalf("graduated: the contract scaler must NOT be ensured, at any treasury (launches=%d early=%v)", ho.contractScaler, res.ContractScalerLaunchedEarly)
+	}
+}
+
+// The same observation, NOT graduated: the scaler is still ensured — proving the flag alone gates it.
+func TestBootstrap_ContractScaler_NotGraduated_StillEnsured(t *testing.T) {
+	obs := contractScalerColdStartObs()
+	obs.ContractGraduated = false
+	ho := &fakeHandoff{}
+	h := sjvvHandler(obs, &fakeLiveConfig{snap: liveconfig.Snapshot{}}, ho, &fakeHaulerAcquirer{price: 300000, yard: "Y", readable: true})
+
+	res, err := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
+	if err != nil {
+		t.Fatalf("reconcileOnce: %v", err)
+	}
+	if ho.contractScaler != 1 || !res.ContractScalerLaunchedEarly {
+		t.Fatalf("not graduated: the contract scaler must still be ensured (launches=%d early=%v)", ho.contractScaler, res.ContractScalerLaunchedEarly)
+	}
+}
+
 // The launch FAILS: bootstrap surfaces nothing terminal (background launch), leaves
 // res.ContractScalerLaunchedEarly false, and never claims the blocker (its own ERROR line only).
 func TestBootstrap_ContractScaler_LaunchError_IsBackground(t *testing.T) {
