@@ -17,7 +17,8 @@ const tradeFleetTag = "trade"
 // starts once the treasury clears the contract-start threshold. Independently-guarded, idempotent
 // actions on the observed delta, ordered so the fleet earns from tick 1 and never deadlocks:
 //
-//  1. Keep the command frigate EARNING IN TRADE (its standing home) and the trade coordinator up.
+//  1. Keep the command frigate EARNING IN TRADE (its standing home) once probes reach target, and the
+//     trade coordinator up regardless.
 //  2. Hand the purchasing frigate back to trade once its cold-start buys have landed.
 //  3. THE CONTRACT-START GATE: below the threshold nothing contract-side is launched or bought. The
 //     gate defers WHEN the operation starts and never withdraws work already running (RULINGS #1).
@@ -33,7 +34,8 @@ const tradeFleetTag = "trade"
 // Each action is guarded "already done / in-flight?" against the FRESH observation, so re-evaluation —
 // including the first tick after a restart — never double-acts or double-buys.
 func (h *RunBootstrapCoordinatorHandler) actIncome(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, obs Observation, res *reconcileResult) {
-	// (1) The frigate EARNS IN TRADE from tick 1, ahead of the graduation stop — trade is not contract income.
+	// (1) The frigate EARNS IN TRADE once probes reach target, ahead of the graduation stop — trade is not
+	// contract income, so a graduated fleet follows the same order.
 	h.ensureFrigateTrading(ctx, cmd, obs, res)
 	h.ensureTradeCoordinator(ctx, cmd)
 
@@ -142,17 +144,31 @@ func frigateIdleInTrade(obs Observation) bool {
 }
 
 // ensureFrigateTrading puts the command frigate in its standing home, the TRADE fleet, so it earns under
-// the same coordinator that tours every other trade hull — no second, hand-rolled earner loop. The write
-// also clears whatever tag it carried, so a stale "contract" tag is retired by the same write.
+// the same coordinator that tours every other trade hull — no second, hand-rolled earner loop, and the one
+// write also clears whatever tag it carried. It waits for a genuinely free tick and never touches the
+// committed purchaser, so no accepted contract and no in-flight purchase is abandoned (RULINGS #1).
 //
-// It waits for a genuinely free tick and never touches the committed purchaser: a hull mid-task keeps its
-// claim, finishes, and is re-tagged later, so no accepted contract and no in-flight purchase is abandoned
-// (RULINGS #1). Idempotent on the observed tag.
+// SEQUENCED BEHIND THE PROBE SEED. The trade coordinator CLAIMS the hull it tours, so a dedicated frigate
+// is idle at no tick for the length of a multi-minute leg — and with the one probe claimed by its own tour
+// the fleet then has no idle hull at all, the presence-gated yard can never be warmed, and probe buying
+// deadlocks for good. Below target the frigate is left alone, so the yard errand actData runs alongside
+// this has a hull. Only a NEW dedication is deferred; an already-trading frigate returned above (RULINGS #1).
 func (h *RunBootstrapCoordinatorHandler) ensureFrigateTrading(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, obs Observation, res *reconcileResult) {
 	if obs.CommandFrigateID == "" || obs.CommandFrigateOnTrade || obs.CommandFrigatePurchasing || !obs.CommandFrigateIdle {
 		return
 	}
 	logger := common.LoggerFromContext(ctx)
+
+	if obs.ProbeCount < probeTarget {
+		logger.Log("INFO", fmt.Sprintf("Bootstrap frigate trade dedication DEFERRED: probes=%d/%d — leaving the command frigate %s undedicated and idle so the probe buy can send it to warm the home shipyard; it takes up trade once the seed completes", obs.ProbeCount, probeTarget, obs.CommandFrigateID), map[string]interface{}{
+			"action":       "bootstrap_frigate_trade_deferred",
+			"container_id": cmd.ContainerID,
+			"ship":         obs.CommandFrigateID,
+			"probes":       obs.ProbeCount,
+			"probe_target": probeTarget,
+		})
+		return
+	}
 
 	if h.retirer == nil {
 		res.Blocker = "no_retirer"
@@ -173,7 +189,7 @@ func (h *RunBootstrapCoordinatorHandler) ensureFrigateTrading(ctx context.Contex
 		return
 	}
 	res.FrigateTrading = true
-	logger.Log("INFO", fmt.Sprintf("Bootstrap dedicated the command frigate %s to the TRADE fleet — its standing home: it tours continuously under the trade-fleet coordinator from hour 0, and the write also clears any stale contract tag", obs.CommandFrigateID), map[string]interface{}{
+	logger.Log("INFO", fmt.Sprintf("Bootstrap dedicated the command frigate %s to the TRADE fleet — its standing home, now that the probe seed is complete (%d/%d): it tours continuously under the trade-fleet coordinator, and the write also clears any stale contract tag", obs.CommandFrigateID, obs.ProbeCount, probeTarget), map[string]interface{}{
 		"action":       "bootstrap_frigate_trading",
 		"container_id": cmd.ContainerID,
 		"ship":         obs.CommandFrigateID,
@@ -181,7 +197,9 @@ func (h *RunBootstrapCoordinatorHandler) ensureFrigateTrading(ctx context.Contex
 }
 
 // ensureTradeCoordinator ensures the standing trade-fleet coordinator during cold start, so the trading
-// frigate (and, later, the seeded trade hull) is actually toured rather than left idle with a tag.
+// frigate (and, later, the seeded trade hull) is actually toured rather than left idle with a tag. It runs
+// from tick 1, AHEAD of the dedication it serves: it selects strictly on the "trade" tag, so untagged it is
+// a zero-API no-op claiming no hull, and being already up is what tours the frigate the moment it lands.
 // IDEMPOTENCY lives in the LAUNCHER (it skips a RUNNING/PENDING coordinator), so a per-tick call never
 // double-launches. Nil-safe, and a BACKGROUND launch that never claims res.Blocker — a coordinator that
 // could not start must not mask why a BUY could not — mirroring ensureContractScalerEarly.

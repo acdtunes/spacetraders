@@ -266,10 +266,10 @@ func (h *RunBootstrapCoordinatorHandler) reconcileOnce(ctx context.Context, cmd 
 	switch phase {
 	case PhaseColdStart:
 		// Scanning and earning run TOGETHER, not in sequence. actData drives probes→target + shipyard
-		// readability; actIncome puts the frigate on trade from HOUR-0 and starts the contract engine once
-		// the treasury clears the threshold (that engine holds an accepted-but-unsourceable contract
-		// gracefully and claims no ship until a market is known, so it cannot steal the idle hull the probe
-		// buy needs). Neither workstream ever waits on the other.
+		// readability; actIncome puts the frigate on trade once that seed lands — below target it leaves it
+		// undedicated, which is what keeps a hull free to warm the yard — and starts the contract engine
+		// once the treasury clears the threshold (that engine holds an accepted-but-unsourceable contract
+		// gracefully and claims no ship until a market is known, so it cannot steal the hull the buy needs).
 		h.actData(ctx, cmd, obs, &res)
 		scanningBlocker := res.Blocker
 		h.actIncome(ctx, cmd, cfg, obs, &res)
@@ -574,8 +574,8 @@ func (h *RunBootstrapCoordinatorHandler) acquireProbesToTarget(ctx context.Conte
 	// at the yard. Still fails CLOSED (no spend) — a genuinely unreadable price buys nothing.
 	price, yard, readable, err := h.acquirer.PriceCheck(ctx, cmd.PlayerID, probeShipType)
 	if err != nil || !readable {
-		// Once the frigate trades and probe #1 tours, no hull is undedicated and the free-hull search is
-		// empty forever — so lend the frigate between tours (a no-cargo errand that re-tags nothing).
+		// Last resort once every hull carries a tag and the free-hull search is empty: lend the frigate
+		// between tours — a no-cargo errand that re-tags nothing.
 		h.awaitReadablePrice(ctx, cmd, obs, res, "", idleTradeFrigate(obs), fmt.Sprintf("probe (%d/%d)", obs.ProbeCount, probeTarget), err)
 		return
 	}
