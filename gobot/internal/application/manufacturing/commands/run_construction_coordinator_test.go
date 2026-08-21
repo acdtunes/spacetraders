@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	mfgServices "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/services"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/goods"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
@@ -35,6 +37,10 @@ type fakeConstructionProducer struct {
 	mu            sync.Mutex
 	acquire       int // QuantityAcquired ProduceGood reports (0 models a dry/no-source market)
 	delivered     int // units DeliverToConstructionSite reports the site accepted (default per call)
+	// zeroReason scripts ProduceGood's ZeroReason (sp-0u1yd): ZeroReasonCapitalDeclined models a
+	// working-capital reserve decline (source was fine, treasury wasn't), as opposed to the default
+	// ZeroReasonUnspecified a dry/no-source market reports. Meaningless unless acquire == 0.
+	zeroReason mfgServices.AcquisitionZeroReason
 	produceGoods  []string
 	produceNodes  []*goods.SupplyChainNode // full node captured per call (acquisition method + children)
 	produceCtxCon []bool                   // whether the ProduceGood ctx was marked construction-supply
@@ -69,7 +75,7 @@ func (p *fakeConstructionProducer) ProduceGood(ctx context.Context, _ *navigatio
 	if p.produceErr != nil {
 		return nil, p.produceErr
 	}
-	return &mfgServices.ProductionResult{QuantityAcquired: p.acquire}, nil
+	return &mfgServices.ProductionResult{QuantityAcquired: p.acquire, ZeroReason: p.zeroReason}, nil
 }
 
 func (p *fakeConstructionProducer) DeliverToConstructionSite(_ context.Context, shipSymbol, good, site string, _ shared.PlayerID) (int, error) {
@@ -616,6 +622,62 @@ func TestConstructionDrain_DeferOnDryMarket(t *testing.T) {
 	}
 	if resp.TasksDrained != 0 {
 		t.Fatalf("expected TasksDrained=0 on defer, got %d", resp.TasksDrained)
+	}
+}
+
+// sp-0u1yd — a material whose SOURCE IS FINE but whose buy the working-capital reserve declined
+// (ProduceGood acquires 0 with ZeroReasonCapitalDeclined) must NOT get the dry-market treatment
+// TestConstructionDrain_DeferOnDryMarket pins above. It still parks PENDING this tick — the drain
+// truly delivered nothing — but its resolved source survives, so it reads NOT deferred and the next
+// activation pass (ActivateConstructionTasks's own short-circuit on !IsDeferredConstruction, pinned
+// independently by TestActivateConstructionTasks_RetriesFailedDeliveries in the services package)
+// republishes it straight to READY on the SAME source, without paying for a re-resolution that
+// cannot fix a capital shortfall — and the log line names the real cause instead of "unsourceable".
+func TestConstructionDrain_CapitalBlockedKeepsSourceAndSkipsResourcing(t *testing.T) {
+	pipeline := newDrainPipeline(t, "ADVANCED_CIRCUITRY", 100)
+	task := readyConstructionTask(t, pipeline, "ADVANCED_CIRCUITRY")
+	wantSource := task.SourceMarket() // "X1-TEST-SRC" (the readyConstructionTask fixture) — must survive
+
+	producer := &fakeConstructionProducer{acquire: 0, zeroReason: mfgServices.ZeroReasonCapitalDeclined}
+	taskRepo := &drainStubTaskRepo{tasks: []*manufacturing.ManufacturingTask{task}}
+	pipelineRepo := &drainStubPipelineRepo{pipelines: map[string]*manufacturing.ManufacturingPipeline{pipeline.ID(): pipeline}}
+	shipRepo := newDrainShipRepo(newTestHauler(t, "HAULER-7", nil))
+	logger := &capturingLogger{}
+
+	handler := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, producer, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
+	resp, err := drainSettled(t, handler, common.WithLogger(context.Background(), logger), newDrainCommand())
+	if err != nil {
+		t.Fatalf("drainOnce: %v", err)
+	}
+
+	if len(producer.deliverCalls) != 0 {
+		t.Fatalf("a capital-blocked material must not be delivered, got %d deliveries", len(producer.deliverCalls))
+	}
+	if task.Status() != manufacturing.TaskStatusPending {
+		t.Fatalf("expected a capital-blocked task PARKED to PENDING (same recoverable park as a dry market), got %s", task.Status())
+	}
+	if task.IsDeferredConstruction() {
+		t.Fatal("a capital-blocked park must NOT clear the resolved source — the source was fine, only the treasury wasn't; clearing it forces a re-resolution that cannot fix a capital shortfall")
+	}
+	if task.SourceMarket() != wantSource {
+		t.Fatalf("expected the resolved source market preserved as %q, got %q", wantSource, task.SourceMarket())
+	}
+	if snap, ok := taskRepo.snapshot(task.ID()); !ok || snap.deferred {
+		t.Fatalf("expected the persisted snapshot to read NOT deferred, got %+v (ok=%v)", snap, ok)
+	}
+	if pipeline.ConstructionProgress() != 0 {
+		t.Fatalf("expected no progress on a capital-blocked material, got %.1f%%", pipeline.ConstructionProgress())
+	}
+	if resp.TasksDrained != 0 {
+		t.Fatalf("expected TasksDrained=0 on a capital-blocked park, got %d", resp.TasksDrained)
+	}
+
+	joined := logger.joined()
+	if strings.Contains(joined, "unsourceable") {
+		t.Fatalf("a capital-blocked park must NOT be logged as unsourceable (misdiagnoses a treasury problem as a supply one), got: %s", joined)
+	}
+	if !strings.Contains(joined, "working-capital") {
+		t.Fatalf("expected a log line naming the working-capital cause, got: %s", joined)
 	}
 }
 

@@ -182,15 +182,15 @@ func (t *ManufacturingTask) ResetToPending() error {
 	return nil
 }
 
-// ParkForResupply returns an in-flight (EXECUTING or ASSIGNED) task to PENDING
-// without counting a retry, so it can be re-sourced and re-dispatched once supply
-// recovers. Used when a construction/acquire task reaches execution with no buy
-// source - a transient supply gap that must be treated as a pending-supply state
-// rather than a permanent failure. The ship is released so any ship can
-// take the task after it is re-sourced, and the retry budget is left untouched
-// because no delivery was attempted. For a construction delivery whose source and
-// factory are both empty this leaves it IsDeferredConstruction(), so the existing
-// SupplyMonitor re-sourcing path picks it up when supply regenerates.
+// ParkForResupply returns an in-flight (EXECUTING or ASSIGNED) task to PENDING without counting a
+// retry, so it can be re-dispatched once the condition that stopped it clears. The ship is
+// released so any ship can take the task once it is dispatchable again.
+//
+// Two callers differ in whether they ALSO clear the source first (ClearSourceForResupply), not in
+// this method's mechanics: a genuine dry source is cleared, leaving the task
+// IsDeferredConstruction() for the SupplyMonitor to re-source; a source a money guard merely
+// declined to spend against is left intact, so the next activation republishes it straight to
+// READY on the SAME source instead of paying for a re-resolution.
 func (t *ManufacturingTask) ParkForResupply() error {
 	if t.status != TaskStatusExecuting && t.status != TaskStatusAssigned {
 		return &ErrInvalidTaskTransition{

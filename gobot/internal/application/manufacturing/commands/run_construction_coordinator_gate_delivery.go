@@ -516,6 +516,11 @@ func (h *RunConstructionCoordinatorHandler) deliverGateLeg(
 			continue
 		}
 		if result == nil || result.QuantityAcquired == 0 {
+			// A capital decline on THIS task's own material must not clear its source below; a
+			// different material's stop on this mixed trip is not consulted (not task's source).
+			if stop.Good == task.Good() && capitalDeclined(result) {
+				leg.capitalBlocked = true
+			}
 			continue // the money/price guards stopped the fill; nothing to deliver for this good
 		}
 		units, derr := h.producer.DeliverToConstructionSite(ctx, lot.ship.ShipSymbol(), stop.Good, task.ConstructionSite(), playerID)

@@ -189,7 +189,7 @@ func TestDeferTask_PersistsThroughExpiredContext(t *testing.T) {
 	expired, cancel := expiredContext()
 	defer cancel()
 
-	handler.deferTask(expired, task)
+	handler.deferTask(expired, task, false)
 
 	if repo.recorded[task.ID()] != manufacturing.TaskStatusPending {
 		t.Fatalf("deferTask must persist the parked PENDING status even when the incoming ctx is cancelled, got %q", repo.recorded[task.ID()])

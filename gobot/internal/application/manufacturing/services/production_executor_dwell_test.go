@@ -111,7 +111,7 @@ func TestPollForProduction_DwellPastThreshold_EscalatesToWarnEveryAttempt(t *tes
 		nil,                               // apiClient: unused — inputsOnly=true skips the buy/spend-floor path
 	)
 
-	_, _, err := executor.PollForProduction(
+	_, _, _, err := executor.PollForProduction(
 		ctx,
 		dockRaceGood,
 		dockRaceMarketWP,
@@ -167,7 +167,7 @@ func TestPollForProduction_BeforeThreshold_NoWarnEscalation(t *testing.T) {
 		nil, // apiClient: unused — inputsOnly=true skips the buy/spend-floor path
 	)
 
-	_, _, err := executor.PollForProduction(
+	_, _, _, err := executor.PollForProduction(
 		ctx,
 		dockRaceGood,
 		dockRaceMarketWP,

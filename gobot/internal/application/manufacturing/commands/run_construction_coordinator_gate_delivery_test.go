@@ -261,6 +261,13 @@ type countingGateBuyer struct {
 	// the price ceiling trips. Deliberately distinct from err, which is a failed CALL — a caller
 	// that conflates the two cannot honour a refusal differently from an outage.
 	acquireZero bool
+	// zeroReason scripts the ZERO-quantity result's ZeroReason (sp-0u1yd), meaningful only when
+	// acquireZero is set. The default (zero value, ZeroReasonUnspecified) models a dry/no-eligible
+	// source — the shape every acquireZero test written before sp-0u1yd already expects.
+	// ZeroReasonCapitalDeclined models the working-capital reserve refusing the spend on an
+	// otherwise-fine source, which the drain must route differently: keep the source, skip the
+	// deferred-resourcing dance.
+	zeroReason mfgServices.AcquisitionZeroReason
 	// spendHeadroom is the largest projected cost SpendFloorWouldBreach will admit — treasury minus
 	// reserve, expressed directly so a test states the headroom instead of staging a balance.
 	//
@@ -300,7 +307,7 @@ func (b *countingGateBuyer) probed() []int {
 // resultFor is the acquisition this buyer reports for a requested lot.
 func (b *countingGateBuyer) resultFor(units int) *mfgServices.ProductionResult {
 	if b.acquireZero {
-		return &mfgServices.ProductionResult{QuantityAcquired: 0}
+		return &mfgServices.ProductionResult{QuantityAcquired: 0, ZeroReason: b.zeroReason}
 	}
 	return &mfgServices.ProductionResult{QuantityAcquired: units}
 }
@@ -745,6 +752,58 @@ func TestDeliverGateLeg_BuysAsAConstructionSinkNotAFactoryFeed(t *testing.T) {
 		if sink != mfgServices.SinkConstructionSite {
 			t.Fatalf("buy %d of %d declared sink %v, want SinkConstructionSite. This hold is delivered to a construction site and consumed against a bill — a factory's activity-saturation floor does not apply to it, and inheriting it refused 52 buys over 2h33m with 80 units left", i+1, len(sinks), sink)
 		}
+	}
+}
+
+// sp-0u1yd — a capital-declined buy (the working-capital reserve refused the spend, not the
+// topology or the market) must NOT get the same clear-and-park treatment as a genuinely
+// unsourceable material. The task's resolved source survives the park, so it reads NOT deferred —
+// the very next activation pass republishes it straight to READY on the SAME source
+// (task_activator_construction.go's own IsDeferredConstruction() short-circuit, independently
+// pinned by TestActivateConstructionTasks_RetriesFailedDeliveries in the services package) instead
+// of paying for a re-resolution that cannot fix a capital shortfall.
+func TestDeliverGateLeg_CapitalDeclinedBuyKeepsTheResolvedSource(t *testing.T) {
+	f := newGateDeliveryHandler(t)
+	f.buyer.acquireZero = true
+	f.buyer.zeroReason = mfgServices.ZeroReasonCapitalDeclined
+
+	ship := gateTestHull(t, "GATE-7", gate.DeliveryFleetTag)
+	// A task with a REAL resolved source, unlike gateTestLot/gateReadyLot's empty-source
+	// simplification (every OTHER test in this file uses it because deliverGateLeg never reads
+	// task.SourceMarket() for routing — it re-resolves fresh every leg) — needed here so this test
+	// can prove the source actually SURVIVES rather than merely observing a no-op clear.
+	task := manufacturing.NewDeliverToConstructionTask(gateTestPipelineID, 1, gateMaterialPrimary, "X1-GT-REAL-SOURCE", "", gateTestSite, nil)
+	if err := task.MarkReady(); err != nil {
+		t.Fatalf("MarkReady: %v", err)
+	}
+	if err := task.AssignShip(ship.ShipSymbol()); err != nil {
+		t.Fatalf("AssignShip: %v", err)
+	}
+	if err := task.StartExecution(); err != nil {
+		t.Fatalf("StartExecution: %v", err)
+	}
+	lot := constructionLot{task: task, ship: ship, claimIdentity: gate.DeliveryFleetTag}
+
+	drained := f.handler.deliverGateLeg(f.ctx(), gateTestCmd(), gateTestSystem, lot, shared.MustNewPlayerID(1))
+
+	if drained {
+		t.Fatal("a capital-declined leg delivered nothing and must not report a drain")
+	}
+	if got := task.Status(); got != manufacturing.TaskStatusPending {
+		t.Fatalf("expected the task parked PENDING (same recoverable park a dry source would get), got %s", got)
+	}
+	if task.IsDeferredConstruction() {
+		t.Fatal("a capital-declined park must NOT clear the resolved source — the source was fine, only the treasury wasn't; clearing it forces a wasted re-resolution")
+	}
+	if task.SourceMarket() != "X1-GT-REAL-SOURCE" {
+		t.Fatalf("expected the resolved source market preserved, got %q", task.SourceMarket())
+	}
+	logs := f.logLines()
+	if strings.Contains(logs, "unsourceable") {
+		t.Fatalf("a capital-declined park must not be logged as unsourceable (misdiagnoses a treasury problem as a supply one):\n%s", logs)
+	}
+	if !strings.Contains(logs, "working-capital") {
+		t.Fatalf("expected a log line naming the working-capital cause:\n%s", logs)
 	}
 }
 

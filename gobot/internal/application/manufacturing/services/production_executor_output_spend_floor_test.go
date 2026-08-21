@@ -53,7 +53,7 @@ func newOutputFloorExecutor(t *testing.T, apiClient domainPorts.APIClient) (*Pro
 	return executor, mediator
 }
 
-func buyFabricatedOutput(executor *ProductionExecutor, ctx context.Context) (int, int, error) {
+func buyFabricatedOutput(executor *ProductionExecutor, ctx context.Context) (int, int, AcquisitionZeroReason, error) {
 	return executor.purchaseFabricatedOutput(ctx, harvestRun{good: dockRaceGood, waypointSymbol: gateFillTestFactoryWP, shipSymbol: dockRaceShip, playerID: shared.MustNewPlayerID(1)}, outputFloorTradeVolume, outputFloorUnitPrice)
 }
 
@@ -67,12 +67,17 @@ func TestPurchaseFabricatedOutput_SpendFloor_ParksWhenBuyWouldBreachReserve(t *t
 	logger := &dwellCapturingLogger{}
 	ctx := common.WithLogger(common.WithPlayerToken(context.Background(), "TOKEN-65XQO"), logger)
 
-	units, cost, err := buyFabricatedOutput(executor, ctx)
+	units, cost, zeroReason, err := buyFabricatedOutput(executor, ctx)
 	if err != nil {
 		t.Fatalf("a breaching output harvest must be parked gracefully, not surfaced as an error: got %v", err)
 	}
 	if units != 0 || cost != 0 {
 		t.Fatalf("a parked (spend-floor) output buy must yield a zero-spend result, got units=%d cost=%d", units, cost)
+	}
+	// sp-0u1yd: the caller (the construction drain) must be able to tell this apart from a dry
+	// factory — the good was sitting right there in export stock; only the treasury said no.
+	if zeroReason != ZeroReasonCapitalDeclined {
+		t.Fatalf("expected ZeroReasonCapitalDeclined on a spend-floor park, got %v", zeroReason)
 	}
 	if mediator.purchaseAttempts() != 0 {
 		t.Fatalf("a breaching output buy must dispatch ZERO purchases (no spend below the floor), got %d", mediator.purchaseAttempts())
@@ -98,12 +103,15 @@ func TestPurchaseFabricatedOutput_SpendFloor_ProceedsAndReleasesWhenTreasuryClea
 	logger := &dwellCapturingLogger{}
 	ctx := common.WithLogger(common.WithPlayerToken(context.Background(), "TOKEN-65XQO"), logger)
 
-	units, _, err := buyFabricatedOutput(executor, ctx)
+	units, _, zeroReason, err := buyFabricatedOutput(executor, ctx)
 	if err != nil {
 		t.Fatalf("a clearing output harvest must proceed, got error: %v", err)
 	}
 	if units != outputFloorTradeVolume {
 		t.Fatalf("a clearing output buy must harvest the full tv=%d unchanged, got %d", outputFloorTradeVolume, units)
+	}
+	if zeroReason != ZeroReasonUnspecified {
+		t.Fatalf("a non-zero acquisition must carry no zero-reason, got %v", zeroReason)
 	}
 	if mediator.purchaseAttempts() != 1 {
 		t.Fatalf("expected exactly 1 purchase for a clearing output buy, got %d", mediator.purchaseAttempts())
@@ -127,12 +135,18 @@ func TestPurchaseFabricatedOutput_ConcurrentCap_ParksWhenReservationRejected(t *
 	logger := &dwellCapturingLogger{}
 	ctx := common.WithLogger(common.WithPlayerToken(context.Background(), "TOKEN-65XQO"), logger)
 
-	units, cost, err := buyFabricatedOutput(executor, ctx)
+	units, cost, zeroReason, err := buyFabricatedOutput(executor, ctx)
 	if err != nil {
 		t.Fatalf("a cap-parked output buy must be graceful, not an error: got %v", err)
 	}
 	if units != 0 || cost != 0 {
 		t.Fatalf("a cap-parked output buy must yield a zero-spend result, got units=%d cost=%d", units, cost)
+	}
+	// sp-0u1yd: the cross-container concurrent-spend cap is the SAME working-capital reserve,
+	// enforced through the shared ledger rather than a live per-container read — still capital, not
+	// a dry factory.
+	if zeroReason != ZeroReasonCapitalDeclined {
+		t.Fatalf("expected ZeroReasonCapitalDeclined on a concurrent-cap park, got %v", zeroReason)
 	}
 	if mediator.purchaseAttempts() != 0 {
 		t.Fatalf("a cap-parked output buy must dispatch ZERO purchases, got %d", mediator.purchaseAttempts())

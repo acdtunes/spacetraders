@@ -89,11 +89,21 @@ type supplyLeg struct {
 	ship      *navigation.Ship
 	pipeline  *manufacturing.ManufacturingPipeline
 	delivered int
+	// capitalBlocked: this leg's zero acquisition was a working-capital decline, not an exhausted
+	// source. completeOrDefer reads it to decide whether the resolved source may be preserved.
+	capitalBlocked bool
 }
 
 func (l *supplyLeg) task() *manufacturing.ManufacturingTask { return l.lot.task }
 
 func (l *supplyLeg) ephemeral() bool { return l.lot.ephemeral }
+
+// capitalDeclined reports whether result's zero acquisition was the working-capital reserve
+// declining to spend, as opposed to every other zero cause. A nil result never reports capital:
+// ProduceGood/BuyAtTerminalFactory only return nil alongside an error, already routed to completeOrFail.
+func capitalDeclined(result *mfgServices.ProductionResult) bool {
+	return result != nil && result.ZeroReason == mfgServices.ZeroReasonCapitalDeclined
+}
 
 // claimTaskForSupply binds the claimed hauler to the task and moves it to EXECUTING.
 func (h *RunConstructionCoordinatorHandler) claimTaskForSupply(ctx context.Context, task *manufacturing.ManufacturingTask, ship *navigation.Ship) bool {
@@ -230,7 +240,9 @@ func (h *RunConstructionCoordinatorHandler) sourceAndDeliverRemainder(
 	if result == nil || result.QuantityAcquired == 0 {
 		// Dry / no eligible source: the fail-closed park. A fan-out CLONE never defers — its
 		// material's original ready task, dispatched alongside, owns the defer — so it just
-		// abandons its empty trip.
+		// abandons its empty trip. Unless capital, not the source, is why: flag it so
+		// completeOrDefer skips clearing a resolved source re-resolving could not fix anyway.
+		leg.capitalBlocked = capitalDeclined(result)
 		return h.completeOrDefer(ctx, leg)
 	}
 
@@ -262,13 +274,14 @@ func (h *RunConstructionCoordinatorHandler) completeOrFail(ctx context.Context, 
 }
 
 // completeOrDefer is completeOrFail for a recoverable condition: an empty-of-the-material hull
-// parks PENDING for the SupplyMonitor to re-source rather than failing.
+// parks PENDING for the SupplyMonitor to re-source rather than failing — unless leg.capitalBlocked,
+// which parks WITHOUT clearing the resolved source (see deferTask).
 func (h *RunConstructionCoordinatorHandler) completeOrDefer(ctx context.Context, leg *supplyLeg) bool {
 	if leg.delivered > 0 {
 		return h.completeSupply(ctx, leg, leg.delivered)
 	}
 	if !leg.ephemeral() {
-		h.deferTask(ctx, leg.task())
+		h.deferTask(ctx, leg.task(), leg.capitalBlocked)
 	}
 	return false
 }
@@ -443,9 +456,9 @@ func (h *RunConstructionCoordinatorHandler) handlePhantomCargo(ctx context.Conte
 		return h.completeSupply(ctx, leg, leg.delivered)
 	}
 	// A fan-out CLONE never defers (its material's original ready task owns the defer); only a real task
-	// parks for re-sourcing.
+	// parks for re-sourcing. A phantom-cargo desync is never a capital decline (false).
 	if !leg.ephemeral() {
-		h.deferTask(ctx, task)
+		h.deferTask(ctx, task, false)
 	}
 	return false
 }

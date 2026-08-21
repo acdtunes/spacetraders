@@ -915,6 +915,102 @@ func TestFeedGateLeg_DoesNotFeedWhenTheBuyAcquiredNothing(t *testing.T) {
 	}
 }
 
+// sp-0u1yd — ONE buy per leg, so a capital-declined buy (the working-capital reserve refused the
+// spend, not the topology) is the WHOLE reason this leg made no progress. It must not get the same
+// clear-and-park treatment as a genuinely unsourceable material: the task's resolved source
+// survives the park, so it reads NOT deferred — the very next activation pass republishes it
+// straight to READY (task_activator_construction.go's own IsDeferredConstruction() short-circuit,
+// independently pinned by TestActivateConstructionTasks_RetriesFailedDeliveries in the services
+// package) instead of paying for a re-resolution that cannot fix a capital shortfall.
+func TestFeedGateLeg_CapitalDeclinedBuyKeepsTheResolvedSource(t *testing.T) {
+	f := newGateFactoryHandler(t)
+	f.buyer.acquireZero = true
+	f.buyer.zeroReason = mfgServices.ZeroReasonCapitalDeclined
+
+	ship := gateTestHull(t, "GF-1", gate.FactoryFleetTag)
+	// A task with a REAL resolved source, unlike gateFactoryLot/gateTestLot's empty-source
+	// simplification (every OTHER test in this file uses it because feedGateLeg never reads
+	// task.SourceMarket() for routing — it re-resolves fresh every leg) — needed here so this test
+	// can prove the source actually SURVIVES rather than merely observing a no-op clear.
+	task := manufacturing.NewDeliverToConstructionTask(gateTestPipelineID, 1, gateMaterialPrimary, "X1-GT-REAL-SOURCE", "", gateTestSite, nil)
+	if err := task.MarkReady(); err != nil {
+		t.Fatalf("MarkReady: %v", err)
+	}
+	if err := task.AssignShip(ship.ShipSymbol()); err != nil {
+		t.Fatalf("AssignShip: %v", err)
+	}
+	if err := task.StartExecution(); err != nil {
+		t.Fatalf("StartExecution: %v", err)
+	}
+	lot := constructionLot{task: task, ship: ship, claimIdentity: gate.FactoryFleetTag}
+
+	drained := f.handler.feedGateLeg(f.ctx(), gateTestCmd(), gateTestSystem, lot, shared.MustNewPlayerID(1))
+
+	if drained {
+		t.Fatal("a capital-declined leg fed nothing and must not report a drain")
+	}
+	if got := task.Status(); got != manufacturing.TaskStatusPending {
+		t.Fatalf("expected the task parked PENDING (same recoverable park as any other stood-down leg), got %s", got)
+	}
+	if task.IsDeferredConstruction() {
+		t.Fatal("a capital-declined park must NOT clear the resolved source — the source was fine, only the treasury wasn't; clearing it forces a wasted re-resolution")
+	}
+	if task.SourceMarket() != "X1-GT-REAL-SOURCE" {
+		t.Fatalf("expected the resolved source market preserved, got %q", task.SourceMarket())
+	}
+	logs := f.logLines()
+	if strings.Contains(logs, "unsourceable") {
+		t.Fatalf("a capital-declined park must not be logged as unsourceable (misdiagnoses a treasury problem as a supply one):\n%s", logs)
+	}
+	if !strings.Contains(logs, "working-capital") {
+		t.Fatalf("expected a log line naming the working-capital cause:\n%s", logs)
+	}
+}
+
+// sp-0u1yd — confirmed live in staging: planGateFeed's own PRE-dispatch affordability precheck
+// (not the buy call) can be the sole reason nothing is planned — every candidate is otherwise
+// viable, but the reserve declines even the minimum tranche for each. This must not read as
+// unsourceable either: source_market survives and the task is not deferred.
+func TestFeedGateLeg_NoFeedableStepBecauseOfCapitalKeepsTheResolvedSource(t *testing.T) {
+	f := newGateFactoryHandler(t)
+	f.buyer.spendHeadroom = 1 // below any real tranche cost: the precheck declines every candidate
+
+	ship := gateTestHull(t, "GF-1", gate.FactoryFleetTag)
+	task := manufacturing.NewDeliverToConstructionTask(gateTestPipelineID, 1, gateMaterialPrimary, "X1-GT-REAL-SOURCE", "", gateTestSite, nil)
+	if err := task.MarkReady(); err != nil {
+		t.Fatalf("MarkReady: %v", err)
+	}
+	if err := task.AssignShip(ship.ShipSymbol()); err != nil {
+		t.Fatalf("AssignShip: %v", err)
+	}
+	if err := task.StartExecution(); err != nil {
+		t.Fatalf("StartExecution: %v", err)
+	}
+	lot := constructionLot{task: task, ship: ship, claimIdentity: gate.FactoryFleetTag}
+
+	drained := f.handler.feedGateLeg(f.ctx(), gateTestCmd(), gateTestSystem, lot, shared.MustNewPlayerID(1))
+
+	if drained {
+		t.Fatal("a capital-declined leg fed nothing and must not report a drain")
+	}
+	if f.buyer.calls() != 0 {
+		t.Fatalf("the precheck must decline BEFORE any buy is attempted, got %d buy call(s)", f.buyer.calls())
+	}
+	if task.IsDeferredConstruction() {
+		t.Fatal("a capital-declined park must NOT clear the resolved source — the source was fine, only the treasury wasn't")
+	}
+	if task.SourceMarket() != "X1-GT-REAL-SOURCE" {
+		t.Fatalf("expected the resolved source market preserved, got %q", task.SourceMarket())
+	}
+	logs := f.logLines()
+	if strings.Contains(logs, "unsourceable") {
+		t.Fatalf("a capital-declined park must not be logged as unsourceable:\n%s", logs)
+	}
+	if !strings.Contains(logs, "working-capital") {
+		t.Fatalf("expected a log line naming the working-capital cause:\n%s", logs)
+	}
+}
+
 // OBSERVABILITY. The spec requires the factory feed to record: good, resolved feed target,
 // dispatched vs declined WITH the reason. All in the MESSAGE — the container log renderer drops
 // metadata maps.
@@ -1197,7 +1293,7 @@ func TestFeedGateLeg_DeliversAFullHoldEvenWhenNoInputSourceResolves(t *testing.T
 	if err != nil {
 		t.Fatalf("reading the fixture pipeline: %v", err)
 	}
-	if _, _, _, planned := f.handler.planGateFeed(f.ctx(), gateTestCmd(), gateTestSystem, billSource, gateTestHoldCapacity); planned {
+	if _, _, _, _, planned := f.handler.planGateFeed(f.ctx(), gateTestCmd(), gateTestSystem, billSource, gateTestHoldCapacity); planned {
 		t.Fatal("fixture is inert: the buy-side planner still found a step, so this test cannot see a hold path that wrongly demands a source")
 	}
 

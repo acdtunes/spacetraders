@@ -162,11 +162,22 @@ func NewProductionExecutorWithConfig(
 	}
 }
 
+// AcquisitionZeroReason distinguishes a working-capital decline from every other reason
+// QuantityAcquired is 0 (dry market, no eligible source, price ceiling, full hold, ...): clearing a
+// resolved source cannot fix a capital shortfall the way it fixes a dry one.
+type AcquisitionZeroReason int
+
+const (
+	ZeroReasonUnspecified AcquisitionZeroReason = iota
+	ZeroReasonCapitalDeclined
+)
+
 // ProductionResult contains the outcome of a production operation
 type ProductionResult struct {
 	QuantityAcquired int
 	TotalCost        int
 	WaypointSymbol   string // Where the good was acquired
+	ZeroReason       AcquisitionZeroReason
 }
 
 // ProduceGood orchestrates the production of a good using the given ship.
@@ -330,6 +341,7 @@ func (e *ProductionExecutor) fillFromSource(
 				// Logged DISTINCTLY from the ordinary stop so "the reserve is genuinely too tight
 				// for a useful buy" and "the full tranche happened not to fit" stay separable.
 				logSpendFloorTooTightToShrink(ctx, good, source.WaypointSymbol, fill.acquired, trancheQty, affordable, minUnits, projectedCost, enforcedFloor)
+				fill.zeroReason = ZeroReasonCapitalDeclined
 				break
 			}
 			logSpendFloorShrink(ctx, good, source.WaypointSymbol, trancheQty, affordable, projectedCost, enforcedFloor)
@@ -340,6 +352,7 @@ func (e *ProductionExecutor) fillFromSource(
 			// check the full one failed, on a fresh treasury read.
 			if reBreached, reFloor := e.spendFloorBreached(ctx, playerID, projectedCost); reBreached {
 				logSpendFloorStop(ctx, good, source.WaypointSymbol, fill.acquired, projectedCost, reFloor)
+				fill.zeroReason = ZeroReasonCapitalDeclined
 				break
 			}
 		}
@@ -356,6 +369,7 @@ func (e *ProductionExecutor) fillFromSource(
 			return nil, fmt.Errorf("failed to purchase cargo: %w", err)
 		}
 		if parked {
+			fill.zeroReason = ZeroReasonCapitalDeclined
 			break // STOP: concurrent cap (reserveConcurrentSpendOrPark logged the cause)
 		}
 		if response == nil {
@@ -396,6 +410,7 @@ type hullFill struct {
 	onboard    int
 	acquired   int
 	totalCost  int
+	zeroReason AcquisitionZeroReason
 }
 
 func newHullFill(ctx context.Context, ship *navigation.Ship, source *MarketLocatorResult, good string) *hullFill {
@@ -437,6 +452,7 @@ func (f *hullFill) result() *ProductionResult {
 		QuantityAcquired: f.acquired,
 		TotalCost:        f.totalCost,
 		WaypointSymbol:   f.source.WaypointSymbol,
+		ZeroReason:       f.zeroReason,
 	}
 }
 

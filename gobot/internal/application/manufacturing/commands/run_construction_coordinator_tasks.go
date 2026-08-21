@@ -74,19 +74,23 @@ func nextConstructionDeliveryTask(completed *manufacturing.ManufacturingTask) *m
 	)
 }
 
-// deferTask parks an unsourceable material's task back to a deferred PENDING for resupply: the dry
-// source is cleared so it reads as IsDeferredConstruction and the SupplyMonitor re-sources it when
-// the market refills, instead of failing it toward death.
-func (h *RunConstructionCoordinatorHandler) deferTask(ctx context.Context, task *manufacturing.ManufacturingTask) {
+// deferTask parks a task EXECUTING/ASSIGNED -> PENDING via ParkForResupply. A genuine dry source
+// (capitalBlocked=false) is also cleared, reverting the task to the deferred signature the
+// SupplyMonitor/activator re-sources. A working-capital decline (capitalBlocked=true) leaves the
+// source INTACT: it was never the problem, and since the task then reads NOT deferred, the
+// activator's next pass republishes it straight to READY on the same source instead of re-sourcing.
+func (h *RunConstructionCoordinatorHandler) deferTask(ctx context.Context, task *manufacturing.ManufacturingTask, capitalBlocked bool) {
 	// A stop is not a dry source: re-queue with the resolved source intact rather than clearing it
 	// and waiting on the SupplyMonitor to re-source a market that was never the problem.
 	if h.requeueInterrupted(ctx, task) {
 		return
 	}
 	logger := common.LoggerFromContext(ctx)
-	// Clear the dry source so the task reverts to the deferred signature (construction-only;
-	// harmless if it was already sourceless).
-	_ = task.ClearSourceForResupply()
+	if !capitalBlocked {
+		// Clear the dry source so the task reverts to the deferred signature (construction-only;
+		// harmless if it was already sourceless).
+		_ = task.ClearSourceForResupply()
+	}
 	if err := task.ParkForResupply(); err != nil {
 		logger.Log("WARNING", fmt.Sprintf("Could not park construction task %s for resupply: %v", task.ID(), err), nil)
 		return
@@ -98,6 +102,18 @@ func (h *RunConstructionCoordinatorHandler) deferTask(ctx context.Context, task 
 	defer cancel()
 	if err := h.taskRepo.Update(wctx, task); err != nil {
 		logger.Log("WARNING", fmt.Sprintf("Could not persist deferred construction task %s: %v", task.ID(), err), nil)
+	}
+	if capitalBlocked {
+		source := task.SourceMarket()
+		if source == "" {
+			source = task.FactorySymbol()
+		}
+		logger.Log("INFO", fmt.Sprintf("Parked construction delivery of %s pending working-capital headroom — the resolved source (%s) is NOT a supply problem and was kept; the next activation returns this task straight to READY on the SAME source once treasury clears the reserve", task.Good(), source), map[string]interface{}{
+			"good": task.Good(), "construction_site": task.ConstructionSite(),
+			"source_market": task.SourceMarket(), "factory": task.FactorySymbol(),
+			"action": "construction_capital_parked",
+		})
+		return
 	}
 	logger.Log("INFO", fmt.Sprintf("Deferred unsourceable construction material %s for resupply", task.Good()), map[string]interface{}{
 		"good": task.Good(), "construction_site": task.ConstructionSite(),

@@ -112,7 +112,7 @@ func TestPollForProduction_CrushedSink_ParksInsteadOfProducingAtALoss(t *testing
 	logger := &dwellCapturingLogger{}
 	ctx := common.WithLogger(context.Background(), logger)
 
-	quantity, cost, err := executor.PollForProduction(
+	quantity, cost, _, err := executor.PollForProduction(
 		ctx,
 		dockRaceGood,
 		dockRaceMarketWP,
@@ -153,7 +153,7 @@ func TestPollForProduction_ProfitableSink_StillHarvests(t *testing.T) {
 	// Harvest costs 10/unit; the sink bids 100/unit - clearly profitable.
 	executor, _, mediator := newCrushedSinkExecutor(t, 10, 100, nil)
 
-	quantity, cost, err := executor.PollForProduction(
+	quantity, cost, _, err := executor.PollForProduction(
 		context.Background(),
 		dockRaceGood,
 		dockRaceMarketWP,
@@ -185,7 +185,7 @@ func TestPollForProduction_CrushedSink_ConstructionSupplyBypassesGuard(t *testin
 	logger := &dwellCapturingLogger{}
 	ctx := shared.WithConstructionSupply(common.WithLogger(context.Background(), logger))
 
-	quantity, _, err := executor.PollForProduction(
+	quantity, _, _, err := executor.PollForProduction(
 		ctx,
 		dockRaceGood,
 		dockRaceMarketWP,
@@ -218,7 +218,7 @@ func TestPollForProduction_CrushedSink_ConstructionSupplyBypassesGuard(t *testin
 func TestPollForProduction_NoImportMarket_FailsOpenAndHarvests(t *testing.T) {
 	executor, _, mediator := newCrushedSinkExecutor(t, 10, 0, fmt.Errorf("no market found importing %s", dockRaceGood))
 
-	quantity, _, err := executor.PollForProduction(
+	quantity, _, _, err := executor.PollForProduction(
 		context.Background(),
 		dockRaceGood,
 		dockRaceMarketWP,

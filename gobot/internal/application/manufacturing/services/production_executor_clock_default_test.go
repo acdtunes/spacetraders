@@ -36,7 +36,7 @@ func TestConstructionPathExecutor_NilClock_DoesNotPanicOnGateFillPoll(t *testing
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // exit the timeout-less poll loop deterministically, just past the clock read
 
-	_, _, err := executor.PollForProduction(
+	_, _, _, err := executor.PollForProduction(
 		ctx, dockRaceGood, gateFillTestFactoryWP, dockRaceShip, shared.MustNewPlayerID(1), nil, false, "X1-DR",
 	)
 

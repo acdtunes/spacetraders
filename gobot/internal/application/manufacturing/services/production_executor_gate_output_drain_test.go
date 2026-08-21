@@ -57,7 +57,7 @@ func TestPurchaseFabricatedOutput_GateNode_DrainsToAvailableSupply_NoRateCap(t *
 
 	const tradeVolume = 43 // the abundant F46 export volume from the bead
 	buy := func(lot int) int {
-		units, _, err := executor.purchaseFabricatedOutput(ctx, harvestRun{good: dockRaceGood, waypointSymbol: gateFillTestFactoryWP, shipSymbol: dockRaceShip, playerID: shared.MustNewPlayerID(1)}, tradeVolume, 10)
+		units, _, _, err := executor.purchaseFabricatedOutput(ctx, harvestRun{good: dockRaceGood, waypointSymbol: gateFillTestFactoryWP, shipSymbol: dockRaceShip, playerID: shared.MustNewPlayerID(1)}, tradeVolume, 10)
 		if err != nil {
 			t.Fatalf("lot %d: gate output-buy must not error: %v", lot, err)
 		}
@@ -81,7 +81,7 @@ func TestPurchaseFabricatedOutput_GateNode_CargoBoundsTheBuy(t *testing.T) {
 	executor, _ := newGateFillExecutor(t, 20)
 	ctx := gateModeCtx(context.Background())
 
-	units, _, err := executor.purchaseFabricatedOutput(ctx, harvestRun{good: dockRaceGood, waypointSymbol: gateFillTestFactoryWP, shipSymbol: dockRaceShip, playerID: shared.MustNewPlayerID(1)}, 43, 10)
+	units, _, _, err := executor.purchaseFabricatedOutput(ctx, harvestRun{good: dockRaceGood, waypointSymbol: gateFillTestFactoryWP, shipSymbol: dockRaceShip, playerID: shared.MustNewPlayerID(1)}, 43, 10)
 	if err != nil {
 		t.Fatalf("gate output-buy must not error: %v", err)
 	}
@@ -99,7 +99,7 @@ func TestPurchaseFabricatedOutput_NonGateNode_DrainsToAvailableSupply(t *testing
 
 	const tradeVolume = 10
 	for lot := 1; lot <= 5; lot++ {
-		units, _, err := executor.purchaseFabricatedOutput(ctx, harvestRun{good: dockRaceGood, waypointSymbol: gateFillTestFactoryWP, shipSymbol: dockRaceShip, playerID: shared.MustNewPlayerID(1)}, tradeVolume, 10)
+		units, _, _, err := executor.purchaseFabricatedOutput(ctx, harvestRun{good: dockRaceGood, waypointSymbol: gateFillTestFactoryWP, shipSymbol: dockRaceShip, playerID: shared.MustNewPlayerID(1)}, tradeVolume, 10)
 		if err != nil {
 			t.Fatalf("lot %d: non-gate harvest must not error: %v", lot, err)
 		}

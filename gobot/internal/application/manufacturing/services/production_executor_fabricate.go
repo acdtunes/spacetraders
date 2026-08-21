@@ -137,7 +137,7 @@ func (e *ProductionExecutor) fabricateGood(ctx context.Context, run fabricationR
 
 	// In inputs-only mode the poll still confirms the output was produced, but the harvest is
 	// skipped so the good is left in factory stock.
-	quantity, cost, err := e.PollForProduction(ctx, node.Good, factoryMarket.WaypointSymbol, updatedShip.ShipSymbol(), playerIDValue, run.opContext, run.inputsOnly, run.systemSymbol)
+	quantity, cost, zeroReason, err := e.PollForProduction(ctx, node.Good, factoryMarket.WaypointSymbol, updatedShip.ShipSymbol(), playerIDValue, run.opContext, run.inputsOnly, run.systemSymbol)
 	if err != nil {
 		return nil, fmt.Errorf("failed during production polling: %w", err)
 	}
@@ -148,6 +148,7 @@ func (e *ProductionExecutor) fabricateGood(ctx context.Context, run fabricationR
 		QuantityAcquired: quantity,
 		TotalCost:        totalCost,
 		WaypointSymbol:   factoryMarket.WaypointSymbol,
+		ZeroReason:       zeroReason,
 	}, nil
 }
 
@@ -321,7 +322,7 @@ func (e *ProductionExecutor) collectExistingFactorySupply(
 
 	// Purchase the goods directly (PollForProduction will find them immediately since supply is HIGH/ABUNDANT).
 	// In inputs-only mode the harvest is skipped, so the already-abundant stock is left for construction to source.
-	quantity, cost, err := e.PollForProduction(ctx, node.Good, factoryMarket.WaypointSymbol, updatedShip.ShipSymbol(), playerIDValue, run.opContext, run.inputsOnly, run.systemSymbol)
+	quantity, cost, zeroReason, err := e.PollForProduction(ctx, node.Good, factoryMarket.WaypointSymbol, updatedShip.ShipSymbol(), playerIDValue, run.opContext, run.inputsOnly, run.systemSymbol)
 	if err != nil {
 		return nil, fmt.Errorf("failed to purchase from factory: %w", err)
 	}
@@ -330,12 +331,13 @@ func (e *ProductionExecutor) collectExistingFactorySupply(
 		QuantityAcquired: quantity,
 		TotalCost:        cost,
 		WaypointSymbol:   factoryMarket.WaypointSymbol,
+		ZeroReason:       zeroReason,
 	}, nil
 }
 
 // PollForProduction polls the market database until the output good appears in exports.
 // Uses exponential backoff with NO timeout - polls indefinitely until good appears or context cancelled.
-// Returns quantity purchased and cost.
+// Returns quantity purchased, cost, and the zero-quantity reason (see AcquisitionZeroReason).
 func (e *ProductionExecutor) PollForProduction(
 	ctx context.Context,
 	good string,
@@ -345,7 +347,7 @@ func (e *ProductionExecutor) PollForProduction(
 	opContext *shared.OperationContext, // Operation context for transaction linking
 	inputsOnly bool, // when true, confirm production then LEAVE the output in factory stock (skip the harvest)
 	systemSymbol string, // system to search for a resale sink when checking the crushed-sink guard (bp6f #3)
-) (int, int, error) {
+) (int, int, AcquisitionZeroReason, error) {
 	logger := common.LoggerFromContext(ctx)
 	run := harvestRun{
 		good:           good,
@@ -366,7 +368,7 @@ func (e *ProductionExecutor) PollForProduction(
 	for {
 		select {
 		case <-ctx.Done():
-			return 0, 0, fmt.Errorf("production polling cancelled: %w", ctx.Err())
+			return 0, 0, ZeroReasonUnspecified, fmt.Errorf("production polling cancelled: %w", ctx.Err())
 		default:
 			// Continue polling
 		}
@@ -374,7 +376,7 @@ func (e *ProductionExecutor) PollForProduction(
 		// Query market data from database (kept fresh by scout tours)
 		marketData, err := e.marketRepo.GetMarketData(ctx, waypointSymbol, playerID.Value())
 		if err != nil {
-			return 0, 0, fmt.Errorf("failed to get market data during polling: %w", err)
+			return 0, 0, ZeroReasonUnspecified, fmt.Errorf("failed to get market data during polling: %w", err)
 		}
 
 		if tradeGood := marketData.FindGood(good); tradeGood != nil {
@@ -394,7 +396,7 @@ func (e *ProductionExecutor) PollForProduction(
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return 0, 0, fmt.Errorf("production polling cancelled during wait: %w", ctx.Err())
+			return 0, 0, ZeroReasonUnspecified, fmt.Errorf("production polling cancelled during wait: %w", ctx.Err())
 		case <-timer.C:
 			// Continue to next poll attempt
 		}
@@ -421,7 +423,7 @@ func (e *ProductionExecutor) harvestProducedOutput(
 	ctx context.Context,
 	run harvestRun,
 	tradeGood *market.TradeGood,
-) (int, int, error) {
+) (int, int, AcquisitionZeroReason, error) {
 	logger := common.LoggerFromContext(ctx)
 
 	// Construction-support: leave the output for the construction pipeline to be the SOLE buyer.
@@ -431,11 +433,11 @@ func (e *ProductionExecutor) harvestProducedOutput(
 			"good":     run.good,
 			"waypoint": run.waypointSymbol,
 		})
-		return 0, 0, nil
+		return 0, 0, ZeroReasonUnspecified, nil
 	}
 
 	if e.crushedSinkParked(ctx, run, tradeGood.PurchasePrice()) {
-		return 0, 0, nil
+		return 0, 0, ZeroReasonUnspecified, nil
 	}
 
 	return e.purchaseFabricatedOutput(ctx, run, tradeGood.TradeVolume(), tradeGood.PurchasePrice())
@@ -505,24 +507,24 @@ func (e *ProductionExecutor) purchaseFabricatedOutput(
 	run harvestRun,
 	tradeVolume int,
 	unitPrice int, // per-unit harvest cost (the factory's ask = tradeGood.PurchasePrice()) — the working-capital-floor basis
-) (int, int, error) {
+) (int, int, AcquisitionZeroReason, error) {
 	logger := common.LoggerFromContext(ctx)
 	good, waypointSymbol, shipSymbol, playerID := run.good, run.waypointSymbol, run.shipSymbol, run.playerID
 
 	ship, err := e.shipRepo.FindBySymbol(ctx, shipSymbol, playerID)
 	if err != nil {
-		return 0, 0, fmt.Errorf("failed to reload ship: %w", err)
+		return 0, 0, ZeroReasonUnspecified, fmt.Errorf("failed to reload ship: %w", err)
 	}
 
 	ship, roomFreed := e.makeRoomForOutputHarvest(ctx, ship, good, playerID)
 	if !roomFreed {
-		return 0, 0, nil
+		return 0, 0, ZeroReasonUnspecified, nil
 	}
 	availableSpace := ship.Cargo().Capacity - ship.Cargo().Units
 
 	purchaseQty := min(availableSpace, harvestTrancheCap(ctx, tradeVolume))
 	if purchaseQty <= 0 {
-		return 0, 0, fmt.Errorf("trade volume is zero for %s", good)
+		return 0, 0, ZeroReasonUnspecified, fmt.Errorf("trade volume is zero for %s", good)
 	}
 
 	// The fabricated-OUTPUT buy is floored IDENTICALLY to the raw-input path, reusing the same
@@ -535,12 +537,12 @@ func (e *ProductionExecutor) purchaseFabricatedOutput(
 			"good": good, "market": waypointSymbol, "projected_cost": projectedCost,
 			"action": "factory_parked", "reason": "spend_floor",
 		})
-		return 0, 0, nil
+		return 0, 0, ZeroReasonCapitalDeclined, nil
 	}
 
 	reservationID, parked := e.reserveConcurrentSpendOrPark(ctx, playerID.Value(), projectedCost, waypointSymbol, good)
 	if parked {
-		return 0, 0, nil // concurrent cap (reserveConcurrentSpendOrPark logged the cause)
+		return 0, 0, ZeroReasonCapitalDeclined, nil // concurrent cap (reserveConcurrentSpendOrPark logged the cause)
 	}
 
 	logger.Log("INFO", fmt.Sprintf("Purchasing %d units of fabricated %s (cargo: %d, trade_volume: %d)", purchaseQty, good, availableSpace, tradeVolume), nil)
@@ -557,7 +559,7 @@ func (e *ProductionExecutor) purchaseFabricatedOutput(
 	response, err := e.purchaseWithDockRetry(ctx, purchaseCmd)
 	e.releaseSpendReservation(ctx, playerID.Value(), reservationID)
 	if err != nil {
-		return 0, 0, fmt.Errorf("failed to purchase fabricated output: %w", err)
+		return 0, 0, ZeroReasonUnspecified, fmt.Errorf("failed to purchase fabricated output: %w", err)
 	}
 
 	logger.Log("INFO", fmt.Sprintf("Purchased fabricated output: %d units of %s for %d credits", response.UnitsAdded, good, response.TotalCost), map[string]interface{}{
@@ -567,7 +569,7 @@ func (e *ProductionExecutor) purchaseFabricatedOutput(
 		"waypoint":   waypointSymbol,
 	})
 
-	return response.UnitsAdded, response.TotalCost, nil
+	return response.UnitsAdded, response.TotalCost, ZeroReasonUnspecified, nil
 }
 
 // harvestTrancheCap bounds one output harvest: the market's own trade volume — the natural "buy

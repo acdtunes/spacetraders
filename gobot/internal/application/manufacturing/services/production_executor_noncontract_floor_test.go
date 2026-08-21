@@ -86,7 +86,7 @@ func TestPurchaseFabricatedOutput_NonContractFloor_ParksInContractBandProceedsAb
 			logger := &dwellCapturingLogger{}
 			ctx := common.WithLogger(common.WithPlayerToken(context.Background(), "TOKEN-Q8BON"), logger)
 
-			units, cost, err := buyFabricatedOutput(executor, ctx)
+			units, cost, zeroReason, err := buyFabricatedOutput(executor, ctx)
 			if err != nil {
 				t.Fatalf("a floor decision must never surface as an error: %v", err)
 			}
@@ -98,6 +98,14 @@ func TestPurchaseFabricatedOutput_NonContractFloor_ParksInContractBandProceedsAb
 			}
 			if mediator.purchaseAttempts() != tc.wantBuys {
 				t.Fatalf("credits %d: want %d purchase dispatches, got %d", tc.credits, tc.wantBuys, mediator.purchaseAttempts())
+			}
+			// sp-0u1yd: a non-contract-floor park is capital, not a dry factory.
+			wantReason := ZeroReasonUnspecified
+			if tc.wantBuys == 0 {
+				wantReason = ZeroReasonCapitalDeclined
+			}
+			if zeroReason != wantReason {
+				t.Fatalf("credits %d: want zero-reason %v, got %v", tc.credits, wantReason, zeroReason)
 			}
 		})
 	}

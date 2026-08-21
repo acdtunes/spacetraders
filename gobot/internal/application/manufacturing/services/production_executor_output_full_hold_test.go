@@ -46,7 +46,7 @@ func TestPurchaseFabricatedOutput_FullHold_UnloadsExistingCargoThenPurchases(t *
 	executor, repo, mediator := newDockRaceExecutor(t, nil)
 	repo.fillCargo(fullStaleOutputCargo(40))
 
-	quantity, cost, err := executor.PollForProduction(
+	quantity, cost, _, err := executor.PollForProduction(
 		context.Background(),
 		dockRaceGood,
 		dockRaceMarketWP,
@@ -75,7 +75,7 @@ func TestPurchaseFabricatedOutput_FullHold_UnsellableCargo_SkipsGracefully(t *te
 	repo.fillCargo(fullStaleOutputCargo(40))
 	mediator.sellShouldFail = true
 
-	quantity, cost, err := executor.PollForProduction(
+	quantity, cost, _, err := executor.PollForProduction(
 		context.Background(),
 		dockRaceGood,
 		dockRaceMarketWP,

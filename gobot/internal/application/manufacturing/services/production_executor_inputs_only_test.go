@@ -25,7 +25,7 @@ func TestPollForProduction_InputsOnly_LeavesOutputInFactory(t *testing.T) {
 	// sell; the ONLY reason no purchase happens is the inputs-only skip.
 	executor, _, mediator := newDockRaceExecutor(t, nil)
 
-	quantity, cost, err := executor.PollForProduction(
+	quantity, cost, _, err := executor.PollForProduction(
 		context.Background(),
 		dockRaceGood,
 		dockRaceMarketWP,
@@ -53,7 +53,7 @@ func TestPollForProduction_Default_HarvestsOutput(t *testing.T) {
 	// fabricated output. No existing caller may regress.
 	executor, _, mediator := newDockRaceExecutor(t, nil)
 
-	quantity, cost, err := executor.PollForProduction(
+	quantity, cost, _, err := executor.PollForProduction(
 		context.Background(),
 		dockRaceGood,
 		dockRaceMarketWP,

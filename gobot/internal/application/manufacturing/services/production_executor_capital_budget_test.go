@@ -162,7 +162,7 @@ func TestPurchaseFabricatedOutput_CapitalBudget_ReservesTradesShareAboveTheFlatF
 			logger := &dwellCapturingLogger{}
 			ctx := common.WithLogger(common.WithPlayerToken(context.Background(), "TOKEN-FTQGP"), logger)
 
-			units, cost, err := buyFabricatedOutput(executor, ctx)
+			units, cost, zeroReason, err := buyFabricatedOutput(executor, ctx)
 			if err != nil {
 				t.Fatalf("a budget decision must never surface as an error: %v", err)
 			}
@@ -177,6 +177,12 @@ func TestPurchaseFabricatedOutput_CapitalBudget_ReservesTradesShareAboveTheFlatF
 				if mediator.purchaseAttempts() != 0 {
 					t.Fatalf("a parked harvest must dispatch no purchase, got %d", mediator.purchaseAttempts())
 				}
+				// sp-0u1yd: a budget-driven park is capital, not a dry factory.
+				if zeroReason != ZeroReasonCapitalDeclined {
+					t.Fatalf("expected ZeroReasonCapitalDeclined on a capital-budget park, got %v", zeroReason)
+				}
+			} else if zeroReason != ZeroReasonUnspecified {
+				t.Fatalf("a non-zero harvest must carry no zero-reason, got %v", zeroReason)
 			}
 		})
 	}

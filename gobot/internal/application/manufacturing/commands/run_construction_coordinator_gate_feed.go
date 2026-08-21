@@ -105,11 +105,12 @@ func (h *RunConstructionCoordinatorHandler) feedGateLeg(
 	// Passing the hold rather than letting the planner guess keeps the prediction and the purchase
 	// talking about one quantity: a planner sizing against some other number would decline steps the
 	// buy would have afforded, or admit ones it would not.
-	step, input, target, planned := h.planGateFeed(ctx, cmd, systemSymbol, billSource, capacity)
+	step, input, target, capitalBlocked, planned := h.planGateFeed(ctx, cmd, systemSymbol, billSource, capacity)
 	if !planned {
 		logger.Log("WARNING", fmt.Sprintf("Gate factory: %s found no feedable step this leg — every gate material is either satisfied, already ABUNDANT at its factory, has no resolvable source and destination, or costs more than the working-capital reserve allows", lot.ship.ShipSymbol()), map[string]interface{}{
 			"ship": lot.ship.ShipSymbol(), "action": "no_feed_step",
 		})
+		leg.capitalBlocked = capitalBlocked
 		return h.completeOrDefer(ctx, leg)
 	}
 
@@ -129,6 +130,8 @@ func (h *RunConstructionCoordinatorHandler) feedGateLeg(
 		logger.Log("WARNING", fmt.Sprintf("Gate factory: acquired nothing of %s at %s — the spend guards stopped the fill, so %s feeds no factory this leg", step.Input, input.WaypointSymbol, lot.ship.ShipSymbol()), map[string]interface{}{
 			"good": step.Input, "source": input.WaypointSymbol, "ship": lot.ship.ShipSymbol(), "action": "buy_acquired_nothing",
 		})
+		// One buy per leg, so a capital decline here is the whole reason this leg made no progress.
+		leg.capitalBlocked = capitalDeclined(result)
 		return h.completeOrDefer(ctx, leg)
 	}
 
@@ -472,17 +475,20 @@ func logGateFeedRanking(ctx context.Context, root string, candidates []gateFeedC
 // Being a `continue` rather than a retry at the buy site is what keeps ONE BUY PER LEG — the only
 // bound on factory-fleet spend, since an INPUT has no bill (see this file's header, and
 // TestFeedGateLeg_BuysExactlyOnceEvenThoughThePlanHasSeveralSteps, which pins the call count).
+// capitalBlocked (meaningful only when planned is false) reports whether at least one candidate
+// was declined specifically as unaffordable, as opposed to every other decline.
 func (h *RunConstructionCoordinatorHandler) planGateFeed(
 	ctx context.Context,
 	cmd *RunConstructionCoordinatorCommand,
 	systemSymbol string,
 	pipeline *manufacturing.ManufacturingPipeline,
 	units int,
-) (gate.FeedStep, *mfgServices.MarketLocatorResult, *mfgServices.MarketLocatorResult, bool) {
+) (gate.FeedStep, *mfgServices.MarketLocatorResult, *mfgServices.MarketLocatorResult, bool, bool) {
 	logger := common.LoggerFromContext(ctx)
 	// Steps the pacing consult passed over, kept across every material so the fallback below can
 	// feed the least-compressed rather than letting pacing stand the leg down.
 	var yielded []yieldedStep
+	var capitalBlocked bool
 
 	for _, material := range gateMaterialsNeediestFirst(pipeline) {
 		plan := gate.PlanFeed(material.TradeSymbol(), h.factory.topology, gate.DefaultFeedDepthCap)
@@ -626,6 +632,7 @@ func (h *RunConstructionCoordinatorHandler) planGateFeed(
 						"units": tranche, "projected_cost": projected, "reserve": reserve,
 						"reason": "unaffordable_input", "action": "step_skipped_unaffordable",
 					})
+					capitalBlocked = true
 					continue
 				}
 			}
@@ -650,7 +657,7 @@ func (h *RunConstructionCoordinatorHandler) planGateFeed(
 					continue
 				}
 			}
-			return step, source, target, true
+			return step, source, target, capitalBlocked, true
 		}
 	}
 	// PACING IS NEVER THE REASON NOTHING IS FED. Every survivor was yielded, so there is no
@@ -660,9 +667,9 @@ func (h *RunConstructionCoordinatorHandler) planGateFeed(
 			"good": best.step.Input, "target": best.step.Target, "source": best.source.WaypointSymbol,
 			"debt": best.debt, "action": "pacing_fallback_least_compressed",
 		})
-		return best.step, best.source, best.target, true
+		return best.step, best.source, best.target, capitalBlocked, true
 	}
-	return gate.FeedStep{}, nil, nil, false
+	return gate.FeedStep{}, nil, nil, capitalBlocked, false
 }
 
 // yieldedStep is one step the pacing consult passed over, kept for the fallback below.
