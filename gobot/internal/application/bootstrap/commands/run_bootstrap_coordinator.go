@@ -199,16 +199,18 @@ type ShipyardScanner interface {
 }
 
 // MetricsSink records the bootstrap's observation series (spec §Observability). Pure observation:
-// nil-safe and best-effort, a recording miss never touches a decision.
+// nil-safe and best-effort, a recording miss never touches a decision. Every method takes playerID so
+// a shared Prometheus instance can scope a panel to one player/era instead of blending every player
+// that has ever run against it.
 type MetricsSink interface {
-	// RecordPhase sets the derived-phase gauge (spacetraders_bootstrap_phase{phase}).
-	RecordPhase(phase string)
+	// RecordPhase sets the derived-phase gauge (spacetraders_bootstrap_phase{phase,player_id}).
+	RecordPhase(phase string, playerID string)
 	// RecordProbePurchased increments the probes-bought counter (once per executed probe buy).
-	RecordProbePurchased()
+	RecordProbePurchased(playerID string)
 	// RecordHaulerPurchased increments the haulers-bought counter (once per executed hauler buy).
-	RecordHaulerPurchased()
+	RecordHaulerPurchased(playerID string)
 	// RecordConstructionPct sets the gate construction-progress gauge [0,100] (GATE phase).
-	RecordConstructionPct(pct float64)
+	RecordConstructionPct(pct float64, playerID string)
 }
 
 // FrigateRetirer clears the command frigate's contract-fleet dedication (reuses fleet unassign —

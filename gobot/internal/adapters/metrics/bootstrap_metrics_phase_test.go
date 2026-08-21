@@ -79,6 +79,10 @@ func derivablePhases(t *testing.T) []string {
 	return phases
 }
 
+// testPlayerID is a fixed, arbitrary player_id used wherever a test only cares about the phase
+// dimension — the player_id dimension itself is covered separately (bootstrap_metrics_player_id_test.go).
+const testPlayerID = "42"
+
 // The phase gauge must publish exactly the phases the coordinator can derive, the active one at 1 and every
 // other at 0. Both drift directions are fleet-visible faults, so both are asserted:
 //
@@ -97,21 +101,21 @@ func TestRecordPhasePublishesExactlyTheDerivablePhases(t *testing.T) {
 				t.Fatalf("Register failed: %v", err)
 			}
 
-			collector.RecordPhase(active)
+			collector.RecordPhase(active, testPlayerID)
 
 			for _, phase := range phases {
 				want := 0.0
 				if phase == active {
 					want = 1.0
 				}
-				if got := testutil.ToFloat64(collector.phase.WithLabelValues(phase)); got != want {
+				if got := testutil.ToFloat64(collector.phase.WithLabelValues(phase, testPlayerID)); got != want {
 					t.Errorf("after RecordPhase(%q): bootstrap_phase{phase=%q} = %v, want %v", active, phase, got, want)
 				}
 			}
 
 			// Whatever remains once every derivable phase is removed is a series the coordinator can never set.
 			for _, phase := range phases {
-				collector.phase.Delete(prometheus.Labels{"phase": phase})
+				collector.phase.Delete(prometheus.Labels{"phase": phase, "player_id": testPlayerID})
 			}
 			if leftover := testutil.CollectAndCount(collector.phase); leftover != 0 {
 				t.Errorf("after RecordPhase(%q): %d bootstrap_phase series published outside the derivable phases %v",

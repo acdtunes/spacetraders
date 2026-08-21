@@ -12,22 +12,23 @@ import (
 // So this list and the Phase constants must stay in exact step.
 var bootstrapKnownPhases = []string{"COLDSTART", "GATE", "EXPANSION"}
 
-// BootstrapMetricsCollector houses the captain bootstrap coordinator's observation series:
+// BootstrapMetricsCollector houses the captain bootstrap coordinator's observation series, each keyed
+// by player_id so a dashboard can scope to one player/era instead of blending every player that has run:
 //
-//   - bootstrap_phase{phase}: a GAUGE set to 1 for the currently-derived phase and 0 for the others,
-//     so a dashboard shows which cold-start phase the reconciler is in (derived, never stored).
-//   - bootstrap_probes_total: a COUNTER incremented once per probe the coordinator actually buys in
-//     the COLDSTART phase — real spend, real progress.
-//   - bootstrap_haulers_total: a COUNTER incremented once per contract hauler the coordinator buys in
-//     the COLDSTART phase — the contract-fleet ramp made visible.
+//   - bootstrap_phase{phase,player_id}: a GAUGE set to 1 for the currently-derived phase and 0 for the
+//     others, so a dashboard shows which cold-start phase the reconciler is in (derived, never stored).
+//   - bootstrap_probes_total{player_id}: a COUNTER incremented once per probe the coordinator actually
+//     buys in the COLDSTART phase — real spend, real progress.
+//   - bootstrap_haulers_total{player_id}: a COUNTER incremented once per contract hauler the coordinator
+//     buys in the COLDSTART phase — the contract-fleet ramp made visible.
 //
 // Pure OBSERVATION (RULINGS #4): a recording miss must never touch a decision, so every method is
 // nil-safe and best-effort. The reconciler's guard/act paths run independently of this collector.
 type BootstrapMetricsCollector struct {
 	phase           *prometheus.GaugeVec
-	probesTotal     prometheus.Counter
-	haulersTotal    prometheus.Counter
-	constructionPct prometheus.Gauge
+	probesTotal     *prometheus.CounterVec
+	haulersTotal    *prometheus.CounterVec
+	constructionPct *prometheus.GaugeVec
 }
 
 // NewBootstrapMetricsCollector creates a new bootstrap metrics collector.
@@ -35,20 +36,24 @@ func NewBootstrapMetricsCollector() *BootstrapMetricsCollector {
 	return &BootstrapMetricsCollector{
 		phase: newGaugeVec(
 			"bootstrap_phase",
-			"The captain bootstrap coordinator's currently-derived cold-start phase (1 = active), by phase (sp-3nbe)",
+			"The captain bootstrap coordinator's currently-derived cold-start phase (1 = active), by phase and player_id (sp-3nbe)",
 			"phase",
+			"player_id",
 		),
-		probesTotal: newCounter(
+		probesTotal: newCounterVec(
 			"bootstrap_probes_total",
-			"Probes the bootstrap coordinator bought in the COLDSTART phase, counted once per purchase (sp-3nbe)",
+			"Probes the bootstrap coordinator bought in the COLDSTART phase, counted once per purchase, by player_id (sp-3nbe)",
+			"player_id",
 		),
-		haulersTotal: newCounter(
+		haulersTotal: newCounterVec(
 			"bootstrap_haulers_total",
-			"Contract haulers the bootstrap coordinator bought in the COLDSTART phase, counted once per purchase (sp-ysgb.1)",
+			"Contract haulers the bootstrap coordinator bought in the COLDSTART phase, counted once per purchase, by player_id (sp-ysgb.1)",
+			"player_id",
 		),
-		constructionPct: newGauge(
+		constructionPct: newGaugeVec(
 			"bootstrap_construction_pct",
-			"The gate construction site's delivery progress [0,100] in the GATE phase, set each tick (sp-ysgb.2)",
+			"The gate construction site's delivery progress [0,100] in the GATE phase, set each tick, by player_id (sp-ysgb.2)",
+			"player_id",
 		),
 	}
 }
@@ -67,9 +72,9 @@ func (c *BootstrapMetricsCollector) Register() error {
 	)
 }
 
-// RecordPhase sets the derived-phase gauge: the given phase to 1 and every other known phase to 0,
-// so exactly one series is active (once per tick).
-func (c *BootstrapMetricsCollector) RecordPhase(phase string) {
+// RecordPhase sets the derived-phase gauge: the given phase to 1 and every other known phase to 0 for
+// this player_id, so exactly one series per player is active (once per tick).
+func (c *BootstrapMetricsCollector) RecordPhase(phase string, playerID string) {
 	if c == nil || c.phase == nil {
 		return
 	}
@@ -78,32 +83,32 @@ func (c *BootstrapMetricsCollector) RecordPhase(phase string) {
 		if p == phase {
 			v = 1.0
 		}
-		c.phase.WithLabelValues(p).Set(v)
+		c.phase.WithLabelValues(p, playerID).Set(v)
 	}
 }
 
 // RecordProbePurchased increments the probe-purchase counter (called once per executed COLDSTART buy).
-func (c *BootstrapMetricsCollector) RecordProbePurchased() {
+func (c *BootstrapMetricsCollector) RecordProbePurchased(playerID string) {
 	if c == nil || c.probesTotal == nil {
 		return
 	}
-	c.probesTotal.Inc()
+	c.probesTotal.WithLabelValues(playerID).Inc()
 }
 
 // RecordHaulerPurchased increments the hauler-purchase counter (called once per executed COLDSTART buy).
-func (c *BootstrapMetricsCollector) RecordHaulerPurchased() {
+func (c *BootstrapMetricsCollector) RecordHaulerPurchased(playerID string) {
 	if c == nil || c.haulersTotal == nil {
 		return
 	}
-	c.haulersTotal.Inc()
+	c.haulersTotal.WithLabelValues(playerID).Inc()
 }
 
 // RecordConstructionPct sets the gate construction-progress gauge [0,100] (called each GATE tick).
-func (c *BootstrapMetricsCollector) RecordConstructionPct(pct float64) {
+func (c *BootstrapMetricsCollector) RecordConstructionPct(pct float64, playerID string) {
 	if c == nil || c.constructionPct == nil {
 		return
 	}
-	c.constructionPct.Set(pct)
+	c.constructionPct.WithLabelValues(playerID).Set(pct)
 }
 
 // globalBootstrapCollector is the singleton captain-bootstrap collector. Set by

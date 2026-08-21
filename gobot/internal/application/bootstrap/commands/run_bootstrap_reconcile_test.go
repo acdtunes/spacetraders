@@ -124,14 +124,28 @@ type fakeMetrics struct {
 	haulers         int
 	constructionPct float64
 	pctRecorded     bool
+	// playerIDs collects every player_id this fake has seen across all four Record* methods, in call
+	// order, so a test can assert on end-to-end plumbing (cmd.PlayerID reaching the metrics sink)
+	// without a dedicated field per method.
+	playerIDs []string
 }
 
-func (m *fakeMetrics) RecordPhase(phase string) { m.phases = append(m.phases, phase) }
-func (m *fakeMetrics) RecordProbePurchased()    { m.purchase++ }
-func (m *fakeMetrics) RecordHaulerPurchased()   { m.haulers++ }
-func (m *fakeMetrics) RecordConstructionPct(pct float64) {
+func (m *fakeMetrics) RecordPhase(phase string, playerID string) {
+	m.phases = append(m.phases, phase)
+	m.playerIDs = append(m.playerIDs, playerID)
+}
+func (m *fakeMetrics) RecordProbePurchased(playerID string) {
+	m.purchase++
+	m.playerIDs = append(m.playerIDs, playerID)
+}
+func (m *fakeMetrics) RecordHaulerPurchased(playerID string) {
+	m.haulers++
+	m.playerIDs = append(m.playerIDs, playerID)
+}
+func (m *fakeMetrics) RecordConstructionPct(pct float64, playerID string) {
 	m.constructionPct = pct
 	m.pctRecorded = true
+	m.playerIDs = append(m.playerIDs, playerID)
 }
 
 // scriptedWorld is a tiny stateful model so a multi-tick acceptance test can observe the effect of
@@ -539,6 +553,42 @@ func TestBootstrap_RecordsMetrics(t *testing.T) {
 	// buy-to-target records one metric per probe bought (0/3 → 3).
 	if m.purchase != 3 {
 		t.Fatalf("expected 3 probe-purchase metrics (buy-to-target), got %d", m.purchase)
+	}
+	// Every Record* call this tick must carry baseCmd()'s PlayerID (1), not an empty or wrong value.
+	for _, id := range m.playerIDs {
+		if id != "1" {
+			t.Fatalf("expected every recorded player_id to be %q (baseCmd's PlayerID), got %v", "1", m.playerIDs)
+		}
+	}
+}
+
+// TestBootstrap_RecordsMetrics_DistinctPlayerIDsPlumbedThrough proves the coordinator threads
+// cmd.PlayerID — not a fixed or shared value — into every Record* call: two players reconciling
+// against the same sink must be attributable to their own player_id, never blended into one. The
+// Prometheus series themselves staying distinct once the collector receives these values is covered
+// separately, in bootstrap_metrics_player_id_test.go.
+func TestBootstrap_RecordsMetrics_DistinctPlayerIDsPlumbedThrough(t *testing.T) {
+	obs := Observation{HomeSystem: "X1-HQ", ProbeCount: 0, HasIdlePurchaser: true, Treasury: 500000, Readable: true}
+	m := &fakeMetrics{}
+	h := newWiredHandler(obs, &fakeAcquirer{price: 40000, yard: "Y", readable: true})
+	h.SetMetricsSink(m)
+
+	h.reconcileOnce(ctxWithLogger(&capturingLogger{}), &RunBootstrapCoordinatorCommand{PlayerID: 101, ContainerID: "boot-101", AgentSymbol: "P101"})
+	h.reconcileOnce(ctxWithLogger(&capturingLogger{}), &RunBootstrapCoordinatorCommand{PlayerID: 202, ContainerID: "boot-202", AgentSymbol: "P202"})
+
+	var saw101, saw202 bool
+	for _, id := range m.playerIDs {
+		switch id {
+		case "101":
+			saw101 = true
+		case "202":
+			saw202 = true
+		default:
+			t.Fatalf("recorded player_id %q, want only 101 or 202: %v", id, m.playerIDs)
+		}
+	}
+	if !saw101 || !saw202 {
+		t.Fatalf("expected Record* calls for both player_id 101 and 202, got %v", m.playerIDs)
 	}
 }
 

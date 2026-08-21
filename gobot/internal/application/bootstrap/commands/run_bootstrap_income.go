@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
@@ -840,7 +841,7 @@ func (h *RunBootstrapCoordinatorHandler) maybeBuyHauler(ctx context.Context, cmd
 	}
 	res.HaulersBought++
 	if h.metrics != nil {
-		h.metrics.RecordHaulerPurchased()
+		h.metrics.RecordHaulerPurchased(strconv.Itoa(cmd.PlayerID))
 	}
 	logger.Log("INFO", fmt.Sprintf("Bootstrap bought contract hauler %s at %s for %d, dedicated + placed on delivery slot %s (%d/%d haulers, %d slots)", bought.ShipSymbol, yard, bought.Price, slot, len(obs.Haulers)+1, haulerTarget, res.PlacementSlots), map[string]interface{}{
 		"action":       "bootstrap_bought_hauler",

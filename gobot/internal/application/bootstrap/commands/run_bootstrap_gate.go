@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strconv"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 )
@@ -436,7 +437,7 @@ func (h *RunBootstrapCoordinatorHandler) maybeBuyGateWorker(ctx context.Context,
 	}
 	res.GateWorkersBought++
 	if h.metrics != nil {
-		h.metrics.RecordHaulerPurchased() // gate workers are light haulers — reuse the hull counter
+		h.metrics.RecordHaulerPurchased(strconv.Itoa(cmd.PlayerID)) // gate workers are light haulers — reuse the hull counter
 	}
 	logger.Log("INFO", fmt.Sprintf("Bootstrap bought gate-construction worker %s at %s for %d, dedicated to construction (%d have→%d, %d desired)", bought.ShipSymbol, yard, bought.Price, obs.GateWorkers, obs.GateWorkers+1, plan.DesiredWorkers), map[string]interface{}{
 		"action":       "bootstrap_bought_gate_worker",

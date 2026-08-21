@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
@@ -259,10 +260,11 @@ func (h *RunBootstrapCoordinatorHandler) reconcileOnce(ctx context.Context, cmd 
 	phase = h.reDeriveUnderScaledGate(cmd.ContainerID, phase, obs)
 	res.Phase = phase
 	if h.metrics != nil {
-		h.metrics.RecordPhase(string(phase))
+		playerID := strconv.Itoa(cmd.PlayerID)
+		h.metrics.RecordPhase(string(phase), playerID)
 		// Construction progress is 0 pre-GATE and rises through GATE to 100 at COMPLETE — set each tick
 		// so the gauge always reflects the live world (pure observation, nil-safe).
-		h.metrics.RecordConstructionPct(obs.ConstructionPercent)
+		h.metrics.RecordConstructionPct(obs.ConstructionPercent, playerID)
 	}
 
 	switch phase {
@@ -630,7 +632,7 @@ func (h *RunBootstrapCoordinatorHandler) acquireProbesToTarget(ctx context.Conte
 		res.Purchased++
 		spent += price
 		if h.metrics != nil {
-			h.metrics.RecordProbePurchased()
+			h.metrics.RecordProbePurchased(strconv.Itoa(cmd.PlayerID))
 		}
 		logger.Log("INFO", fmt.Sprintf("Bootstrap bought probe %s at %s for %d (%d/%d)", bought.ShipSymbol, yard, bought.Price, obs.ProbeCount+res.Purchased, probeTarget), map[string]interface{}{
 			"action":       "bootstrap_bought_probe",

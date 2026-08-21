@@ -110,26 +110,26 @@ func NewBootstrapCoordinatorHandler(
 // bootstrapMetricsSink adapts to the global bootstrap collector: pure observation, nil-safe.
 type bootstrapMetricsSink struct{}
 
-func (m *bootstrapMetricsSink) RecordPhase(phase string) {
+func (m *bootstrapMetricsSink) RecordPhase(phase string, playerID string) {
 	if c := metrics.GetGlobalBootstrapCollector(); c != nil {
-		c.RecordPhase(phase)
+		c.RecordPhase(phase, playerID)
 	}
 }
 
-func (m *bootstrapMetricsSink) RecordProbePurchased() {
+func (m *bootstrapMetricsSink) RecordProbePurchased(playerID string) {
 	if c := metrics.GetGlobalBootstrapCollector(); c != nil {
-		c.RecordProbePurchased()
+		c.RecordProbePurchased(playerID)
 	}
 }
 
-func (m *bootstrapMetricsSink) RecordHaulerPurchased() {
+func (m *bootstrapMetricsSink) RecordHaulerPurchased(playerID string) {
 	if c := metrics.GetGlobalBootstrapCollector(); c != nil {
-		c.RecordHaulerPurchased()
+		c.RecordHaulerPurchased(playerID)
 	}
 }
 
-func (m *bootstrapMetricsSink) RecordConstructionPct(pct float64) {
+func (m *bootstrapMetricsSink) RecordConstructionPct(pct float64, playerID string) {
 	if c := metrics.GetGlobalBootstrapCollector(); c != nil {
-		c.RecordConstructionPct(pct)
+		c.RecordConstructionPct(pct, playerID)
 	}
 }
