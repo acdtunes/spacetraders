@@ -55,13 +55,13 @@ func (h *RunConstructionCoordinatorHandler) feedGateLeg(
 		logger.Log("WARNING", fmt.Sprintf("Gate factory: %s was routed to the feeding leg but the factory collaborators are not wired — parking its task and feeding nothing", lot.ship.ShipSymbol()), map[string]interface{}{
 			"ship": lot.ship.ShipSymbol(), "action": "factory_unwired",
 		})
-		return h.completeOrDefer(ctx, &supplyLeg{lot: lot, ship: lot.ship})
+		return h.completeOrDeferFactoryLeg(ctx, &supplyLeg{lot: lot, ship: lot.ship})
 	}
 
 	pipeline, err := h.pipelineRepo.FindByID(ctx, task.PipelineID())
 	if err != nil || pipeline == nil {
 		logger.Log("WARNING", fmt.Sprintf("Gate factory: cannot read pipeline %s for %s — standing down this leg rather than feeding against an unknown bill: %v", task.PipelineID(), task.Good(), err), nil)
-		return h.completeOrDefer(ctx, &supplyLeg{lot: lot, ship: lot.ship})
+		return h.completeOrDeferFactoryLeg(ctx, &supplyLeg{lot: lot, ship: lot.ship})
 	}
 	leg := &supplyLeg{lot: lot, ship: lot.ship, pipeline: pipeline}
 
@@ -111,7 +111,7 @@ func (h *RunConstructionCoordinatorHandler) feedGateLeg(
 			"ship": lot.ship.ShipSymbol(), "action": "no_feed_step",
 		})
 		leg.capitalBlocked = capitalBlocked
-		return h.completeOrDefer(ctx, leg)
+		return h.completeOrDeferFactoryLeg(ctx, leg)
 	}
 
 	// THE SAME pinned buy the delivery fleet uses, with every money guard unchanged. SinkFactoryFeed:
@@ -122,7 +122,7 @@ func (h *RunConstructionCoordinatorHandler) feedGateLeg(
 		logger.Log("WARNING", fmt.Sprintf("Gate factory: buying %s at %s for the %s factory failed: %v", step.Input, input.WaypointSymbol, step.Target, berr), map[string]interface{}{
 			"good": step.Input, "target": step.Target, "source": input.WaypointSymbol,
 		})
-		return h.completeOrDefer(ctx, leg)
+		return h.completeOrDeferFactoryLeg(ctx, leg)
 	}
 	if result == nil || result.QuantityAcquired == 0 {
 		// The money or price guards stopped the fill. Fail closed: do NOT fly an empty hull to a
@@ -132,7 +132,7 @@ func (h *RunConstructionCoordinatorHandler) feedGateLeg(
 		})
 		// One buy per leg, so a capital decline here is the whole reason this leg made no progress.
 		leg.capitalBlocked = capitalDeclined(result)
-		return h.completeOrDefer(ctx, leg)
+		return h.completeOrDeferFactoryLeg(ctx, leg)
 	}
 
 	// Record what this leg took out of the source so the next leg's consult can see it. Volume
@@ -165,13 +165,13 @@ func (h *RunConstructionCoordinatorHandler) feedGateLeg(
 		logger.Log("WARNING", fmt.Sprintf("Gate factory: feeding %d %s into the %s factory at %s failed; the cargo stays aboard for the next leg: %v", result.QuantityAcquired, step.Input, step.Target, target.WaypointSymbol, ferr), map[string]interface{}{
 			"good": step.Input, "target": step.Target, "factory": target.WaypointSymbol,
 		})
-		return h.completeOrDefer(ctx, leg)
+		return h.completeOrDeferFactoryLeg(ctx, leg)
 	}
 	if fed != nil && fed.Refused {
 		logger.Log("WARNING", fmt.Sprintf("Gate factory: %s refused %s — %s keeps the cargo aboard rather than stranding it there (sp-b27a2)", target.WaypointSymbol, step.Input, lot.ship.ShipSymbol()), map[string]interface{}{
 			"good": step.Input, "factory": target.WaypointSymbol, "action": "feed_refused",
 		})
-		return h.completeOrDefer(ctx, leg)
+		return h.completeOrDeferFactoryLeg(ctx, leg)
 	}
 
 	units := 0
@@ -190,7 +190,42 @@ func (h *RunConstructionCoordinatorHandler) feedGateLeg(
 	if leg.delivered > 0 {
 		return h.completeSupply(ctx, leg, leg.delivered)
 	}
-	return h.completeOrDefer(ctx, leg)
+	return h.completeOrDeferFactoryLeg(ctx, leg)
+}
+
+// completeOrDeferFactoryLeg is completeOrDefer for a FACTORY-role leg, with one exception beyond
+// leg.capitalBlocked (already handled by completeOrDefer/deferTask): a leg whose task is
+// BUY-resolved and NOT capital-blocked stands the hull down WITHOUT clearing that resolution, since
+// this leg's plan is pipeline-wide and says nothing about whether the paired task needed feeding.
+// A capital-blocked leg still defers to the existing mechanism, which already preserves the source.
+func (h *RunConstructionCoordinatorHandler) completeOrDeferFactoryLeg(ctx context.Context, leg *supplyLeg) bool {
+	if leg.delivered > 0 || leg.capitalBlocked || leg.task().SourceMarket() == "" {
+		return h.completeOrDefer(ctx, leg)
+	}
+	if !leg.ephemeral() {
+		h.standDownBuyResolvedTask(ctx, leg.task())
+	}
+	return false
+}
+
+// standDownBuyResolvedTask parks task back to PENDING without clearing its resolved source or
+// factory — deferTask minus ClearSourceForResupply, kept separate so deferTask's own shared
+// definition stays untouched. Mirrors deferTask's persistence shape otherwise.
+func (h *RunConstructionCoordinatorHandler) standDownBuyResolvedTask(ctx context.Context, task *manufacturing.ManufacturingTask) {
+	logger := common.LoggerFromContext(ctx)
+	source := task.SourceMarket()
+	if err := task.ParkForResupply(); err != nil {
+		logger.Log("WARNING", fmt.Sprintf("Gate factory: could not stand down from the already buy-resolved construction task %s: %v", task.ID(), err), nil)
+		return
+	}
+	wctx, cancel := persistCleanupCtx(ctx)
+	defer cancel()
+	if err := h.taskRepo.Update(wctx, task); err != nil {
+		logger.Log("WARNING", fmt.Sprintf("Could not persist construction task %s standing down without clearing its buy source: %v", task.ID(), err), nil)
+	}
+	logger.Log("INFO", fmt.Sprintf("Gate factory: stood down from %s's already-resolved buy source %s without clearing it — that is delivery-role work, not feeding work, so this leg parks rather than deferring it (sp-8epum)", task.Good(), source), map[string]interface{}{
+		"good": task.Good(), "source_market": source, "action": "factory_stood_down_buy_resolved",
+	})
 }
 
 // feedGateLegFromHold runs the leg for a hull with NO FREE HOLD: it delivers what is already
@@ -226,7 +261,7 @@ func (h *RunConstructionCoordinatorHandler) feedGateLegFromHold(
 		logger.Log("WARNING", fmt.Sprintf("Gate factory: %s has a FULL hold (%s) and no factory in this chain imports any of it — parking rather than dispatching cargo a factory would refuse (sp-b27a2)", ship.ShipSymbol(), describeHold(ship)), map[string]interface{}{
 			"ship": ship.ShipSymbol(), "hold": describeHold(ship), "action": "full_hold_unfeedable",
 		})
-		return h.completeOrDefer(ctx, leg)
+		return h.completeOrDeferFactoryLeg(ctx, leg)
 	}
 
 	// The input list names the good ABOARD that this trip is for — the same subject contract the
@@ -242,14 +277,14 @@ func (h *RunConstructionCoordinatorHandler) feedGateLegFromHold(
 			"good": step.Input, "target": step.Target, "factory": target.WaypointSymbol,
 			"ship": ship.ShipSymbol(), "action": "full_hold_feed_failed",
 		})
-		return h.completeOrDefer(ctx, leg)
+		return h.completeOrDeferFactoryLeg(ctx, leg)
 	}
 	if fed != nil && fed.Refused {
 		logger.Log("WARNING", fmt.Sprintf("Gate factory: %s refused the %d %s aboard %s — keeping the cargo rather than stranding it there (sp-b27a2)", target.WaypointSymbol, aboard, step.Input, ship.ShipSymbol()), map[string]interface{}{
 			"good": step.Input, "factory": target.WaypointSymbol,
 			"ship": ship.ShipSymbol(), "action": "full_hold_feed_refused",
 		})
-		return h.completeOrDefer(ctx, leg)
+		return h.completeOrDeferFactoryLeg(ctx, leg)
 	}
 
 	units := 0
@@ -271,7 +306,7 @@ func (h *RunConstructionCoordinatorHandler) feedGateLegFromHold(
 			"target": step.Target, "factory": target.WaypointSymbol, "depth": step.Depth,
 			"action": "full_hold_fed_nothing",
 		})
-		return h.completeOrDefer(ctx, leg)
+		return h.completeOrDeferFactoryLeg(ctx, leg)
 	}
 
 	logger.Log("INFO", fmt.Sprintf("Gate factory: %s had no free hold, so it fed the %d %s already aboard into the %s factory at %s — freeing the hull rather than parking it", ship.ShipSymbol(), units, step.Input, step.Target, target.WaypointSymbol), map[string]interface{}{
@@ -279,7 +314,7 @@ func (h *RunConstructionCoordinatorHandler) feedGateLegFromHold(
 		"target": step.Target, "factory": target.WaypointSymbol, "depth": step.Depth,
 		"action": "full_hold_fed",
 	})
-	return h.completeOrDefer(ctx, leg)
+	return h.completeOrDeferFactoryLeg(ctx, leg)
 }
 
 // planGateFeedFromHold picks the step this leg will feed OFF THE HULL'S OWN HOLD.

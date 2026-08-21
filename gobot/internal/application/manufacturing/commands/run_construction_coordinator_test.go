@@ -420,6 +420,28 @@ func readyConstructionTask(t *testing.T, pipeline *manufacturing.ManufacturingPi
 	return task
 }
 
+// readyFactoryFeedableConstructionTask is readyConstructionTask's sibling for a task a FACTORY-role
+// hull genuinely has feeding work for: UNRESOLVED (neither sourceMarket nor factorySymbol set), the
+// shape planMaterial/resourceDeferredConstructionTask (construction_pipeline_planner.go,
+// task_activator_construction.go) leave a task in immediately before resolving it — and both of
+// those set AT MOST ONE of sourceMarket/factorySymbol, never both. readyConstructionTask's own
+// "X1-TEST-SRC" default is correct for its many OTHER callers (delivery-role legs and
+// role-agnostic dispatch-mechanics tests, where a resolved buy source is exactly what the fixture
+// wants) and must not change here.
+//
+// Load-bearing after sp-8epum: planDispatchLots declines to pair a gate.RoleFactory hull with a
+// task whose SourceMarket() is already set, because production never hands a factory hull one. A
+// factory-role end-to-end test staging a task carrying "X1-TEST-SRC" would be asserting against a
+// pairing production never makes; this sibling keeps those tests representative.
+func readyFactoryFeedableConstructionTask(t *testing.T, pipeline *manufacturing.ManufacturingPipeline, good string) *manufacturing.ManufacturingTask {
+	t.Helper()
+	task := manufacturing.NewDeliverToConstructionTask(pipeline.ID(), 1, good, "", "", constructionSiteWP, nil)
+	if err := task.MarkReady(); err != nil {
+		t.Fatalf("MarkReady: %v", err)
+	}
+	return task
+}
+
 func newDrainCommand() *RunConstructionCoordinatorCommand {
 	return &RunConstructionCoordinatorCommand{PlayerID: 1, SystemSymbol: testSystem, ContainerID: "construction-coordinator-1"}
 }

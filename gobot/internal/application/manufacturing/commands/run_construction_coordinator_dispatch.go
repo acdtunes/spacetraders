@@ -226,6 +226,20 @@ func (l constructionLot) cappedNeed(need int) int {
 	return need
 }
 
+// factoryRoleHasNoFeedingWorkFor reports whether ship is a FACTORY-role hull about to be paired
+// with an already BUY-resolved task (task.SourceMarket() != ""). feedGateLeg's plan is
+// PIPELINE-WIDE, never scoped to the paired task's own good, so such a pairing buys the factory
+// role no feeding work — and when the leg then finds nothing else to feed, it completes THIS task,
+// clearing the buy resolution a delivery hull needs. A task that is not buy-resolved is unaffected:
+// feeding those is the factory role's whole purpose.
+func (h *RunConstructionCoordinatorHandler) factoryRoleHasNoFeedingWorkFor(cmd *RunConstructionCoordinatorCommand, ship *navigation.Ship, task *manufacturing.ManufacturingTask) bool {
+	if task.SourceMarket() == "" {
+		return false
+	}
+	role, ok := h.gateLegRole(h.claimIdentityFor(cmd, ship))
+	return ok && role == gate.RoleFactory
+}
+
 // planDispatchLots fans the ready material-tasks into per-hull lot-tasks so throughput is not capped
 // at the number of materials. It dispatches each existing ready task once, skipping a material whose
 // bill is already met, then fans spare idle hulls onto materials wanting more concurrent lots —
@@ -268,9 +282,12 @@ func (h *RunConstructionCoordinatorHandler) planDispatchLots(ctx context.Context
 		if !budget.wantsAnotherLot(key) {
 			continue
 		}
-		hull := pool.take(task.Good())
+		hull := pool.takeFor(task.Good(), func(ship *navigation.Ship) bool {
+			return !h.factoryRoleHasNoFeedingWorkFor(cmd, ship, task)
+		})
 		if hull == nil {
-			break
+			// A miss here means only THIS task found no eligible hull; try the rest before giving up.
+			continue
 		}
 		lots = append(lots, constructionLot{task: task, ship: hull, claimIdentity: h.claimIdentityFor(cmd, hull)})
 		budget.assign(key)
@@ -287,7 +304,12 @@ func (h *RunConstructionCoordinatorHandler) planDispatchLots(ctx context.Context
 		if err := clone.MarkReady(); err != nil {
 			break // cannot stage a clone lot-task; stop fanning (all originals are already dispatched)
 		}
-		hull := pool.take(clone.Good())
+		// clone inherits its representative task's resolution, so the same eligibility check applies.
+		// Unlike pass 1, a miss here BREAKS rather than continues: neediestMaterial() would otherwise
+		// hand back this same key forever with nothing changed, which is an infinite loop, not a retry.
+		hull := pool.takeFor(clone.Good(), func(ship *navigation.Ship) bool {
+			return !h.factoryRoleHasNoFeedingWorkFor(cmd, ship, clone)
+		})
 		if hull == nil {
 			break
 		}
@@ -567,9 +589,16 @@ func newHaulerPool(ships []*navigation.Ship) *haulerPool {
 // take claims the next hull for a lot of good: the first untaken hull already carrying good, else
 // the first untaken hull. nil once the pool is exhausted.
 func (p *haulerPool) take(good string) *navigation.Ship {
+	return p.takeFor(good, nil)
+}
+
+// takeFor is take, restricted to hulls eligible reports true for (nil = every hull is eligible,
+// making take its special case). An ineligible hull is left untaken for a later, better-suited
+// task rather than claimed and wasted.
+func (p *haulerPool) takeFor(good string, eligible func(*navigation.Ship) bool) *navigation.Ship {
 	next := -1
 	for i, ship := range p.ships {
-		if p.taken[i] {
+		if p.taken[i] || (eligible != nil && !eligible(ship)) {
 			continue
 		}
 		if onHandUnits(ship, good) > 0 {

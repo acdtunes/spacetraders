@@ -1571,7 +1571,7 @@ func TestConstructionDrain_DrivesAFactoryTaggedHullAllTheWayToTheFeedingLeg(t *t
 	const unitsTaken = 37
 
 	pipeline := newDrainPipeline(t, gateMaterialPrimary, 40)
-	task := readyConstructionTask(t, pipeline, gateMaterialPrimary)
+	task := readyFactoryFeedableConstructionTask(t, pipeline, gateMaterialPrimary)
 
 	hull := newTestHaulerInFleet(t, "GATE-8", gate.FactoryFleetTag)
 
@@ -1659,7 +1659,7 @@ func TestConstructionDrain_DrivesAFactoryTaggedHullAllTheWayToTheFeedingLeg(t *t
 // subject — the decline staying scoped to the delivery role — undiluted.
 func TestConstructionDrain_StillDispatchesAFactoryHullFullOfFabricationInputs(t *testing.T) {
 	pipeline := newDrainPipeline(t, gateMaterialSecondary, 200)
-	task := readyConstructionTask(t, pipeline, gateMaterialSecondary)
+	task := readyFactoryFeedableConstructionTask(t, pipeline, gateMaterialSecondary)
 
 	inputs, err := shared.NewCargoItem("IRON_ORE", "IRON_ORE", "", 40)
 	if err != nil {
@@ -1715,7 +1715,7 @@ func TestConstructionDrain_StillDispatchesAFactoryHullFullOfFabricationInputs(t 
 // on the capacity guard and the hull stayed full forever.
 func TestConstructionDrain_RecoversAFactoryHullFullOfFabricationInputs(t *testing.T) {
 	pipeline := newDrainPipeline(t, gateMaterialPrimary, 40)
-	task := readyConstructionTask(t, pipeline, gateMaterialPrimary)
+	task := readyFactoryFeedableConstructionTask(t, pipeline, gateMaterialPrimary)
 
 	inputs, err := shared.NewCargoItem("IRON_ORE", "IRON_ORE", "", 40)
 	if err != nil {
@@ -1797,7 +1797,7 @@ func TestConstructionDrain_RecoversAFullFactoryHullWhileDeliveryIsStillRunning(t
 	const unitsTaken = 33
 
 	pipeline := newDrainPipeline(t, gateMaterialPrimary, 40)
-	task := readyConstructionTask(t, pipeline, gateMaterialPrimary)
+	task := readyFactoryFeedableConstructionTask(t, pipeline, gateMaterialPrimary)
 
 	inputs, err := shared.NewCargoItem("IRON_ORE", "IRON_ORE", "", 40)
 	if err != nil {
