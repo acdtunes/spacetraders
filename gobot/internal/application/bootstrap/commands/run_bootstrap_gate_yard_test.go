@@ -47,15 +47,17 @@ func TestBootstrap_Gate_ColdYard_PositionsAHullAtTheShipyard(t *testing.T) {
 	}
 }
 
-// WHICH OF THE TWO EXISTING SHAPES. The gate-worker readiness gate is obs.HasIdlePurchaser — ANY idle
-// hull, never a symbol (the observer sets it from `if s.IsIdle()` over the whole roster) — so this caller
-// takes the UN-NAMED form and lets hullToSend's free-hull search pick a genuinely free hull. It names no
-// purchaser (that shape belongs to the trade seed, pinned to the frigate by symbol) and lends no tagged
-// hull, so RULINGS #7 holds: no contract hauler or mfg worker is ever poached for the errand.
-func TestBootstrap_Gate_ColdYard_NamesNoPurchaser_LeavingTheFreeHullSearch(t *testing.T) {
+// WHICH OF THE TWO EXISTING SHAPES. Gate workers are pinned to no hull, so this caller takes the
+// UN-NAMED form and lets hullToSend's free-hull search choose — the NAMED-purchaser shape belongs to the
+// trade seed. What it does supply is a LEND candidate, because that search demands an undedicated hull
+// and a matured fleet has none: without it the ramp waits on a yard nothing will ever warm. The lend
+// re-tags nothing and claims nothing, so RULINGS #7 holds — no fleet loses a hull, one makes a trip.
+func TestBootstrap_Gate_ColdYard_NamesNoPurchaser_ButOffersTheLendCandidate(t *testing.T) {
+	obs := gateYardObs()
+	obs.BorrowableHull = "H1" // every haul hull is dedicated; this one is idle between legs
 	acq := &fakeGateAcquirer{price: 200_000, readable: false}
 	scanner := &fakeScanner{dispatched: true}
-	h := gateHandler(gateYardObs(), &fakeConstruction{}, &fakeManufacturing{}, &fakeRepurposer{}, acq, &fakeHandoff{})
+	h := gateHandler(obs, &fakeConstruction{}, &fakeManufacturing{}, &fakeRepurposer{}, acq, &fakeHandoff{})
 	h.SetShipyardScanner(scanner)
 
 	h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
@@ -63,8 +65,27 @@ func TestBootstrap_Gate_ColdYard_NamesNoPurchaser_LeavingTheFreeHullSearch(t *te
 	if len(scanner.purchasers) != 1 || scanner.purchasers[0] != "" {
 		t.Fatalf("gate workers are pinned to no hull — the scanner must pick a free one itself; purchasers=%v", scanner.purchasers)
 	}
+	if len(scanner.borrows) != 1 || scanner.borrows[0] != "H1" {
+		t.Fatalf("the ramp must offer the observed lend candidate, or the free-hull search has nothing to fall back to; borrows=%v", scanner.borrows)
+	}
+}
+
+// NOTHING TO LEND IS NOT A DISPATCH. An observation that found no free cargo hull offers "", which
+// leaves hullToSend's borrow fallback inert — the ramp keeps waiting rather than naming a hull it never saw.
+func TestBootstrap_Gate_ColdYard_OffersNoLendWhenNothingIsFree(t *testing.T) {
+	obs := gateYardObs() // BorrowableHull unset: every cargo hull is flying or claimed
+	acq := &fakeGateAcquirer{price: 200_000, readable: false}
+	scanner := &fakeScanner{dispatched: false}
+	h := gateHandler(obs, &fakeConstruction{}, &fakeManufacturing{}, &fakeRepurposer{}, acq, &fakeHandoff{})
+	h.SetShipyardScanner(scanner)
+
+	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
+
 	if len(scanner.borrows) != 1 || scanner.borrows[0] != "" {
-		t.Fatalf("the gate ramp lends no tagged hull for the errand (RULINGS #7 — nothing dedicated is poached); borrows=%v", scanner.borrows)
+		t.Fatalf("no observed candidate must reach the scanner as no lend; borrows=%v", scanner.borrows)
+	}
+	if res.Blocker != "price_unreadable" || acq.buys != 0 {
+		t.Fatalf("nothing dispatched ⇒ still waiting on the read, still spending nothing; blocker=%q buys=%d", res.Blocker, acq.buys)
 	}
 }
 

@@ -386,10 +386,10 @@ func (h *RunBootstrapCoordinatorHandler) maybeBuyGateWorker(ctx context.Context,
 		return
 	}
 
-	// Unreadable price ⇒ fail CLOSED (no spend) and SEND a hull: a yard prices only while one stands at it, and nothing else in GATE ever warms it. Named nobody — any idle hull buys here.
+	// Unreadable price ⇒ fail CLOSED (no spend) and SEND a hull: a yard prices only while one stands at it, and nothing else in GATE ever warms it. Named nobody — any idle hull buys here — plus a LEND, because GATE is reached on a matured fleet where every haul-capable hull is tagged and the undedicated-hull search has nobody left to pick.
 	price, yard, readable, err := h.gateAcquirer.PriceCheck(ctx, cmd.PlayerID, haulerShipType)
 	if err != nil || !readable {
-		h.awaitReadablePrice(ctx, cmd, obs, res, "", "", fmt.Sprintf("gate worker (%d/%d)", obs.GateWorkers, plan.DesiredWorkers), err)
+		h.awaitReadablePrice(ctx, cmd, obs, res, "", obs.BorrowableHull, fmt.Sprintf("gate worker (%d/%d)", obs.GateWorkers, plan.DesiredWorkers), err)
 		return
 	}
 

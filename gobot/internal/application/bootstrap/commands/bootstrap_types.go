@@ -28,13 +28,11 @@ const (
 	// PhaseGate is jump-gate construction: start the construction pipeline, ensure the executor
 	// has adopted it, and size the gate workforce until the site is complete.
 	PhaseGate Phase = "GATE"
-	// PhaseExpansion is the terminal: the jump-gate construction is COMPLETE — the gate is built,
-	// steady-state growth begins (sp-feiy7, Admiral 2026-07-24: "we should add a new phase called
-	// EXPANSION — this is the phase where we start to buy probes"). It replaces the old COMPLETE
-	// label in that exact slot: bootstrap's own job here is unchanged (hand the standing economy
-	// off, then exit), but the DERIVED phase now names the era the world has entered — the phase
-	// growth spenders (the probe-buyer fleet) key on. Like a built gate it is monotone:
-	// once derived it never regresses to a buying phase.
+	// PhaseExpansion is the terminal: the jump-gate construction is COMPLETE — the gate is built and
+	// steady-state growth begins. Bootstrap's own job here is to hand the standing economy off and
+	// exit; the DERIVED phase names the era the world has entered, which is what the growth spenders
+	// (the probe-buyer fleet) key on. Like a built gate it is monotone: once derived it never
+	// regresses to a buying phase.
 	PhaseExpansion Phase = "EXPANSION"
 )
 
@@ -61,6 +59,9 @@ type Observation struct {
 	// HasIdlePurchaser reports whether an idle hull exists to fly to a shipyard and execute a buy
 	// (the batch-purchase path needs a purchasing hull). When false the buy is BLOCKED, not failed.
 	HasIdlePurchaser bool
+	// BorrowableHull names one free, EMPTY, cargo-capable hull to LEND for a yard trip, of ANY
+	// dedication ("" ⇒ none): once every haul hull is tagged, an undedicated search never warms a yard.
+	BorrowableHull string
 	// MarketsCovered is how many SCOUTABLE home-system marketplaces have (fresh) market data — the
 	// heartbeat's scan-progress numerator (observability only; coverage gates nothing).
 	MarketsCovered int

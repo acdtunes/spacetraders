@@ -89,6 +89,10 @@ func observeFleetShape(ships []*navigation.Ship, obs *bootstrapCmd.Observation) 
 		}
 		if s.IsIdle() {
 			obs.HasIdlePurchaser = true
+			// EMPTY is the lend's safe point: a laden idle hull is one its own coordinator comes back for by symbol.
+			if obs.BorrowableHull == "" && !s.IsInTransit() && s.CargoCapacity() > 0 && s.CargoUnits() == 0 {
+				obs.BorrowableHull = s.ShipSymbol()
+			}
 		}
 		wp := ""
 		if loc := s.CurrentLocation(); loc != nil {
