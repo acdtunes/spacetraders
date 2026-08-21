@@ -106,5 +106,15 @@ bootstrap:
 # the cap was the binding term, not the market. 73% of 177 repositions had
 # another hull inbound to the same destination within 10 minutes, each one
 # quoted the full value of an opportunity none of them had reserved.
+#
+# construction_cargo_blocklist (sp-2kuyo): the tour's own ADVANCED_CIRCUITRY arbitrage (buy
+# X1-DY75-D37, sell X1-DY75-A4) draws from the SAME market the gate-construction pipeline
+# sources ADVANCED_CIRCUITRY from directly — two uncoordinated buyers drove that market's
+# construction-side buy price from 5,085 to 6,712cr/u in 17 minutes. Standing the tour fleet
+# down from this good ONLY while the gate pipeline is actively executing with unfilled
+# material (common.CapitalWorkSensor.ConstructionHasWork) removes the self-inflicted
+# competition without touching the gate's own buy path.
 trade_fleet:
   reposition_reach_max_hulls_per_system: 2
+  construction_cargo_blocklist:
+    - ADVANCED_CIRCUITRY

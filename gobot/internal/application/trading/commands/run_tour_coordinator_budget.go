@@ -201,6 +201,53 @@ func (h *RunTourCoordinatorHandler) tradeCapitalBudget(ctx context.Context, play
 	return tradeBudget
 }
 
+// effectiveCargoBlocklist is what the tour's cargo-selection enforcement points consult: the
+// static h.cargoBlocklist, unioned with h.constructionCargoBlocklist only while
+// h.workSensor.ConstructionHasWork reports true. An empty constructionCargoBlocklist
+// short-circuits before the sensor is consulted, so the default path is byte-identical.
+//
+// Fail-direction matches tradeCapitalBudget's own use of this sensor, directly above: a nil
+// workSensor or a read error is treated as "construction is live," so the tour stands down
+// rather than risk resuming the price competition this exists to prevent.
+func (h *RunTourCoordinatorHandler) effectiveCargoBlocklist(ctx context.Context, playerID int) map[string]bool {
+	if len(h.constructionCargoBlocklist) == 0 {
+		return h.cargoBlocklist
+	}
+	constructionHasWork := true
+	if h.workSensor != nil {
+		if has, err := h.workSensor.ConstructionHasWork(ctx, playerID); err != nil {
+			common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf("Could not sense whether construction is live for the tour construction-blocklist — assuming it is and standing down from %d construction-conditional good(s) (fail-conservative, matches tradeCapitalBudget's convention for this sensor): %v", len(h.constructionCargoBlocklist), err), map[string]interface{}{
+				"error": err.Error(),
+			})
+		} else {
+			constructionHasWork = has
+		}
+	}
+	if !constructionHasWork {
+		return h.cargoBlocklist
+	}
+	return unionCargoBlocklists(h.cargoBlocklist, h.constructionCargoBlocklist)
+}
+
+// unionCargoBlocklists returns a new set of every good in either a or b, without mutating
+// either (both are long-lived handler fields read concurrently by every touring hull).
+func unionCargoBlocklists(a, b map[string]bool) map[string]bool {
+	if len(a) == 0 {
+		return b
+	}
+	if len(b) == 0 {
+		return a
+	}
+	out := make(map[string]bool, len(a)+len(b))
+	for k := range a {
+		out[k] = true
+	}
+	for k := range b {
+		out[k] = true
+	}
+	return out
+}
+
 // plannerReserveFor is the keep-back the SOLVER is handed for a plan priced under this budget.
 // The solver's own money guard is spend_cap = max(0, max_spend − working_capital_reserve), a CASH
 // contract that only holds on the EXPLICIT --max-spend path: under the dynamic budget max_spend is

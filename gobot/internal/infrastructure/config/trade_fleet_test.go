@@ -407,6 +407,42 @@ func TestLoadConfig_CargoBlocklist_AbsentIsEmpty(t *testing.T) {
 		"an absent cargo_blocklist must be empty (no filtering ⇒ byte-identical), never a config-layer default")
 }
 
+// Pins construction_cargo_blocklist through the real viper mapstructure pipeline; a tag typo
+// would ship a silently-inert knob.
+func TestLoadConfig_ConstructionCargoBlocklist_RoundTrips(t *testing.T) {
+	t.Setenv("SPACETRADERS_CONFIG", "")
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(
+		"trade_fleet:\n"+
+			"  enabled: true\n"+
+			"  construction_cargo_blocklist:\n"+
+			"    - ADVANCED_CIRCUITRY\n"), 0o644))
+	t.Chdir(dir)
+
+	cfg, err := LoadConfig("")
+
+	require.NoError(t, err)
+	require.Equal(t, []string{"ADVANCED_CIRCUITRY"}, cfg.TradeFleet.ConstructionCargoBlocklist,
+		"construction_cargo_blocklist must reach the config struct so the captain arms the gate-construction stand-down by editing config.yaml + restarting")
+}
+
+// An absent construction_cargo_blocklist must be nil/empty — the byte-identical default.
+func TestLoadConfig_ConstructionCargoBlocklist_AbsentIsEmpty(t *testing.T) {
+	t.Setenv("SPACETRADERS_CONFIG", "")
+	dir := t.TempDir()
+	// enabled but NO construction_cargo_blocklist — the default config.yaml shape.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(
+		"trade_fleet:\n"+
+			"  enabled: true\n"), 0o644))
+	t.Chdir(dir)
+
+	cfg, err := LoadConfig("")
+
+	require.NoError(t, err)
+	require.Empty(t, cfg.TradeFleet.ConstructionCargoBlocklist,
+		"an absent construction_cargo_blocklist must be empty (no additional blocking ⇒ byte-identical), never a config-layer default")
+}
+
 // The firm-sink money guard's BOOT floor is what holds the line whenever the rotation
 // bound cannot be derived — the window a restart opens before the map has been counted,
 // and any stretch where the census behind it is unreadable. In that window the floor IS

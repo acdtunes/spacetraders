@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"testing"
 
@@ -236,4 +237,180 @@ func manifestGoods(items []lookbackItem) map[string]bool {
 		got[it.Good] = true
 	}
 	return got
+}
+
+// sp-2kuyo — construction-conditional blocklist. The tour's own ADVANCED_CIRCUITRY arbitrage
+// (buy X1-DY75-D37, sell X1-DY75-A4) draws from the SAME market the gate-construction pipeline
+// sources ADVANCED_CIRCUITRY from directly; the two uncoordinated buyers drove the
+// construction-side buy price from 5,085 to 6,712cr/u in 17 minutes. ConstructionCargoBlocklist
+// unions with the unconditional CargoBlocklist ONLY while h.workSensor.ConstructionHasWork
+// reports true for the player, reusing the SAME enforcement points CargoBlocklist already uses
+// (effectiveCargoBlocklist, run_tour_coordinator_budget.go) rather than adding a new filter path.
+//
+// tourFakeCapitalWorkSensor (constructionWork/err/calls) is defined in
+// run_tour_coordinator_capital_budget_test.go and reused here unmodified.
+
+// constructionBlocklistFixture: one system hosting ADVANCED_CIRCUITRY (the good sp-2kuyo gates)
+// and IRON_ORE (an unrelated control good), so a test can prove the construction-conditional
+// blocklist drops exactly the named good while active and leaves the control good untouched.
+func constructionBlocklistFixture() *tourFixture {
+	wp := "X1-BL1-A"
+	return &tourFixture{
+		cargo: map[string]int{}, location: wp, cargoCap: 40,
+		markets: map[string][]string{"X1-BL1": {wp}},
+		ask: map[string]map[string]int{wp: {
+			"ADVANCED_CIRCUITRY": 5000, "IRON_ORE": 120,
+		}},
+		bid: map[string]map[string]int{wp: {
+			"ADVANCED_CIRCUITRY": 4500, "IRON_ORE": 50,
+		}},
+		tv: map[string]map[string]int{wp: {
+			"ADVANCED_CIRCUITRY": 20, "IRON_ORE": 20,
+		}},
+	}
+}
+
+// TestTourConstructionCargoBlocklist_BlocksWhileConstructionActive proves the core requirement:
+// with the construction-conditional list armed AND the sensor reporting construction live, the
+// named good is dropped from the solver snapshot exactly like the unconditional blocklist,
+// while an unrelated good survives.
+func TestTourConstructionCargoBlocklist_BlocksWhileConstructionActive(t *testing.T) {
+	fx := constructionBlocklistFixture()
+	fake := &tourFakeRoutingClient{plans: []*routing.TourPlan{{Feasible: true}}}
+	h := newTourHandler(t, fx, fake, nil)
+	h.SetConstructionCargoBlocklist([]string{"ADVANCED_CIRCUITRY"})
+	h.SetCapitalWorkSensor(&tourFakeCapitalWorkSensor{constructionWork: true})
+
+	goods := snapshotGoods(planOnce(t, h, fake))
+
+	if goods["ADVANCED_CIRCUITRY"] {
+		t.Errorf("ADVANCED_CIRCUITRY must be blocked while construction is active: %v", goods)
+	}
+	if !goods["IRON_ORE"] {
+		t.Errorf("an unrelated good must be unaffected: %v", goods)
+	}
+}
+
+// TestTourConstructionCargoBlocklist_TradeableWhenConstructionIdle proves the good returns to
+// the full universe the moment ConstructionHasWork reports false (gate finished, or its
+// material bill is filled) — the entire point of making this list CONDITIONAL rather than a
+// second permanent blocklist.
+func TestTourConstructionCargoBlocklist_TradeableWhenConstructionIdle(t *testing.T) {
+	fx := constructionBlocklistFixture()
+	fake := &tourFakeRoutingClient{plans: []*routing.TourPlan{{Feasible: true}}}
+	h := newTourHandler(t, fx, fake, nil)
+	h.SetConstructionCargoBlocklist([]string{"ADVANCED_CIRCUITRY"})
+	h.SetCapitalWorkSensor(&tourFakeCapitalWorkSensor{constructionWork: false})
+
+	goods := snapshotGoods(planOnce(t, h, fake))
+
+	if !goods["ADVANCED_CIRCUITRY"] {
+		t.Errorf("ADVANCED_CIRCUITRY must be tradeable once construction is idle: %v", goods)
+	}
+}
+
+// TestTourConstructionCargoBlocklist_UnsetIsByteIdentical proves the feature is opt-in even
+// when a capital-work sensor happens to be wired for the (unrelated) capital-budget purpose:
+// with NO SetConstructionCargoBlocklist call, the good rides into the snapshot regardless of
+// what the sensor reports.
+func TestTourConstructionCargoBlocklist_UnsetIsByteIdentical(t *testing.T) {
+	fx := constructionBlocklistFixture()
+	fake := &tourFakeRoutingClient{plans: []*routing.TourPlan{{Feasible: true}}}
+	h := newTourHandler(t, fx, fake, nil)
+	h.SetCapitalWorkSensor(&tourFakeCapitalWorkSensor{constructionWork: true}) // wired for capital budgeting, NOT the blocklist
+
+	goods := snapshotGoods(planOnce(t, h, fake))
+
+	if !goods["ADVANCED_CIRCUITRY"] {
+		t.Errorf("an unset construction blocklist must never additionally block a good: %v", goods)
+	}
+}
+
+// TestEffectiveCargoBlocklist unit-tests the fail-direction contract directly, matching the
+// convention documented in run_tour_coordinator_budget.go's tradeCapitalBudget — the only OTHER
+// consumer of h.workSensor.ConstructionHasWork on this handler: constructionHasWork defaults
+// true and is overwritten only by a clean, error-free read, so a nil sensor or a sensor error
+// fails the SAME direction tradeCapitalBudget does (toward "construction is live") — here,
+// toward standing the tour down from the good rather than risk re-igniting the exact
+// self-inflicted price-impact spiral this bead exists to prevent. Only a clean, explicit
+// "false" read restores the full, unconditional cargoBlocklist.
+func TestEffectiveCargoBlocklist(t *testing.T) {
+	cases := []struct {
+		name             string
+		cargoBlocklist   []string
+		constructionList []string
+		sensor           *tourFakeCapitalWorkSensor // nil = SetCapitalWorkSensor never called
+		wantBlocked      []string
+		wantAllowed      []string
+		wantConsulted    bool
+	}{
+		{
+			name:             "no construction list configured — sensor never consulted",
+			cargoBlocklist:   []string{"FUEL"},
+			constructionList: nil,
+			sensor:           &tourFakeCapitalWorkSensor{constructionWork: true},
+			wantBlocked:      []string{"FUEL"},
+			wantAllowed:      []string{"ADVANCED_CIRCUITRY"},
+			wantConsulted:    false,
+		},
+		{
+			name:             "construction list configured, sensor reports true — union applies",
+			cargoBlocklist:   []string{"FUEL"},
+			constructionList: []string{"ADVANCED_CIRCUITRY"},
+			sensor:           &tourFakeCapitalWorkSensor{constructionWork: true},
+			wantBlocked:      []string{"FUEL", "ADVANCED_CIRCUITRY"},
+			wantConsulted:    true,
+		},
+		{
+			name:             "construction list configured, sensor reports false — static list only",
+			cargoBlocklist:   []string{"FUEL"},
+			constructionList: []string{"ADVANCED_CIRCUITRY"},
+			sensor:           &tourFakeCapitalWorkSensor{constructionWork: false},
+			wantBlocked:      []string{"FUEL"},
+			wantAllowed:      []string{"ADVANCED_CIRCUITRY"},
+			wantConsulted:    true,
+		},
+		{
+			name:             "construction list configured, sensor errors — fails toward blocking (matches tradeCapitalBudget)",
+			cargoBlocklist:   nil,
+			constructionList: []string{"ADVANCED_CIRCUITRY"},
+			sensor:           &tourFakeCapitalWorkSensor{err: errors.New("container registry unreadable")},
+			wantBlocked:      []string{"ADVANCED_CIRCUITRY"},
+			wantConsulted:    true,
+		},
+		{
+			name:             "construction list configured, sensor never wired — fails toward blocking (matches tradeCapitalBudget)",
+			cargoBlocklist:   nil,
+			constructionList: []string{"ADVANCED_CIRCUITRY"},
+			sensor:           nil,
+			wantBlocked:      []string{"ADVANCED_CIRCUITRY"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := &RunTourCoordinatorHandler{}
+			h.SetCargoBlocklist(tc.cargoBlocklist)
+			h.SetConstructionCargoBlocklist(tc.constructionList)
+			if tc.sensor != nil {
+				h.SetCapitalWorkSensor(tc.sensor)
+			}
+
+			got := h.effectiveCargoBlocklist(context.Background(), 1)
+
+			for _, want := range tc.wantBlocked {
+				if !got[want] {
+					t.Errorf("expected %q blocked, got %v", want, got)
+				}
+			}
+			for _, want := range tc.wantAllowed {
+				if got[want] {
+					t.Errorf("expected %q allowed, got %v", want, got)
+				}
+			}
+			if tc.sensor != nil && (tc.sensor.calls > 0) != tc.wantConsulted {
+				t.Errorf("sensor consulted = %v, want %v", tc.sensor.calls > 0, tc.wantConsulted)
+			}
+		})
+	}
 }

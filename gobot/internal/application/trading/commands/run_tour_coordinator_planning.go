@@ -61,13 +61,11 @@ func (h *RunTourCoordinatorHandler) planForState(
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	// Drop the config-driven noise-goods blocklist from the good universe BEFORE
-	// any downstream consumer sees it, so a blocklisted good (FUEL/ALUMINUM/PLASTICS — sub-
-	// 70-cr/u tempo drag) is never chosen as tour cargo (buy source OR sell sink) and never
-	// misreported as an unreachable lane. No-op (same slice) when the blocklist is unset, so
-	// the default path is byte-identical. This is the tour cargo universe only — refueling
-	// is a separate command that never reads this snapshot.
-	snapshot = filterBlocklistedCargo(snapshot, h.cargoBlocklist)
+	// Drop the effective blocklist from the good universe BEFORE any downstream consumer sees
+	// it, so a blocklisted good is never chosen as tour cargo (buy source OR sell sink). No-op
+	// when it's empty, so the default path is byte-identical. Tour cargo universe only —
+	// refueling never reads this snapshot.
+	snapshot = filterBlocklistedCargo(snapshot, h.effectiveCargoBlocklist(ctx, cmd.PlayerID))
 	// Pull the richest sinks the gate-neighbour horizon HIDES back into the tour graph,
 	// behind an explicit bound and only where reach and freshness both survive the haul
 	// (admitFarSinks). Empty whenever the bound, the guards or the wiring say so, leaving

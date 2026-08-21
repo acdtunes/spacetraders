@@ -157,6 +157,12 @@ func (h *RunTourCoordinatorHandler) SetCargoBlocklist(goods []string) {
 	h.cargoBlocklist = stringSet(goods)
 }
 
+// SetConstructionCargoBlocklist injects the construction-conditional cargo blocklist at boot,
+// the same mechanism SetCargoBlocklist uses. Empty/absent is byte-identical.
+func (h *RunTourCoordinatorHandler) SetConstructionCargoBlocklist(goods []string) {
+	h.constructionCargoBlocklist = stringSet(goods)
+}
+
 // SetSinkFreshness arms the sp-tgll8 item-2 "FRESH" clause on the firm-sink buy gate with
 // the maximum age a downstream sink's cached market_data may carry at buy time. The daemon
 // injects cfg.TradeFleet.ResolvedSinkFreshnessMaxAge() at boot — the same global-config →

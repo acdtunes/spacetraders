@@ -106,6 +106,7 @@ func (w circuitWiring) configureTourCoordinator(h *tradeRouteCmd.RunTourCoordina
 	h.SetEventRecorder(w.captainEventRepo) // coordinator error-loop event when the dynamic-budget resolve stays unreadable
 	// Blocks low-value noise goods from tour cargo selection; absent/empty is byte-identical.
 	h.SetCargoBlocklist(w.cfg.TradeFleet.CargoBlocklist)
+	h.SetConstructionCargoBlocklist(w.cfg.TradeFleet.ConstructionCargoBlocklist)
 	// Samples the deliberate price-impact instrumentation instead of scanning every
 	// market around every trade.
 	h.SetScanPolicy(w.cfg.TradeImpact.ResolvedScanPolicy())

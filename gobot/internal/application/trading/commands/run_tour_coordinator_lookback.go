@@ -259,12 +259,10 @@ func (h *RunTourCoordinatorHandler) loadLookbackManifest(
 	maxAge := h.listingMaxAge(ctx, cmd.PlayerID)
 	src := freshListings(srcRaw, now, maxAge)
 	dst := freshListings(destRaw, now, maxAge)
-	// Bar the noise-goods blocklist from the look-back buy universe — the SECOND
-	// tour cargo-selection path (fresh listings, independent of the solver snapshot). Filtering
-	// the buy-source rows means a blocklisted good (FUEL/ALUMINUM/PLASTICS) is never a look-back
-	// purchase; since look-back only BUYS from src, barring it here bars it entirely. No-op when
-	// the blocklist is unset, so the default look-back is byte-identical.
-	src = filterBlocklistedListings(src, h.cargoBlocklist)
+	// Bar the effective blocklist from the look-back buy universe — the second tour
+	// cargo-selection path, independent of the solver snapshot. No-op when it's empty, so the
+	// default look-back is byte-identical.
+	src = filterBlocklistedListings(src, h.effectiveCargoBlocklist(ctx, cmd.PlayerID))
 
 	ship, err := h.legs.loadShip(ctx, cmd.ShipSymbol, cmd.PlayerID)
 	if err != nil {

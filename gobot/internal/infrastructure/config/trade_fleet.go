@@ -140,6 +140,9 @@ type TradeFleetConfig struct {
 	// config.yaml + restarting the daemon (RULINGS #5, no code redeploy).
 	CargoBlocklist []string `mapstructure:"cargo_blocklist"`
 
+	// ConstructionCargoBlocklist, unlike CargoBlocklist, applies only while construction is active.
+	ConstructionCargoBlocklist []string `mapstructure:"construction_cargo_blocklist"`
+
 	// --- Placement/relocation scoring loop (sp-z7ng, epic sp-fguo Layer-B) ---
 	// Daemon-global tour tunings, same for every tour container (the mirror of
 	// reposition_jump_bound/max_tour_systems above): StartTourRun stamps them into every tour

@@ -242,6 +242,12 @@ type RunTourCoordinatorHandler struct {
 	// ship refueling (RefuelShipHandler → API RefuelShip) never consults the tour snapshot.
 	cargoBlocklist map[string]bool
 
+	// constructionCargoBlocklist names goods the tour must NOT trade ONLY while a construction
+	// pipeline is actively executing with unfilled material (h.workSensor.ConstructionHasWork)
+	// — unlike cargoBlocklist, which is unconditional. effectiveCargoBlocklist unions the two
+	// per call; nil/empty is byte-identical.
+	constructionCargoBlocklist map[string]bool
+
 	// depositParked de-dups the pre-positioning parked/dormant verdict so a hull whose
 	// deposits are parked — no ceiling configured, treasury at/below the reserve, or an
 	// unreadable balance — logs ONCE per container per distinct state, not once per

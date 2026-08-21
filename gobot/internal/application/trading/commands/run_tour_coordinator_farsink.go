@@ -199,7 +199,7 @@ func (h *RunTourCoordinatorHandler) probeFarSink(
 	if err != nil {
 		return probe // an unreadable system contributes nothing
 	}
-	rows = filterBlocklistedCargo(rows, h.cargoBlocklist)
+	rows = filterBlocklistedCargo(rows, h.effectiveCargoBlocklist(ctx, cmd.PlayerID))
 	rows, expired := keepRowsSurvivingArrival(rows, reach.travel(), h.rankerAgeCaps, now)
 	if expired > 0 {
 		metrics.RecordTourCandidateDropped(cmd.PlayerID, farSinkExpiredReason, expired)
