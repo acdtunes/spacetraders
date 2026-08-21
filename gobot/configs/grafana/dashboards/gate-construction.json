@@ -62,7 +62,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "spacetraders_daemon_bootstrap_phase == 1",
+          "expr": "spacetraders_daemon_bootstrap_phase{player_id=\"$player\"} == 1",
           "legendFormat": "{{phase}}",
           "refId": "A"
         }
@@ -138,7 +138,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "spacetraders_daemon_bootstrap_construction_pct",
+          "expr": "spacetraders_daemon_bootstrap_construction_pct{player_id=\"$player\"}",
           "legendFormat": "progress",
           "refId": "A"
         }
@@ -205,7 +205,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "deriv(spacetraders_daemon_bootstrap_construction_pct[1h]) * 3600",
+          "expr": "deriv(spacetraders_daemon_bootstrap_construction_pct{player_id=\"$player\"}[1h]) * 3600",
           "legendFormat": "rate",
           "refId": "A"
         }
@@ -276,7 +276,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "(100 - spacetraders_daemon_bootstrap_construction_pct) / (deriv(spacetraders_daemon_bootstrap_construction_pct[1h]) > 0)",
+          "expr": "(100 - spacetraders_daemon_bootstrap_construction_pct{player_id=\"$player\"}) / (deriv(spacetraders_daemon_bootstrap_construction_pct{player_id=\"$player\"}[1h]) > 0)",
           "legendFormat": "eta",
           "refId": "A"
         }
@@ -453,7 +453,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "spacetraders_daemon_bootstrap_construction_pct",
+          "expr": "spacetraders_daemon_bootstrap_construction_pct{player_id=\"$player\"}",
           "legendFormat": "construction %",
           "refId": "A"
         }
@@ -526,7 +526,7 @@
           },
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT m->>'tradeSymbol' || '  ' || (m->>'deliveredQuantity') || '/' || (m->>'targetQuantity') AS \"Material\", ROUND(100.0 * (m->>'deliveredQuantity')::numeric / NULLIF((m->>'targetQuantity')::numeric, 0), 1) AS \"Delivered\" FROM manufacturing_pipelines p CROSS JOIN LATERAL jsonb_array_elements(p.materials) AS m WHERE p.status = 'EXECUTING' AND p.construction_site IS NOT NULL ORDER BY 1",
+          "rawSql": "SELECT m->>'tradeSymbol' || '  ' || (m->>'deliveredQuantity') || '/' || (m->>'targetQuantity') AS \"Material\", ROUND(100.0 * (m->>'deliveredQuantity')::numeric / NULLIF((m->>'targetQuantity')::numeric, 0), 1) AS \"Delivered\" FROM manufacturing_pipelines p CROSS JOIN LATERAL jsonb_array_elements(p.materials) AS m WHERE p.player_id=(SELECT MAX(id) FROM players) AND p.status = 'EXECUTING' AND p.construction_site IS NOT NULL ORDER BY 1",
           "refId": "A"
         }
       ],
@@ -571,7 +571,7 @@
           },
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT COALESCE(NULLIF(dedicated_fleet, ''), '(none)') AS \"Fleet\", COUNT(*) AS \"Ships\", COUNT(*) FILTER (WHERE assignment_status = 'active') AS \"Active\" FROM ships GROUP BY 1 ORDER BY 2 DESC",
+          "rawSql": "SELECT COALESCE(NULLIF(dedicated_fleet, ''), '(none)') AS \"Fleet\", COUNT(*) AS \"Ships\", COUNT(*) FILTER (WHERE assignment_status = 'active') AS \"Active\" FROM ships WHERE player_id=(SELECT MAX(id) FROM players) GROUP BY 1 ORDER BY 2 DESC",
           "refId": "A"
         }
       ],
@@ -721,7 +721,29 @@
     "bootstrap"
   ],
   "templating": {
-    "list": []
+    "list": [
+      {
+        "current": {},
+        "datasource": {
+          "type": "grafana-postgresql-datasource",
+          "uid": "postgresql"
+        },
+        "definition": "SELECT MAX(id) FROM players",
+        "description": "Current era's player id. Scopes the Prometheus panels the same way every SQL panel scopes itself, so dead eras never leak in.",
+        "hide": 2,
+        "includeAll": false,
+        "label": "Player",
+        "multi": false,
+        "name": "player",
+        "options": [],
+        "query": "SELECT MAX(id) FROM players",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 0,
+        "type": "query"
+      }
+    ]
   },
   "time": {
     "from": "now-6h",
