@@ -386,15 +386,10 @@ func (h *RunBootstrapCoordinatorHandler) maybeBuyGateWorker(ctx context.Context,
 		return
 	}
 
-	// Price-check first (reuse shipyard list). Unreadable price ⇒ the capital gate fails CLOSED.
+	// Unreadable price ⇒ fail CLOSED (no spend) and SEND a hull: a yard prices only while one stands at it, and nothing else in GATE ever warms it. Named nobody — any idle hull buys here.
 	price, yard, readable, err := h.gateAcquirer.PriceCheck(ctx, cmd.PlayerID, haulerShipType)
 	if err != nil || !readable {
-		res.Blocker = "price_unreadable"
-		logger.Log("WARN", fmt.Sprintf("Bootstrap gate worker price unreadable — failing closed (no buy): err=%v", err), map[string]interface{}{
-			"action":       "bootstrap_gate_blocked",
-			"container_id": cmd.ContainerID,
-			"blocker":      "price_unreadable",
-		})
+		h.awaitReadablePrice(ctx, cmd, obs, res, "", "", fmt.Sprintf("gate worker (%d/%d)", obs.GateWorkers, plan.DesiredWorkers), err)
 		return
 	}
 

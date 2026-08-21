@@ -77,9 +77,9 @@ func (f *fakeAcquirer) Buy(ctx context.Context, playerID int, shipType, yard str
 }
 
 // fakeScanner is the shipyard-readability port. dispatched/err are what it returns; it records the
-// purchaser each call named ("" = the scanner picks a free hull itself). readyAcq/readyHaul (optional)
-// are flipped readable when it "dispatches", modeling the hull arriving at the yard so the NEXT tick's
-// live price read succeeds; world (optional) stands the named purchaser idle at the yard.
+// purchaser each call named ("" = the scanner picks a free hull itself). readyAcq/readyHaul/readyGate
+// (optional) are flipped readable when it "dispatches", modeling the hull arriving at the yard so the
+// NEXT tick's live price read succeeds; world (optional) stands the named purchaser idle at the yard.
 type fakeScanner struct {
 	dispatched  bool
 	err         error
@@ -89,6 +89,7 @@ type fakeScanner struct {
 	borrows     []string // the tagged-but-free hull each call was offered to lend ("" = none)
 	readyAcq    *fakeAcquirer
 	readyHaul   *fakeHaulerAcquirer
+	readyGate   *fakeGateAcquirer
 	world       *incomeWorld
 }
 
@@ -106,6 +107,9 @@ func (f *fakeScanner) EnsureShipyardReadable(ctx context.Context, playerID int, 
 		}
 		if f.readyHaul != nil {
 			f.readyHaul.readable = true
+		}
+		if f.readyGate != nil {
+			f.readyGate.readable = true
 		}
 		if f.world != nil {
 			f.world.purchaserAtYard() // the hull now stands idle at the yard as the purchaser
