@@ -54,9 +54,10 @@ const (
 // Move reasons. A role change with no stated cause is exactly the opacity this design exists to
 // remove — an operator seeing a hull flip roles must be able to tell a pause from an adoption.
 const (
-	MoveReasonLegacyAdoption   = "legacy hull adopted into a role fleet"
-	MoveReasonPauseToFactory   = "delivery paused — every gate material is below its buy floor"
-	MoveReasonResumeToBaseline = "delivery resumed — returning to the D/F/F/D baseline mix"
+	MoveReasonLegacyAdoption        = "legacy hull adopted into a role fleet"
+	MoveReasonPauseToFactory        = "delivery paused — every gate material is below its buy floor"
+	MoveReasonResumeToBaseline      = "delivery resumed — returning to the D/F/F/D baseline mix"
+	MoveReasonFactoryIdleToDelivery = "factory has nothing to feed — redirecting to delivery"
 )
 
 // Skip reasons: why a hull the target mix WANTED moved was held back. Only actionable declines
@@ -124,14 +125,26 @@ type ReallocationInput struct {
 	// one material is buyable; moving workers then would starve delivery of capacity it can
 	// still use. Getting it backwards idles the fleet whenever a single material dips.
 	DeliveryPaused bool
-	Workers        []Worker
-	Dwell          time.Duration
-	MaxMoves       int
+	// FactoryHasNoWork mirrors DeliveryPaused for the opposite end of the pipeline: does the
+	// factory role have any feedable step right now, for any outstanding gate material. The caller
+	// derives it from the SAME live check feedGateLeg itself uses (planGateFeed), never a cached or
+	// task-level heuristic.
+	//
+	// Not structurally exclusive with DeliveryPaused — a material can be too scarce to buy directly
+	// while its own precursor chain is also unfeedable. roleTarget checks DeliveryPaused first, so
+	// a caller asserting both lands on the established, dwell-protected recovery state.
+	FactoryHasNoWork bool
+	Workers          []Worker
+	Dwell            time.Duration
+	MaxMoves         int
 }
 
 // ReallocationPlan is the tick's ruling, materialized.
 type ReallocationPlan struct {
 	DeliveryPaused bool
+	// FactoryHasNoWork is carried straight from ReallocationInput so LogLine can name why an
+	// unpaused target is all-delivery rather than the baseline.
+	FactoryHasNoWork bool
 	// WantDelivery and WantFactory describe the ROLED population only, and they are reported AFTER
 	// this tick's adoptions: an adoption grows the roled population, so it grows the target with
 	// it. HaveDelivery/HaveFactory/Unroled are the census as it stood at the START of the tick, so
@@ -161,9 +174,13 @@ type ReallocationPlan struct {
 // LogLine renders the whole ruling for the container log — everything in the MESSAGE, because
 // the container log renderer drops metadata maps.
 func (p ReallocationPlan) LogLine() string {
+	// paused before factoryHasNoWork, matching roleTarget's own precedence.
 	state := "running"
-	if p.DeliveryPaused {
+	switch {
+	case p.DeliveryPaused:
 		state = "PAUSED"
+	case p.FactoryHasNoWork:
+		state = "running, factory has no work"
 	}
 	moves := make([]string, 0, len(p.Moves))
 	for _, m := range p.Moves {
@@ -224,6 +241,11 @@ func BaselineMix(n int) (delivery, factory int) {
 // recovers sooner, delivery resumes. It is also what makes an aggressive buy floor safe — over-
 // buying costs a reallocation, not a stall.
 //
+// UNPAUSED WITH THE FACTORY ROLE IDLE, the target is ALL DELIVERY — paused's mirror image: instead
+// of sending the roled population to feed a starved factory, it sends them to deliver because there
+// is nothing left to feed. See ReallocationInput.FactoryHasNoWork for the signal and the precedence
+// when a caller asserts both.
+//
 // THE TARGET DESCRIBES THE ROLED POPULATION, AND ADOPTION IS NOT A DEFICIT DECISION. These are
 // one rule, and getting them apart is what makes the whole thing stable.
 //
@@ -239,10 +261,11 @@ func BaselineMix(n int) (delivery, factory int) {
 //
 // So the target is BaselineMix over the ROLED census, which sums to that census by construction —
 // the target is always REACHABLE, and needDelivery/needFactory are exact negatives of each other.
-// Unroled hulls are ADOPTED instead: purely additive, never re-roling an already-correct hull, and
-// baseline-PRESERVING, because adoptionTarget is by construction the role the target itself gains
-// when the roled population grows by one. Adoption therefore moves the census and the target in
-// lockstep and opens no deficit at all.
+// Every shape roleTarget can return sums to the same roled census for the same reason, which is
+// what makes a third shape safe to add. Unroled hulls are ADOPTED instead: purely additive, never
+// re-roling an already-correct hull, and baseline-PRESERVING, because adoptionTarget is by
+// construction the role the target itself gains when the roled population grows by one. Adoption
+// therefore moves the census and the target in lockstep and opens no deficit at all.
 //
 // UNROLED hulls are still considered FIRST, and for ONE reason: adoption must outrank a re-role for
 // the tick's one move, or the arming starves — on a fleet already holding four legacy hulls the
@@ -250,7 +273,7 @@ func BaselineMix(n int) (delivery, factory int) {
 // inert. It is NOT needed to keep the target final for a deficit read; the lockstep property above
 // already guarantees that in either order. See unroledFirst.
 func PlanReallocation(in ReallocationInput) ReallocationPlan {
-	plan := ReallocationPlan{DeliveryPaused: in.DeliveryPaused}
+	plan := ReallocationPlan{DeliveryPaused: in.DeliveryPaused, FactoryHasNoWork: in.FactoryHasNoWork}
 
 	// MEMBERSHIP FIRST. ParseFleetTag's ok=false covers THREE distinct classes — the legacy gate
 	// tag, a FOREIGN fleet tag, and the undedicated empty tag — and only the first is ours to
@@ -298,13 +321,13 @@ func PlanReallocation(in ReallocationInput) ReallocationPlan {
 	}
 
 	roled := plan.HaveDelivery + plan.HaveFactory
-	plan.WantDelivery, plan.WantFactory = roleTarget(in.DeliveryPaused, roled)
+	plan.WantDelivery, plan.WantFactory = roleTarget(in.DeliveryPaused, in.FactoryHasNoWork, roled)
 
 	haveDelivery, haveFactory := plan.HaveDelivery, plan.HaveFactory
 	for _, worker := range unroledFirst(crew) {
 		role, isRoled := ParseFleetTag(worker.FleetTag)
 
-		target := adoptionTarget(in.DeliveryPaused, haveDelivery, haveFactory)
+		target := adoptionTarget(in.DeliveryPaused, in.FactoryHasNoWork, haveDelivery, haveFactory)
 		if isRoled {
 			var wanted bool
 			target, wanted = moveTarget(role, plan.WantDelivery-haveDelivery, plan.WantFactory-haveFactory)
@@ -321,22 +344,19 @@ func PlanReallocation(in ReallocationInput) ReallocationPlan {
 			plan.Skips = append(plan.Skips, MoveSkip{Ship: worker.Ship, Reason: MoveSkipBusy})
 			continue
 		}
-		// THE DWELL GATES THE BORROW ONLY — a roled hull being taken to factory under a pause.
+		// THE DWELL GATES ENTRY INTO EITHER SPECIAL STATE — factory under a pause, or delivery
+		// under FactoryHasNoWork — and NEVER the return to baseline, which stays immediate so a
+		// short trigger cannot strand the fleet short of a whole role for a full dwell window.
 		//
-		// Returning to baseline is immediate, because a dwell-locked return leaves the fleet with
-		// ZERO delivery hulls for the rest of the window after even a short pause, which is a
-		// revenue stall in exactly the path this phase exists to unblock.
+		// Safe for a structural reason: the target sums to the roled census, so moveTarget only ever
+		// WANTS hulls in the surplus role and a re-role walks the deficit to zero without
+		// overshooting, whichever direction is gated.
 		//
-		// Safe for a structural reason, not merely an observed one. A flapping pause can only ever
-		// RE-borrow through this guard, so the damping that prevents oscillation is intact: at most
-		// two moves per dwell window per hull. And the return direction cannot oscillate against
-		// itself, because the target sums to the roled census, so moveTarget only ever WANTS hulls
-		// in the surplus role — a blocked hull can never push its need onto a hull that would
-		// over-correct, and the deficit walks to zero without overshooting. That property is what
-		// the roled-census target bought; before it, a blocked unroled hull's phantom deficit did
-		// exactly that over-correction, and exempting the return ping-ponged a hull every tick
-		// forever. Re-measured after the fix: 0 moves over the same eight ticks.
-		borrow := isRoled && in.DeliveryPaused
+		// FactoryHasNoWork is gated the SAME way rather than left immediate, because unlike
+		// DeliveryPaused — which BuyPolicy already runs through its own buy/resume hysteresis — it is
+		// a fresh read every tick against a live ask and live treasury headroom, either of which can
+		// cross the reserve line and back with no real market event.
+		borrow := isRoled && (in.DeliveryPaused || in.FactoryHasNoWork)
 		if borrow && !worker.LastMovedByUs.IsZero() && in.Now.Sub(worker.LastMovedByUs) < dwell {
 			plan.Skips = append(plan.Skips, MoveSkip{Ship: worker.Ship, Reason: MoveSkipDwell})
 			continue
@@ -350,7 +370,7 @@ func PlanReallocation(in ReallocationInput) ReallocationPlan {
 			Ship:   worker.Ship,
 			From:   worker.FleetTag,
 			To:     target,
-			Reason: moveReason(in.DeliveryPaused, isRoled),
+			Reason: moveReason(in.DeliveryPaused, in.FactoryHasNoWork, isRoled),
 		})
 		if isRoled {
 			// A re-role is a TRANSFER inside the roled population: its size is unchanged, so the
@@ -366,7 +386,7 @@ func PlanReallocation(in ReallocationInput) ReallocationPlan {
 			// deficit. Every adoption is decided before any re-role (unroledFirst), so the target
 			// is final by the time a deficit is read.
 			roled++
-			plan.WantDelivery, plan.WantFactory = roleTarget(in.DeliveryPaused, roled)
+			plan.WantDelivery, plan.WantFactory = roleTarget(in.DeliveryPaused, in.FactoryHasNoWork, roled)
 		}
 		if target == RoleDelivery {
 			haveDelivery++
@@ -377,40 +397,37 @@ func PlanReallocation(in ReallocationInput) ReallocationPlan {
 	return plan
 }
 
-// roleTarget is the split this planner drives the ROLED population toward — the hulls whose role
-// it actually governs. It sums to roled in both states (BaselineMix(n) sums to n; the paused
-// target is 0+n), which is what makes the target reachable and the needs exact negatives.
+// roleTarget is the split this planner drives the ROLED population toward. It sums to roled in
+// EVERY state (BaselineMix(n) sums to n; the paused target is 0+n; the all-delivery target is n+0),
+// which is what makes the target reachable and the needs exact negatives.
 //
-// Paused, the target is ALL FACTORY; unpaused it is the D/F/F/D baseline. Both are targets for the
-// same population, which is why adoption needs no rule of its own — see adoptionTarget.
-func roleTarget(paused bool, roled int) (delivery, factory int) {
-	if paused {
+// Paused, the target is ALL FACTORY; under FactoryHasNoWork, the mirror, ALL DELIVERY; otherwise
+// the D/F/F/D baseline. Paused is checked first, so a caller asserting both gets all-factory — see
+// ReallocationInput.FactoryHasNoWork for why.
+func roleTarget(paused, factoryHasNoWork bool, roled int) (delivery, factory int) {
+	switch {
+	case paused:
 		return 0, roled
+	case factoryHasNoWork:
+		return roled, 0
+	default:
+		return BaselineMix(roled)
 	}
-	return BaselineMix(roled)
 }
 
 // adoptionTarget is the role the CURRENT target assigns to one more hull — literally
-// roleTarget(paused, roled+1) minus roleTarget(paused, roled), expressed directly.
-//
-// That equivalence is the whole answer to "which role does a hull adopted under a PAUSE get?".
-// There is no second mix rule and no pause special case: adoption follows the same target
-// everything else follows, and that target simply evaluates differently in the two states.
-// Unpaused it is NextRole — because the baseline is GENERATED by NextRole, so the role the
-// baseline gains at position n is exactly NextRole's answer at n. Paused it is factory, because
-// the paused target is all-factory and gains a factory hull.
-//
-// Adopting via NextRole under a pause instead would hand out delivery roles the paused target
-// immediately wants moved to factory: one wasted move per adoption, and a fresh churn source
-// introduced by the fix meant to remove one. Nothing is lost by not doing it — BaselineMix is
-// re-derived from the LIVE roled count every tick rather than accumulated from a history, so a
-// fleet adopted entirely under a pause converges on resume to the same baseline as one that never
-// paused. That is NextRole's own stated property, one level up.
-func adoptionTarget(paused bool, haveDelivery, haveFactory int) Role {
-	if paused {
+// roleTarget(paused, factoryHasNoWork, roled+1) minus roleTarget(paused, factoryHasNoWork, roled),
+// expressed directly, so there is no second mix rule for either trigger to drift from. Paused it is
+// factory; under FactoryHasNoWork, delivery; otherwise NextRole, matching roleTarget's precedence.
+func adoptionTarget(paused, factoryHasNoWork bool, haveDelivery, haveFactory int) Role {
+	switch {
+	case paused:
 		return RoleFactory
+	case factoryHasNoWork:
+		return RoleDelivery
+	default:
+		return NextRole(haveDelivery, haveFactory)
 	}
-	return NextRole(haveDelivery, haveFactory)
 }
 
 // unroledFirst orders the GATE crew: legacy/unroled hulls, then the rest in input order. Stable
@@ -453,6 +470,7 @@ func unroledFirst(workers []Worker) []Worker {
 //
 // Consequently a re-role walks the deficit to zero one hull at a time and cannot overshoot: each
 // move takes needFactory one step toward 0, and at 0 every remaining hull returns wanted=false.
+// It takes needs, not state, so a new roleTarget shape never touches this function.
 func moveTarget(role Role, needDelivery, needFactory int) (Role, bool) {
 	var target Role
 	switch {
@@ -469,13 +487,18 @@ func moveTarget(role Role, needDelivery, needFactory int) (Role, bool) {
 	return target, true
 }
 
-// moveReason names WHY, so a role change is diagnosable from the log without a code read.
-func moveReason(paused, roled bool) string {
+// moveReason names WHY, so a role change is diagnosable from the log without a code read. roled is
+// checked first and alone decides adoption, independent of paused/factoryHasNoWork.
+func moveReason(paused, factoryHasNoWork, roled bool) string {
 	if !roled {
 		return MoveReasonLegacyAdoption
 	}
-	if paused {
+	switch {
+	case paused:
 		return MoveReasonPauseToFactory
+	case factoryHasNoWork:
+		return MoveReasonFactoryIdleToDelivery
+	default:
+		return MoveReasonResumeToBaseline
 	}
-	return MoveReasonResumeToBaseline
 }

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	mfgServices "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/services"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing/gate"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
@@ -32,6 +33,7 @@ import (
 // indistinguishable from one that is never invoked. It spends nothing: no floor is read here.
 func (h *RunConstructionCoordinatorHandler) reallocateGateRoles(
 	ctx context.Context,
+	cmd *RunConstructionCoordinatorCommand,
 	systemSymbol string,
 	tasks []*manufacturing.ManufacturingTask,
 	playerID shared.PlayerID,
@@ -78,14 +80,16 @@ func (h *RunConstructionCoordinatorHandler) reallocateGateRoles(
 		buyFloor, resumeFloor = pipeline.DeliveryBuyFloor(), pipeline.DeliveryResumeFloor()
 	}
 	paused := h.gate.policyFor(buyFloor, resumeFloor).FleetPaused(outstanding)
+	factoryHasNoWork := h.gateFactoryHasNoWork(ctx, cmd, systemSymbol, pipeline)
 
 	plan := gate.PlanReallocation(gate.ReallocationInput{
-		Now:            h.clock.Now(),
-		DeliveryPaused: paused,
-		Workers:        workers,
+		Now:              h.clock.Now(),
+		DeliveryPaused:   paused,
+		FactoryHasNoWork: factoryHasNoWork,
+		Workers:          workers,
 	})
 	logger.Log("INFO", plan.LogLine(), map[string]interface{}{
-		"paused": paused, "moves": len(plan.Moves), "held": len(plan.Skips),
+		"paused": paused, "factory_has_no_work": factoryHasNoWork, "moves": len(plan.Moves), "held": len(plan.Skips),
 		"have_delivery": plan.HaveDelivery, "have_factory": plan.HaveFactory, "unroled": plan.Unroled,
 		"dwell_records": plan.DwellRecords,
 	})
@@ -107,6 +111,27 @@ func (h *RunConstructionCoordinatorHandler) reallocateGateRoles(
 			"ship": move.Ship, "from": move.From, "to": move.To.FleetTag(), "reason": move.Reason,
 		})
 	}
+}
+
+// gateFactoryHasNoWork reuses planGateFeed directly — the SAME planner feedGateLeg consults before
+// dispatching a real factory hull — to answer whether the factory role has any feedable step right
+// now, for any outstanding gate material, rather than a stale heuristic. It runs before hauler
+// discovery, so it has no real hull's capacity to probe with; mfgServices.MinViableTrancheUnits is
+// exact rather than a guess, since planGateFeed's affordability check clamps units down to this
+// constant whenever units exceeds it, making the verdict identical for any units at or above it.
+// Fails to false (assume there is work) on an unreadable pipeline, unreachable today since
+// outstandingGateMaterials already proved one exists before this runs.
+func (h *RunConstructionCoordinatorHandler) gateFactoryHasNoWork(
+	ctx context.Context,
+	cmd *RunConstructionCoordinatorCommand,
+	systemSymbol string,
+	pipeline *manufacturing.ManufacturingPipeline,
+) bool {
+	if pipeline == nil {
+		return false
+	}
+	_, _, _, _, planned := h.planGateFeed(ctx, cmd, systemSymbol, pipeline, mfgServices.MinViableTrancheUnits)
+	return !planned
 }
 
 // gateCensusScope names the scope the census actually covered, as a phrase ready to append.

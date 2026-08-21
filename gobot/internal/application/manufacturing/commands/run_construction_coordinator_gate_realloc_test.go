@@ -86,7 +86,7 @@ func (f *gateReallocFixture) resumeEveryMaterial() {
 func (f *gateReallocFixture) reallocate(t *testing.T) {
 	t.Helper()
 	task := manufacturing.NewDeliverToConstructionTask(gateTestPipelineID, 1, gateMaterialPrimary, "", "", gateTestSite, nil)
-	f.handler.reallocateGateRoles(f.ctx(), gateTestSystem, []*manufacturing.ManufacturingTask{task}, shared.MustNewPlayerID(1))
+	f.handler.reallocateGateRoles(f.ctx(), gateTestCmd(), gateTestSystem, []*manufacturing.ManufacturingTask{task}, shared.MustNewPlayerID(1))
 }
 
 // assignments is every AssignFleet write the reallocator made, in order.
@@ -156,6 +156,111 @@ func TestReallocateGateRoles_DoesNotMoveWhenOnlyOneMaterialIsPaused(t *testing.T
 	}
 	if writes := f.assignments(); len(writes) != 0 {
 		t.Fatalf("moved %+v with ONE material still buyable; that starves delivery of capacity it can still use", writes)
+	}
+}
+
+// ---------------------------------------------------------------------------------------------
+// THE NEW TRIGGER: THE FACTORY ROLE HAS NOTHING TO FEED
+// ---------------------------------------------------------------------------------------------
+//
+// With FAB_MATS and ADVANCED_CIRCUITRY both now resolving via direct buy most eras
+// (sp-4od84/sp-0u1yd/sp-8epum), the factory role can go a long stretch with nothing feedable — and
+// unpaused, the reallocator's target used to be the static D/F/F/D baseline regardless, stranding
+// those hulls idle forever. These tests drive the SAME live check feedGateLeg itself would hit
+// (planGateFeed, via gateFactoryHasNoWork), never a stale or fabricated flag.
+
+// THE TRIGGER. Factory hulls move to the delivery role when the factory role has nothing to feed —
+// staged by declining BOTH of FAB_MATS's immediate inputs; ADVANCED_CIRCUITRY already contributes
+// no steps in this stub topology (see stubFactoryTopology's own doc comment: it is absent from the
+// recipe map, so IsRaw calls it raw and PlanFeed yields zero steps for it). This mirrors exactly how
+// TestFeedGateLeg_ParksItsTaskWhenNothingCanBeFed stages "nothing feedable" for a real leg.
+func TestReallocateGateRoles_MovesFactoryHullsToDeliveryWhenTheFactoryRoleHasNoWork(t *testing.T) {
+	f := newGateReallocHandler(t,
+		gateCrewMember{"D-1", gate.DeliveryFleetTag}, gateCrewMember{"D-2", gate.DeliveryFleetTag},
+		gateCrewMember{"F-1", gate.FactoryFleetTag}, gateCrewMember{"F-2", gate.FactoryFleetTag},
+	)
+	f.topo.errByGood = map[string]error{"IRON": errors.New("no exporter"), "QUARTZ_SAND": errors.New("no exporter")}
+
+	f.reallocate(t)
+
+	writes := f.assignments()
+	if len(writes) == 0 {
+		t.Fatalf("a fleet whose factory role has nothing to feed moved nobody.\nlog:\n%s", f.logLines())
+	}
+	for _, w := range writes {
+		if w.fleet != gate.DeliveryFleetTag {
+			t.Fatalf("wrote fleet %q for %s; a factory role with no work moves TOWARD delivery", w.fleet, w.ship)
+		}
+		if !strings.HasPrefix(w.ship, "F-") {
+			t.Fatalf("re-tagged %s, which is already a delivery hull", w.ship)
+		}
+	}
+	// THE RULING MUST NAME WHY, not just what: "want 4D/0F" beside "delivery running" is a fact with
+	// no stated cause unless the SAME line says the factory role has no work.
+	if !strings.Contains(f.logLines(), "factory has no work") {
+		t.Fatalf("the ruling does not report why the target is all-delivery:\n%s", f.logLines())
+	}
+	if !strings.Contains(f.logLines(), gate.MoveReasonFactoryIdleToDelivery) {
+		t.Fatalf("the move does not carry the new reason string, so an operator cannot tell this redirect from any other role change:\n%s", f.logLines())
+	}
+}
+
+// THE REGRESSION GUARD, AT THE CALLER LEVEL. The DEFAULT fixture has real feedable work (FAB_MATS
+// resolves through IRON/QUARTZ_SAND/IRON_ORE against a topology that declines nothing), so a fleet
+// already at the 2D/2F baseline must stay there — completely unchanged from before this task. This
+// is the caller-level counterpart to
+// TestPlanReallocation_AnUnpausedFleetReturnsToTheBaselineMixNotToAllDelivery: proof that computing
+// FactoryHasNoWork did not itself change the normal, factory-has-real-work case.
+func TestReallocateGateRoles_StaysAtTheBaselineWhenTheFactoryRoleHasRealWork(t *testing.T) {
+	f := newGateReallocHandler(t,
+		gateCrewMember{"D-1", gate.DeliveryFleetTag}, gateCrewMember{"D-2", gate.DeliveryFleetTag},
+		gateCrewMember{"F-1", gate.FactoryFleetTag}, gateCrewMember{"F-2", gate.FactoryFleetTag},
+	)
+
+	f.reallocate(t)
+
+	if writes := f.assignments(); len(writes) != 0 {
+		t.Fatalf("moved %+v; a fleet whose factory role has REAL work must stay on the 2D/2F baseline, not redirect to all-delivery", writes)
+	}
+	if !strings.Contains(f.logLines(), "want 2D/2F") {
+		t.Fatalf("the ruling did not target the baseline mix:\n%s", f.logLines())
+	}
+	if strings.Contains(f.logLines(), "factory has no work") {
+		t.Fatalf("the ruling reported the factory role as idle when the default fixture has real feedable work:\n%s", f.logLines())
+	}
+}
+
+// THE SIGNAL IS LIVE, NOT A STALE OR LAST-TICK-CACHED READ. The SAME fixture has real work on tick
+// one and none on tick two, purely because the topology changed underneath it — nothing about the
+// crew, the pipeline, or any persisted task resolution changes between the two calls. A caller
+// reading a cached tick-one verdict, or a heuristic like "does any task still carry factory_symbol"
+// (which reflects a PAST resolution, not this tick's market), would not react to this at all.
+func TestReallocateGateRoles_TheNoWorkSignalReactsLiveNotFromAStaleResolution(t *testing.T) {
+	f := newGateReallocHandler(t,
+		gateCrewMember{"D-1", gate.DeliveryFleetTag}, gateCrewMember{"D-2", gate.DeliveryFleetTag},
+		gateCrewMember{"F-1", gate.FactoryFleetTag}, gateCrewMember{"F-2", gate.FactoryFleetTag},
+	)
+
+	// TICK ONE: real work exists (the default topology). Non-vacuity for tick two below — the fleet
+	// must start SETTLED, so tick two's redirect is attributable to the topology change alone.
+	f.reallocate(t)
+	if writes := f.assignments(); len(writes) != 0 {
+		t.Fatalf("fixture is inert: moved %+v on tick one; want the fleet already settled at its baseline", writes)
+	}
+
+	// TICK TWO: the SAME market this fleet would consult goes dark for both of FAB_MATS's inputs.
+	// Nothing else changed.
+	f.topo.errByGood = map[string]error{"IRON": errors.New("no exporter"), "QUARTZ_SAND": errors.New("no exporter")}
+	f.reallocate(t)
+
+	writes := f.assignments()
+	if len(writes) == 0 {
+		t.Fatalf("the factory role's hulls did not react to the topology going dark this tick — the signal is being read from something other than a live check.\nlog:\n%s", f.logLines())
+	}
+	for _, w := range writes {
+		if w.fleet != gate.DeliveryFleetTag || !strings.HasPrefix(w.ship, "F-") {
+			t.Fatalf("wrote %+v; want the factory hulls redirected to delivery this tick", writes)
+		}
 	}
 }
 
@@ -594,7 +699,7 @@ func TestReallocateGateRoles_IsANoOpWhenEitherRoleIsUnwired(t *testing.T) {
 	base.shipRepo.mu.Unlock()
 
 	task := manufacturing.NewDeliverToConstructionTask(gateTestPipelineID, 1, gateMaterialPrimary, "", "", gateTestSite, nil)
-	base.handler.reallocateGateRoles(base.ctx(), gateTestSystem, []*manufacturing.ManufacturingTask{task}, shared.MustNewPlayerID(1))
+	base.handler.reallocateGateRoles(base.ctx(), gateTestCmd(), gateTestSystem, []*manufacturing.ManufacturingTask{task}, shared.MustNewPlayerID(1))
 
 	base.shipRepo.mu.Lock()
 	defer base.shipRepo.mu.Unlock()
@@ -664,7 +769,7 @@ func TestReallocateGateRoles_AnnouncesTheQuietPathsToo(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f, tasks := tc.build(t)
-			f.handler.reallocateGateRoles(f.ctx(), tc.system, tasks, shared.MustNewPlayerID(1))
+			f.handler.reallocateGateRoles(f.ctx(), gateTestCmd(), tc.system, tasks, shared.MustNewPlayerID(1))
 
 			if !strings.Contains(f.logLines(), tc.want) {
 				t.Fatalf("this exit is silent, so a reallocator stuck here reads exactly like one that is never called. want %q in:\n%s", tc.want, f.logLines())

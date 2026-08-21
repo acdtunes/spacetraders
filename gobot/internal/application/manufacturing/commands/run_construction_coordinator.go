@@ -395,7 +395,7 @@ func (h *RunConstructionCoordinatorHandler) drainOnce(ctx context.Context, cmd *
 	//
 	// It takes the RESOLVED systemSymbol, not cmd.SystemSymbol: an unset launch symbol would disable
 	// the in-system scoping and let this drain re-role a gate hull parked in a system it cannot reach.
-	h.reallocateGateRoles(ctx, systemSymbol, tasks, playerID)
+	h.reallocateGateRoles(ctx, cmd, systemSymbol, tasks, playerID)
 
 	// Discover the drain's OWN dedicated fleet FIRST, then supplement with opportunistic idle
 	// hulls (see selectHaulers).

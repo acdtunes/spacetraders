@@ -48,6 +48,41 @@ func TestBaselineMix_MatchesTheDFFDPurchaseOrderAtEveryN(t *testing.T) {
 	}
 }
 
+// THE THIRD STATE'S SUM INVARIANT, proven directly against roleTarget rather than only through
+// PlanReallocation's higher-level behaviour: the all-delivery target must sum to the roled census
+// at EVERY n, exactly as BaselineMix and the paused target already do. This is what keeps
+// needDelivery/needFactory exact negatives of each other for the new branch too — the property the
+// file's PHANTOM DEFICIT tests exist to protect, extended to cover the third shape.
+func TestRoleTarget_TheAllDeliveryStateSumsToTheRoledCensusAtEveryN(t *testing.T) {
+	for n := 0; n < 9; n++ {
+		delivery, factory := roleTarget(false, true, n)
+		if delivery != n || factory != 0 {
+			t.Fatalf("roleTarget(false, true, %d) = %dD/%dF, want %dD/0F — the all-delivery target must be the WHOLE roled population, not a partial re-split", n, delivery, factory, n)
+		}
+	}
+}
+
+// PRECEDENCE. A caller that ever asserts both paused and factoryHasNoWork gets the PAUSED answer,
+// not the factory-idle one — pinned directly against roleTarget/adoptionTarget so the ordering
+// cannot silently flip to whichever case happens to be written first in a future edit. See
+// ReallocationInput.FactoryHasNoWork for why paused is the safer of the two when a caller ever
+// asserts both: it costs nothing (a paused fleet's delivery buy is already refused for every
+// material, so all-delivery would sit exactly as idle as all-factory) and it keeps the established,
+// dwell-protected recovery loop in charge rather than the newer idle-hull optimization.
+func TestRoleTarget_WhenBothPausedAndFactoryHasNoWorkPausedWins(t *testing.T) {
+	if delivery, factory := roleTarget(true, true, 4); delivery != 0 || factory != 4 {
+		t.Fatalf("roleTarget(true, true, 4) = %dD/%dF, want 0D/4F — paused must win when a caller ever asserts both", delivery, factory)
+	}
+}
+
+// ...and adoptionTarget keeps the SAME precedence, or a hull adopted on a tick where a caller
+// (wrongly) asserts both would land on the opposite role from a re-role decided the same tick.
+func TestAdoptionTarget_WhenBothPausedAndFactoryHasNoWorkPausedWins(t *testing.T) {
+	if got := adoptionTarget(true, true, 0, 0); got != RoleFactory {
+		t.Fatalf("adoptionTarget(true, true, 0, 0) = %v, want RoleFactory — paused must win when a caller ever asserts both", got)
+	}
+}
+
 // PAUSED: delivery hulls move to the factory role. This is what makes the pause a
 // self-shortening feedback loop — the hulls go feed the factory that is low, so supply recovers
 // sooner and delivery resumes.
@@ -109,6 +144,83 @@ func TestPlanReallocation_AnUnpausedFleetReturnsToTheBaselineMixNotToAllDelivery
 	}
 	if plan.WantDelivery != 2 || plan.WantFactory != 2 {
 		t.Fatalf("target mix = %dD/%dF, want the 2D/2F baseline for 4 hulls", plan.WantDelivery, plan.WantFactory)
+	}
+}
+
+// UNPAUSED WITH THE FACTORY ROLE IDLE: the mirror image of the paused case, in the opposite
+// direction. Instead of borrowing delivery hulls to feed a starved factory, this redirects factory
+// hulls that have nothing left to feed toward the one productive gate-work actually available —
+// see PlanReallocation's doc comment ("UNPAUSED WITH THE FACTORY ROLE GENUINELY IDLE") for why this
+// third state exists at all: with both gate materials now resolving via direct buy most eras
+// (sp-4od84/sp-0u1yd/sp-8epum), the factory role can go a long stretch with nothing feedable, and
+// without this branch those hulls would sit idle at the static D/F/F/D baseline forever.
+func TestPlanReallocation_AnUnpausedFleetWithNoFactoryWorkMovesFactoryHullsToDelivery(t *testing.T) {
+	plan := PlanReallocation(ReallocationInput{
+		Now:              reallocNow,
+		DeliveryPaused:   false,
+		FactoryHasNoWork: true,
+		Workers: []Worker{
+			idleWorker("D-1", DeliveryFleetTag),
+			idleWorker("D-2", DeliveryFleetTag),
+			idleWorker("F-1", FactoryFleetTag),
+			idleWorker("F-2", FactoryFleetTag),
+		},
+		MaxMoves: 4,
+	})
+
+	if len(plan.Moves) != 2 {
+		t.Fatalf("moves = %v, want both factory hulls moved to delivery", movedShips(plan))
+	}
+	for _, m := range plan.Moves {
+		if m.To != RoleDelivery {
+			t.Fatalf("move %+v targets %v; a fleet whose factory role has no work moves TOWARD delivery", m, m.To)
+		}
+		if m.From != FactoryFleetTag {
+			t.Fatalf("move %+v came from %q; a delivery hull is already where this target wants it and must not be re-tagged", m, m.From)
+		}
+		if m.Reason != MoveReasonFactoryIdleToDelivery {
+			t.Fatalf("move %+v reason = %q, want %q — an operator must be able to tell WHY a hull changed role", m, m.Reason, MoveReasonFactoryIdleToDelivery)
+		}
+	}
+	// THE INVARIANT: the target sums to the roled census, exactly as the paused and baseline targets
+	// do — proven here end to end, not just at roleTarget's own unit test — or
+	// needDelivery/needFactory stop being exact negatives of each other and the phantom-deficit class
+	// of bug this file's comments describe becomes reachable again.
+	if plan.WantDelivery != 4 || plan.WantFactory != 0 {
+		t.Fatalf("target mix = %dD/%dF, want 4D/0F — ALL delivery, not a partial re-split", plan.WantDelivery, plan.WantFactory)
+	}
+}
+
+// PRECEDENCE, END TO END. A caller that ever asserts both DeliveryPaused and FactoryHasNoWork gets
+// the PAUSED ruling — delivery hulls borrow to factory, exactly as
+// TestPlanReallocation_APausedFleetMovesDeliveryHullsToTheFactoryRole — and FactoryHasNoWork being
+// simultaneously true changes nothing about the outcome or the reported reason. See
+// ReallocationInput.FactoryHasNoWork for why paused is the safer answer when a caller ever asserts
+// both.
+func TestPlanReallocation_WhenBothPausedAndFactoryHasNoWorkTheFleetStillGoesAllFactory(t *testing.T) {
+	plan := PlanReallocation(ReallocationInput{
+		Now:              reallocNow,
+		DeliveryPaused:   true,
+		FactoryHasNoWork: true,
+		Workers: []Worker{
+			idleWorker("D-1", DeliveryFleetTag),
+			idleWorker("D-2", DeliveryFleetTag),
+			idleWorker("F-1", FactoryFleetTag),
+			idleWorker("F-2", FactoryFleetTag),
+		},
+		MaxMoves: 4,
+	})
+
+	if len(plan.Moves) != 2 {
+		t.Fatalf("moves = %v, want both delivery hulls moved to factory, exactly as under DeliveryPaused alone", movedShips(plan))
+	}
+	for _, m := range plan.Moves {
+		if m.To != RoleFactory || m.Reason != MoveReasonPauseToFactory {
+			t.Fatalf("move %+v; a caller asserting both booleans must still read as a PAUSE, not a factory-idle redirect", m)
+		}
+	}
+	if plan.WantDelivery != 0 || plan.WantFactory != 4 {
+		t.Fatalf("target mix = %dD/%dF, want 0D/4F", plan.WantDelivery, plan.WantFactory)
 	}
 }
 
@@ -194,6 +306,25 @@ func TestPlanReallocation_ALegacyHullIsAdoptedEvenWhilePaused(t *testing.T) {
 
 	if len(plan.Moves) != 1 || plan.Moves[0].To != RoleFactory {
 		t.Fatalf("moves = %v, want the legacy hull adopted into the factory role while paused", movedShips(plan))
+	}
+}
+
+// ...and the mirror: a legacy hull is adopted straight to DELIVERY when the factory role has no
+// work, which is adoptionTarget's own increment of the all-delivery target (see
+// TestAdoptionTarget_WhenBothPausedAndFactoryHasNoWorkPausedWins for the precedence corner).
+func TestPlanReallocation_ALegacyHullIsAdoptedToDeliveryWhenFactoryHasNoWork(t *testing.T) {
+	plan := PlanReallocation(ReallocationInput{
+		Now:              reallocNow,
+		FactoryHasNoWork: true,
+		Workers:          []Worker{idleWorker("L-1", LegacyFleetTag)},
+		MaxMoves:         1,
+	})
+
+	if len(plan.Moves) != 1 || plan.Moves[0].To != RoleDelivery {
+		t.Fatalf("moves = %v, want the legacy hull adopted into the delivery role while the factory role has no work", movedShips(plan))
+	}
+	if plan.Moves[0].Reason != MoveReasonLegacyAdoption {
+		t.Fatalf("move %+v reason = %q, want %q — adoption is reported as adoption whatever role it lands in", plan.Moves[0], plan.Moves[0].Reason, MoveReasonLegacyAdoption)
 	}
 }
 
@@ -657,32 +788,100 @@ func TestPlanReallocation_TheDwellGatesTheBorrowButNotTheReturn(t *testing.T) {
 	}
 }
 
+// THE SAME ASYMMETRY, EXTENDED TO THE NEW TRIGGER: the dwell gates the NO-WORK borrow too, never
+// its return. See the "FactoryHasNoWork is DELIBERATELY GATED THE SAME WAY" comment in
+// PlanReallocation for the justification this test proves — unlike DeliveryPaused, which BuyPolicy
+// already runs through its own hysteresis (a buy floor and a HIGHER resume floor), FactoryHasNoWork
+// is a fresh, undamped read every tick: planGateFeed's affordability check prices a candidate step
+// against the LIVE ask and LIVE treasury headroom, either of which can cross the reserve line and
+// back on consecutive ticks with no real market event. Gating this move with the SAME dwell already
+// built for exactly this class of noise is what stops that flicker from oscillating the workforce.
+func TestPlanReallocation_TheDwellGatesTheNoWorkBorrowButNotItsReturn(t *testing.T) {
+	justMoved := func(ship, tag string) Worker {
+		return Worker{Ship: ship, FleetTag: tag, Idle: true, LastMovedByUs: reallocNow.Add(-time.Second)}
+	}
+
+	// RETURN: the factory role recovered real work one second after all four hulls were borrowed to
+	// delivery for having none. They are deep inside the dwell and must come back regardless.
+	resume := PlanReallocation(ReallocationInput{
+		Now:              reallocNow,
+		DeliveryPaused:   false,
+		FactoryHasNoWork: false,
+		Workers: []Worker{
+			justMoved("H-1", DeliveryFleetTag), justMoved("H-2", DeliveryFleetTag),
+			justMoved("H-3", DeliveryFleetTag), justMoved("H-4", DeliveryFleetTag),
+		},
+		Dwell:    10 * time.Minute,
+		MaxMoves: 10,
+	})
+	if len(resume.Moves) != 2 {
+		t.Fatalf("moves = %v one second into a 10-minute dwell, want the 2 hulls the baseline is short of; a dwell-locked return leaves the factory role with ZERO hulls for the rest of the window", movedShips(resume))
+	}
+	for _, m := range resume.Moves {
+		if m.To != RoleFactory || m.Reason != MoveReasonResumeToBaseline {
+			t.Fatalf("move %+v; the ungated direction is the return to baseline specifically, not every move", m)
+		}
+	}
+	for _, s := range resume.Skips {
+		if s.Reason == MoveSkipDwell {
+			t.Fatalf("skips = %+v; nothing may be held by the dwell on the return leg", resume.Skips)
+		}
+	}
+
+	// BORROW: the same freshly-moved hulls, taken TO delivery because the factory role has no work.
+	// Still gated.
+	borrow := PlanReallocation(ReallocationInput{
+		Now:              reallocNow,
+		DeliveryPaused:   false,
+		FactoryHasNoWork: true,
+		Workers: []Worker{
+			justMoved("D-1", DeliveryFleetTag), justMoved("D-2", DeliveryFleetTag),
+			justMoved("F-1", FactoryFleetTag), justMoved("F-2", FactoryFleetTag),
+		},
+		Dwell:    10 * time.Minute,
+		MaxMoves: 10,
+	})
+	if len(borrow.Moves) != 0 {
+		t.Fatalf("moves = %v one second into a 10-minute dwell; the NO-WORK BORROW must stay gated, or a flickering signal oscillates the whole workforce", movedShips(borrow))
+	}
+	for _, ship := range []string{"F-1", "F-2"} {
+		if got := skipReason(borrow, ship); got != MoveSkipDwell {
+			t.Fatalf("skip reason for %s = %q, want %q", ship, got, MoveSkipDwell)
+		}
+	}
+}
+
 // ADOPTION IS THE TARGET'S OWN INCREMENT — which is the whole answer to "what role does a hull
-// adopted under a PAUSE get?". There is no second mix rule and no pause special case: adoption
-// follows the same target everything else follows, and that target simply evaluates differently in
-// the two states. Unpaused that is NextRole, because the baseline is GENERATED by NextRole; paused
-// it is factory, because the paused target is all-factory.
+// adopted under a PAUSE, or under FactoryHasNoWork, get?". There is no second mix rule and no
+// special case for either trigger: adoption follows the same target everything else follows, and
+// that target simply evaluates differently across its three states. At the baseline that is
+// NextRole, because the baseline is GENERATED by NextRole; paused it is factory, because the
+// paused target is all-factory; under FactoryHasNoWork it is delivery, the mirrored reason.
 //
-// Pinned as an identity over both states and every partial N, so the two can never drift.
+// Pinned as an identity over all four (paused, factoryHasNoWork) combinations and every partial N
+// — including the corner where a caller asserts both, which must resolve identically to paused
+// alone — so the three states (and the precedence between the two triggers) can never drift apart.
 func TestPlanReallocation_AdoptionTargetIsExactlyWhatTheTargetGainsFromOneMoreHull(t *testing.T) {
 	for _, paused := range []bool{false, true} {
-		for roled := 0; roled < 9; roled++ {
-			beforeDelivery, beforeFactory := roleTarget(paused, roled)
-			afterDelivery, afterFactory := roleTarget(paused, roled+1)
+		for _, factoryHasNoWork := range []bool{false, true} {
+			for roled := 0; roled < 9; roled++ {
+				beforeDelivery, beforeFactory := roleTarget(paused, factoryHasNoWork, roled)
+				afterDelivery, afterFactory := roleTarget(paused, factoryHasNoWork, roled+1)
 
-			var gained Role
-			switch {
-			case afterDelivery == beforeDelivery+1 && afterFactory == beforeFactory:
-				gained = RoleDelivery
-			case afterFactory == beforeFactory+1 && afterDelivery == beforeDelivery:
-				gained = RoleFactory
-			default:
-				t.Fatalf("paused=%v roled=%d: target went %dD/%dF -> %dD/%dF; one more hull must add exactly one role",
-					paused, roled, beforeDelivery, beforeFactory, afterDelivery, afterFactory)
-			}
-			if got := adoptionTarget(paused, beforeDelivery, beforeFactory); got != gained {
-				t.Fatalf("paused=%v roled=%d: adoptionTarget = %v, want %v — adoption that is not the target's own increment is a second mix rule, and it opens a deficit the same tick it fills one",
-					paused, roled, got, gained)
+				var gained Role
+				switch {
+				case afterDelivery == beforeDelivery+1 && afterFactory == beforeFactory:
+					gained = RoleDelivery
+				case afterFactory == beforeFactory+1 && afterDelivery == beforeDelivery:
+					gained = RoleFactory
+				default:
+					t.Fatalf("paused=%v factoryHasNoWork=%v roled=%d: target went %dD/%dF -> %dD/%dF; one more hull must add exactly one role",
+						paused, factoryHasNoWork, roled, beforeDelivery, beforeFactory, afterDelivery, afterFactory)
+				}
+				if got := adoptionTarget(paused, factoryHasNoWork, beforeDelivery, beforeFactory); got != gained {
+					t.Fatalf("paused=%v factoryHasNoWork=%v roled=%d: adoptionTarget = %v, want %v — adoption that is not the target's own increment is a second mix rule, and it opens a deficit the same tick it fills one",
+						paused, factoryHasNoWork, roled, got, gained)
+				}
 			}
 		}
 	}
@@ -844,5 +1043,37 @@ func TestReallocationPlan_LogLineNamesThePauseTheTargetTheMovesAndTheHolds(t *te
 		if !strings.Contains(quiet, want) {
 			t.Fatalf("settled-fleet log line %q does not name %q; a settled fleet and a broken reallocator must not look identical", quiet, want)
 		}
+	}
+}
+
+// THE LOG NAMES WHY, not just WHAT. An operator seeing "want 4D/0F" beside "delivery running" has
+// no way to tell that apart from a bug unless the SAME line says the factory role has no work —
+// moveReason covers the per-move grain, this is the plan-level equivalent.
+func TestReallocationPlan_LogLineNamesFactoryHasNoWorkButNeverAlongsidePaused(t *testing.T) {
+	noWork := PlanReallocation(ReallocationInput{
+		Now:              reallocNow,
+		FactoryHasNoWork: true,
+		Workers:          []Worker{idleWorker("D-1", DeliveryFleetTag), idleWorker("F-1", FactoryFleetTag)},
+		MaxMoves:         10,
+	})
+	if line := noWork.LogLine(); !strings.Contains(line, "factory has no work") {
+		t.Fatalf("log line %q does not say why the target shifted to all-delivery", line)
+	}
+
+	// PAUSED WINS THE WORDING TOO, matching roleTarget's own precedence: a caller asserting both
+	// must read as PAUSED alone, never as a combination of the two qualifiers.
+	both := PlanReallocation(ReallocationInput{
+		Now:              reallocNow,
+		DeliveryPaused:   true,
+		FactoryHasNoWork: true,
+		Workers:          []Worker{idleWorker("D-1", DeliveryFleetTag)},
+		MaxMoves:         10,
+	})
+	line := both.LogLine()
+	if !strings.Contains(line, "PAUSED") {
+		t.Fatalf("log line %q does not say PAUSED when both are true", line)
+	}
+	if strings.Contains(line, "factory has no work") {
+		t.Fatalf("log line %q names the factory-idle wording while also PAUSED; the two must never combine", line)
 	}
 }
