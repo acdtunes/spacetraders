@@ -136,16 +136,13 @@ func (a *TaskActivator) resourcePendingTask(ctx context.Context, task *manufactu
 }
 
 // resourceDeferredConstructionTask un-sticks a construction material that was deferred at planning
-// time (neither a buy source nor a factory found then). It recovers in two ways, in precedence order:
+// time (neither a buy source nor a factory found then), in the same precedence as planMaterial
+// (construction_pipeline_planner.go):
 //
-//  1. FABRICATE (primary): resolve a FACTORY that exports the good and set it on the task,
-//     so the task goes READY and the drain fabricates it (buying inputs, feeding the factory,
-//     harvesting) instead of buying the good's own export cold. This breaks the buy-only deadlock:
-//     the drain buying a manufactured export without feeding it depletes that export MODERATE->SCARCE,
-//     after which the buy-only recovery below can NEVER clear the floor, so the task sat PENDING
-//     forever. Only for MANUFACTURABLE goods — a raw/mined good is never fabricated.
-//  2. BUY (fallback): re-source against the pipeline's persisted --min-supply floor — the recovery
-//     for raw/mined goods with no factory. Stays deferred (returns false) if no buy source clears.
+//  1. BUY (primary): resolveDeferredViaBuySource re-sources against the pipeline's --min-supply
+//     floor — one hop, no chain, and supply-gated so it never takes an unacceptable source.
+//  2. FABRICATE (fallback): resolveDeferredViaFactory resolves a FACTORY only once BUY finds
+//     nothing, and only for MANUFACTURABLE goods. Stays deferred if neither resolves.
 //
 // On success it assigns the factory/source (keeping the task PENDING) so the caller marks it READY;
 // on failure it returns false and the task stays deferred for a later poll. It never spends — input
@@ -155,23 +152,23 @@ func (a *TaskActivator) resourceDeferredConstructionTask(ctx context.Context, ta
 		return false
 	}
 	systemSymbol := extractSystemSymbol(task.ConstructionSite())
-	if a.resolveDeferredViaFactory(ctx, task, systemSymbol) {
+	if a.resolveDeferredViaBuySource(ctx, task, systemSymbol) {
 		return true
 	}
-	return a.resolveDeferredViaBuySource(ctx, task, systemSymbol)
+	return a.resolveDeferredViaFactory(ctx, task, systemSymbol)
 }
 
 // resolveDeferredViaFactory sets a fabrication factory on a deferred construction task so it recovers
-// as a FABRICATE. It mirrors the planner's fabricate-eligibility (planFabrication): a good
-// with a recipe (GetRequiredInputs non-empty) for which a factory EXPORTS it while IMPORTING its
-// inputs. Returns false (leaving the task for the buy fallback) when the good has no recipe or no such
-// factory exists — so a good with only a plain buy market falls through to the buy path.
+// as a FABRICATE. Tried only after resolveDeferredViaBuySource finds no acceptable source. Mirrors
+// the planner's fabricate-eligibility (planFabrication): a good with a recipe (GetRequiredInputs
+// non-empty) for which a factory EXPORTS it while IMPORTING its inputs. Returns false when the good
+// has no recipe or no such factory exists.
 func (a *TaskActivator) resolveDeferredViaFactory(ctx context.Context, task *manufacturing.ManufacturingTask, systemSymbol string) bool {
 	logger := common.LoggerFromContext(ctx)
 	good := task.Good()
 	inputs := goods.GetRequiredInputs(good)
 	if len(inputs) == 0 {
-		return false // no recipe — not fabricable; use the buy fallback
+		return false // no recipe — not fabricable; task stays deferred (buy already ran)
 	}
 	factory, err := a.marketLocator.FindFactoryForProduction(ctx, good, inputs, systemSymbol, a.playerID)
 	if err != nil || factory == nil {
@@ -198,7 +195,8 @@ func (a *TaskActivator) resolveDeferredViaFactory(ctx context.Context, task *man
 // the pipeline's persisted --min-supply floor, read back off the PERSISTED pipeline so a floor set
 // at planning time or updated later is honoured on this recovery path too, not only during the
 // initial planning pass. An unset or unreadable floor resolves to "" and FindConstructionSource
-// treats that as MODERATE. This is the fallback for raw/mined goods with no fabrication factory.
+// treats that as MODERATE. This is the primary recovery path, tried before resolveDeferredViaFactory
+// for every deferred good.
 func (a *TaskActivator) resolveDeferredViaBuySource(ctx context.Context, task *manufacturing.ManufacturingTask, systemSymbol string) bool {
 	logger := common.LoggerFromContext(ctx)
 	minSupply := a.pipelineMinSupply(ctx, task.PipelineID(), task.Good())
