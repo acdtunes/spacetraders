@@ -106,7 +106,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(spacetraders_daemon_bootstrap_phase{phase=\"COLDSTART\"}) * 1 + sum(spacetraders_daemon_bootstrap_phase{phase=\"GATE\"}) * 2 + sum(spacetraders_daemon_bootstrap_phase{phase=\"EXPANSION\"}) * 3",
+          "expr": "sum(spacetraders_daemon_bootstrap_phase{phase=\"COLDSTART\",player_id=\"$player\"}) * 1 + sum(spacetraders_daemon_bootstrap_phase{phase=\"GATE\",player_id=\"$player\"}) * 2 + sum(spacetraders_daemon_bootstrap_phase{phase=\"EXPANSION\",player_id=\"$player\"}) * 3",
           "editorMode": "code",
           "legendFormat": "__auto",
           "range": false,
@@ -1261,7 +1261,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(spacetraders_daemon_bootstrap_phase{phase=\"COLDSTART\"}) * 1 + sum(spacetraders_daemon_bootstrap_phase{phase=\"GATE\"}) * 2 + sum(spacetraders_daemon_bootstrap_phase{phase=\"EXPANSION\"}) * 3",
+          "expr": "sum(spacetraders_daemon_bootstrap_phase{phase=\"COLDSTART\",player_id=\"$player\"}) * 1 + sum(spacetraders_daemon_bootstrap_phase{phase=\"GATE\",player_id=\"$player\"}) * 2 + sum(spacetraders_daemon_bootstrap_phase{phase=\"EXPANSION\",player_id=\"$player\"}) * 3",
           "editorMode": "code",
           "legendFormat": "phase",
           "range": true,
