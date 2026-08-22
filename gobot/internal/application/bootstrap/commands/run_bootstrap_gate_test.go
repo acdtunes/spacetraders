@@ -537,6 +537,23 @@ func TestBootstrap_Gate_WorkingCapitalFloor_BlocksAtBoundaryAndLogsFloor(t *test
 	}
 }
 
+// sp-fr55v: the floor RAISE must actually bind. A cushion that would have JUST cleared the
+// pre-raise 150k floor sits BELOW the new one, so a buy that used to pass must now correctly fail
+// (RULINGS #4 — a raised floor only ever blocks MORE, never less).
+func TestBootstrap_Gate_WorkingCapitalFloor_RaiseBlocksTheOldBoundary(t *testing.T) {
+	const price = int64(300000)
+	obs := gateFloorObs(price + 150_000) // cushion = 150_000 exactly: the pre-raise floor, not the current one
+	acq := &fakeGateAcquirer{price: price, yard: "Y1", readable: true}
+	h := gateHandler(obs, &fakeConstruction{}, &fakeManufacturing{}, &fakeRepurposer{}, acq, &fakeHandoff{})
+	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
+	if acq.buys != 0 {
+		t.Fatalf("cushion=150000 cleared the pre-sp-fr55v floor but sits below the raised %d floor: must NOT buy, got %d buys", contractWorkingCapitalFloor, acq.buys)
+	}
+	if res.Blocker != "capital_gate" {
+		t.Fatalf("expected capital_gate blocker at the pre-raise boundary, got %q", res.Blocker)
+	}
+}
+
 // --- a capital-blocked gate-worker buy publishes the pending-scaling reservation so
 // construction's own spend guard can defer to the SAME threshold this buy is waiting on. ---
 
@@ -594,14 +611,14 @@ func TestBootstrap_Gate_CapitalGateBlockedWorkerBuy_UnwiredPublisherIsNilSafe(t 
 	}
 }
 
-// The bootstrap contract-op cushion and the immutable anti-stall bound are now DISTINCT (Admiral RULINGS
-// #5 2026-07-18 amendment split): the gate-worker buy uses the SAME contract cushion as the hauler buy —
-// the 150k contract-operating floor — which is RAISED above (never below) the immutable 50k anti-stall
-// bound, so bootstrap spend stays stricter than the line the autosizer/reconciler reserve. This pins the
-// split so a future edit cannot silently re-unify them or drop the contract cushion below the bound.
+// The bootstrap fleet-scaling cushion and the immutable anti-stall bound are DISTINCT (Admiral RULINGS
+// #5 2026-07-18 amendment split, cushion raised sp-fr55v): the gate-worker buy uses the SAME cushion as
+// the hauler buy — the 350k fleet-scaling floor — which is RAISED above (never below) the immutable 50k
+// anti-stall bound, so bootstrap spend stays stricter than the line the autosizer/reconciler reserve.
+// This pins the split so a future edit cannot silently re-unify them or drop the cushion below the bound.
 func TestBootstrap_ContractCushion_IsDistinctFromAndAboveTheImmutableBound(t *testing.T) {
-	if contractWorkingCapitalFloor != 150_000 {
-		t.Fatalf("bootstrap contract working-capital cushion (%d) must be the 150k contract-operating floor",
+	if contractWorkingCapitalFloor != 350_000 {
+		t.Fatalf("bootstrap fleet-scaling working-capital cushion (%d) must be the 350k fleet-scaling floor",
 			contractWorkingCapitalFloor)
 	}
 	if common.ImmutableReserveFloor != 50_000 {

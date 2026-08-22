@@ -37,6 +37,10 @@ const GateFillWorkingCapitalFloor = ImmutableReserveFloor + 200_000
 // gate-worker buys. IMMUTABLE: const-only, no config/tune/launch seam.
 const ContractReserveCushion = ImmutableReserveFloor + 100_000
 
+// FleetScalingReserveCushion is bootstrap's lump-sum hauler/gate-worker/trade-seed floor, raised so
+// a max-observed 288,900 contract source-buy still clears its own floor right after (RULINGS #4/#5).
+const FleetScalingReserveCushion = ImmutableReserveFloor + 300_000
+
 // ContractScalerCushion is the contract SCALER's CAPEX floor and the SOLE money guard on a
 // scaler hull/depot buy (RULINGS #6 amendment). It reserves MORE than the operating cushion
 // because a scaler buy is LUMPY capital expenditure — a whole hull or depot role at once, not a

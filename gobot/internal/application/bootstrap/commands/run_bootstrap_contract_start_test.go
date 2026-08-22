@@ -221,7 +221,9 @@ func TestBootstrap_BelowThreshold_ContractOpsUnderway_ScalerStillEnsured(t *test
 func TestBootstrap_AtThreshold_StartsContractOpsAndPivotsOffIdleInTrade(t *testing.T) {
 	obs := tradeIdleObs()
 	obs.Treasury = defaultContractStartTreasuryThreshold // exactly at the bar: >= starts the operation
-	ret, acq, run, ho := &fakeRetirer{}, &fakeHaulerAcquirer{price: 300_000, yard: "X1-YARD", readable: true}, &fakeContractRunner{}, &fakeHandoff{}
+	// price kept well under treasury−contractWorkingCapitalFloor so the capital gate is not what is
+	// isolated here — this test is about the SEQUENCING bar, not the working-capital floor.
+	ret, acq, run, ho := &fakeRetirer{}, &fakeHaulerAcquirer{price: 100_000, yard: "X1-YARD", readable: true}, &fakeContractRunner{}, &fakeHandoff{}
 	h := tradeIdleHandler(obs, ret, acq, run, ho, &fakeFrigateLoop{})
 
 	res, err := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
@@ -384,7 +386,9 @@ func TestBootstrap_MidPurchaseBelowThreshold_IsNeverInterrupted(t *testing.T) {
 	obs.HasIdlePurchaser = false
 	obs.Haulers = nil
 	obs.TradeHullCount = 0
-	ret, acq := &fakeRetirer{}, &fakeHaulerAcquirer{price: 300_000, yard: "X1-YARD", readable: true}
+	// price kept well under treasury−contractWorkingCapitalFloor so the capital gate is not what is
+	// isolated here — this test is about the SEQUENCING bar, not the working-capital floor.
+	ret, acq := &fakeRetirer{}, &fakeHaulerAcquirer{price: 50_000, yard: "X1-YARD", readable: true}
 	h := tradeIdleHandler(obs, ret, acq, &fakeContractRunner{}, &fakeHandoff{}, &fakeFrigateLoop{})
 
 	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())

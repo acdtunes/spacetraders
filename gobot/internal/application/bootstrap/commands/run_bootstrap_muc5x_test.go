@@ -16,10 +16,10 @@ import "testing"
 // frigate is freed.
 
 // mucUnaffordableObs is the live deadlock (TORWIND_DEV12): a cold-start cold-start pivot observation with the
-// hauler price UNREADABLE (cold yard) and the treasury set so treasury − price is far below the 150k floor.
+// hauler price UNREADABLE (cold yard) and the treasury set so treasury − price is far below the 350k floor.
 func mucUnaffordableObs() Observation {
 	obs := pivotObs() // 0 haulers, frigate idle in trade, cargo empty, no idle purchaser, viable hubs
-	// 527_060 − 763_473 = −236_413 ≪ 150k floor ⇒ UNAFFORDABLE. Both numbers sit 400k above the live
+	// 527_060 − 763_473 = −236_413 ≪ 350k floor ⇒ UNAFFORDABLE. Both numbers sit 400k above the live
 	// figures this bead was written from, purely so the treasury also clears the contract-START threshold:
 	// the capital gate is what these tests are about, and the sequencing gate must not answer first.
 	obs.Treasury = 527_060
@@ -66,7 +66,7 @@ func TestBootstrap_Muc5x_ColdPrice_AffordableCached_TakesAndPositionsAsBefore(t 
 	acq := &fakeHaulerAcquirer{price: 300_000, yard: "Y", readable: false, lastAsk: 300_000}
 	loop := &fakeFrigateLoop{}
 	scanner := &fakeScanner{dispatched: true}
-	obs := pivotObs() // treasury 2_000_000 ⇒ 2_000_000 − 300_000 = 1_700_000 ≥ 150k floor ⇒ affordable
+	obs := pivotObs() // treasury 2_000_000 ⇒ 2_000_000 − 300_000 = 1_700_000 ≥ 350k floor ⇒ affordable
 	h := pivotHandlerScanned(obs, ret, acq, loop, scanner)
 
 	res, err := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())

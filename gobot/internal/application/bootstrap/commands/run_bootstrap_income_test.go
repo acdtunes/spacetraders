@@ -570,6 +570,24 @@ func TestBootstrap_Income_WorkingCapitalFloor_BlocksWhenCushionShort(t *testing.
 	}
 }
 
+// sp-fr55v: the floor RAISE must actually bind. A cushion that would have JUST cleared the
+// pre-raise 150k floor sits BELOW the new one, so a buy that used to pass must now correctly fail
+// (RULINGS #4 — a raised floor only ever blocks MORE, never less).
+func TestBootstrap_Income_WorkingCapitalFloor_RaiseBlocksTheOldBoundary(t *testing.T) {
+	const price = int64(600000)
+	obs := incomeObs()
+	obs.Treasury = price + 150_000 // cushion = 150_000 exactly: the pre-raise floor, not the current one
+	acq := &fakeHaulerAcquirer{price: price, yard: "X1-YARD", readable: true}
+	h := newIncomeHandler(obs, &fakeRetirer{}, acq, &fakeContractRunner{})
+	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
+	if acq.buys != 0 {
+		t.Fatalf("cushion=150000 cleared the pre-sp-fr55v floor but sits below the raised %d floor: must NOT buy, got %d buys", contractWorkingCapitalFloor, acq.buys)
+	}
+	if res.Blocker != "capital_gate" {
+		t.Fatalf("expected capital_gate blocker at the pre-raise boundary, got %q", res.Blocker)
+	}
+}
+
 // --- no idle purchaser blocks the hauler buy (and never price-checks) ---
 
 func TestBootstrap_Income_NoPurchaserBlocksHauler(t *testing.T) {

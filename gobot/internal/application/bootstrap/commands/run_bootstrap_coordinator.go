@@ -49,24 +49,19 @@ const (
 	gateWorkerTarget = 4
 
 	// contractWorkingCapitalFloor is the ABSOLUTE cash cushion (whole credits) the treasury must still
-	// clear AFTER a staged bootstrap contract-op spend — the hauler buy (incl. the sp-7r7w first-hauler
-	// pivot) AND the GATE-phase gate-worker/construction spend: the spend is affordable when
+	// clear AFTER a staged bootstrap fleet-scaling spend — the hauler buy (incl. the first-hauler
+	// pivot), the trade-seed buy, AND the GATE-phase gate-worker/construction spend: affordable when
 	// treasury−price ≥ this floor (PLAYBOOK §3).
 	//
-	// 150k is the contract operation's OPERATING capital: a light-hauler contract cycle's goods+fuel plus
-	// enough headroom to keep several concurrent contract cycles funded through a treasury dip — a
-	// deliberately conservative operating floor for the whole contract op, NOT a bare per-buy minimum.
-	//
-	// DISTINCT from the immutable anti-stall bound (Admiral RULINGS #5, 2026-07-18 amendment split): this
-	// contract cushion is the derived CONTRACT-OPERATING tier common.ContractReserveCushion (150k =
-	// common.ImmutableReserveFloor + 100k; sp-zq635 re-homed it into the ONE floor source so the base and
-	// every cushion move together and can never drift). The base common.ImmutableReserveFloor (50k) remains
-	// the SEPARATE immutable anti-stall backstop: the outer-max clamp that keeps mature tour/factory trade
-	// able to trade its way out of a low-treasury crunch, and the line the fleet autosizer clamps to
-	// directly. Both are hard constants — never config keys, never live-tunable. The contract cushion is
-	// RAISED above the immutable bound (stricter), so no money guard is weakened (RULINGS #4/#5): a
-	// permitted contract-op buy leaves the op funded at 150k.
-	contractWorkingCapitalFloor int64 = common.ContractReserveCushion
+	// Aliases the derived FLEET-SCALING tier common.FleetScalingReserveCushion (see its own doc for
+	// the sizing data) rather than the lower common.ContractReserveCushion it used to point at: that
+	// tier was sized to survive only ITSELF, not itself plus a large contract source-buy landing right
+	// after. common.ImmutableReserveFloor (50k) remains the SEPARATE immutable anti-stall backstop: the
+	// outer-max clamp mature tour/factory trade uses to trade out of a low-treasury crunch, and the
+	// line the fleet autosizer clamps to directly. Both are hard constants — never config keys, never
+	// live-tunable. This cushion sits ABOVE that bound (stricter), so no money guard is weakened
+	// (RULINGS #4/#5).
+	contractWorkingCapitalFloor int64 = common.FleetScalingReserveCushion
 
 	// GATE-entry gate — UNCONDITIONALLY ON: GATE entry requires a genuinely SCALED contract op
 	// (the FULL fleet at the auto-scaler's live target). Without that bar one contract payout
@@ -98,9 +93,9 @@ const (
 	// hold to enter GATE: a war chest for the jump-gate material bill (~1600 FAB_MATS + 400 ADVANCED_CIRCUITRY)
 	// so GATE is earned from contract surplus, never raced on a thin treasury its own material spend then
 	// crashes. 500k (⇒ treasury ≥ 550k to gate) is sized against the freshly-read gate bill. It is a
-	// PHASE-entry threshold, NOT a spend guard (RULINGS #5); the buy-time 150k working-capital floor is
-	// untouched. Base choice: the immutable 50k anti-stall bound; the 150k contract cushion is the stricter
-	// alternative if contract working capital should not count as surplus.
+	// PHASE-entry threshold, NOT a spend guard (RULINGS #5); the buy-time 350k working-capital floor is
+	// untouched. Base choice: the immutable 50k anti-stall bound; the 350k fleet-scaling cushion is the
+	// stricter alternative if contract working capital should not count as surplus.
 	gateSurplusFloor int64 = 500_000
 	// gateReentryConstructionPct is the construction-progress ceiling (whole percent, 0..100) below
 	// which an under-scaled sticky GATE may re-derive COLDSTART (the escape hatch). 5% scopes the escape to a

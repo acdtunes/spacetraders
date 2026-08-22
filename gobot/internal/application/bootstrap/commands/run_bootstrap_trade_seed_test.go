@@ -57,6 +57,35 @@ func TestBootstrap_TradeSeed_SecondAcquisitionRoutedToTradeFleet(t *testing.T) {
 	}
 }
 
+// sp-fr55v: the trade-seed buy shares contractWorkingCapitalFloor with the hauler buy it re-routes
+// acquisition #2 from (RULINGS #4/#5 — re-routing must never weaken that guard), so its OWN boundary
+// moves with the raise too: a cushion that cleared the pre-raise 150k floor must now be BLOCKED.
+func TestBootstrap_TradeSeed_WorkingCapitalFloor_RaiseBlocksTheOldBoundary(t *testing.T) {
+	const price = int64(300000)
+	obs := incomeObs()
+	obs.BatchContractRunning = true
+	obs.GrowthRunning = true
+	obs.CommandFrigateID = "FRIGATE-1"
+	obs.CommandFrigatePurchasing = true
+	obs.Haulers = []HaulerSnapshot{{Symbol: "H1", Waypoint: "X1-HUBA"}}
+	obs.TradeHullCount = 0
+	obs.Treasury = price + 150_000 // cushion = 150_000 exactly: the pre-raise floor, not the current one
+	acq := &fakeHaulerAcquirer{price: price, yard: "X1-YARD", readable: true}
+	ho := &fakeHandoff{}
+	h := tradeSeedHandler(obs, ho, acq)
+
+	res, err := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
+	if err != nil {
+		t.Fatalf("reconcileOnce: %v", err)
+	}
+	if acq.dedicateBuys != 0 || res.TradeHullSeeded {
+		t.Fatalf("cushion=150000 cleared the pre-sp-fr55v floor but sits below the raised %d floor: must NOT seed, got dedicateBuys=%d seeded=%v", contractWorkingCapitalFloor, acq.dedicateBuys, res.TradeHullSeeded)
+	}
+	if res.Blocker != "capital_gate" {
+		t.Fatalf("expected capital_gate blocker at the pre-raise boundary, got %q", res.Blocker)
+	}
+}
+
 // --- (c) idempotent: with a trade hull already present, the seed does NOT re-fire ---
 
 func TestBootstrap_TradeSeed_Idempotent_NoReseedWhenTradeHullExists(t *testing.T) {

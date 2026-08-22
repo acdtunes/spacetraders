@@ -390,7 +390,7 @@ func TestBootstrap_StalledPurchaser_ZeroHaulerGuardDoesNotBlockOnceAHaulerExists
 func TestBootstrap_StalledPurchaser_ZeroHaulerPivotKeepsItsPurchaser(t *testing.T) {
 	obs := stalledPurchaserObs(frigateStarvedDwell + time.Minute)
 	obs.Haulers = nil
-	obs.Treasury = 423_434 // 423434 − 313730 = 109704, under the 150k working-capital floor
+	obs.Treasury = 423_434 // 423434 − 313730 = 109704, under the 350k working-capital floor
 	ret := &fakeRetirer{}
 	h := starvedHandler(obs, ret, stalledAcquirer(), &fakeContractRunner{}, &fakeHandoff{})
 

@@ -17,7 +17,7 @@ import (
 
 // strandedObs is that wedge: hauler #1 never bought, the frigate carrying the purchasing dedication out
 // of the trade fleet, and a treasury that cannot reach the ask (423_434 − 363_473 = 59_961, under the
-// 150k working-capital floor).
+// 350k working-capital floor).
 func strandedObs() Observation {
 	obs := pivotObs()
 	obs.CommandFrigateOnTrade = false   // the pivot took it out of trade
@@ -59,8 +59,10 @@ func TestBootstrap_StrandedPurchaser_NotReleasedOutsideTheWedge(t *testing.T) {
 		mutate   func(*Observation)
 	}{
 		{
-			// 423_434 − 200_000 = 223_434 ≥ the 150k floor: the pivot is legitimately mid-purchase.
+			// 623_434 − 200_000 = 423_434 ≥ the 350k floor: the pivot is legitimately mid-purchase.
+			// Treasury raised over strandedObs' default so the SAME 200k ask still clears the raised floor.
 			name: "the ask is within reach", price: 200_000, readable: true,
+			mutate: func(o *Observation) { o.Treasury = 623_434 },
 		},
 		{
 			// A cold yard that has never priced a hauler reports 0 — an absence of evidence, which is no
