@@ -47,24 +47,48 @@ func effectiveReserveFloor() int {
 // is one about to buy — so a sensor miss can never budget it to zero and park the gate.
 func (e *ProductionExecutor) budgetedReserveFloor(ctx context.Context, playerID, treasury int) int {
 	floor := effectiveReserveFloor()
-	if e.workSensor == nil {
+	if e.workSensor != nil {
+		logger := common.LoggerFromContext(ctx)
+		tradeHasWork := true
+		if has, err := e.workSensor.TradeHasWork(ctx, playerID); err != nil {
+			// Cause in the MESSAGE: the container log renderer drops the metadata map.
+			logger.Log("WARNING", fmt.Sprintf("Could not sense whether trade is live for the capital budget — assuming it is and taking only construction's %d%% share (fail-conservative): %v", 100-common.TradeCapitalSharePct, err), map[string]interface{}{
+				"error": err.Error(),
+			})
+		} else {
+			tradeHasWork = has
+		}
+
+		deployable := common.CapitalDeployable(int64(treasury), int64(floor))
+		_, constructionBudget := common.CapitalSplit(common.TradeCapitalSharePct, deployable, tradeHasWork, true)
+		floor = int(common.BudgetedSpendFloor(int64(floor), deployable, constructionBudget))
+	}
+
+	return e.raiseForPendingScaling(ctx, playerID, floor)
+}
+
+// raiseForPendingScaling is budgetedReserveFloor's LAST step: it raises floor to a pending
+// fleet-scaling reservation's target when one is active and larger, via MAX — never ADD. The
+// reservation and the trade-split raise already folded into `floor` are two independently-computed
+// ABSOLUTE watermarks over the SAME pool, not disjoint slices — ADD double-counts (floor=300k,
+// pending=508k: ADD wrongly gives 808k, MAX correctly gives 508k). Fails OPEN (floor unchanged)
+// when unwired or on a read error — RULINGS #4 untouched.
+func (e *ProductionExecutor) raiseForPendingScaling(ctx context.Context, playerID, floor int) int {
+	if e.pendingScaling == nil {
 		return floor
 	}
-
-	logger := common.LoggerFromContext(ctx)
-	tradeHasWork := true
-	if has, err := e.workSensor.TradeHasWork(ctx, playerID); err != nil {
-		// Cause in the MESSAGE: the container log renderer drops the metadata map.
-		logger.Log("WARNING", fmt.Sprintf("Could not sense whether trade is live for the capital budget — assuming it is and taking only construction's %d%% share (fail-conservative): %v", 100-common.TradeCapitalSharePct, err), map[string]interface{}{
+	amount, err := e.pendingScaling.PendingReservation(ctx, playerID)
+	if err != nil {
+		logger := common.LoggerFromContext(ctx)
+		logger.Log("WARNING", fmt.Sprintf("Could not read the pending fleet-scaling reservation for the capital budget — ignoring it this cycle (fail-open, never lowers the existing floor): %v", err), map[string]interface{}{
 			"error": err.Error(),
 		})
-	} else {
-		tradeHasWork = has
+		return floor
 	}
-
-	deployable := common.CapitalDeployable(int64(treasury), int64(floor))
-	_, constructionBudget := common.CapitalSplit(common.TradeCapitalSharePct, deployable, tradeHasWork, true)
-	return int(common.BudgetedSpendFloor(int64(floor), deployable, constructionBudget))
+	if amount > int64(floor) {
+		return int(amount)
+	}
+	return floor
 }
 
 // SpendReservationLedger is the CROSS-OPERATION concurrent spend cap. The per-buy floor checks
@@ -111,6 +135,12 @@ type TreasuryReader interface {
 	Credits(ctx context.Context, playerID int) (int64, error)
 }
 
+// PendingScalingReservation reports a pending, capital-blocked, ABSOLUTE lump-sum fleet-scaling
+// purchase so construction's spend guard can defer to it. amount == 0 means nothing pending (see raiseForPendingScaling).
+type PendingScalingReservation interface {
+	PendingReservation(ctx context.Context, playerID int) (amount int64, err error)
+}
+
 // SetSpendLedger wires the cross-container concurrent spend cap. Leaving it unset keeps the cap
 // fail-open, which is what every non-daemon caller wants; the daemon always wires one.
 func (e *ProductionExecutor) SetSpendLedger(ledger SpendReservationLedger) {
@@ -153,6 +183,11 @@ func (e *ProductionExecutor) treasuryCredits(ctx context.Context, playerID int) 
 // Leaving it unset is the test-fixture path only, and keeps the flat reserve floor as sole guard.
 func (e *ProductionExecutor) SetCapitalWorkSensor(sensor common.CapitalWorkSensor) {
 	e.workSensor = sensor
+}
+
+// SetPendingScalingReservation wires the signal budgetedReserveFloor composes via MAX; unset is byte-identical (RULINGS #4).
+func (e *ProductionExecutor) SetPendingScalingReservation(p PendingScalingReservation) {
+	e.pendingScaling = p
 }
 
 // spendFloorBreached reports whether buying an input tranche costing projectedCost would drop

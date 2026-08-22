@@ -68,3 +68,17 @@ type SpendReservationModel struct {
 func (SpendReservationModel) TableName() string {
 	return "factory_spend_reservations"
 }
+
+// PendingScalingReservationModel is the single active "a pending fleet-scaling purchase is
+// capital-blocked" signal for a player. ONE row per player (PlayerID is the primary key).
+// FRESHNESS, NOT EXPLICIT CLEANUP: see PendingScalingReservationRepository for how a stale
+// UpdatedAt reads as absent instead of being deleted.
+type PendingScalingReservationModel struct {
+	PlayerID     int       `gorm:"column:player_id;primaryKey;not null"`
+	TargetAmount int64     `gorm:"column:target_amount;not null"`
+	UpdatedAt    time.Time `gorm:"column:updated_at;not null"`
+}
+
+func (PendingScalingReservationModel) TableName() string {
+	return "pending_scaling_reservations"
+}

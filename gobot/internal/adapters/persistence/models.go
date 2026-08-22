@@ -26,6 +26,7 @@ func AllModels() []any {
 		&ManufacturingFactoryStateModel{},
 		&EraModel{},
 		&SpendReservationModel{},
+		&PendingScalingReservationModel{},
 		&GateEdgeModel{},
 		&TourLegTelemetryModel{},
 		&ScoutPostModel{},

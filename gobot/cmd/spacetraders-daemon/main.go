@@ -1045,6 +1045,7 @@ func run(cfg *config.Config) error {
 	capitalWorkSensor := common.NewEngineCapitalWorkSensor(containerRepo).
 		WithConstructionDemand(goodsServices.NewConstructionDemandReader(constructionPipelineRepo))
 	constructionExecutor.SetCapitalWorkSensor(capitalWorkSensor)
+	constructionExecutor.SetPendingScalingReservation(persistence.NewPendingScalingReservationRepository(db))
 	// The rescue-buy validator's trailing-median source (sp-f5lki). It was NEVER WIRED: the repo
 	// was built at the top of this function and handed only to the market scanner, so
 	// trailingMedianAsk returned ok=false on every call and rescueSource parked EVERY rescue buy

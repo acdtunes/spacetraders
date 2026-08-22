@@ -104,6 +104,7 @@ func NewBootstrapCoordinatorHandler(
 	h.SetGateSurplusReleaser(&bootstrapGateSurplusReleaser{shipRepo: shipRepo})
 	h.SetGateWorkerAcquirer(&bootstrapGateWorkerAcquirer{bootstrapAcquirer: acq, shipRepo: shipRepo})
 	h.SetHandoffLauncher(&bootstrapHandoffLauncher{server: server})
+	h.SetPendingScalingReservationPublisher(persistence.NewPendingScalingReservationRepository(server.db))
 	return h
 }
 

@@ -472,6 +472,63 @@ func TestBootstrap_Income_CapitalGateBlocksHauler(t *testing.T) {
 	}
 }
 
+// --- a capital-blocked hauler buy publishes the pending-scaling reservation so construction's
+// own spend guard can defer to the SAME threshold this buy is waiting on. ---
+
+// The published target must be EXACTLY price+contractWorkingCapitalFloor.
+func TestBootstrap_Income_CapitalGateBlockedHauler_PublishesPendingScalingReservation(t *testing.T) {
+	obs := incomeObs()
+	obs.Treasury = 600000 // cushion = 600000−750000 = −150000, far below the floor → blocked
+	acq := &fakeHaulerAcquirer{price: 750000, yard: "Y", readable: true}
+	pub := &fakePendingScalingPublisher{}
+	h := newIncomeHandler(obs, &fakeRetirer{}, acq, &fakeContractRunner{})
+	h.SetPendingScalingReservationPublisher(pub)
+	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
+
+	if acq.buys != 0 || res.Blocker != "capital_gate" {
+		t.Fatalf("setup must be capital-blocked: buys=%d blocker=%q", acq.buys, res.Blocker)
+	}
+	if pub.calls != 1 {
+		t.Fatalf("expected exactly one publish call on a capital-blocked hauler buy, got %d", pub.calls)
+	}
+	if wantTarget := int64(750000) + contractWorkingCapitalFloor; pub.amounts[0] != wantTarget {
+		t.Fatalf("expected published target=%d (price+floor), got %d", wantTarget, pub.amounts[0])
+	}
+}
+
+// An AFFORDABLE buy must NOT publish.
+func TestBootstrap_Income_AffordableHauler_DoesNotPublishPendingScalingReservation(t *testing.T) {
+	const price = int64(600000)
+	obs := incomeObs()
+	obs.Treasury = price + contractWorkingCapitalFloor + 1 // cushion clears the floor by 1 credit
+	acq := &fakeHaulerAcquirer{price: price, yard: "X1-YARD", readable: true}
+	pub := &fakePendingScalingPublisher{}
+	h := newIncomeHandler(obs, &fakeRetirer{}, acq, &fakeContractRunner{})
+	h.SetPendingScalingReservationPublisher(pub)
+	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
+
+	if acq.buys != 1 || res.Blocker == "capital_gate" {
+		t.Fatalf("setup must be affordable: buys=%d blocker=%q", acq.buys, res.Blocker)
+	}
+	if pub.calls != 0 {
+		t.Fatalf("an affordable hauler buy must not publish a pending-scaling reservation, got %d calls", pub.calls)
+	}
+}
+
+// Nil-safe and byte-identical (RULINGS #4): every other income test in this file wires no
+// publisher at all and still passes; pinned explicitly here too.
+func TestBootstrap_Income_CapitalGateBlockedHauler_UnwiredPublisherIsNilSafe(t *testing.T) {
+	obs := incomeObs()
+	obs.Treasury = 600000
+	acq := &fakeHaulerAcquirer{price: 750000, yard: "Y", readable: true}
+	h := newIncomeHandler(obs, &fakeRetirer{}, acq, &fakeContractRunner{})
+	// deliberately no SetPendingScalingReservationPublisher call
+	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
+	if res.Blocker != "capital_gate" {
+		t.Fatalf("expected capital_gate blocker even with no publisher wired, got %q", res.Blocker)
+	}
+}
+
 // --- sp-acv5: the hauler affordability gate is an ABSOLUTE contract working-capital floor
 // (treasury−price ≥ floor), NOT a proportional reserve_margin×treasury cap. The first light hauler is
 // bought as soon as the buy still leaves the goods+fuel operating cushion — it no longer waits for

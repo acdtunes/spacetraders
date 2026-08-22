@@ -787,6 +787,8 @@ func (h *RunBootstrapCoordinatorHandler) maybeBuyHauler(ctx context.Context, cmd
 	})
 	if !affordable {
 		res.Blocker = "capital_gate"
+		// Publish the SAME threshold so construction's spend guard can defer to it.
+		h.publishPendingScalingReservation(ctx, cmd, pendingScalingReservationTarget(price), "hauler")
 		return
 	}
 

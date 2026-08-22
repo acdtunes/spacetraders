@@ -148,6 +148,22 @@ func (m *fakeMetrics) RecordConstructionPct(pct float64, playerID string) {
 	m.playerIDs = append(m.playerIDs, playerID)
 }
 
+// fakePendingScalingPublisher is the write-side test double, shared by the gate-worker and
+// hauler buy tests (both call h.SetPendingScalingReservationPublisher directly, same as SetMetricsSink).
+type fakePendingScalingPublisher struct {
+	calls   int
+	players []int
+	amounts []int64
+	err     error
+}
+
+func (f *fakePendingScalingPublisher) Publish(ctx context.Context, playerID int, targetAmount int64) error {
+	f.calls++
+	f.players = append(f.players, playerID)
+	f.amounts = append(f.amounts, targetAmount)
+	return f.err
+}
+
 // scriptedWorld is a tiny stateful model so a multi-tick acceptance test can observe the effect of
 // probe buys across ticks (the probe fleet filling to target). probesScouting stays 0
 // under Option B — bootstrap no longer scouts (the scout-post coordinator does); it is retained only

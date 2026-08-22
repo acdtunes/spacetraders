@@ -139,6 +139,13 @@ const (
 // bootstrap container — single-sourced here so the floor can never drift from the tick it mirrors.
 const DefaultTickInterval = defaultBootstrapTickSeconds * time.Second
 
+// pendingScalingReservationTarget is the treasury a capital-blocked gate-worker or hauler buy is
+// waiting to clear: price plus the SAME contractWorkingCapitalFloor the buy's own cushion/
+// affordable test already enforces, so the two numbers can never drift apart (RULINGS #5).
+func pendingScalingReservationTarget(price int64) int64 {
+	return price + contractWorkingCapitalFloor
+}
+
 // ShipRefresher forces a live re-read of the player's hulls before any role/assignment decision —
 // the phantom-cache guard (captain L47): the ship cache desyncs (a phantom-idle hull misread as
 // busy, or vice-versa), so the reconciler refreshes the pool at the top of every tick. An error
@@ -357,6 +364,15 @@ type HandoffLauncher interface {
 	LaunchTradeFleetCoordinator(ctx context.Context, playerID int, agentSymbol string) error
 }
 
+// PendingScalingReservationPublisher publishes the pending-fleet-scaling reservation
+// construction's own spend guard defers to (production_executor_spend_guards.go's
+// PendingScalingReservation port). Bootstrap calls Publish every tick a gate-worker or hauler buy
+// remains capital-blocked; the read side ages the row out on staleness, so simply not calling
+// this again is what retires it — nil-safe/unwired like every other collaborator here.
+type PendingScalingReservationPublisher interface {
+	Publish(ctx context.Context, playerID int, targetAmount int64) error
+}
+
 // RunBootstrapCoordinatorCommand launches the standing bootstrap coordinator for a player.
 // Like the fleet-growth / siting coordinators it runs an infinite reconcile loop inside a single
 // Handle() call; the container wraps it. The cold-start shape is fixed in code, so the launch config
@@ -427,6 +443,10 @@ type RunBootstrapCoordinatorHandler struct {
 	gateAcquirer  GateWorkerAcquirer
 	handoff       HandoffLauncher
 	tourStarter   HomeTourStarter
+
+	// pendingScaling publishes the capital-blocked-buy signal construction's spend guard reads to
+	// raise its floor via MAX. Shared by maybeBuyGateWorker (GATE) and maybeBuyHauler (income).
+	pendingScaling PendingScalingReservationPublisher
 
 	// liveConfig snapshots the container's OWN persisted config at each tick start,
 	// so a `spacetraders tune --operation bootstrap` of a knob takes effect on the NEXT tick with
@@ -551,6 +571,29 @@ func (h *RunBootstrapCoordinatorHandler) SetHomeTourStarter(t HomeTourStarter) {
 // SetHandoffLauncher wires the EXPANSION hand-off (launch the autosizer + standing coordinators). Unset →
 // the gate completes but the hand-off is a logged skip, so the mature economy is not launched (surfaced loudly).
 func (h *RunBootstrapCoordinatorHandler) SetHandoffLauncher(l HandoffLauncher) { h.handoff = l }
+
+// SetPendingScalingReservationPublisher wires the capital-blocked-buy signal (consumed via MAX on
+// the other side). Unset → maybeBuyGateWorker/maybeBuyHauler simply do not publish, RULINGS #4.
+func (h *RunBootstrapCoordinatorHandler) SetPendingScalingReservationPublisher(p PendingScalingReservationPublisher) {
+	h.pendingScaling = p
+}
+
+// publishPendingScalingReservation refreshes the reservation the moment a gate-worker or hauler
+// buy is capital-blocked. Best-effort: a publish failure never touches res.Blocker, which is
+// already the correct, complete reason for this tick's decision.
+func (h *RunBootstrapCoordinatorHandler) publishPendingScalingReservation(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, targetAmount int64, what string) {
+	if h.pendingScaling == nil {
+		return
+	}
+	if err := h.pendingScaling.Publish(ctx, cmd.PlayerID, targetAmount); err != nil {
+		common.LoggerFromContext(ctx).Log("WARN", fmt.Sprintf("Bootstrap could not publish the pending fleet-scaling reservation for the capital-blocked %s buy (construction's spend guard will not see the raised target this cycle): %v", what, err), map[string]interface{}{
+			"action":        "bootstrap_pending_scaling_publish_error",
+			"container_id":  cmd.ContainerID,
+			"target_amount": targetAmount,
+			"error":         err.Error(),
+		})
+	}
+}
 
 // SetLiveConfigReader wires the per-tick live-config snapshot source, making the
 // tunable knobs (BootstrapTunableDefaults) honor `spacetraders tune --operation bootstrap` on

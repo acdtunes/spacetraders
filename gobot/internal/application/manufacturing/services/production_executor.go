@@ -112,6 +112,8 @@ type ProductionExecutor struct {
 	// apiClient/spendLedger, NOT priceHistory's. A wired-but-erroring sensor does NOT fail open:
 	// see budgetedReserveFloor.
 	workSensor common.CapitalWorkSensor
+	// pendingScaling backs the capital-blocked-buy signal; nil is fail-open, same as workSensor.
+	pendingScaling PendingScalingReservation
 }
 
 // NewProductionExecutor creates a new production executor with default polling intervals

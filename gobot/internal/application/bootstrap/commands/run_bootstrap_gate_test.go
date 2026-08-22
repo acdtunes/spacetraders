@@ -537,6 +537,63 @@ func TestBootstrap_Gate_WorkingCapitalFloor_BlocksAtBoundaryAndLogsFloor(t *test
 	}
 }
 
+// --- a capital-blocked gate-worker buy publishes the pending-scaling reservation so
+// construction's own spend guard can defer to the SAME threshold this buy is waiting on. ---
+
+// The published target must be EXACTLY price+contractWorkingCapitalFloor.
+func TestBootstrap_Gate_CapitalGateBlockedWorkerBuy_PublishesPendingScalingReservation(t *testing.T) {
+	const price = int64(300000)
+	obs := gateFloorObs(price + contractWorkingCapitalFloor - 1) // cushion = floor − 1 → blocked
+	acq := &fakeGateAcquirer{price: price, yard: "Y1", readable: true}
+	pub := &fakePendingScalingPublisher{}
+	h := gateHandler(obs, &fakeConstruction{}, &fakeManufacturing{}, &fakeRepurposer{}, acq, &fakeHandoff{})
+	h.SetPendingScalingReservationPublisher(pub)
+	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
+
+	if acq.buys != 0 || res.Blocker != "capital_gate" {
+		t.Fatalf("setup must be capital-blocked: buys=%d blocker=%q", acq.buys, res.Blocker)
+	}
+	if pub.calls != 1 {
+		t.Fatalf("expected exactly one publish call on a capital-blocked gate-worker buy, got %d", pub.calls)
+	}
+	if wantTarget := price + contractWorkingCapitalFloor; pub.amounts[0] != wantTarget {
+		t.Fatalf("expected published target=%d (price+floor), got %d", wantTarget, pub.amounts[0])
+	}
+}
+
+// An AFFORDABLE buy must NOT publish: publishing regardless would needlessly throttle
+// construction against a threshold nothing is actually blocked on.
+func TestBootstrap_Gate_AffordableWorkerBuy_DoesNotPublishPendingScalingReservation(t *testing.T) {
+	const price = int64(300000)
+	obs := gateFloorObs(price + contractWorkingCapitalFloor + 1) // cushion = floor + 1 → affordable
+	acq := &fakeGateAcquirer{price: price, yard: "Y1", readable: true}
+	pub := &fakePendingScalingPublisher{}
+	h := gateHandler(obs, &fakeConstruction{}, &fakeManufacturing{}, &fakeRepurposer{}, acq, &fakeHandoff{})
+	h.SetPendingScalingReservationPublisher(pub)
+	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
+
+	if acq.buys != 1 || res.Blocker == "capital_gate" {
+		t.Fatalf("setup must be affordable: buys=%d blocker=%q", acq.buys, res.Blocker)
+	}
+	if pub.calls != 0 {
+		t.Fatalf("an affordable buy must not publish a pending-scaling reservation, got %d calls", pub.calls)
+	}
+}
+
+// Nil-safe and byte-identical (RULINGS #4): every other gate test in this file wires no
+// publisher at all and still passes; pinned explicitly here too.
+func TestBootstrap_Gate_CapitalGateBlockedWorkerBuy_UnwiredPublisherIsNilSafe(t *testing.T) {
+	const price = int64(300000)
+	obs := gateFloorObs(price + contractWorkingCapitalFloor - 1)
+	acq := &fakeGateAcquirer{price: price, yard: "Y1", readable: true}
+	h := gateHandler(obs, &fakeConstruction{}, &fakeManufacturing{}, &fakeRepurposer{}, acq, &fakeHandoff{})
+	// deliberately no SetPendingScalingReservationPublisher call
+	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
+	if res.Blocker != "capital_gate" {
+		t.Fatalf("expected capital_gate blocker even with no publisher wired, got %q", res.Blocker)
+	}
+}
+
 // The bootstrap contract-op cushion and the immutable anti-stall bound are now DISTINCT (Admiral RULINGS
 // #5 2026-07-18 amendment split): the gate-worker buy uses the SAME contract cushion as the hauler buy —
 // the 150k contract-operating floor — which is RAISED above (never below) the immutable 50k anti-stall
