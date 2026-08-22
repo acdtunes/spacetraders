@@ -270,12 +270,21 @@ func (h *RunBootstrapCoordinatorHandler) releaseStarvedFrigateToContract(ctx con
 		return
 	}
 
-	// Capital ops outrank one opportunistic leg: while the operation is funded and still hull-less the
-	// frigate is the first-hauler pivot's purchaser, so leave it where the pivot expects to find it. Still
-	// scoped to a HULL-LESS op on purpose: once hauler #1 exists the pivot is over, and a hull-less stall
-	// keeps its own cure (releaseStrandedPurchaser hands the frigate back to TRADE to earn toward the ask).
+	// Capital ops outrank one opportunistic leg: while the operation is funded, still hull-less, and the
+	// pivot's buy is affordable right now, the frigate is the first-hauler pivot's purchaser, so leave it
+	// where it expects to find it (once hauler #1 exists the pivot is over; releaseStrandedPurchaser
+	// covers a hull-less stall from there). buyShipAsk's `ask` only prices the trade-seed pivot (it
+	// requires a hauler already owned), so a fresh read against the same cushion≥floor test
+	// maybeBuyHauler's own capital gate uses stands in; unreadable or non-positive fails closed.
 	if contractOpsWarranted(obs, cfg.ContractStartTreasury) && len(obs.Haulers) == 0 {
-		return
+		pivotAffordableNow := false
+		if h.haulAcquirer != nil {
+			pivotPrice, _, readable, err := h.haulAcquirer.PriceCheck(ctx, cmd.PlayerID, haulerShipType)
+			pivotAffordableNow = err == nil && readable && pivotPrice > 0 && obs.Treasury-pivotPrice >= contractWorkingCapitalFloor
+		}
+		if pivotAffordableNow {
+			return
+		}
 	}
 
 	logger := common.LoggerFromContext(ctx)

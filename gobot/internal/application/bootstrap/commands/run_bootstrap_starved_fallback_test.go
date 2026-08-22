@@ -291,6 +291,48 @@ func TestBootstrap_StarvedFallback_YieldsToTheFirstHaulerPivot(t *testing.T) {
 	}
 }
 
+// The reservation above must yield once the pivot it protects can no longer fire: a buy short of the
+// working-capital floor leaves the starved frigate earning nothing while blocked from the one fallback
+// that could grow the treasury toward clearing it.
+func TestBootstrap_StarvedFallback_ReleasedWhenFirstHaulerPivotUnaffordable(t *testing.T) {
+	obs := starvedObs(frigateStarvedDwell + time.Minute)
+	obs.Treasury = defaultContractStartTreasuryThreshold + 1
+	ret := &fakeRetirer{}
+	unaffordablePrice := obs.Treasury - contractWorkingCapitalFloor + 1 // cushion lands one credit short
+	h := starvedHandler(obs, ret, &fakeHaulerAcquirer{price: unaffordablePrice, yard: "Y", readable: true}, &fakeContractRunner{}, &fakeHandoff{})
+
+	res, err := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
+	if err != nil {
+		t.Fatalf("reconcileOnce: %v", err)
+	}
+	if len(ret.ships) != 1 || ret.ships[0] != "FRIGATE-1" {
+		t.Fatalf("an unaffordable first-hauler pivot must not hold the starved frigate hostage — it must release to contract fallback, got retires=%v (blocker=%q)", ret.ships, res.Blocker)
+	}
+	if !res.FrigateContractFallback {
+		t.Fatalf("the fallback must be recorded on the tick result so the heartbeat shows it")
+	}
+	if res.FrigatePivoted {
+		t.Fatalf("precondition broken: the pivot must not fire this tick")
+	}
+}
+
+// The same fail-closed rule applies when the yard cannot be read at all: no evidence the buy is in reach
+// is no reason to hold the reservation.
+func TestBootstrap_StarvedFallback_ReleasedWhenFirstHaulerPriceUnreadable(t *testing.T) {
+	obs := starvedObs(frigateStarvedDwell + time.Minute)
+	obs.Treasury = defaultContractStartTreasuryThreshold + 1
+	ret := &fakeRetirer{}
+	h := starvedHandler(obs, ret, &fakeHaulerAcquirer{price: 100_000, yard: "Y", readable: false}, &fakeContractRunner{}, &fakeHandoff{})
+
+	res, err := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
+	if err != nil {
+		t.Fatalf("reconcileOnce: %v", err)
+	}
+	if len(ret.ships) != 1 || ret.ships[0] != "FRIGATE-1" || !res.FrigateContractFallback {
+		t.Fatalf("an unreadable yard is no evidence the pivot buy is in reach — fail closed, release the starved frigate, got retires=%v fallback=%v (blocker=%q)", ret.ships, res.FrigateContractFallback, res.Blocker)
+	}
+}
+
 // A graduated player has durably retired contracts: no engine, and no fallback into one.
 func TestBootstrap_StarvedFallback_SilentForAGraduatedPlayer(t *testing.T) {
 	obs := starvedObs(frigateStarvedDwell + time.Minute)
