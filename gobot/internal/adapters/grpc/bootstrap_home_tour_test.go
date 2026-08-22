@@ -104,6 +104,23 @@ func TestSelectHomeTourHulls_NeverTakesAHullThatIsNotItsOwn(t *testing.T) {
 	require.Equal(t, []string{"TORWIND-3"}, got)
 }
 
+// --- THE YARD SENTINEL must never be swept into scouting ---
+//
+// The sentinel is protected via the SAME claim/assignment axis the test above already pins for ANY
+// captain reservation — selectHomeTourHulls needs no code change at all. This test pins the EXACT
+// reason string bootstrap's own buy+reserve uses (bootstrapCmd.YardSentinelReservationReason), so a
+// future rename on either side (the buy in bootstrap_yard_sentinel.go, or the read here) is caught
+// immediately instead of silently reopening the scouting-rotation leak this test exists to close.
+func TestSelectHomeTourHulls_NeverTakesTheYardSentinel(t *testing.T) {
+	sentinel := homeProbe(t, "SENTINEL-1", "X1-HQ-YARD")
+	require.NoError(t, sentinel.ReserveByCaptain(bootstrapCmd.YardSentinelReservationReason, shared.NewRealClock()))
+	idle := homeProbe(t, "TORWIND-3", "X1-HQ-B2")
+
+	got := selectHomeTourHulls([]*navigation.Ship{sentinel, idle}, "X1-HQ", nil)
+	require.Equal(t, []string{"TORWIND-3"}, got,
+		"the yard sentinel must never be swept into the scouting rotation while it stands captain-reserved at the home shipyard")
+}
+
 // --- The two reads meet at the reconciler's guard ---
 
 // END TO END over the observation the guard actually sees: the ramp's parked hulls make the

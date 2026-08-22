@@ -486,6 +486,8 @@ func (h *RunBootstrapCoordinatorHandler) actExpansion(ctx context.Context, cmd *
 	// ENSURED FIRST, so the hulls are handed into a fleet somebody is actually working.
 	h.ensureTradeFleetCoordinator(ctx, cmd, cfg)
 	h.redirectConstructionHullsToTrade(ctx, cmd, cfg, obs, res)
+	// Release the yard sentinel's captain reservation, same placement/reasoning as the redirect above.
+	h.releaseYardSentinel(ctx, cmd, cfg, obs, res)
 
 	if !handedOff {
 		// Hold and retry while the fault could still be transient, so a fleet that has only just finished
@@ -652,6 +654,51 @@ func (h *RunBootstrapCoordinatorHandler) redirectConstructionHullsToTrade(ctx co
 		"redirected":   redirected,
 		"candidates":   len(hulls),
 		"ships":        hulls,
+	})
+}
+
+// releaseYardSentinel clears the yard-sentinel's captain reservation at the EXPANSION hand-off,
+// returning it to plain idle — DedicatedFleet stays "" (never tagged), already the first case of
+// adoptStrandedProbes's allowlist, so the already boot-standing probe-sensing coordinator adopts it on
+// its own very next tick. This release is the one load-bearing action the whole hand-off depends on.
+//
+// Best-effort like the trade redirect beside it: never holds the terminal exit, never claims
+// res.Blocker. Safe to retry blindly — the hull simply stays reserved until a later tick succeeds.
+func (h *RunBootstrapCoordinatorHandler) releaseYardSentinel(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, obs Observation, res *reconcileResult) {
+	if obs.YardSentinelSymbol == "" {
+		return // never bought this era, or already released — the ledger no longer reports a reservation
+	}
+	logger := common.LoggerFromContext(ctx)
+
+	if cfg.DryRun {
+		logger.Log("INFO", fmt.Sprintf("Bootstrap DRY-RUN: WOULD release the yard sentinel %s's captain reservation so parked-sensing adopts it (took no action)", obs.YardSentinelSymbol), map[string]interface{}{
+			"action":       "bootstrap_would_release_yard_sentinel",
+			"container_id": cmd.ContainerID,
+			"ship":         obs.YardSentinelSymbol,
+		})
+		return
+	}
+	if h.yardSentinel == nil {
+		logger.Log("WARN", fmt.Sprintf("Bootstrap EXPANSION has no yard-sentinel collaborator wired — cannot release %s's reservation, so it stays parked and unproductive instead of joining parked-sensing", obs.YardSentinelSymbol), map[string]interface{}{
+			"action":       "bootstrap_yard_sentinel_release_skipped",
+			"container_id": cmd.ContainerID,
+			"ship":         obs.YardSentinelSymbol,
+		})
+		return
+	}
+	if err := h.yardSentinel.Release(ctx, cmd.PlayerID, obs.YardSentinelSymbol, "expansion_handoff"); err != nil {
+		logger.Log("ERROR", fmt.Sprintf("Bootstrap EXPANSION failed to release the yard sentinel %s's captain reservation (retried next tick/boot; the exit is not held on it): %v", obs.YardSentinelSymbol, err), map[string]interface{}{
+			"action":       "bootstrap_yard_sentinel_release_error",
+			"container_id": cmd.ContainerID,
+			"ship":         obs.YardSentinelSymbol,
+		})
+		return
+	}
+	res.YardSentinelReleased = true
+	logger.Log("INFO", fmt.Sprintf("Bootstrap EXPANSION released the yard sentinel %s — parked-sensing adopts it into productive duty next, not a permanent dead asset", obs.YardSentinelSymbol), map[string]interface{}{
+		"action":       "bootstrap_yard_sentinel_released",
+		"container_id": cmd.ContainerID,
+		"ship":         obs.YardSentinelSymbol,
 	})
 }
 

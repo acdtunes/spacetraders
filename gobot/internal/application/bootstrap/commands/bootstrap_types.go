@@ -221,6 +221,18 @@ type Observation struct {
 	// never gates on an unknown target, so a scaler-less op stays in cold start rather than entering GATE blind.
 	ContractScalerTarget int
 
+	// --- Yard-sentinel signals: the extra probe bought once per era, kept captain-reserved (never a
+	// coordinator dedication) and parked docked at the home shipyard through COLDSTART/GATE so every
+	// PriceCheck reads warm without diverting an earning hull. ---
+
+	// YardSentinelSymbol is the sentinel's ship symbol — always captain-reserved (see
+	// YardSentinelReservationReason) and never DedicatedFleet-tagged, so observeFleetShape excludes it
+	// from ProbeCount/ProbesScouting and selectHomeTourHulls skips it on the plain IsIdle() check
+	// alone. "" before one has been bought this era.
+	YardSentinelSymbol string
+	// YardSentinelParked reports whether YardSentinelSymbol is DOCKED at the home shipyard yet.
+	YardSentinelParked bool
+
 	// Readable reports whether the observer gathered all its inputs. false ⇒ fail-closed (no action
 	// this tick), with Reason naming what could not be read.
 	Readable bool

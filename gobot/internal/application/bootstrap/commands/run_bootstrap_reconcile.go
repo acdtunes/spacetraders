@@ -91,6 +91,10 @@ type reconcileResult struct {
 	TradeHullSeeded         bool // the cold-start hull-routing trade-seed fired this tick: acquisition #2 bought + dedicated to the trade fleet + the trade coordinator ensured
 	PlacementSlots          int  // fixed delivery slots this era resolves — where the ramp spreads its hulls (for the heartbeat)
 
+	// Yard-sentinel tallies (see actYardSentinel).
+	YardSentinelBought bool // the sentinel was bought + captain-reserved this tick
+	YardSentinelDocked bool // the sentinel became docked at the home shipyard this tick
+
 	// GATE tallies.
 	ConstructionStartRan bool // `construction start` ran this tick (created/resumed the pipeline)
 	MfgEnsured           bool // the manufacturing coordinator (executor) was ensured-running this tick
@@ -102,6 +106,7 @@ type reconcileResult struct {
 	// COMPLETE tallies.
 	HandoffLaunched          bool // the standing fleet-growth coordinator was launched this tick (the hand-off)
 	ConstructionHullsToTrade int  // gate construction hulls re-dedicated to the TRADE fleet this tick: the gate is built, so its workers stop earning until they are put back to work
+	YardSentinelReleased     bool // the yard sentinel's captain reservation was released this tick — parked-sensing adopts it next
 	Done                     bool // terminal: COMPLETE reached and handed off — the reconcile loop may exit
 
 	// The dedicated contract auto-scaler was ensured this tick (cold-start window, contract-start gate
@@ -442,6 +447,132 @@ func (h *RunBootstrapCoordinatorHandler) actData(ctx context.Context, cmd *RunBo
 	// (2) START the tour. The Admiral's cold-start arc is "buy 2 probes and start a 3 probe
 	// tour on the home system" — buying and leaving the probes idle fails it by one verb.
 	h.startHomeMarketTour(ctx, cmd, obs, res)
+
+	// (3) The yard sentinel: bootstrap's own small, independent, one-shot acquisition.
+	h.actYardSentinel(ctx, cmd, obs, res)
+}
+
+// actYardSentinel drives the yard sentinel toward "bought, captain-reserved, docked at the home
+// shipyard" — independent of the probeTarget scouting seed: it waits until obs.ProbeCount is already
+// AT target (the higher-priority scouting seed never splits a scarce buy with it), and
+// observeFleetShape excludes the sentinel from ProbeCount/ProbesScouting so a real scout lost later is
+// still replaced. Gated on the SAME common.ImmutableReserveFloor the scouting buy uses (RULINGS #5),
+// never the stricter contractWorkingCapitalFloor. Re-derived every tick, and neither branch below ever
+// claims res.Blocker — the sentinel must never mask why a scouting/contract buy could not happen.
+func (h *RunBootstrapCoordinatorHandler) actYardSentinel(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, obs Observation, res *reconcileResult) {
+	if obs.ProbeCount < probeTarget {
+		return // the higher-priority scouting seed is not yet complete; the sentinel waits its turn
+	}
+	if obs.YardSentinelSymbol == "" {
+		h.buyYardSentinel(ctx, cmd, obs, res)
+		return
+	}
+	h.parkYardSentinel(ctx, cmd, obs, res)
+}
+
+// buyYardSentinel evaluates and (unless blocked) executes the ONE-SHOT yard-sentinel buy, emitting the
+// same guardrail arithmetic as every other bootstrap buy (RULINGS #4, fail closed). Caller has already
+// confirmed no sentinel exists yet this era.
+func (h *RunBootstrapCoordinatorHandler) buyYardSentinel(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, obs Observation, res *reconcileResult) {
+	logger := common.LoggerFromContext(ctx)
+
+	// Readiness gate: mirrors acquireProbesToTarget's own (an idle hull must exist to fly to the yard
+	// and execute the buy). BLOCKED, not failed — a later tick with a free hull retries.
+	if !obs.HasIdlePurchaser {
+		return
+	}
+	if h.yardSentinel == nil {
+		logger.Log("WARN", "Bootstrap yard sentinel needed but no acquirer wired — the home shipyard price stays cold without a standing hull unless an earning ship is diverted to warm it", map[string]interface{}{
+			"action":       "bootstrap_yard_sentinel_no_acquirer",
+			"container_id": cmd.ContainerID,
+		})
+		return
+	}
+
+	price, yard, readable, err := h.yardSentinel.PriceCheck(ctx, cmd.PlayerID, probeShipType)
+	if err != nil || !readable {
+		// Reuse the SAME cold-yard positioning dance every other buy uses (RULINGS #4: this tick still
+		// spends nothing either way). Lending the idle-in-trade frigate mirrors the probe buy's own
+		// last resort.
+		h.awaitReadablePrice(ctx, cmd, obs, res, "", idleTradeFrigate(obs), "yard sentinel", err)
+		return
+	}
+
+	cushion := obs.Treasury - price
+	affordable := cushion >= common.ImmutableReserveFloor
+	logger.Log("INFO", fmt.Sprintf("Bootstrap yard-sentinel buy decision: price=%d treasury=%d cushion=(treasury-price)=%d floor=%d affordable=(cushion≥floor)=%v yard=%s — %s", price, obs.Treasury, cushion, common.ImmutableReserveFloor, affordable, yard, buyBlockNote(affordable)), map[string]interface{}{
+		"action":       "bootstrap_yard_sentinel_buy_decision",
+		"container_id": cmd.ContainerID,
+		"price":        price,
+		"treasury":     obs.Treasury,
+		"cushion":      cushion,
+		"floor":        common.ImmutableReserveFloor,
+		"affordable":   affordable,
+		"yard":         yard,
+	})
+	if !affordable {
+		// Capital-gated, exactly like the scouting buy — never claims res.Blocker (see actYardSentinel).
+		return
+	}
+
+	bought, err := h.yardSentinel.BuyAndReserve(ctx, cmd.PlayerID, probeShipType, yard, YardSentinelReservationReason, "")
+	if err != nil {
+		logger.Log("ERROR", fmt.Sprintf("Bootstrap yard-sentinel purchase failed: %v", err), map[string]interface{}{
+			"action":       "bootstrap_yard_sentinel_buy_error",
+			"container_id": cmd.ContainerID,
+		})
+		return
+	}
+	res.YardSentinelBought = true
+	logger.Log("INFO", fmt.Sprintf("Bootstrap bought the standing yard-sentinel probe %s at %s for %d — captain-reserved so it stays out of scouting and heads to the home shipyard to keep prices warm for the rest of cold start", bought.ShipSymbol, yard, bought.Price), map[string]interface{}{
+		"action":       "bootstrap_bought_yard_sentinel",
+		"container_id": cmd.ContainerID,
+		"ship":         bought.ShipSymbol,
+		"price":        bought.Price,
+	})
+}
+
+// parkYardSentinel drives the sentinel to "docked at the home shipyard" and then stops calling —
+// mirrors redirectConstructionHullsToTrade's empty-selection early-out, so a settled sentinel costs
+// this pass nothing for the rest of COLDSTART/GATE.
+func (h *RunBootstrapCoordinatorHandler) parkYardSentinel(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, obs Observation, res *reconcileResult) {
+	if obs.YardSentinelParked {
+		return // already docked — the terminal, steady state
+	}
+	logger := common.LoggerFromContext(ctx)
+	if h.yardSentinel == nil || obs.HomeSystem == "" {
+		return
+	}
+	docked, err := h.yardSentinel.EnsureParked(ctx, cmd.PlayerID, obs.HomeSystem, obs.YardSentinelSymbol)
+	if err != nil {
+		logger.Log("WARN", fmt.Sprintf("Bootstrap could not position the yard sentinel %s at the home shipyard (retried next tick): %v", obs.YardSentinelSymbol, err), map[string]interface{}{
+			"action":       "bootstrap_yard_sentinel_position_error",
+			"container_id": cmd.ContainerID,
+			"ship":         obs.YardSentinelSymbol,
+		})
+		return
+	}
+	if !docked {
+		return // en route, or waiting on fleet data to sync — the next tick re-derives and retries
+	}
+	res.YardSentinelDocked = true
+	logger.Log("INFO", fmt.Sprintf("Bootstrap yard sentinel %s is docked at the home shipyard — shipyard prices stay warm for the rest of cold start with no earning hull ever diverted", obs.YardSentinelSymbol), map[string]interface{}{
+		"action":       "bootstrap_yard_sentinel_parked",
+		"container_id": cmd.ContainerID,
+		"ship":         obs.YardSentinelSymbol,
+	})
+}
+
+// yardSentinelStatus renders the sentinel's lifecycle stage for the heartbeat: "none" before it exists,
+// "positioning" once bought but not yet docked, "parked" once it is — the terminal, steady state.
+func yardSentinelStatus(obs Observation) string {
+	if obs.YardSentinelSymbol == "" {
+		return "none"
+	}
+	if obs.YardSentinelParked {
+		return "parked"
+	}
+	return "positioning"
 }
 
 // startHomeMarketTour puts bootstrap's probes on a market tour of the home system, through the
@@ -729,15 +860,15 @@ func buyBlockNote(affordable bool) string {
 func (h *RunBootstrapCoordinatorHandler) emitHeartbeat(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, phase Phase, obs Observation, res reconcileResult) {
 	logger := common.LoggerFromContext(ctx)
 
-	delta := fmt.Sprintf("bought=%d tour_hulls=%d haulers_bought=%d trade_seeded=%v frigate_trading=%v frigate_contract_fallback=%v batch_contract=%v frigate_loop_stopped=%v purchaser_released=%v construction_started=%v mfg_ensured=%v mfg_bounced=%v workers_released=%d gate_workers_bought=%d construction_hulls_to_trade=%d handoff=%v", res.Purchased, res.TourHulls, res.HaulersBought, res.TradeHullSeeded, res.FrigateTrading, res.FrigateContractFallback, res.ContractRun, res.FrigateLoopStopped, res.PurchaserReleased, res.ConstructionStartRan, res.MfgEnsured, res.MfgBounced, res.WorkersReleased, res.GateWorkersBought, res.ConstructionHullsToTrade, res.HandoffLaunched)
+	delta := fmt.Sprintf("bought=%d tour_hulls=%d haulers_bought=%d trade_seeded=%v frigate_trading=%v frigate_contract_fallback=%v batch_contract=%v frigate_loop_stopped=%v purchaser_released=%v construction_started=%v mfg_ensured=%v mfg_bounced=%v workers_released=%d gate_workers_bought=%d construction_hulls_to_trade=%d yard_sentinel_bought=%v yard_sentinel_docked=%v yard_sentinel_released=%v handoff=%v", res.Purchased, res.TourHulls, res.HaulersBought, res.TradeHullSeeded, res.FrigateTrading, res.FrigateContractFallback, res.ContractRun, res.FrigateLoopStopped, res.PurchaserReleased, res.ConstructionStartRan, res.MfgEnsured, res.MfgBounced, res.WorkersReleased, res.GateWorkersBought, res.ConstructionHullsToTrade, res.YardSentinelBought, res.YardSentinelDocked, res.YardSentinelReleased, res.HandoffLaunched)
 	next := h.nextAction(cfg, phase, obs)
 	blockers := res.Blocker
 	if blockers == "" {
 		blockers = "none"
 	}
 
-	logger.Log("INFO", fmt.Sprintf("Bootstrap heartbeat: phase=%s probes=%d/%d scouting=%d coverage=%d/%d (%.0f%%) haulers=%d/%d slots=%d income/hr=%.0f treasury=%d gate_site=%s construction=%.0f%% gate_workers=%d/%d · %s · next=%q · blockers=%s",
-		phase, obs.ProbeCount, probeTarget, obs.ProbesScouting, obs.MarketsCovered, obs.MarketsTotal, obs.CoverageFraction()*100, len(obs.Haulers), haulerTarget, res.PlacementSlots, obs.IncomePerHour, obs.Treasury, gateSiteOrNone(obs.GateSite), obs.ConstructionPercent, obs.GateWorkers, res.DesiredWorkers, delta, next, blockers), map[string]interface{}{
+	logger.Log("INFO", fmt.Sprintf("Bootstrap heartbeat: phase=%s probes=%d/%d scouting=%d coverage=%d/%d (%.0f%%) haulers=%d/%d slots=%d income/hr=%.0f treasury=%d gate_site=%s construction=%.0f%% gate_workers=%d/%d yard_sentinel=%s · %s · next=%q · blockers=%s",
+		phase, obs.ProbeCount, probeTarget, obs.ProbesScouting, obs.MarketsCovered, obs.MarketsTotal, obs.CoverageFraction()*100, len(obs.Haulers), haulerTarget, res.PlacementSlots, obs.IncomePerHour, obs.Treasury, gateSiteOrNone(obs.GateSite), obs.ConstructionPercent, obs.GateWorkers, res.DesiredWorkers, yardSentinelStatus(obs), delta, next, blockers), map[string]interface{}{
 		"action":                    "bootstrap_heartbeat",
 		"container_id":              cmd.ContainerID,
 		"phase":                     string(phase),
@@ -765,6 +896,8 @@ func (h *RunBootstrapCoordinatorHandler) emitHeartbeat(ctx context.Context, cmd 
 		"gate_workers":              obs.GateWorkers,
 		"desired_workers":           res.DesiredWorkers,
 		"workers_released":          res.WorkersReleased,
+		"yard_sentinel":             obs.YardSentinelSymbol,
+		"yard_sentinel_status":      yardSentinelStatus(obs),
 		"handoff":                   res.HandoffLaunched,
 		"blocker":                   blockers,
 	})

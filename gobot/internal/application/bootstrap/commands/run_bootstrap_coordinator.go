@@ -37,6 +37,11 @@ const (
 	probeTarget = 3
 	// probeShipType is the shipyard ship-type symbol bought for a probe.
 	probeShipType = "SHIP_PROBE"
+
+	// YardSentinelReservationReason is the yard-sentinel's captain-reservation reason. EXPORTED so
+	// observeFleetShape (internal/adapters/grpc) can recognise the SAME string to tell the sentinel
+	// apart from any other captain reservation, without a second source of truth for it.
+	YardSentinelReservationReason = "bootstrap_yard_sentinel"
 	// haulerTarget caps the contract hull ramp: one hauler per viable contract hub, up to 4 (spec 4–5).
 	haulerTarget = 4
 	// haulerShipType is the ship-type bought for a contract hauler (and, reused, a gate worker). A light
@@ -257,6 +262,32 @@ type HaulerAcquirer interface {
 	BuyAndDedicate(ctx context.Context, playerID int, shipType, yard, fleet, purchaserSymbol string) (BuyResult, error)
 }
 
+// YardSentinelAcquirer manages the standing yard-sentinel probe: the one-shot buy+reserve, the
+// idempotent navigate+dock positioning, and the EXPANSION release. Mirrors GateSurplusReleaser's own
+// phase-spanning shape (one collaborator for both halves of one hull's life).
+//
+// PROTECTION IS A CAPTAIN RESERVATION, NEVER A DEDICATION TAG: BuyAndReserve leaves DedicatedFleet()
+// "" forever and instead marks the hull IsAssigned()/!IsIdle() via ReserveForCaptain — the claim/
+// assignment axis selectHomeTourHulls's own idle check already refuses, with no change to that
+// function. A reservation, not a plain container claim, because it is the one assignment kind that
+// survives a daemon restart (ReleaseAllActive's boot sweep excludes it) — a claim under bootstrap's
+// own container would be wiped on the next deploy and fall straight back into scouting's reach.
+// Release returns it to plain idle with the tag still "" — already adoptStrandedProbes's own ""
+// allowlist case, so the already-running probe-sensing coordinator adopts it with no further code.
+type YardSentinelAcquirer interface {
+	// PriceCheck mirrors ProbeAcquirer/HaulerAcquirer (same asset, SHIP_PROBE).
+	PriceCheck(ctx context.Context, playerID int, shipType string) (price int64, yard string, readable bool, err error)
+	// BuyAndReserve buys ONE shipType at yard and reserves the bought hull for the captain with
+	// `reason`. purchaserSymbol mirrors HaulerAcquirer.BuyAndDedicate ("" ⇒ any idle hull buys).
+	BuyAndReserve(ctx context.Context, playerID int, shipType, yard, reason, purchaserSymbol string) (BuyResult, error)
+	// EnsureParked flies the sentinel to the home shipyard and docks it — idempotent, re-derived from
+	// live ship state every call like ShipyardScanner.EnsureShipyardReadable: docked ⇒ no-op; mid-
+	// flight ⇒ wait; at the yard undocked ⇒ dock; otherwise ⇒ navigate.
+	EnsureParked(ctx context.Context, playerID int, homeSystem, shipSymbol string) (docked bool, err error)
+	// Release clears the sentinel's captain reservation at the EXPANSION hand-off.
+	Release(ctx context.Context, playerID int, shipSymbol, reason string) error
+}
+
 // ContractRunner launches the contract fleet coordinator (workflow batch-contract) for a player
 // (reuses the existing ContractFleetCoordinator launch). The reconciler calls Start only when the
 // observation reports it is not already running, so the launch is idempotent; Start is best-effort and
@@ -417,11 +448,12 @@ func (r *RunBootstrapCoordinatorResponse) RunTerminal() bool { return r.Done }
 type RunBootstrapCoordinatorHandler struct {
 	clock shared.Clock
 
-	refresher ShipRefresher
-	observer  WorldObserver
-	acquirer  ProbeAcquirer
-	scanner   ShipyardScanner // Positions a hull at the home yard so the cold price reads
-	metrics   MetricsSink
+	refresher    ShipRefresher
+	observer     WorldObserver
+	acquirer     ProbeAcquirer
+	scanner      ShipyardScanner // Positions a hull at the home yard so the cold price reads
+	metrics      MetricsSink
+	yardSentinel YardSentinelAcquirer // The standing yard-sentinel's whole lifecycle
 
 	// Contract-workstream collaborators. Each is nil-safe: a nil collaborator degrades the contract
 	// action it drives to a logged skip (surfaced as a blocker), never a panic.
@@ -508,6 +540,12 @@ func (h *RunBootstrapCoordinatorHandler) SetShipyardScanner(s ShipyardScanner) {
 
 // SetMetricsSink wires the metrics recorder. Optional and nil-safe (pure observation).
 func (h *RunBootstrapCoordinatorHandler) SetMetricsSink(m MetricsSink) { h.metrics = m }
+
+// SetYardSentinelAcquirer wires the yard-sentinel's buy, positioning, and EXPANSION release. Unset →
+// the sentinel is never bought (a logged skip, surfaced loudly — see buyYardSentinel).
+func (h *RunBootstrapCoordinatorHandler) SetYardSentinelAcquirer(a YardSentinelAcquirer) {
+	h.yardSentinel = a
+}
 
 // SetFrigateRetirer wires the "retire the frigate from contract work" action (reuses fleet unassign).
 // Unset → the retire is a logged skip.

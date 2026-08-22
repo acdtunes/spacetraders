@@ -70,9 +70,18 @@ func (o *bootstrapObserver) Observe(ctx context.Context, playerID int) (bootstra
 	o.readUntouredProbes(ctx, playerID, ships, &obs)
 	o.readContractWorkstream(ctx, playerID, &obs)
 	o.readGatePhase(ctx, playerID, &obs)
+	o.readYardSentinelParked(ctx, ships, obs.HomeSystem, &obs)
 
 	obs.Readable = true
 	return obs, nil
+}
+
+// isYardSentinelShip reports whether s is the standing yard-sentinel probe: a scout-type
+// hull captain-reserved with the sentinel's OWN reason string. That reason is the ONLY thing that tells
+// it apart from an ordinary operator `ship reserve` on some other probe — a plain IsReservedByCaptain()
+// check would also match those, which is why this is not simply "any reserved scout".
+func isYardSentinelShip(s *navigation.Ship) bool {
+	return s.IsReservedByCaptain() && s.CaptainReservationReason() == bootstrapCmd.YardSentinelReservationReason
 }
 
 // observeFleetShape folds the hulls into probe counts, the command frigate's role and
@@ -80,7 +89,15 @@ func (o *bootstrapObserver) Observe(ctx context.Context, playerID int) (bootstra
 func observeFleetShape(ships []*navigation.Ship, obs *bootstrapCmd.Observation) {
 	commandHome, anyHome := "", ""
 	for _, s := range ships {
-		if s.IsScoutType() {
+		if isYardSentinelShip(s) {
+			// EXCLUDED from ProbeCount/ProbesScouting on purpose: the sentinel is bootstrap's
+			// OWN one-shot acquisition, one extra hull beyond probeTarget, never a member of the 3-probe
+			// scouting seed. Folding it into the SAME shared counter would let its mere presence shrink
+			// the `need := probeTarget - obs.ProbeCount` arithmetic acquireProbesToTarget uses — under-
+			// shooting the real scouting seed by one — and, once it existed, would mask a REAL scout lost
+			// later (2 real + 1 sentinel reading as "3, at target") from the replace-on-loss buy.
+			obs.YardSentinelSymbol = s.ShipSymbol()
+		} else if s.IsScoutType() {
 			obs.ProbeCount++
 			// A dispatched (non-idle) probe is scouting; a fresh probe idle at the yard is not yet.
 			if !s.IsIdle() {
@@ -211,6 +228,38 @@ func (o *bootstrapObserver) readUntouredProbes(ctx context.Context, playerID int
 		return
 	}
 	obs.ProbesUntoured = countUntouredHomeProbes(ships, obs.HomeSystem, toured)
+}
+
+// readYardSentinelParked resolves whether the standing yard-sentinel probe is DOCKED at the
+// home shipyard yet — the terminal state actYardSentinel's positioning step drives toward. BEST-EFFORT
+// like readUntouredProbes: an unreadable waypoint repo, or no sentinel bought yet, leaves it false,
+// which the reconciler reads as "keep positioning" — fail-safe, and never a spend either way.
+func (o *bootstrapObserver) readYardSentinelParked(ctx context.Context, ships []*navigation.Ship, homeSystem string, obs *bootstrapCmd.Observation) {
+	if obs.YardSentinelSymbol == "" || homeSystem == "" {
+		return
+	}
+	yardWps, err := o.waypointRepo.ListBySystemWithTrait(ctx, homeSystem, shipyardTrait)
+	if err != nil {
+		return
+	}
+	isYard := map[string]struct{}{}
+	for _, wp := range yardWps {
+		if wp != nil {
+			isYard[wp.Symbol] = struct{}{}
+		}
+	}
+	for _, s := range ships {
+		if s == nil || s.ShipSymbol() != obs.YardSentinelSymbol {
+			continue
+		}
+		loc := s.CurrentLocation()
+		if loc == nil {
+			return // in transit — not parked yet
+		}
+		_, atYard := isYard[loc.Symbol]
+		obs.YardSentinelParked = atYard && s.IsDocked()
+		return
+	}
 }
 
 // countUntouredHomeProbes counts the probes at home that are IDLE and carry no scout-tour

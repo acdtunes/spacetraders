@@ -83,6 +83,10 @@ func NewBootstrapCoordinatorHandler(
 	// The cold-start market tour: bootstrap starts it through the operator's own verb.
 	h.SetHomeTourStarter(&bootstrapHomeTourStarter{server: server})
 	h.SetShipyardScanner(&bootstrapShipyardScanner{med: med, shipRepo: shipRepo, waypointRepo: waypointRepo})
+	// The standing yard-sentinel's whole lifecycle: buy+reserve, positioning, and the
+	// EXPANSION-hand-off release. Same acq instance (asset-agnostic PriceCheck/buyWith), so this is a
+	// thin sibling of the hauler/gate-worker acquirers above — builds nothing new.
+	h.SetYardSentinelAcquirer(&bootstrapYardSentinelAcquirer{bootstrapAcquirer: acq})
 	h.SetFrigateRetirer(&bootstrapFrigateRetirer{shipRepo: shipRepo})
 	h.SetContractRunner(&bootstrapContractRunner{server: server})
 	// The frigate contract-loop primitive. Bootstrap drives only its STOP half, to clear a loop container
