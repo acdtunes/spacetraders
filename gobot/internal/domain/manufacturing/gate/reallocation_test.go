@@ -70,22 +70,28 @@ func TestRoleTarget_TheAllDeliveryStateSumsToTheRoledCensusAtEveryN(t *testing.T
 // material, so all-delivery would sit exactly as idle as all-factory) and it keeps the established,
 // dwell-protected recovery loop in charge rather than the newer idle-hull optimization.
 func TestRoleTarget_WhenBothPausedAndFactoryHasNoWorkPausedWins(t *testing.T) {
-	if delivery, factory := roleTarget(true, true, 4); delivery != 0 || factory != 4 {
-		t.Fatalf("roleTarget(true, true, 4) = %dD/%dF, want 0D/4F — paused must win when a caller ever asserts both", delivery, factory)
+	if delivery, factory := roleTarget(true, true, 4); delivery != 1 || factory != 3 {
+		t.Fatalf("roleTarget(true, true, 4) = %dD/%dF, want 1D/3F — paused must win when a caller ever asserts both, and still reserve its one sentinel delivery hull", delivery, factory)
 	}
 }
 
 // ...and adoptionTarget keeps the SAME precedence, or a hull adopted on a tick where a caller
-// (wrongly) asserts both would land on the opposite role from a re-role decided the same tick.
+// (wrongly) asserts both would land on the opposite role from a re-role decided the same tick. With
+// no sentinel yet (haveDelivery == 0), that shared precedence lands on RoleDelivery — filling the
+// sentinel — not RoleFactory; see TestPlanReallocation_ALegacyHullIsAdoptedEvenWhilePaused for the
+// end-to-end version of this exact corner.
 func TestAdoptionTarget_WhenBothPausedAndFactoryHasNoWorkPausedWins(t *testing.T) {
-	if got := adoptionTarget(true, true, 0, 0); got != RoleFactory {
-		t.Fatalf("adoptionTarget(true, true, 0, 0) = %v, want RoleFactory — paused must win when a caller ever asserts both", got)
+	if got := adoptionTarget(true, true, 0, 0); got != RoleDelivery {
+		t.Fatalf("adoptionTarget(true, true, 0, 0) = %v, want RoleDelivery — paused must win when a caller ever asserts both, and with no sentinel yet this hull becomes it", got)
 	}
 }
 
-// PAUSED: delivery hulls move to the factory role. This is what makes the pause a
-// self-shortening feedback loop — the hulls go feed the factory that is low, so supply recovers
-// sooner and delivery resumes.
+// PAUSED: delivery hulls move to the factory role — but not all of them. One stays behind as the
+// SENTINEL, or the per-good paused flag could never be re-checked and cleared: it is only ever
+// re-evaluated from a hull that actually holds the delivery role. This is what makes the pause a
+// self-shortening feedback loop that also closes its own loop — the borrowed hulls go feed the
+// factory that is low, so supply recovers sooner, while the sentinel hull is what notices when it
+// has.
 func TestPlanReallocation_APausedFleetMovesDeliveryHullsToTheFactoryRole(t *testing.T) {
 	plan := PlanReallocation(ReallocationInput{
 		Now:            reallocNow,
@@ -99,12 +105,12 @@ func TestPlanReallocation_APausedFleetMovesDeliveryHullsToTheFactoryRole(t *test
 		MaxMoves: 4,
 	})
 
-	if len(plan.Moves) != 2 {
-		t.Fatalf("moves = %v, want both delivery hulls moved to factory", movedShips(plan))
+	if len(plan.Moves) != 1 {
+		t.Fatalf("moves = %v, want exactly one of the two delivery hulls moved to factory — the other holds as the sentinel", movedShips(plan))
 	}
 	for _, m := range plan.Moves {
 		if m.To != RoleFactory {
-			t.Fatalf("move %+v targets %v; a paused fleet moves TOWARD the factory role", m, m.To)
+			t.Fatalf("move %+v targets %v; a paused fleet's EXCESS delivery hulls move TOWARD the factory role", m, m.To)
 		}
 		if m.From != DeliveryFleetTag {
 			t.Fatalf("move %+v came from %q; a factory hull is already where the paused target wants it and must not be re-tagged", m, m.From)
@@ -112,6 +118,9 @@ func TestPlanReallocation_APausedFleetMovesDeliveryHullsToTheFactoryRole(t *test
 		if m.Reason != MoveReasonPauseToFactory {
 			t.Fatalf("move %+v reason = %q, want %q — an operator must be able to tell WHY a hull changed role", m, m.Reason, MoveReasonPauseToFactory)
 		}
+	}
+	if plan.WantDelivery != 1 || plan.WantFactory != 3 {
+		t.Fatalf("target mix = %dD/%dF, want 1D/3F — paused reserves exactly one sentinel delivery hull, never zero", plan.WantDelivery, plan.WantFactory)
 	}
 }
 
@@ -211,16 +220,16 @@ func TestPlanReallocation_WhenBothPausedAndFactoryHasNoWorkTheFleetStillGoesAllF
 		MaxMoves: 4,
 	})
 
-	if len(plan.Moves) != 2 {
-		t.Fatalf("moves = %v, want both delivery hulls moved to factory, exactly as under DeliveryPaused alone", movedShips(plan))
+	if len(plan.Moves) != 1 {
+		t.Fatalf("moves = %v, want exactly one delivery hull moved to factory, exactly as under DeliveryPaused alone", movedShips(plan))
 	}
 	for _, m := range plan.Moves {
 		if m.To != RoleFactory || m.Reason != MoveReasonPauseToFactory {
 			t.Fatalf("move %+v; a caller asserting both booleans must still read as a PAUSE, not a factory-idle redirect", m)
 		}
 	}
-	if plan.WantDelivery != 0 || plan.WantFactory != 4 {
-		t.Fatalf("target mix = %dD/%dF, want 0D/4F", plan.WantDelivery, plan.WantFactory)
+	if plan.WantDelivery != 1 || plan.WantFactory != 3 {
+		t.Fatalf("target mix = %dD/%dF, want 1D/3F — paused still reserves its one sentinel delivery hull even when a caller also asserts FactoryHasNoWork", plan.WantDelivery, plan.WantFactory)
 	}
 }
 
@@ -295,7 +304,9 @@ func TestPlanReallocation_LegacyHullsAreAdoptedIntoRolesInTheDFFDOrder(t *testin
 }
 
 // A legacy hull is adopted even while the fleet is PAUSED: it holds no role, so moving it can
-// only fill a deficit. The paused target is all-factory, so that is where it goes.
+// only fill a deficit. With no roled hulls yet, the paused target's one sentinel slot IS that
+// deficit, so the legacy hull becomes the sentinel DELIVERY hull — landing it on factory here would
+// leave the fleet at zero delivery hulls, exactly the gap the sentinel exists to close.
 func TestPlanReallocation_ALegacyHullIsAdoptedEvenWhilePaused(t *testing.T) {
 	plan := PlanReallocation(ReallocationInput{
 		Now:            reallocNow,
@@ -304,8 +315,8 @@ func TestPlanReallocation_ALegacyHullIsAdoptedEvenWhilePaused(t *testing.T) {
 		MaxMoves:       1,
 	})
 
-	if len(plan.Moves) != 1 || plan.Moves[0].To != RoleFactory {
-		t.Fatalf("moves = %v, want the legacy hull adopted into the factory role while paused", movedShips(plan))
+	if len(plan.Moves) != 1 || plan.Moves[0].To != RoleDelivery {
+		t.Fatalf("moves = %v, want the legacy hull adopted into the delivery role as the paused fleet's sentinel", movedShips(plan))
 	}
 }
 
@@ -388,12 +399,18 @@ func TestPlanReallocation_AHullInsideItsDwellWindowIsHeld(t *testing.T) {
 // dwell clock is the drain's, not the ship's; refusing on an absent record would deadlock the
 // arming after every restart.
 func TestPlanReallocation_AnUnseenHullIsEligibleImmediately(t *testing.T) {
+	// Two delivery hulls so the paused target (1D/1F sentinel split) actually has an excess hull to
+	// move — a single-hull fleet would already sit exactly on its one-hull sentinel target and
+	// never reach the dwell check at all.
 	plan := PlanReallocation(ReallocationInput{
 		Now:            reallocNow,
 		DeliveryPaused: true,
-		Workers:        []Worker{{Ship: "D-1", FleetTag: DeliveryFleetTag, Idle: true}}, // zero LastMovedByUs
-		Dwell:          time.Hour,
-		MaxMoves:       1,
+		Workers: []Worker{
+			{Ship: "D-1", FleetTag: DeliveryFleetTag, Idle: true}, // zero LastMovedByUs
+			{Ship: "D-2", FleetTag: DeliveryFleetTag, Idle: true}, // zero LastMovedByUs
+		},
+		Dwell:    time.Hour,
+		MaxMoves: 1,
 	})
 
 	if len(plan.Moves) != 1 {
@@ -454,17 +471,22 @@ func TestPlanReallocation_UnsetKnobsResolveToTheArmedDefaults(t *testing.T) {
 // unset knob to zero and never consulted the constant: the guard would be structurally present
 // and operationally off, which is precisely the failure mode "there is no off state" denies.
 func TestPlanReallocation_AnUnsetDwellResolvesToTheArmedDefaultNotToZero(t *testing.T) {
-	justMoved := Worker{Ship: "D-1", FleetTag: DeliveryFleetTag, Idle: true, LastMovedByUs: reallocNow.Add(-time.Minute)}
+	justMoved := func(ship string) Worker {
+		return Worker{Ship: ship, FleetTag: DeliveryFleetTag, Idle: true, LastMovedByUs: reallocNow.Add(-time.Minute)}
+	}
 
+	// Two delivery hulls so the paused target (1D/1F sentinel split) has a genuine excess hull to
+	// move — a single-hull fleet would already sit on its sentinel target and never reach the dwell
+	// check at all.
 	plan := PlanReallocation(ReallocationInput{
 		Now:            reallocNow,
 		DeliveryPaused: true,
-		Workers:        []Worker{justMoved},
+		Workers:        []Worker{justMoved("D-1"), justMoved("D-2")},
 		// Dwell deliberately unset.
 	})
 
 	if len(plan.Moves) != 0 {
-		t.Fatalf("moves = %v; a hull one minute into the %s default dwell must be held even with the knob unset", movedShips(plan), DefaultRoleDwell)
+		t.Fatalf("moves = %v; both hulls one minute into the %s default dwell must be held even with the knob unset", movedShips(plan), DefaultRoleDwell)
 	}
 	if got := skipReason(plan, "D-1"); got != MoveSkipDwell {
 		t.Fatalf("skip reason with an unset dwell = %q, want %q — the default must be the ARMED %s, not zero", got, MoveSkipDwell, DefaultRoleDwell)
@@ -543,7 +565,7 @@ func TestPlanReallocation_AnUndedicatedHullIsNeitherAdoptedNorCountedInTheTarget
 		DeliveryPaused: true,
 		Workers: []Worker{
 			idleWorker("X-1", ""), // no dedicated_fleet: first in line if it were treated as legacy
-			idleWorker("D-1", DeliveryFleetTag),
+			idleWorker("G-1", FactoryFleetTag),
 		},
 		MaxMoves: 10,
 	})
@@ -553,13 +575,15 @@ func TestPlanReallocation_AnUndedicatedHullIsNeitherAdoptedNorCountedInTheTarget
 			t.Fatalf("move %+v re-tagged an UNDEDICATED hull into a gate role; dedicated_fleet is the single ownership column and this hull is not ours", m)
 		}
 	}
-	// The positive half: the gate hull must still be borrowed. Excluding the intruder must not
-	// stall the policy — "X-1 was not moved" alone is true of a planner that moved nothing.
-	if len(plan.Moves) != 1 || plan.Moves[0].Ship != "D-1" || plan.Moves[0].To != RoleFactory {
-		t.Fatalf("moves = %v; the one real gate hull must still move to factory under the pause", movedShips(plan))
+	// The positive half: the gate hull must still be GOVERNED. Excluding the intruder must not
+	// stall the policy — "X-1 was not moved" alone is true of a planner that moved nothing. A
+	// single-hull gate crew under a pause is entirely its own sentinel, so the one real hull moves
+	// TO delivery, not to factory.
+	if len(plan.Moves) != 1 || plan.Moves[0].Ship != "G-1" || plan.Moves[0].To != RoleDelivery {
+		t.Fatalf("moves = %v; the one real gate hull must still move — a lone gate hull under a pause is its own sentinel", movedShips(plan))
 	}
-	if plan.WantFactory != 1 {
-		t.Fatalf("paused target = %dF over a 1-hull gate crew, want 1F — the paused target counts the GATE crew, not the raw input", plan.WantFactory)
+	if plan.WantDelivery != 1 || plan.WantFactory != 0 {
+		t.Fatalf("paused target = %dD/%dF over a 1-hull gate crew, want 1D/0F — the paused target counts the GATE crew, not the raw input, and a 1-hull crew is entirely its own sentinel", plan.WantDelivery, plan.WantFactory)
 	}
 	if plan.Foreign != 1 || plan.Unroled != 0 {
 		t.Fatalf("Foreign = %d, Unroled = %d; an undedicated hull is foreign, never a legacy hull awaiting adoption", plan.Foreign, plan.Unroled)
@@ -788,6 +812,72 @@ func TestPlanReallocation_TheDwellGatesTheBorrowButNotTheReturn(t *testing.T) {
 	}
 }
 
+// THE BUG THIS FIX CLOSES. A fleet that has drifted to (0 delivery, N factory) under a pause is
+// exactly the state that left two staging materials paused for over an hour with no organic exit:
+// BuyPolicy.Decide is only ever re-run from deliverGateLeg, which only ever runs for a hull
+// actually holding the delivery role, so zero such hulls means Decide() never runs again and
+// paused can never clear itself — only an unrelated daemon restart (which resets the in-memory
+// paused map) ever unstuck it. Given that exact starting census, well past one full dwell period so
+// the borrow guard cannot be blamed for holding it there, the reallocator must now move exactly ONE
+// hull to delivery — not zero — restoring the sentinel that lets BuyPolicy.Decide run again on an
+// ordinary cadence.
+func TestPlanReallocation_AFleetStuckAtZeroDeliveryUnderPauseRecoversASentinelHull(t *testing.T) {
+	longAgo := reallocNow.Add(-2 * DefaultRoleDwell) // well past one full dwell period
+	stuck := []Worker{
+		{Ship: "F-1", FleetTag: FactoryFleetTag, Idle: true, LastMovedByUs: longAgo},
+		{Ship: "F-2", FleetTag: FactoryFleetTag, Idle: true, LastMovedByUs: longAgo},
+		{Ship: "F-3", FleetTag: FactoryFleetTag, Idle: true, LastMovedByUs: longAgo},
+	}
+
+	recovery := PlanReallocation(ReallocationInput{
+		Now:            reallocNow,
+		DeliveryPaused: true,
+		Workers:        stuck,
+		MaxMoves:       4,
+	})
+
+	if len(recovery.Moves) != 1 {
+		t.Fatalf("moves = %v, want exactly one hull recovered to delivery from a (0 delivery, 3 factory) stall under a pause — the old (0, roled) target had no path back from here at all", movedShips(recovery))
+	}
+	move := recovery.Moves[0]
+	if move.To != RoleDelivery {
+		t.Fatalf("move %+v targets %v; a fleet stuck at zero delivery under a pause must recover ONE sentinel hull to delivery, or paused can never be re-checked and cleared", move, move.To)
+	}
+	if move.Reason != MoveReasonPauseSentinel {
+		t.Fatalf("move %+v reason = %q, want %q — an operator watching the log must be able to tell a sentinel recovery from an ordinary pause borrow", move, move.Reason, MoveReasonPauseSentinel)
+	}
+	if recovery.WantDelivery != 1 || recovery.WantFactory != 2 {
+		t.Fatalf("target = %dD/%dF, want 1D/2F — the paused target always reserves exactly one sentinel delivery hull", recovery.WantDelivery, recovery.WantFactory)
+	}
+
+	// HOLDS IT THERE: re-feed the recovered census on the next tick. The new sentinel must not be
+	// borrowed straight back to factory — that would recreate the zero-delivery stall one tick
+	// later and make the "fix" just a slower version of the same bug.
+	settled := make([]Worker, 0, len(stuck))
+	for _, w := range stuck {
+		tag, lastMoved := w.FleetTag, w.LastMovedByUs
+		for _, m := range recovery.Moves {
+			if m.Ship == w.Ship {
+				tag, lastMoved = m.To.FleetTag(), reallocNow
+			}
+		}
+		settled = append(settled, Worker{Ship: w.Ship, FleetTag: tag, Idle: true, LastMovedByUs: lastMoved})
+	}
+
+	holds := PlanReallocation(ReallocationInput{
+		Now:            reallocNow.Add(time.Minute),
+		DeliveryPaused: true,
+		Workers:        settled,
+		MaxMoves:       4,
+	})
+	if len(holds.Moves) != 0 {
+		t.Fatalf("moves = %v one minute after recovering the sentinel; a settled 1D/2F fleet under an unchanged pause must not churn", movedShips(holds))
+	}
+	if holds.WantDelivery != 1 || holds.HaveDelivery != 1 {
+		t.Fatalf("plan = %+v; want the recovered sentinel (1 delivery hull) still standing, not reclaimed by factory", holds)
+	}
+}
+
 // THE SAME ASYMMETRY, EXTENDED TO THE NEW TRIGGER: the dwell gates the NO-WORK borrow too, never
 // its return. See the "FactoryHasNoWork is DELIBERATELY GATED THE SAME WAY" comment in
 // PlanReallocation for the justification this test proves — unlike DeliveryPaused, which BuyPolicy
@@ -902,10 +992,11 @@ func TestPlanReallocation_AFleetAdoptedUnderAPauseConvergesToTheSameBaselineAsOn
 	neverPaused := driveToQuiescence(t, false, ships, allLegacy())
 
 	underPause := driveToQuiescence(t, true, ships, allLegacy())
-	for i, tag := range underPause {
-		if tag != FactoryFleetTag {
-			t.Fatalf("%s = %q after adoption under a pause; the paused target is all-factory, so that is what adoption assigns", ships[i], tag)
-		}
+	// The paused target always reserves exactly one sentinel delivery hull (never zero, per
+	// roleTarget), so a cold start adopted ENTIRELY under a pause must settle at 1D/3F, not
+	// all-factory — even though every hull here arrived through adoption rather than a re-role.
+	if got := mixOf(underPause); got != "1D/3F" {
+		t.Fatalf("cold start adopted entirely under a pause settled at %s, want 1D/3F — the paused target always reserves its one sentinel delivery hull", got)
 	}
 	resumed := driveToQuiescence(t, false, ships, underPause)
 
@@ -1014,12 +1105,15 @@ func mixOf(tags []string) string {
 // target mix, the census, every move, and every hull held back with its reason — in the MESSAGE,
 // because the container log renderer drops metadata maps.
 func TestReallocationPlan_LogLineNamesThePauseTheTargetTheMovesAndTheHolds(t *testing.T) {
+	// D-1 busy (held) and D-2 idle (moves): with the sentinel reservation, this 2-hull fleet's
+	// paused target is 1D/1F, a single-hull deficit — so whichever hull is idle satisfies it alone,
+	// and D-1 being busy is what still surfaces it as a held decision rather than a silent no-op.
 	plan := PlanReallocation(ReallocationInput{
 		Now:            reallocNow,
 		DeliveryPaused: true,
 		Workers: []Worker{
-			idleWorker("D-1", DeliveryFleetTag),
-			{Ship: "D-2", FleetTag: DeliveryFleetTag, Idle: false},
+			{Ship: "D-1", FleetTag: DeliveryFleetTag, Idle: false},
+			idleWorker("D-2", DeliveryFleetTag),
 		},
 		MaxMoves: 10,
 	})

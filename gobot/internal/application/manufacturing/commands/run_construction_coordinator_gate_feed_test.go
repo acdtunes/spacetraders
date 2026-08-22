@@ -1568,16 +1568,23 @@ func TestGateFeedLeg_ContainsNoWaypointLiterals(t *testing.T) {
 }
 
 // pinFactoryRoleByPausing pauses every material on the pipeline, through the handler's own live
-// buy policy, which is what lets a ONE-HULL fixture keep its factory tag through a whole drain tick.
+// buy policy, which is what lets a ONE-HULL fixture keep its factory tag through a whole drain tick
+// — for a WEDGED hull. A hull whose hold is full and carries nothing any outstanding bill wants is
+// held non-idle by gateWorkforce's own onlyTheFactoryLegCanEmpty guard regardless of the
+// paused/sentinel target, which is what makes pausing alone still sufficient for the two callers
+// that stage exactly that hold state.
 //
 // It is not decoration. reallocateGateRoles runs inside drainOnce, and an UNPAUSED gate's target is
 // the D/F/F/D baseline — BaselineMix(1) is a single DELIVERY hull, so a lone factory hull is
-// correctly re-roled to delivery before hauler discovery and the feeding leg never runs at all. A
-// PAUSED gate targets all-factory, which is both the state that puts a hull on the factory role in
-// production and the state these tests are about.
+// correctly re-roled to delivery before hauler discovery and the feeding leg never runs at all.
 //
-// The alternative — a second, delivery-tagged hull to make the census 1D/1F — would change the
-// dispatch pool that two of these tests measure directly (claim count, which hull takes the lot).
+// A PAUSED gate's target reserves one SENTINEL delivery hull (roleTarget) rather than routing every
+// hull to factory, so pausing alone is no longer enough for a lone, NON-wedged factory hull: with
+// roled == 1, that one hull IS the sentinel the paused branch always wants on delivery. The caller
+// that stages a bare (non-wedged) single factory hull adds a second, in-transit delivery hull to
+// fill the sentinel slot in the census without entering the dispatch pool — seeing why a plain
+// second hull would change the pool two OTHER tests measure directly (claim count, which hull takes
+// the lot), which is why it is staged locally there rather than folded into this helper.
 //
 // The floors come from the pipeline, not from "": policyFor caches per floor pair, so pausing
 // through a different pair would build a SECOND policy object and the drain would read an unpaused
@@ -1693,11 +1700,19 @@ func TestConstructionDrain_DrivesAFactoryTaggedHullAllTheWayToTheFeedingLeg(t *t
 	task := readyFactoryFeedableConstructionTask(t, pipeline, gateMaterialPrimary)
 
 	hull := newTestHaulerInFleet(t, "GATE-8", gate.FactoryFleetTag)
+	// A companion DELIVERY hull, in transit and so untouchable by the reallocator's move logic and
+	// invisible to hauler discovery this tick, fills the paused fleet's one sentinel slot in the
+	// census. Without it GATE-8 is the fleet's ONLY hull, so it IS the sentinel roleTarget always
+	// reserves on delivery, and reallocateGateRoles re-tags it away before hauler discovery ever
+	// runs — see pinFactoryRoleByPausing's doc comment for why pausing alone no longer suffices for
+	// a single, non-wedged factory hull.
+	sentinel := newTestHaulerInFleet(t, "GATE-1", gate.DeliveryFleetTag)
+	sentinel.SetNavStatus(navigation.NavStatusInTransit)
 
 	producer := &fakeConstructionProducer{acquire: 40, delivered: 40}
 	taskRepo := &drainStubTaskRepo{tasks: []*manufacturing.ManufacturingTask{task}}
 	pipelineRepo := &drainStubPipelineRepo{pipelines: map[string]*manufacturing.ManufacturingPipeline{pipeline.ID(): pipeline}}
-	shipRepo := newDrainShipRepo(hull)
+	shipRepo := newDrainShipRepo(hull, sentinel)
 	deliveryBuyer, factoryBuyer := &countingGateBuyer{}, &countingGateBuyer{}
 	feeder := &recordingFeeder{units: unitsTaken}
 	logger := &capturingLogger{}

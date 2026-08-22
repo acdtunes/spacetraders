@@ -268,8 +268,13 @@ func TestReallocateGateRoles_TheNoWorkSignalReactsLiveNotFromAStaleResolution(t 
 // false forever — an unfiltered FleetPaused would then read false exactly when the OTHER material
 // is starved, which is when reallocation matters most.
 func TestReallocateGateRoles_IgnoresMaterialsWhoseBillIsAlreadyMet(t *testing.T) {
+	// Three hulls, not two: the paused target reserves exactly one sentinel delivery hull
+	// (roleTarget), so a 1D/1F fleet already SITS at that target and a correctly-recognized pause
+	// would move nobody too — indistinguishable from a met bill being wrongly counted as unpaused.
+	// A second delivery hull gives the paused target a genuine excess to correct.
 	f := newGateReallocHandler(t,
-		gateCrewMember{"D-1", gate.DeliveryFleetTag}, gateCrewMember{"F-1", gate.FactoryFleetTag},
+		gateCrewMember{"D-1", gate.DeliveryFleetTag}, gateCrewMember{"D-2", gate.DeliveryFleetTag},
+		gateCrewMember{"F-1", gate.FactoryFleetTag},
 	)
 	f.pipeline.setBill(gateMaterialSecondary, 0) // its bill is closed; no leg will ever decide on it
 	f.handler.gate.policyFor("", "").Decide(gateMaterialPrimary, gateMaterialPrimary+"-EXPORTER", shared.SupplyLevelScarce)
@@ -281,7 +286,7 @@ func TestReallocateGateRoles_IgnoresMaterialsWhoseBillIsAlreadyMet(t *testing.T)
 		t.Fatalf("a fleet whose ONLY outstanding material is paused moved nobody — a met bill is being counted as an un-paused material.\nlog:\n%s", f.logLines())
 	}
 	if writes[0].ship != "D-1" || writes[0].fleet != gate.FactoryFleetTag {
-		t.Fatalf("wrote %+v; the paused fleet's one delivery hull is what moves, and it moves to the factory role", writes[0])
+		t.Fatalf("wrote %+v; the paused fleet's excess delivery hull is what moves, and it moves to the factory role, leaving one delivery hull as the sentinel", writes[0])
 	}
 }
 
@@ -324,8 +329,11 @@ func TestReallocateGateRoles_NeverTouchesAForeignOrCustomFleetTag(t *testing.T) 
 		gateCrewMember{"X-1", "contract"}, gateCrewMember{"X-2", "trade"},
 		gateCrewMember{"X-3", "gate-alt"}, gateCrewMember{"X-4", ""},
 		// A real gate hull, so the tick is CAPABLE of a write: without it "nobody was re-tagged"
-		// is also what a reallocator that does nothing at all produces.
-		gateCrewMember{"D-1", gate.DeliveryFleetTag},
+		// is also what a reallocator that does nothing at all produces. It starts on FACTORY, not
+		// delivery: with only one real gate hull (roled == 1), the paused target's one sentinel
+		// slot always wants delivery, so a hull that already starts there gives the tick nothing to
+		// write and cannot show it is CAPABLE of one.
+		gateCrewMember{"G-1", gate.FactoryFleetTag},
 	)
 	f.pauseEveryMaterial()
 
@@ -496,7 +504,10 @@ func TestReallocateGateRoles_HoldsTheDwellOnABorrowAcrossTicks(t *testing.T) {
 // system is not this drain's to re-role, and re-tagging it would change which pool it lands in
 // for a drain that can actually reach it.
 func TestReallocateGateRoles_LeavesGateHullsInAnotherSystemAlone(t *testing.T) {
-	f := newGateReallocHandler(t, gateCrewMember{"D-1", gate.DeliveryFleetTag})
+	// The in-system hull starts on FACTORY, not delivery: with it the only in-system gate hull
+	// (roled == 1), the paused target's one sentinel slot always wants delivery, so a hull that
+	// already starts there gives the tick nothing to write and cannot show it is CAPABLE of one.
+	f := newGateReallocHandler(t, gateCrewMember{"G-1", gate.FactoryFleetTag})
 	elsewhere := newTestHaulerInFleet(t, "D-FAR", gate.DeliveryFleetTag) // testFactoryWaypoint, not the gate system
 	f.shipRepo.mu.Lock()
 	f.shipRepo.ships = append(f.shipRepo.ships, elsewhere)
@@ -516,7 +527,7 @@ func TestReallocateGateRoles_LeavesGateHullsInAnotherSystemAlone(t *testing.T) {
 	}
 	// It must be absent from the CENSUS too, not merely unmoved: counted in, it would inflate the
 	// target this system's hulls are driven toward.
-	if !strings.Contains(f.logLines(), "have 1D/0F") {
+	if !strings.Contains(f.logLines(), "have 0D/1F") {
 		t.Fatalf("the out-of-system hull was counted into the census, which moves the target for the hulls that ARE here:\n%s", f.logLines())
 	}
 }
@@ -676,7 +687,13 @@ func TestReallocateGateRoles_StillReturnsAFactoryHullFullOfMaterialTheBillWants(
 func TestReallocateGateRoles_StillBorrowsAWedgedDELIVERYHullIntoTheFactoryRole(t *testing.T) {
 	hull := gateTestFullHullTagged(t, "D-1", gate.DeliveryFleetTag, "IRON_ORE")
 	assertUndeliverableFullHold(t, hull) // the SAME hold that holds a factory hull back
-	f := newGateReallocHandlerWithHulls(t, hull)
+	// A second, healthy delivery hull fills the paused fleet's one sentinel slot, so the wedged
+	// hull is the EXCESS delivery hull the target wants moved. With only D-1 in the whole fleet
+	// (roled == 1), the sentinel reservation and the wedge recovery would both want the SAME hull
+	// on opposite roles — a real tension between the two guards, but not the one this test is
+	// about, so it is sidestepped here rather than resolved.
+	healthy := gateTestHull(t, "D-2", gate.DeliveryFleetTag)
+	f := newGateReallocHandlerWithHulls(t, hull, healthy)
 	f.pauseEveryMaterial()
 
 	f.reallocate(t)

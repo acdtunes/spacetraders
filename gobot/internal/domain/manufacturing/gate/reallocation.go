@@ -56,6 +56,7 @@ const (
 const (
 	MoveReasonLegacyAdoption        = "legacy hull adopted into a role fleet"
 	MoveReasonPauseToFactory        = "delivery paused — every gate material is below its buy floor"
+	MoveReasonPauseSentinel         = "delivery paused — holding one sentinel hull on delivery so the market gets re-checked"
 	MoveReasonResumeToBaseline      = "delivery resumed — returning to the D/F/F/D baseline mix"
 	MoveReasonFactoryIdleToDelivery = "factory has nothing to feed — redirecting to delivery"
 )
@@ -236,10 +237,11 @@ func BaselineMix(n int) (delivery, factory int) {
 // factories, and re-trips the pause. That is a thrash no dwell timer can fix, so the unpaused
 // target is the D/F/F/D baseline and convergence is capped per tick.
 //
-// Paused, the target is ALL FACTORY. That is what makes the pause self-shortening: delivery
-// pauses because a terminal factory is low, those hulls go feed it, it produces faster, supply
-// recovers sooner, delivery resumes. It is also what makes an aggressive buy floor safe — over-
-// buying costs a reallocation, not a stall.
+// Paused, the target is ALL FACTORY BUT ONE SENTINEL DELIVERY HULL (see roleTarget for why one
+// hull always stays). That is what makes the pause self-shortening: delivery pauses because a
+// terminal factory is low, those hulls go feed it, it produces faster, supply recovers sooner,
+// delivery resumes — safely, since an aggressive buy floor only ever costs a reallocation, not a
+// stall.
 //
 // UNPAUSED WITH THE FACTORY ROLE IDLE, the target is ALL DELIVERY — paused's mirror image: instead
 // of sending the roled population to feed a starved factory, it sends them to deliver because there
@@ -370,7 +372,7 @@ func PlanReallocation(in ReallocationInput) ReallocationPlan {
 			Ship:   worker.Ship,
 			From:   worker.FleetTag,
 			To:     target,
-			Reason: moveReason(in.DeliveryPaused, in.FactoryHasNoWork, isRoled),
+			Reason: moveReason(in.DeliveryPaused, in.FactoryHasNoWork, isRoled, target),
 		})
 		if isRoled {
 			// A re-role is a TRANSFER inside the roled population: its size is unchanged, so the
@@ -398,16 +400,18 @@ func PlanReallocation(in ReallocationInput) ReallocationPlan {
 }
 
 // roleTarget is the split this planner drives the ROLED population toward. It sums to roled in
-// EVERY state (BaselineMix(n) sums to n; the paused target is 0+n; the all-delivery target is n+0),
-// which is what makes the target reachable and the needs exact negatives.
+// EVERY state (BaselineMix(n) sums to n; the paused target is min(1,n)+the rest; the all-delivery
+// target is n+0), which is what makes the target reachable and the needs exact negatives.
 //
-// Paused, the target is ALL FACTORY; under FactoryHasNoWork, the mirror, ALL DELIVERY; otherwise
-// the D/F/F/D baseline. Paused is checked first, so a caller asserting both gets all-factory — see
-// ReallocationInput.FactoryHasNoWork for why.
+// Paused, the target is ALL FACTORY EXCEPT ONE SENTINEL DELIVERY HULL (min(1, roled) — see
+// PlanReallocation for why); under FactoryHasNoWork, the mirror, ALL DELIVERY; otherwise the
+// D/F/F/D baseline. Paused is checked first, so a caller asserting both gets the paused/sentinel
+// answer — see ReallocationInput.FactoryHasNoWork for why.
 func roleTarget(paused, factoryHasNoWork bool, roled int) (delivery, factory int) {
 	switch {
 	case paused:
-		return 0, roled
+		sentinel := min(1, roled)
+		return sentinel, roled - sentinel
 	case factoryHasNoWork:
 		return roled, 0
 	default:
@@ -417,10 +421,13 @@ func roleTarget(paused, factoryHasNoWork bool, roled int) (delivery, factory int
 
 // adoptionTarget is the role the CURRENT target assigns to one more hull — literally
 // roleTarget(paused, factoryHasNoWork, roled+1) minus roleTarget(paused, factoryHasNoWork, roled),
-// expressed directly, so there is no second mix rule for either trigger to drift from. Paused it is
-// factory; under FactoryHasNoWork, delivery; otherwise NextRole, matching roleTarget's precedence.
+// expressed directly, so there is no second mix rule for either trigger to drift from. Under
+// FactoryHasNoWork it is delivery; otherwise NextRole. Paused, it is factory UNLESS haveDelivery
+// == 0, in which case THIS hull becomes the sentinel instead (mirrors roleTarget's min(1,roled)).
 func adoptionTarget(paused, factoryHasNoWork bool, haveDelivery, haveFactory int) Role {
 	switch {
+	case paused && haveDelivery == 0:
+		return RoleDelivery
 	case paused:
 		return RoleFactory
 	case factoryHasNoWork:
@@ -488,12 +495,15 @@ func moveTarget(role Role, needDelivery, needFactory int) (Role, bool) {
 }
 
 // moveReason names WHY, so a role change is diagnosable from the log without a code read. roled is
-// checked first and alone decides adoption, independent of paused/factoryHasNoWork.
-func moveReason(paused, factoryHasNoWork, roled bool) string {
+// checked first and alone decides adoption, independent of paused/factoryHasNoWork. Paused further
+// splits on the move's target: restoring the sentinel goes TO delivery, not factory.
+func moveReason(paused, factoryHasNoWork, roled bool, target Role) string {
 	if !roled {
 		return MoveReasonLegacyAdoption
 	}
 	switch {
+	case paused && target == RoleDelivery:
+		return MoveReasonPauseSentinel
 	case paused:
 		return MoveReasonPauseToFactory
 	case factoryHasNoWork:
