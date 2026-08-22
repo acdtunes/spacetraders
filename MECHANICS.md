@@ -487,7 +487,7 @@ to nothing.
   a no-op at the ceiling. Per tick: memoized plan → live ceiling → budgeted per-role fill in the
   order **delivery → warehouse → stocker** → re-role surplus delivery → depot fill. Plan sizes:
   `MaxDeliveryHulls 6` (the p-median knee), `WarehouseUnits 8`, `StockerUnits 1`. Ceiling
-  `contract_fleet_max_hulls` defaults to **3** — the same number bootstrap's GATE-entry bar reads
+  `contract_fleet_max_hulls` defaults to **4** — the same number bootstrap's GATE-entry bar reads
   as `ContractScalerTarget`. **There is no per-tick purchase cap**: it scales as fast as treasury
   and API allow.
 - **One money guard, and only one.** Per hull, in order: a zero-spend REUSE tier first (free, and
@@ -495,7 +495,7 @@ to nothing.
   CLOSED) → treasury readable (fails CLOSED) → **`treasury − price < ContractScalerCushion
   (200000)` ⇒ stop**. There is no reserve floor beyond the cushion, no treasury-fraction ceiling,
   no price ceiling. The cushion is a compile-time const with no config/tune seam. The ceiling by
-  contrast fails OPEN to the default 3 — it is a throttle, not a money guard.
+  contrast fails OPEN to the default 4 — it is a throttle, not a money guard.
 - **Armed.** No CLI verb at all. `ensureContractScalerEarly` runs on **every COLDSTART tick whose
   contract-start treasury gate passes** (`contract_start_treasury_threshold`, default 500000, or
   the operation already under way) — the gate is the derived phase plus that threshold, plus a
@@ -505,7 +505,7 @@ to nothing.
 - **Hands off.** Spawns depot elements indirectly through the grower: `GrowWarehouse` →
   `WAREHOUSE`, `GrowStocker` → a standing continuous `STOCKER`. Both are gated on
   home-reachability; a non-viable hull is evicted rather than launched. At the default ceiling of
-  3 the budget never reaches a warehouse index, so **zero depot calls occur by default**.
+  4 the budget never reaches a warehouse index, so **zero depot calls occur by default**.
 - **Knobs.** `tune --operation contractscaler contract_fleet_max_hulls` [0,16] — its only lever.
 - **Source.** `internal/application/contractscaler/commands/run_contract_scaler.go`,
   `contract_scaler_tune.go`; plan `internal/domain/contractscaler/plan.go`; ports/launch
