@@ -321,6 +321,12 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 	// Track previous ship for balancing logic
 	var previousShipSymbol string
 
+	// activeWorkerLastResortDraft mirrors activeWorkerContainerID for whether the awaited
+	// worker is a fresh last-resort command-hull draft, so its completion can start the settle
+	// window below. Not consumed on the rare timeout->"already has an active hull" wait path;
+	// that just costs one ungapped leg, not a regression.
+	var activeWorkerLastResortDraft bool
+
 	// errMon makes a long streak of identical retry errors observable (a stuck
 	// loop must not run silently) — edge-triggered, once per streak crossing,
 	// not once per iteration.
@@ -347,6 +353,10 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 	// re-dispatching the same no-op forever. A restart clears it deliberately: the split is cheap
 	// and re-earning it once is safer than persisting a stale suppression.
 	deliverHeldAttempted := make(map[string]bool)
+
+	// commandFrigateLastResortCooldown is the per-hull settle-window tracker, keyed by symbol
+	// like liquidationCooldown above; see commandFrigateLastResortSettleWindow.
+	commandFrigateLastResortCooldown := make(map[string]time.Time)
 
 	idlePoolWait := workerWait{
 		ch:           workerCompletedCh,
@@ -683,6 +693,27 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 		// authorized here rather than benched, matching readoptInterruptedDeliveries.
 		commandDraftAllowed := holder != "" || !hasRegularHaulerCandidate(pool.generalEntities)
 
+		// A fresh last-resort draft of the command hull (never a holder finishing its own
+		// load) is paced by the settle window so bootstrap can reclaim it between legs; see
+		// commandFrigateLastResortSettleWindow. Checked before spawning so a cooling-down hull
+		// waits like "no spawnable ships" rather than bouncing off the claim-side backstop.
+		lastResortDraft := holder == "" && generalPoolCommandDraft(pool.generalEntities, selectedShip)
+		if lastResortDraft {
+			if remaining := commandFrigateCooldownRemaining(commandFrigateLastResortCooldown, selectedShip, h.clock.Now()); remaining > 0 {
+				logger.Log("INFO", fmt.Sprintf(
+					"Command frigate %s cooling down %s more before its next last-resort contract leg — holding it undrafted so bootstrap's poll can reclaim it for trade between legs",
+					selectedShip, remaining.Truncate(time.Second)), map[string]interface{}{
+					"action":         "command_frigate_last_resort_cooldown",
+					"ship_symbol":    selectedShip,
+					"remaining_secs": int(remaining.Seconds()),
+				})
+				if h.awaitWorkerSlot(ctx, idlePoolWait, &activeWorkerContainerID) {
+					return result, ctx.Err()
+				}
+				continue
+			}
+		}
+
 		workerContainerID, err := h.spawnContractWorker(ctx, cmd, selectedShip, commandDraftAllowed, deliverHeldOnly)
 		if err != nil {
 			pass.retryAfterStepFailure(ctx, "spawn_contract_worker", err.Error(), err)
@@ -691,6 +722,7 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 		errMon.Note("spawn_contract_worker", "")
 
 		activeWorkerContainerID = workerContainerID
+		activeWorkerLastResortDraft = lastResortDraft
 		// Timestamp the spawn so an instant death of this worker is measurable
 		// against the spawn-governor's instant-death threshold.
 		gov.NoteSpawn(selectedShip)
@@ -727,6 +759,14 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 				// best-effort.
 				h.homeCompletedHullToStandby(ctx, cmd, event.ShipSymbol)
 			}
+
+			// Start the settle window: this leg is over, success or fail (gov above already
+			// covers the instant-death case separately).
+			if activeWorkerLastResortDraft {
+				commandFrigateLastResortCooldown[event.ShipSymbol] = h.clock.Now().Add(commandFrigateLastResortSettleWindow)
+			}
+			activeWorkerLastResortDraft = false
+
 			activeWorkerContainerID = ""
 			previousShipSymbol = event.ShipSymbol
 
