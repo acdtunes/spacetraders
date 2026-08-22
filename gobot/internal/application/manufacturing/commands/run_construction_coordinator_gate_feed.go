@@ -195,17 +195,28 @@ func (h *RunConstructionCoordinatorHandler) feedGateLeg(
 
 // completeOrDeferFactoryLeg is completeOrDefer for a FACTORY-role leg, with one exception beyond
 // leg.capitalBlocked (already handled by completeOrDefer/deferTask): a leg whose task is
-// BUY-resolved and NOT capital-blocked stands the hull down WITHOUT clearing that resolution, since
-// this leg's plan is pipeline-wide and says nothing about whether the paired task needed feeding.
-// A capital-blocked leg still defers to the existing mechanism, which already preserves the source.
+// BUY-resolved, NOT capital-blocked, and still live-acceptable stands the hull down WITHOUT
+// clearing that resolution, since this leg's plan is pipeline-wide and says nothing about whether
+// the paired task needed feeding. A capital-blocked or STALE-source leg still falls through to the
+// existing completeOrDefer/deferTask/ClearSourceForResupply, untouched below.
 func (h *RunConstructionCoordinatorHandler) completeOrDeferFactoryLeg(ctx context.Context, leg *supplyLeg) bool {
-	if leg.delivered > 0 || leg.capitalBlocked || leg.task().SourceMarket() == "" {
+	if leg.delivered > 0 || leg.capitalBlocked || !h.factoryLegHasAcceptableSource(ctx, leg) {
 		return h.completeOrDefer(ctx, leg)
 	}
 	if !leg.ephemeral() {
 		h.standDownBuyResolvedTask(ctx, leg.task())
 	}
 	return false
+}
+
+// factoryLegHasAcceptableSource asks the SAME question, through the SAME primitive, as
+// factoryRoleHasNoFeedingWorkFor's routing decision, so the two can never disagree.
+func (h *RunConstructionCoordinatorHandler) factoryLegHasAcceptableSource(ctx context.Context, leg *supplyLeg) bool {
+	source := leg.task().SourceMarket()
+	if source == "" || !h.factory.enabled() {
+		return false
+	}
+	return h.factory.topology.SourceSupplyAcceptable(ctx, source, leg.task().Good(), leg.ship.PlayerID().Value())
 }
 
 // standDownBuyResolvedTask parks task back to PENDING without clearing its resolved source or

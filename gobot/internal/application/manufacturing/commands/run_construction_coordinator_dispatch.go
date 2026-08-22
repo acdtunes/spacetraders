@@ -229,15 +229,20 @@ func (l constructionLot) cappedNeed(need int) int {
 // factoryRoleHasNoFeedingWorkFor reports whether ship is a FACTORY-role hull about to be paired
 // with an already BUY-resolved task (task.SourceMarket() != ""). feedGateLeg's plan is
 // PIPELINE-WIDE, never scoped to the paired task's own good, so such a pairing buys the factory
-// role no feeding work — and when the leg then finds nothing else to feed, it completes THIS task,
-// clearing the buy resolution a delivery hull needs. A task that is not buy-resolved is unaffected:
-// feeding those is the factory role's whole purpose.
-func (h *RunConstructionCoordinatorHandler) factoryRoleHasNoFeedingWorkFor(cmd *RunConstructionCoordinatorCommand, ship *navigation.Ship, task *manufacturing.ManufacturingTask) bool {
-	if task.SourceMarket() == "" {
+// role no feeding work — and when the leg then finds nothing else to feed, it stands the task down
+// rather than clearing a resolution a delivery hull still needs, PROVIDED that resolution is still
+// live-acceptable; a STALE one is treated as absent so the hull reaches the path that re-resolves
+// it. A task that is not buy-resolved is unaffected: feeding those is the factory role's purpose.
+func (h *RunConstructionCoordinatorHandler) factoryRoleHasNoFeedingWorkFor(ctx context.Context, cmd *RunConstructionCoordinatorCommand, ship *navigation.Ship, task *manufacturing.ManufacturingTask) bool {
+	source := task.SourceMarket()
+	if source == "" {
 		return false
 	}
 	role, ok := h.gateLegRole(h.claimIdentityFor(cmd, ship))
-	return ok && role == gate.RoleFactory
+	if !ok || role != gate.RoleFactory {
+		return false
+	}
+	return h.factory.topology.SourceSupplyAcceptable(ctx, source, task.Good(), cmd.PlayerID)
 }
 
 // planDispatchLots fans the ready material-tasks into per-hull lot-tasks so throughput is not capped
@@ -283,7 +288,7 @@ func (h *RunConstructionCoordinatorHandler) planDispatchLots(ctx context.Context
 			continue
 		}
 		hull := pool.takeFor(task.Good(), func(ship *navigation.Ship) bool {
-			return !h.factoryRoleHasNoFeedingWorkFor(cmd, ship, task)
+			return !h.factoryRoleHasNoFeedingWorkFor(ctx, cmd, ship, task)
 		})
 		if hull == nil {
 			// A miss here means only THIS task found no eligible hull; try the rest before giving up.
@@ -308,7 +313,7 @@ func (h *RunConstructionCoordinatorHandler) planDispatchLots(ctx context.Context
 		// Unlike pass 1, a miss here BREAKS rather than continues: neediestMaterial() would otherwise
 		// hand back this same key forever with nothing changed, which is an infinite loop, not a retry.
 		hull := pool.takeFor(clone.Good(), func(ship *navigation.Ship) bool {
-			return !h.factoryRoleHasNoFeedingWorkFor(cmd, ship, clone)
+			return !h.factoryRoleHasNoFeedingWorkFor(ctx, cmd, ship, clone)
 		})
 		if hull == nil {
 			break

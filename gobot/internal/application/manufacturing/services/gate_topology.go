@@ -262,3 +262,14 @@ func (t *GateTopology) ImportSupply(ctx context.Context, factoryWaypoint, good s
 	}
 	return *supply, true
 }
+
+// SourceSupplyAcceptable reports whether good's supply at an ALREADY-RESOLVED construction buy
+// source is STILL acceptable, through the SAME TradeGoodAt lookup ImportSupply uses above but
+// unrestricted to IMPORT listings, since a buy source is typically an EXPORT.
+func (t *GateTopology) SourceSupplyAcceptable(ctx context.Context, waypointSymbol, good string, playerID int) bool {
+	supply := supplyModerate
+	if listing, err := t.markets.TradeGoodAt(ctx, waypointSymbol, good, playerID); err == nil && listing != nil {
+		supply = supplyOrModerate(listing)
+	}
+	return acceptableSourceSupply(supply, goods.IsMineableRawMaterial(good))
+}

@@ -151,6 +151,10 @@ type GateFactoryTopology interface {
 	// non-IMPORT listing, null supply), which must leave the caller's existing order untouched
 	// rather than sorting the unreadable to either end.
 	ImportSupply(ctx context.Context, factoryWaypoint, good string, playerID int) (string, bool)
+	// SourceSupplyAcceptable reports whether good's supply at waypoint — an ALREADY-RESOLVED
+	// construction task's buy source — is STILL acceptable right now. Both
+	// factoryRoleHasNoFeedingWorkFor and completeOrDeferFactoryLeg ask this through this ONE method.
+	SourceSupplyAcceptable(ctx context.Context, waypointSymbol, good string, playerID int) bool
 }
 
 // GateFeeder delivers a hull's inputs INTO a pinned factory.

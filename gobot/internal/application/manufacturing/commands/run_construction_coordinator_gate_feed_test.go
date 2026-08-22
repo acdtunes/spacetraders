@@ -53,6 +53,9 @@ type stubFactoryTopology struct {
 	// importsAsked records every ImportSupply lookup, kept apart from `asked` so a test asserting
 	// which goods were resolved as SOURCES is not polluted by ranking reads.
 	importsAsked []string
+	// sourceAcceptable, keyed by good, answers SourceSupplyAcceptable; unset defaults to true so
+	// every existing fixture is unaffected.
+	sourceAcceptable map[string]bool
 }
 
 // importSupplyKey names one (factory, input) pair in the fixture's import table.
@@ -73,6 +76,15 @@ func (s *stubFactoryTopology) importsAskedList() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]string(nil), s.importsAsked...)
+}
+
+func (s *stubFactoryTopology) SourceSupplyAcceptable(_ context.Context, _, good string, _ int) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if acceptable, ok := s.sourceAcceptable[good]; ok {
+		return acceptable
+	}
+	return true
 }
 
 func newStubFactoryTopology() *stubFactoryTopology {
@@ -1011,6 +1023,113 @@ func TestFeedGateLeg_NoFeedableStepBecauseOfCapitalKeepsTheResolvedSource(t *tes
 	}
 }
 
+func TestFactoryRoleHasNoFeedingWorkFor_BlocksOnlyWhileTheSourceIsStillLiveAcceptable(t *testing.T) {
+	f := newGateFactoryHandler(t)
+	pipeline := newDrainPipeline(t, gateMaterialPrimary, 40)
+	task := readyConstructionTask(t, pipeline, gateMaterialPrimary)
+	factoryShip := gateTestHull(t, "GF-1", gate.FactoryFleetTag)
+	deliveryShip := gateTestHull(t, "GD-1", gate.DeliveryFleetTag)
+	cmd := gateTestCmd()
+
+	if !f.handler.factoryRoleHasNoFeedingWorkFor(f.ctx(), cmd, factoryShip, task) {
+		t.Fatal("a factory hull must stay blocked from a task whose resolved source is genuinely still acceptable")
+	}
+
+	f.topo.sourceAcceptable = map[string]bool{gateMaterialPrimary: false}
+	if f.handler.factoryRoleHasNoFeedingWorkFor(f.ctx(), cmd, factoryShip, task) {
+		t.Fatal("a factory hull stayed blocked from a task whose resolved source has gone STALE")
+	}
+
+	unresolved := readyFactoryFeedableConstructionTask(t, pipeline, gateMaterialPrimary)
+	if f.handler.factoryRoleHasNoFeedingWorkFor(f.ctx(), cmd, factoryShip, unresolved) {
+		t.Fatal("an unresolved task (no SourceMarket) must never be blocked")
+	}
+
+	if f.handler.factoryRoleHasNoFeedingWorkFor(f.ctx(), cmd, deliveryShip, task) {
+		t.Fatal("a DELIVERY-role hull was blocked by a FACTORY-only routing predicate")
+	}
+}
+
+// TestFeedGateLeg_StaleBuyResolvedSourceIsClearedNotPreserved mirrors
+// TestFeedGateLeg_CapitalDeclinedBuyKeepsTheResolvedSource: a STALE resolution must clear, unlike a
+// capital decline.
+func TestFeedGateLeg_StaleBuyResolvedSourceIsClearedNotPreserved(t *testing.T) {
+	f := newGateFactoryHandler(t)
+	f.topo.errByGood = map[string]error{"IRON": errors.New("no exporter"), "QUARTZ_SAND": errors.New("no exporter")}
+	f.topo.sourceAcceptable = map[string]bool{gateMaterialPrimary: false}
+
+	ship := gateTestHull(t, "GF-1", gate.FactoryFleetTag)
+	task := manufacturing.NewDeliverToConstructionTask(gateTestPipelineID, 1, gateMaterialPrimary, "X1-GT-STALE-SOURCE", "", gateTestSite, nil)
+	if err := task.MarkReady(); err != nil {
+		t.Fatalf("MarkReady: %v", err)
+	}
+	if err := task.AssignShip(ship.ShipSymbol()); err != nil {
+		t.Fatalf("AssignShip: %v", err)
+	}
+	if err := task.StartExecution(); err != nil {
+		t.Fatalf("StartExecution: %v", err)
+	}
+	lot := constructionLot{task: task, ship: ship, claimIdentity: gate.FactoryFleetTag}
+
+	drained := f.handler.feedGateLeg(f.ctx(), gateTestCmd(), gateTestSystem, lot, shared.MustNewPlayerID(1))
+
+	if drained {
+		t.Fatal("a leg that fed nothing must not report a drain")
+	}
+	if got := task.Status(); got != manufacturing.TaskStatusPending {
+		t.Fatalf("expected the task parked PENDING, got %s", got)
+	}
+	if !task.IsDeferredConstruction() {
+		t.Fatalf("expected the STALE resolved source CLEARED (task reverted to the deferred signature) so the next activation pass re-resolves it — got source=%q factory=%q still set", task.SourceMarket(), task.FactorySymbol())
+	}
+	if task.SourceMarket() != "" {
+		t.Fatalf("expected SourceMarket cleared, got %q", task.SourceMarket())
+	}
+	logs := f.logLines()
+	if strings.Contains(logs, "stood down") {
+		t.Fatalf("a stale source must go through the ORDINARY defer path, not the buy-resolved stand-down, which would (wrongly) preserve it:\n%s", logs)
+	}
+	if !strings.Contains(logs, "Deferred unsourceable construction material") {
+		t.Fatalf("expected the ordinary deferTask log line proving the real clear-and-park path ran:\n%s", logs)
+	}
+}
+
+func TestFeedGateLeg_StillAcceptableSourceIsStillPreservedWhenNothingIsFeedable(t *testing.T) {
+	f := newGateFactoryHandler(t)
+	f.topo.errByGood = map[string]error{"IRON": errors.New("no exporter"), "QUARTZ_SAND": errors.New("no exporter")}
+
+	ship := gateTestHull(t, "GF-1", gate.FactoryFleetTag)
+	task := manufacturing.NewDeliverToConstructionTask(gateTestPipelineID, 1, gateMaterialPrimary, "X1-GT-GOOD-SOURCE", "", gateTestSite, nil)
+	if err := task.MarkReady(); err != nil {
+		t.Fatalf("MarkReady: %v", err)
+	}
+	if err := task.AssignShip(ship.ShipSymbol()); err != nil {
+		t.Fatalf("AssignShip: %v", err)
+	}
+	if err := task.StartExecution(); err != nil {
+		t.Fatalf("StartExecution: %v", err)
+	}
+	lot := constructionLot{task: task, ship: ship, claimIdentity: gate.FactoryFleetTag}
+
+	drained := f.handler.feedGateLeg(f.ctx(), gateTestCmd(), gateTestSystem, lot, shared.MustNewPlayerID(1))
+
+	if drained {
+		t.Fatal("a leg that fed nothing must not report a drain")
+	}
+	if got := task.Status(); got != manufacturing.TaskStatusPending {
+		t.Fatalf("expected the task parked PENDING, got %s", got)
+	}
+	if task.IsDeferredConstruction() {
+		t.Fatal("a STILL-ACCEPTABLE resolved source must survive the park — clearing it here is the exact sp-8epum oscillation this test guards against")
+	}
+	if task.SourceMarket() != "X1-GT-GOOD-SOURCE" {
+		t.Fatalf("expected the resolved source market preserved, got %q", task.SourceMarket())
+	}
+	if !strings.Contains(f.logLines(), "stood down") {
+		t.Fatalf("expected the buy-resolved stand-down path, not the ordinary defer:\n%s", f.logLines())
+	}
+}
+
 // OBSERVABILITY. The spec requires the factory feed to record: good, resolved feed target,
 // dispatched vs declined WITH the reason. All in the MESSAGE — the container log renderer drops
 // metadata maps.
@@ -1628,6 +1747,55 @@ func TestConstructionDrain_DrivesAFactoryTaggedHullAllTheWayToTheFeedingLeg(t *t
 	}
 	if claims[0].symbol != "GATE-8" || claims[0].operation != gate.FactoryFleetTag {
 		t.Fatalf("claim %+v: a gate-factory hull must be claimed under %q, or ClaimShip rejects it and the hull silently never works", claims[0], gate.FactoryFleetTag)
+	}
+}
+
+// TestConstructionDrain_FactoryHullRescuesAStaleBuyResolvedTask drives the self-heal chain through
+// the REAL dispatch path (planDispatchLots -> supplyTask -> feedGateLeg ->
+// completeOrDeferFactoryLeg): a READY, buy-resolved task whose source has gone stale is picked up
+// by an idle FACTORY-role hull, and the existing defer path clears the stale source.
+func TestConstructionDrain_FactoryHullRescuesAStaleBuyResolvedTask(t *testing.T) {
+	pipeline := newDrainPipeline(t, gateMaterialPrimary, 40)
+	task := readyConstructionTask(t, pipeline, gateMaterialPrimary)
+
+	hull := newTestHaulerInFleet(t, "GATE-9", gate.FactoryFleetTag)
+
+	producer := &fakeConstructionProducer{acquire: 40, delivered: 40}
+	taskRepo := &drainStubTaskRepo{tasks: []*manufacturing.ManufacturingTask{task}}
+	pipelineRepo := &drainStubPipelineRepo{pipelines: map[string]*manufacturing.ManufacturingPipeline{pipeline.ID(): pipeline}}
+	shipRepo := newDrainShipRepo(hull)
+	deliveryBuyer, factoryBuyer := &countingGateBuyer{}, &countingGateBuyer{}
+	feeder := &recordingFeeder{}
+	topo := newStubFactoryTopology()
+	topo.sourceAcceptable = map[string]bool{gateMaterialPrimary: false}
+	topo.errByGood = map[string]error{"IRON": fmt.Errorf("no exporter"), "QUARTZ_SAND": fmt.Errorf("no exporter")}
+	logger := &capturingLogger{}
+
+	handler := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, producer, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
+	handler.SetGateDelivery(&stubGateTopology{supply: "MODERATE"}, deliveryBuyer)
+	handler.SetGateFactory(topo, factoryBuyer, feeder)
+	pinFactoryRoleByPausing(handler, pipeline)
+	if _, err := drainSettled(t, handler, common.WithLogger(context.Background(), logger), newDrainCommand()); err != nil {
+		t.Fatalf("drainOnce: %v", err)
+	}
+
+	joined := logger.joined()
+
+	shipRepo.mu.Lock()
+	claims := append([]drainClaim(nil), shipRepo.claims...)
+	shipRepo.mu.Unlock()
+	if len(claims) != 1 {
+		t.Fatalf("expected the factory hull claimed exactly once, got %d — a stale buy-resolved task must not leave a factory-role hull permanently idle.\nlog:\n%s", len(claims), joined)
+	}
+
+	if !task.IsDeferredConstruction() {
+		t.Fatalf("expected the stale source cleared (task reverted to the deferred signature) so the next activation pass re-resolves it — got source=%q factory=%q, status=%s.\nlog:\n%s", task.SourceMarket(), task.FactorySymbol(), task.Status(), joined)
+	}
+	if task.Status() != manufacturing.TaskStatusPending {
+		t.Fatalf("expected the task parked PENDING, got %s", task.Status())
+	}
+	if want := "Deferred unsourceable construction material"; !strings.Contains(joined, want) {
+		t.Fatalf("expected the ordinary deferTask log line proving the real clear-and-park path ran; want %q.\nlog:\n%s", want, joined)
 	}
 }
 
