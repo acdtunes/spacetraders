@@ -29,12 +29,12 @@ const (
 	ceilingKey = "contract_fleet_max_hulls"
 
 	// DefaultContractFleetMaxHulls is the ceiling when the operator sets none: the whole contract
-	// operation sized at 3 hulls, filled delivery-first. It is also the cold start's GATE-ENTRY BAR —
+	// operation sized at 4 hulls, filled delivery-first. It is also the cold start's GATE-ENTRY BAR —
 	// bootstrap enters GATE once the full contract fleet reaches min(plan size, this ceiling) — so the
 	// number is chosen for TIME-TO-GATE, not for contract throughput: a small operation funds the gate
 	// sooner than a saturated one (delivery saturates ~7-8). Operators raise it live via
 	// contract_fleet_max_hulls once the gate is behind them; the 200000 cushion gates the ramp either way.
-	DefaultContractFleetMaxHulls = 3
+	DefaultContractFleetMaxHulls = 4
 
 	// ContractCushion is the SOLE money guard on a scaler buy (RULINGS #6 amendment,
 	// Admiral-authorized): buy only while treasury-price >= this. It is the derived

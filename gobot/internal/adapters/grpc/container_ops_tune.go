@@ -124,7 +124,7 @@ func tunableKnobsByContainerType() map[string]map[string]TuneBound {
 			// shipped default is sized for time-to-gate (a small operation funds the gate sooner) and is
 			// raised live once the gate is built — delivery saturates ~7-8. Min 0 reverts to the default; the
 			// sole money guard (the 200000 cushion) is a const, not tunable.
-			"contract_fleet_max_hulls": {Type: "int", Min: 0, Max: 16, Default: contractScaler["contract_fleet_max_hulls"], Unit: "hulls", Applies: TuneAppliesLive, Description: "the exclusive contract fleet's live-tunable ceiling (filled delivery-first, behind the 200000 cushion). Default 3 — the cold start's GATE-entry bar; raise it once the gate is built (delivery saturates ~7-8)"},
+			"contract_fleet_max_hulls": {Type: "int", Min: 0, Max: 16, Default: contractScaler["contract_fleet_max_hulls"], Unit: "hulls", Applies: TuneAppliesLive, Description: "the exclusive contract fleet's live-tunable ceiling (filled delivery-first, behind the 200000 cushion). Default 4 — the cold start's GATE-entry bar; raise it once the gate is built (delivery saturates ~7-8)"},
 		},
 		string(container.ContainerTypeAutoOutfitCoordinator): {
 			"min_telemetry_samples":     {Type: "int", Min: 1, Max: 1000, Default: autoOutfit["min_telemetry_samples"], Unit: "legs", Applies: TuneAppliesLive, Description: "fail-closed thin-telemetry floor — a hull with fewer measured legs is never upgraded"},

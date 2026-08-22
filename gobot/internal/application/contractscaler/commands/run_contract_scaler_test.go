@@ -875,15 +875,15 @@ func TestReconcile_SurplusDeliveryNotReleasedWithoutWarehouseDeficit(t *testing.
 
 // --- The era-5 cold-start retune: a SMALLER contract operation that reaches the gate sooner ---
 
-// THE ADMIRAL'S ERA-5 CEILING. The shipped default sizes the whole contract operation at three hulls, so
+// THE ADMIRAL'S ERA-5 CEILING. The shipped default sizes the whole contract operation at four hulls, so
 // bootstrap's GATE-entry bar (the full fleet against the scaler's achievable target) is reached early. This
 // pins the operational number; the operator raises it live when the gate is behind them.
-func TestContractScaler_DefaultCeilingIsThree(t *testing.T) {
-	if DefaultContractFleetMaxHulls != 3 {
-		t.Fatalf("DefaultContractFleetMaxHulls = %d, want 3 (the era-5 cold-start contract operation)", DefaultContractFleetMaxHulls)
+func TestContractScaler_DefaultCeilingIsFour(t *testing.T) {
+	if DefaultContractFleetMaxHulls != 4 {
+		t.Fatalf("DefaultContractFleetMaxHulls = %d, want 4 (the era-5 cold-start contract operation)", DefaultContractFleetMaxHulls)
 	}
-	if got := ContractScalerTunableDefaults()[ceilingKey]; got != 3 {
-		t.Fatalf("the tune registry's documented default for %s = %d, want 3", ceilingKey, got)
+	if got := ContractScalerTunableDefaults()[ceilingKey]; got != 4 {
+		t.Fatalf("the tune registry's documented default for %s = %d, want 4", ceilingKey, got)
 	}
 }
 
@@ -908,10 +908,10 @@ func TestContractScaler_CeilingStaysLiveTunableAboveTheDefault(t *testing.T) {
 	}
 }
 
-// At the shipped default the ramp fills DELIVERY hulls only — three central parks, no depot bundle. The
-// fill order is structurally delivery-first, so a three-hull budget never strands capital in a warehouse
+// At the shipped default the ramp fills DELIVERY hulls only — four central parks, no depot bundle. The
+// fill order is structurally delivery-first, so a four-hull budget never strands capital in a warehouse
 // that has no delivery fleet to serve.
-func TestReconcile_DefaultCeilingBuysThreeDeliveryHullsAndNoDepot(t *testing.T) {
+func TestReconcile_DefaultCeilingBuysFourDeliveryHullsAndNoDepot(t *testing.T) {
 	h, pur, _, gr := newDepotHarness(DefaultContractFleetMaxHulls, 7, 0, 0, 0)
 
 	bought := reconcile(t, h, DefaultContractFleetMaxHulls)
@@ -923,7 +923,7 @@ func TestReconcile_DefaultCeilingBuysThreeDeliveryHullsAndNoDepot(t *testing.T) 
 		t.Fatalf("delivery buys = %d, want %d (delivery fills first and the budget stops there)", len(pur.orders), DefaultContractFleetMaxHulls)
 	}
 	if len(gr.warehouseGrows) != 0 || len(gr.stockerGrows) != 0 {
-		t.Fatalf("depot grows = (%d,%d), want (0,0) — a three-hull budget is spent entirely on delivery",
+		t.Fatalf("depot grows = (%d,%d), want (0,0) — a four-hull budget is spent entirely on delivery",
 			len(gr.warehouseGrows), len(gr.stockerGrows))
 	}
 }

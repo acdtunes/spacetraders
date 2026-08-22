@@ -186,17 +186,17 @@ func coldStartScalerTarget() int {
 	return min(planSlots, contractScalerCmd.DefaultContractFleetMaxHulls)
 }
 
-// THE ADMIRAL'S ERA-5 BAR: GATE is reached once the contract operation holds THREE hulls. The default
+// THE ADMIRAL'S ERA-5 BAR: GATE is reached once the contract operation holds FOUR hulls. The default
 // ceiling is what sets it, so this pins the operational number the retune exists to deliver.
-func TestBootstrap_ColdStartGate_EntryBarIsThreeContractHulls(t *testing.T) {
-	if got := coldStartScalerTarget(); got != 3 {
-		t.Fatalf("cold-start GATE-entry bar = %d contract hulls, want 3 (the era-5 default ceiling)", got)
+func TestBootstrap_ColdStartGate_EntryBarIsFourContractHulls(t *testing.T) {
+	if got := coldStartScalerTarget(); got != 4 {
+		t.Fatalf("cold-start GATE-entry bar = %d contract hulls, want 4 (the era-5 default ceiling)", got)
 	}
 }
 
-// A funded operation at THREE hulls enters GATE — and the same operation one hull short does NOT. The
+// A funded operation at FOUR hulls enters GATE — and the same operation one hull short does NOT. The
 // boundary is the whole point: the hull bar moved down, it did not disappear.
-func TestBootstrap_ColdStartGate_EntersAtThreeHullsNotTwo(t *testing.T) {
+func TestBootstrap_ColdStartGate_EntersAtFourHullsNotThree(t *testing.T) {
 	target := coldStartScalerTarget()
 
 	funded := func(hulls int) Observation {
@@ -215,7 +215,7 @@ func TestBootstrap_ColdStartGate_EntersAtThreeHullsNotTwo(t *testing.T) {
 }
 
 // The depot hulls count toward the bar exactly as the delivery haulers do — the bar is the FULL contract
-// fleet, so a mixed 2-delivery + 1-depot operation reaches GATE at the same three hulls.
+// fleet, so a mixed 2-delivery + 1-depot operation reaches GATE at the same four hulls.
 func TestBootstrap_ColdStartGate_FullFleetCountsDepotHulls(t *testing.T) {
 	target := coldStartScalerTarget()
 	obs := Observation{
@@ -229,10 +229,10 @@ func TestBootstrap_ColdStartGate_FullFleetCountsDepotHulls(t *testing.T) {
 	}
 }
 
-// THE FUNDING BAR SURVIVES THE SMALLER FLEET. At the new three-hull bar the treasury war chest still
+// THE FUNDING BAR SURVIVES THE SMALLER FLEET. At the new four-hull bar the treasury war chest still
 // independently BLOCKS entry: an operation whose surplus over the immutable reserve floor is one credit
 // short does not gate. Lowering the hull bar must not become a way in on an unfunded operation.
-func TestBootstrap_ColdStartGate_ThreeHullsStillBlockedWhenUnfunded(t *testing.T) {
+func TestBootstrap_ColdStartGate_FourHullsStillBlockedWhenUnfunded(t *testing.T) {
 	target := coldStartScalerTarget()
 
 	obs := Observation{
