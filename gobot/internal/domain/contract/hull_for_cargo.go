@@ -61,6 +61,7 @@ type hullFit struct {
 	travelTime float64 // one-way cruise time to the target, speed-aware
 	capacity   int     // clamped to >=1 so trip math never divides by zero
 	trips      int     // ceil(cargoUnits / capacity): round trips to move the load
+	onOwnSlot  bool    // true iff standing exactly on its own assigned standby slot
 }
 
 // SelectHullForCargo picks the hull whose hold matches the load - the shared
@@ -75,7 +76,9 @@ type hullFit struct {
 //	        smallest fitting hold, so a nearer adequate hull beats a farther
 //	        smaller one while two equidistant hulls still right-size. Travel
 //	        time is speed-aware, so a fast hull that clears the leg sooner
-//	        outranks a slow one nominally as close.
+//	        outranks a slow one nominally as close. A further exact tie on
+//	        both prefers the hull NOT parked on its own standby slot, leaving
+//	        the correctly-homed one in place.
 //	Tier 2: the command frigate, only when NO regular hull fits. It stays an
 //	        eligible candidate but is drafted strictly last-resort - mirroring
 //	        how IncludeCommandShip already gates its pool entry.
@@ -85,11 +88,14 @@ type hullFit struct {
 //	Tier 4: the command frigate as the sole remaining candidate.
 //
 // The caller owns availability filtering (idle/claimable) and claiming; this
-// function only ranks the candidates it is given.
+// function only ranks the candidates it is given. deliveryFleet/standbySlots
+// feed the Tier-1 ownership tiebreak; an empty one leaves it a no-op.
 func SelectHullForCargo(
 	candidates []*navigation.Ship,
 	target *shared.Waypoint,
 	cargoUnits int,
+	deliveryFleet []string,
+	standbySlots []string,
 ) (*SelectionResult, error) {
 	if len(candidates) == 0 {
 		return nil, fmt.Errorf("no ships available for selection")
@@ -105,7 +111,7 @@ func SelectHullForCargo(
 
 	var regular, command []hullFit
 	for _, ship := range candidates {
-		fit := newHullFit(ship, target, units)
+		fit := newHullFit(ship, target, units, deliveryFleet, standbySlots)
 		if IsCommandHull(ship) {
 			command = append(command, fit)
 		} else {
@@ -136,7 +142,7 @@ func SelectHullForCargo(
 }
 
 // newHullFit computes the ranking figures for one candidate hull.
-func newHullFit(ship *navigation.Ship, target *shared.Waypoint, units int) hullFit {
+func newHullFit(ship *navigation.Ship, target *shared.Waypoint, units int, deliveryFleet, standbySlots []string) hullFit {
 	capacity := ship.CargoCapacity()
 	if capacity < 1 {
 		capacity = 1
@@ -148,7 +154,24 @@ func newHullFit(ship *navigation.Ship, target *shared.Waypoint, units int) hullF
 		travelTime: float64(shared.FlightModeCruise.TravelTime(distance, ship.EngineSpeed())),
 		capacity:   capacity,
 		trips:      int(math.Ceil(float64(units) / float64(capacity))),
+		onOwnSlot:  isOnOwnAssignedSlot(ship, deliveryFleet, standbySlots),
 	}
+}
+
+// isOnOwnAssignedSlot reports whether ship is standing exactly on the slot
+// AssignedSlot would give it against deliveryFleet/standbySlots. An empty
+// roster or slot list answers false uniformly, so a caller's tiebreak on it
+// degrades to a no-op rather than guessing.
+func isOnOwnAssignedSlot(ship *navigation.Ship, deliveryFleet, standbySlots []string) bool {
+	if len(deliveryFleet) == 0 || len(standbySlots) == 0 {
+		return false
+	}
+	slot, owns := AssignedSlot(ship.ShipSymbol(), deliveryFleet, standbySlots)
+	if !owns {
+		return false
+	}
+	loc := ship.CurrentLocation()
+	return loc != nil && loc.Symbol == slot
 }
 
 // filterFits returns the candidates satisfying the fit predicate.
@@ -163,14 +186,20 @@ func filterFits(fits []hullFit, keep func(hullFit) bool) []hullFit {
 }
 
 // byNearestThenSmallest orders adequate hulls (Tier 1): shortest cruise travel
-// time first, smallest fitting hold breaking a tie. Proximity is the primary
-// key so a nearer adequate hull beats a farther smaller one; size-fit is
-// subordinated to distance, not the other way round.
+// time first, smallest fitting hold second, standby-slot ownership breaking a
+// further exact tie - proximity and size-fit both outrank it, so it never
+// reorders candidates that differ on either.
 func byNearestThenSmallest(a, b hullFit) bool {
 	if a.travelTime != b.travelTime {
 		return a.travelTime < b.travelTime
 	}
-	return a.capacity < b.capacity
+	if a.capacity != b.capacity {
+		return a.capacity < b.capacity
+	}
+	if a.onOwnSlot != b.onOwnSlot {
+		return !a.onOwnSlot // prefer the displaced candidate over the one on its own slot
+	}
+	return false
 }
 
 // bySmallestCapacity orders fitting command hulls (Tier 2): smallest hold

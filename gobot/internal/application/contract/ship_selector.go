@@ -21,6 +21,7 @@ import (
 //   - requiredCargoSymbol: The cargo needed for delivery (optional, for prioritization)
 //   - unitsNeeded: Units still required for the delivery - used for hull
 //     right-sizing, estimating round trips per candidate hull
+//   - deliveryFleet / standbySlots: nil-safe context for SelectHullForCargo's ownership tiebreak
 func SelectClosestShip(
 	ctx context.Context,
 	shipSymbols []string,
@@ -31,6 +32,8 @@ func SelectClosestShip(
 	requiredCargoSymbol string,
 	unitsNeeded int,
 	playerID int,
+	deliveryFleet []string,
+	standbySlots []string,
 ) (string, float64, error) {
 	logger := common.LoggerFromContext(ctx)
 
@@ -80,7 +83,7 @@ func SelectClosestShip(
 	}
 
 	selector := domainContract.NewShipSelector()
-	result, err := selector.SelectOptimalShip(ships, targetWaypoint, requiredCargoSymbol, unitsNeeded)
+	result, err := selector.SelectOptimalShip(ships, targetWaypoint, requiredCargoSymbol, unitsNeeded, deliveryFleet, standbySlots)
 	if err != nil {
 		return "", 0, err
 	}

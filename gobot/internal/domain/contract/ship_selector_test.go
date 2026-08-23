@@ -56,7 +56,7 @@ func TestSelectOptimalShip_CommandShip_WinsWhenOnlyHullThatFits(t *testing.T) {
 	command := newSelectorTestShipWithHull(t, "TORWIND-1", "COMMAND", 700, 0, 30, 40) // far, fits
 
 	selector := NewShipSelector()
-	result, err := selector.SelectOptimalShip([]*navigation.Ship{hauler, command}, target, "", 10)
+	result, err := selector.SelectOptimalShip([]*navigation.Ship{hauler, command}, target, "", 10, nil, nil)
 	if err != nil {
 		t.Fatalf("SelectOptimalShip: %v", err)
 	}
@@ -81,7 +81,7 @@ func TestSelectOptimalShip_FittingHaulerBenchesCommandFrigate_ForSmallDelivery(t
 	frigate := newSelectorTestShipWithHull(t, "TORWIND-1", "COMMAND", 100, 0, 36, 4)
 
 	selector := NewShipSelector()
-	result, err := selector.SelectOptimalShip([]*navigation.Ship{hauler, frigate}, target, "", 2)
+	result, err := selector.SelectOptimalShip([]*navigation.Ship{hauler, frigate}, target, "", 2, nil, nil)
 	if err != nil {
 		t.Fatalf("SelectOptimalShip: %v", err)
 	}
@@ -104,7 +104,7 @@ func TestSelectOptimalShip_BigCargoHaulerBeatsFastSmallFrigate_ForLargeDelivery(
 	frigate := newSelectorTestShipWithHull(t, "TORWIND-1", "COMMAND", 100, 0, 36, 4)
 
 	selector := NewShipSelector()
-	result, err := selector.SelectOptimalShip([]*navigation.Ship{hauler, frigate}, target, "", 40)
+	result, err := selector.SelectOptimalShip([]*navigation.Ship{hauler, frigate}, target, "", 40, nil, nil)
 	if err != nil {
 		t.Fatalf("SelectOptimalShip: %v", err)
 	}

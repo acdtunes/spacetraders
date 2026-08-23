@@ -19,7 +19,8 @@ func hullFitTarget(t *testing.T) *shared.Waypoint {
 
 func selectHull(t *testing.T, ships []*navigation.Ship, units int) *SelectionResult {
 	t.Helper()
-	result, err := SelectHullForCargo(ships, hullFitTarget(t), units)
+	// nil, nil: no ownership context; these tests exercise distance/capacity only.
+	result, err := SelectHullForCargo(ships, hullFitTarget(t), units, nil, nil)
 	if err != nil {
 		t.Fatalf("SelectHullForCargo: %v", err)
 	}
@@ -64,6 +65,54 @@ func TestSelectHullForCargo_EqualDistanceTieBreaksOnSmallerHold(t *testing.T) {
 
 	if result.Ship.ShipSymbol() != "TORWIND-3" {
 		t.Fatalf("expected the smaller equidistant hold TORWIND-3 (40-hold) to win the tie-break over TORWIND-7 (120-hold), got %s (%s)", result.Ship.ShipSymbol(), result.Reason)
+	}
+}
+
+// Tier 1 tiebreak: on an exact tie of distance AND capacity, the candidate
+// NOT standing on its own assigned standby slot wins - prefer the displaced
+// hull, leave the correctly-homed one parked.
+func TestSelectHullForCargo_EqualTieBreaksOnDisplacedHullOverHomedHull(t *testing.T) {
+	home := newSelectorTestShipWithHull(t, "TORWIND-7", "HAULER", 100, 0, 30, 80)
+	displaced := newSelectorTestShipWithHull(t, "TORWIND-6", "HAULER", 100, 0, 30, 80)
+
+	// Both stand at the same physical waypoint (newSelectorTestShipWithHull always
+	// places its ship at symbol "X1-TW-A2"), so distance and capacity tie exactly.
+	// The symbol-sorted zip gives TORWIND-6 a different slot (displaced) and
+	// TORWIND-7 exactly the slot it's standing on (home).
+	deliveryFleet := []string{"TORWIND-6", "TORWIND-7"}
+	slots := []string{"X1-TW-OTHER", "X1-TW-A2"}
+
+	result, err := SelectHullForCargo([]*navigation.Ship{home, displaced}, hullFitTarget(t), 30, deliveryFleet, slots)
+	if err != nil {
+		t.Fatalf("SelectHullForCargo: %v", err)
+	}
+
+	if result.Ship.ShipSymbol() != "TORWIND-6" {
+		t.Fatalf("expected the displaced hull TORWIND-6 to win the exact tie over the correctly-homed TORWIND-7, got %s (%s)",
+			result.Ship.ShipSymbol(), result.Reason)
+	}
+}
+
+// Precedence guard: the ownership tiebreak is consulted only on an exact
+// distance+capacity tie. A nearer hull standing on its own slot must still
+// beat a farther displaced hull, proving the tiebreak can never outrank
+// proximity, Tier 1's primary key.
+func TestSelectHullForCargo_OwnSlotTiebreakNeverOutranksADistanceDifference(t *testing.T) {
+	near := newSelectorTestShipWithHull(t, "TORWIND-7", "HAULER", 10, 0, 30, 80)
+	far := newSelectorTestShipWithHull(t, "TORWIND-3", "HAULER", 200, 0, 30, 80)
+
+	// TORWIND-7 (near) is parked on its own slot; TORWIND-3 (far) is displaced.
+	deliveryFleet := []string{"TORWIND-3", "TORWIND-7"}
+	slots := []string{"X1-TW-OTHER", "X1-TW-A2"}
+
+	result, err := SelectHullForCargo([]*navigation.Ship{near, far}, hullFitTarget(t), 30, deliveryFleet, slots)
+	if err != nil {
+		t.Fatalf("SelectHullForCargo: %v", err)
+	}
+
+	if result.Ship.ShipSymbol() != "TORWIND-7" {
+		t.Fatalf("expected the nearer hull TORWIND-7 to win despite standing on its own slot - the ownership tiebreak must never outrank a genuine distance difference, got %s (%s)",
+			result.Ship.ShipSymbol(), result.Reason)
 	}
 }
 
@@ -158,7 +207,7 @@ func TestSelectHullForCargo_CommandFrigateAsSoleCandidate(t *testing.T) {
 }
 
 func TestSelectHullForCargo_NoCandidates_ReturnsError(t *testing.T) {
-	if _, err := SelectHullForCargo(nil, hullFitTarget(t), 10); err == nil {
+	if _, err := SelectHullForCargo(nil, hullFitTarget(t), 10, nil, nil); err == nil {
 		t.Fatalf("expected an error for an empty candidate list")
 	}
 }

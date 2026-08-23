@@ -29,20 +29,23 @@ func NewShipSelector() *ShipSelector {
 //  2. Ships in transit are excluded (unless they have cargo)
 //  3. Fallback: cargo-fit hull selection via SelectHullForCargo: among hulls
 //     whose hold fits the load, the NEAREST by cruise travel time (smallest
-//     fitting hold breaks a tie), the command frigate strictly last-resort,
-//     fewest-round-trips when nothing fits in one trip. This assigns the job
-//     to the nearest adequate hull rather than the smallest anywhere, so a
-//     nearer fitting hull is not passed over for a far smaller one idling at
-//     a hub.
+//     fitting hold breaks a tie, standby-slot ownership breaks a further exact
+//     tie), the command frigate strictly last-resort, fewest-round-trips when
+//     nothing fits in one trip. This assigns the job to the nearest adequate
+//     hull rather than the smallest anywhere, so a nearer fitting hull is not
+//     passed over for a far smaller one idling at a hub.
 //
 // requiredCargoSymbol is optional and drives the priority rule above.
 // unitsNeeded is the quantity still outstanding, used to judge which hulls fit
-// the load (and trip counts when none do).
+// the load (and trip counts when none do). deliveryFleet/standbySlots pass
+// through to SelectHullForCargo's ownership tiebreak.
 func (s *ShipSelector) SelectOptimalShip(
 	ships []*navigation.Ship,
 	targetWaypoint *shared.Waypoint,
 	requiredCargoSymbol string,
 	unitsNeeded int,
+	deliveryFleet []string,
+	standbySlots []string,
 ) (*SelectionResult, error) {
 	if len(ships) == 0 {
 		return nil, fmt.Errorf("no ships available for selection")
@@ -75,7 +78,7 @@ func (s *ShipSelector) SelectOptimalShip(
 		return nil, fmt.Errorf("no available ships found (all are in transit)")
 	}
 
-	return SelectHullForCargo(available, targetWaypoint, unitsNeeded)
+	return SelectHullForCargo(available, targetWaypoint, unitsNeeded, deliveryFleet, standbySlots)
 }
 
 func (s *ShipSelector) hasRequiredCargo(ship *navigation.Ship, requiredCargoSymbol string) bool {

@@ -663,6 +663,13 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 			// DEFAULT PATH: select closest ship to purchase market (prioritizes
 			// ships with required cargo).
 			logger.Log("INFO", fmt.Sprintf("Selecting closest ship (required cargo: %s)...", requiredCargo), nil)
+
+			// Live roster + placement slots for the ownership tiebreak, resolved like
+			// the between-legs homing hook below (fail-open to a no-op).
+			deliveryFleet := resolveDedicatedMembersForHoming(ctx, logger, h.shipRepo, cmd.PlayerID, dedicatedFleetContract, cmd.DedicatedShips)
+			standbySlots := appContract.ResolveStandbyStations(ctx, logger, h.standbyProvider, cmd.ContainerID, cmd.PlayerID.Value(), cmd.StandbyStations)
+			standbySlots = appContract.ResolveStandbyForHoming(ctx, logger, h.standbyPlacementProvider, cmd.PlayerID.Value(), standbySlots)
+
 			selectedShip, distance, err = appContract.SelectClosestShip(
 				ctx,
 				spawnableShips,
@@ -673,6 +680,8 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 				requiredCargo,
 				unitsNeeded,
 				cmd.PlayerID.Value(),
+				deliveryFleet,
+				standbySlots,
 			)
 			if err != nil {
 				pass.retryAfterStepFailure(ctx, "select_closest_ship", fmt.Sprintf("Failed to select ship: %v", err), err)
