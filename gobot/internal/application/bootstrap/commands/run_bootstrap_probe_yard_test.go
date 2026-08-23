@@ -71,18 +71,18 @@ type tradeFleetScanner struct {
 	dispatches int
 }
 
-func (s *tradeFleetScanner) EnsureShipyardReadable(ctx context.Context, playerID int, homeSystem, purchaser, borrow string) (bool, error) {
+func (s *tradeFleetScanner) EnsureShipyardReadable(ctx context.Context, playerID int, homeSystem, shipType, purchaser, borrow string) (bool, bool, error) {
 	s.offered = append(s.offered, borrow)
 	send := purchaser
 	if send == "" {
 		send = borrow
 	}
 	if send == "" || (send == "FRIGATE-1" && !s.world.frigateIdle) {
-		return false, nil
+		return false, false, nil
 	}
 	s.dispatches++
 	s.acq.readable = true // the hull now stands at the yard → the next tick's live price reads
-	return true, nil
+	return true, false, nil
 }
 
 func newProbeYardHandler(world *probeYardWorld) (*RunBootstrapCoordinatorHandler, *probeYardAcquirer, *tradeFleetScanner) {

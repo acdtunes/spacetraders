@@ -906,7 +906,7 @@ func (h *RunBootstrapCoordinatorHandler) maybeSeedTradeHull(ctx context.Context,
 	// leaves it wherever it ended, so a cold yard is answered as the hauler buy answers one: SEND it.
 	price, yard, readable, err := h.haulAcquirer.PriceCheck(ctx, cmd.PlayerID, haulerShipType)
 	if err != nil || !readable {
-		h.awaitReadablePrice(ctx, cmd, obs, res, committedBuyShip(obs), "", "trade-seed", err)
+		h.awaitReadablePrice(ctx, cmd, obs, res, haulerShipType, committedBuyShip(obs), "", "trade-seed", err)
 		return
 	}
 
@@ -992,7 +992,7 @@ func (h *RunBootstrapCoordinatorHandler) awaitHaulerPrice(ctx context.Context, c
 	// Freeing the frigate is only worth it if something can then send it. With no scanner wired, fail
 	// closed without stopping it — an earning loop is never halted for a trip that cannot be made.
 	if h.scanner == nil {
-		h.awaitReadablePrice(ctx, cmd, obs, res, "", "", "hauler", priceErr)
+		h.awaitReadablePrice(ctx, cmd, obs, res, haulerShipType, "", "", "hauler", priceErr)
 		return
 	}
 
@@ -1053,7 +1053,7 @@ func (h *RunBootstrapCoordinatorHandler) awaitHaulerPrice(ctx context.Context, c
 	// With no purchaser to name — a subsequent buy resting on an incidentally-idle probe that is not at
 	// the yard — the scanner picks a free hull, and is lent nothing: committing the earner is the PIVOT's
 	// decision above, taken against the capital test, never a side effect here.
-	h.awaitReadablePrice(ctx, cmd, obs, res, purchaser, "", "hauler", priceErr)
+	h.awaitReadablePrice(ctx, cmd, obs, res, haulerShipType, purchaser, "", "hauler", priceErr)
 }
 
 // firstUnservedSlot returns the first fixed delivery slot (within the ramp's cap) that no existing

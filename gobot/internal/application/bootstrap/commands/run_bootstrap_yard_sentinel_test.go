@@ -38,6 +38,7 @@ type fakeYardSentinelAcquirer struct {
 	parkCalls int
 	parkErr   error
 	docked    bool
+	parkTypes []string // the ship type each EnsureParked call was asked to stand watch for
 
 	releaseCalls   int
 	releaseErr     error
@@ -67,8 +68,9 @@ func (f *fakeYardSentinelAcquirer) BuyAndReserve(ctx context.Context, playerID i
 	return BuyResult{ShipSymbol: sym, Price: f.price}, nil
 }
 
-func (f *fakeYardSentinelAcquirer) EnsureParked(ctx context.Context, playerID int, homeSystem, shipSymbol string) (bool, error) {
+func (f *fakeYardSentinelAcquirer) EnsureParked(ctx context.Context, playerID int, homeSystem, shipType, shipSymbol string) (bool, error) {
 	f.parkCalls++
+	f.parkTypes = append(f.parkTypes, shipType)
 	if f.parkErr != nil {
 		return false, f.parkErr
 	}
@@ -289,9 +291,18 @@ func TestBootstrap_YardSentinel_NeverBuysASecondOnceOneExists(t *testing.T) {
 	}
 }
 
-// --- positioning: idempotent, stops calling once parked ---
+// --- positioning: re-evaluated every tick so a shifted need can redirect it (sp-ltl75) ---
+//
+// Before the fix, EnsureParked stopped being called the instant obs.YardSentinelParked went true — a
+// purely POSITIONAL fact (docked at SOME shipyard) the reconciler treated as a terminal latch. That froze
+// the sentinel wherever it first parked even once bootstrap's ramp moved on to a ship type a DIFFERENT
+// yard sells (confirmed live: the sentinel parked at the probe yard, bootstrap moved on to buying
+// haulers, and the sentinel never reconsidered). The fix re-derives the need (sentinelShipTypeNeed) and
+// keeps calling EnsureParked every tick for as long as something is still being bought, so a real
+// yard-selection implementation gets the chance to redirect a hull sitting somewhere the current need has
+// outgrown — pinned for real at the grpc adapter in TestEnsureParked_RepositionsWhenDockedAtAYardConfirmedWrongForTheCurrentType.
 
-func TestBootstrap_YardSentinel_ParksUntilDocked_ThenStopsCalling(t *testing.T) {
+func TestBootstrap_YardSentinel_KeepsReVerifyingPlacementWhileAnyRampStillNeedsToBuy(t *testing.T) {
 	obs := freshDataObs()
 	obs.ProbeCount = probeTarget
 	obs.YardSentinelSymbol = "SENTINEL-1"
@@ -307,6 +318,9 @@ func TestBootstrap_YardSentinel_ParksUntilDocked_ThenStopsCalling(t *testing.T) 
 	if ys.parkCalls != 1 {
 		t.Fatalf("expected one EnsureParked call while not yet parked, got %d", ys.parkCalls)
 	}
+	if len(ys.parkTypes) != 1 || ys.parkTypes[0] != haulerShipType {
+		t.Fatalf("probes are already at target and the contract-hauler ramp is still short — the sentinel must stand watch for %s, got %v", haulerShipType, ys.parkTypes)
+	}
 	if ys.buys != 0 {
 		t.Fatalf("must not re-buy once the sentinel already exists, got buys=%d", ys.buys)
 	}
@@ -314,17 +328,30 @@ func TestBootstrap_YardSentinel_ParksUntilDocked_ThenStopsCalling(t *testing.T) 
 		t.Fatalf("must not report docked while EnsureParked still returns false")
 	}
 
-	// The next tick's fresh observation reports it parked (the adapter's own idempotent state, or an
-	// observer re-read) — the reconciler must stop calling entirely, mirroring
-	// redirectConstructionHullsToTrade's empty-selection early-out.
+	// The next tick's fresh observation reports it docked (the adapter's own idempotent state, or an
+	// observer re-read). The hauler ramp is STILL short of target, so EnsureParked must be RE-VERIFIED,
+	// never frozen by the mere fact of being docked — that freeze was the bug.
+	ys.docked = true
 	docked := obs
 	docked.YardSentinelParked = true
 	h.SetWorldObserver(&fakeObserver{obs: docked})
 	if _, err := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd()); err != nil {
 		t.Fatalf("tick 2: %v", err)
 	}
-	if ys.parkCalls != 1 {
-		t.Fatalf("once parked, EnsureParked must never be called again, got %d calls", ys.parkCalls)
+	if ys.parkCalls != 2 {
+		t.Fatalf("still short of the hauler ramp target — EnsureParked must be re-verified every tick, not frozen once docked, got %d calls", ys.parkCalls)
+	}
+
+	// Once the hauler ramp ALSO reaches target there is genuinely nothing left to stand watch for, and
+	// the sentinel correctly HOLDS its position rather than being redirected on no evidence.
+	fullyStaffed := docked
+	fullyStaffed.Haulers = make([]HaulerSnapshot, haulerTarget)
+	h.SetWorldObserver(&fakeObserver{obs: fullyStaffed})
+	if _, err := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd()); err != nil {
+		t.Fatalf("tick 3: %v", err)
+	}
+	if ys.parkCalls != 2 {
+		t.Fatalf("every ramp is at target — EnsureParked must not be called with no evidence of any need, got %d calls", ys.parkCalls)
 	}
 }
 
@@ -563,5 +590,54 @@ func TestBootstrap_YardSentinel_ColdStartThroughExpansion_BootstrapReleasesForAd
 	// No second buy was ever attempted across the whole run — the one-shot property holds end to end.
 	if ys.buys != 1 {
 		t.Fatalf("exactly one sentinel must ever be bought across the whole COLDSTART→EXPANSION run, got %d", ys.buys)
+	}
+}
+
+// --- sentinelShipTypeNeed: the pure predicate behind the placement fix (sp-ltl75) ---
+//
+// The sentinel's placement must track whichever workstream is CURRENTLY buying, not the type it happened
+// to be bought as. This pins the precedence in isolation, off the SAME counts the heartbeat itself
+// reports (probe_target/probes, hauler_target/haulers) — no Observer, no handler, no acquirer needed.
+func TestSentinelShipTypeNeed_TracksTheActiveWorkstream(t *testing.T) {
+	cases := []struct {
+		name     string
+		obs      Observation
+		wantType string
+		wantOK   bool
+	}{
+		{
+			name:     "probes still short of target: the scouting seed's own asset",
+			obs:      Observation{ProbeCount: probeTarget - 1},
+			wantType: probeShipType,
+			wantOK:   true,
+		},
+		{
+			name:     "probes complete, haulers short of target: the contract-hauler ramp's asset",
+			obs:      Observation{ProbeCount: probeTarget, Haulers: nil},
+			wantType: haulerShipType,
+			wantOK:   true,
+		},
+		{
+			name:     "probes complete, haulers partially ramped: still the hauler ramp's asset",
+			obs:      Observation{ProbeCount: probeTarget, Haulers: make([]HaulerSnapshot, haulerTarget-1)},
+			wantType: haulerShipType,
+			wantOK:   true,
+		},
+		{
+			name:   "both ramps at target: nothing is currently being bought",
+			obs:    Observation{ProbeCount: probeTarget, Haulers: make([]HaulerSnapshot, haulerTarget)},
+			wantOK: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotType, gotOK := sentinelShipTypeNeed(tc.obs)
+			if gotOK != tc.wantOK {
+				t.Fatalf("ok: got %v, want %v", gotOK, tc.wantOK)
+			}
+			if gotOK && gotType != tc.wantType {
+				t.Fatalf("shipType: got %q, want %q", gotType, tc.wantType)
+			}
+		})
 	}
 }

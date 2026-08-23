@@ -493,8 +493,9 @@ func (h *RunBootstrapCoordinatorHandler) buyYardSentinel(ctx context.Context, cm
 	if err != nil || !readable {
 		// Reuse the SAME cold-yard positioning dance every other buy uses (RULINGS #4: this tick still
 		// spends nothing either way). Lending the idle-in-trade frigate mirrors the probe buy's own
-		// last resort.
-		h.awaitReadablePrice(ctx, cmd, obs, res, "", idleTradeFrigate(obs), "yard sentinel", err)
+		// last resort. The sentinel is always bought as a probe — see sentinelShipTypeNeed for what it
+		// later stands watch over.
+		h.awaitReadablePrice(ctx, cmd, obs, res, probeShipType, "", idleTradeFrigate(obs), "yard sentinel", err)
 		return
 	}
 
@@ -532,18 +533,33 @@ func (h *RunBootstrapCoordinatorHandler) buyYardSentinel(ctx context.Context, cm
 	})
 }
 
-// parkYardSentinel drives the sentinel to "docked at the home shipyard" and then stops calling —
-// mirrors redirectConstructionHullsToTrade's empty-selection early-out, so a settled sentinel costs
-// this pass nothing for the rest of COLDSTART/GATE.
-func (h *RunBootstrapCoordinatorHandler) parkYardSentinel(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, obs Observation, res *reconcileResult) {
-	if obs.YardSentinelParked {
-		return // already docked — the terminal, steady state
+// sentinelShipTypeNeed reports the ship type bootstrap is CURRENTLY trying to buy — the SAME precedence
+// actData/actIncome dispatch every COLDSTART tick (scouting seed, then contract-hauler ramp) — so the
+// sentinel can stand watch over a yard that serves it. ok=false means neither has anything left to buy.
+func sentinelShipTypeNeed(obs Observation) (shipType string, ok bool) {
+	if obs.ProbeCount < probeTarget {
+		return probeShipType, true
 	}
+	if len(obs.Haulers) < haulerTarget {
+		return haulerShipType, true
+	}
+	return "", false
+}
+
+// parkYardSentinel drives the sentinel toward a yard serving bootstrap's CURRENT purchasing need,
+// re-evaluated every tick rather than latched on obs.YardSentinelParked (a purely positional fact, not
+// evidence the yard still serves what the ramp needs now). EnsureParked is a cheap no-op once correctly
+// positioned, so re-checking costs nothing and is what lets it redirect when the need shifts.
+func (h *RunBootstrapCoordinatorHandler) parkYardSentinel(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, obs Observation, res *reconcileResult) {
 	logger := common.LoggerFromContext(ctx)
 	if h.yardSentinel == nil || obs.HomeSystem == "" {
 		return
 	}
-	docked, err := h.yardSentinel.EnsureParked(ctx, cmd.PlayerID, obs.HomeSystem, obs.YardSentinelSymbol)
+	shipType, needed := sentinelShipTypeNeed(obs)
+	if !needed {
+		return // every ramp the sentinel could stand watch for is already at target — hold position
+	}
+	docked, err := h.yardSentinel.EnsureParked(ctx, cmd.PlayerID, obs.HomeSystem, shipType, obs.YardSentinelSymbol)
 	if err != nil {
 		logger.Log("WARN", fmt.Sprintf("Bootstrap could not position the yard sentinel %s at the home shipyard (retried next tick): %v", obs.YardSentinelSymbol, err), map[string]interface{}{
 			"action":       "bootstrap_yard_sentinel_position_error",
@@ -556,10 +572,11 @@ func (h *RunBootstrapCoordinatorHandler) parkYardSentinel(ctx context.Context, c
 		return // en route, or waiting on fleet data to sync — the next tick re-derives and retries
 	}
 	res.YardSentinelDocked = true
-	logger.Log("INFO", fmt.Sprintf("Bootstrap yard sentinel %s is docked at the home shipyard — shipyard prices stay warm for the rest of cold start with no earning hull ever diverted", obs.YardSentinelSymbol), map[string]interface{}{
+	logger.Log("INFO", fmt.Sprintf("Bootstrap yard sentinel %s is docked at the home shipyard, standing watch for %s — shipyard prices stay warm with no earning hull ever diverted", obs.YardSentinelSymbol, shipType), map[string]interface{}{
 		"action":       "bootstrap_yard_sentinel_parked",
 		"container_id": cmd.ContainerID,
 		"ship":         obs.YardSentinelSymbol,
+		"ship_type":    shipType,
 	})
 }
 
@@ -711,7 +728,7 @@ func (h *RunBootstrapCoordinatorHandler) acquireProbesToTarget(ctx context.Conte
 	if err != nil || !readable {
 		// Last resort once every hull carries a tag and the free-hull search is empty: lend the frigate
 		// between tours — a no-cargo errand that re-tags nothing.
-		h.awaitReadablePrice(ctx, cmd, obs, res, "", idleTradeFrigate(obs), fmt.Sprintf("probe (%d/%d)", obs.ProbeCount, probeTarget), err)
+		h.awaitReadablePrice(ctx, cmd, obs, res, probeShipType, "", idleTradeFrigate(obs), fmt.Sprintf("probe (%d/%d)", obs.ProbeCount, probeTarget), err)
 		return
 	}
 
@@ -779,10 +796,13 @@ func (h *RunBootstrapCoordinatorHandler) acquireProbesToTarget(ctx context.Conte
 // a hull is what turns the read into evidence — and it is not a way around the price guard (RULINGS
 // #4): this tick still spends nothing either way, whichever branch it takes.
 //
+// shipType is threaded to the scanner so it can prefer/exclude a candidate using the persisted
+// shipyard-inventory record instead of blindly picking the first SHIPYARD waypoint.
+//
 // purchaser names the committed buy ship when the caller has one, so a tick that sends nothing means
 // it is already there or on its way (still positioning); with no purchaser named, nothing sent means
 // the wait simply continues. subject names what the tick is blocked on, for the heartbeat log.
-func (h *RunBootstrapCoordinatorHandler) awaitReadablePrice(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, obs Observation, res *reconcileResult, purchaser, borrow, subject string, priceErr error) {
+func (h *RunBootstrapCoordinatorHandler) awaitReadablePrice(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, obs Observation, res *reconcileResult, shipType, purchaser, borrow, subject string, priceErr error) {
 	logger := common.LoggerFromContext(ctx)
 
 	if h.scanner == nil {
@@ -795,13 +815,23 @@ func (h *RunBootstrapCoordinatorHandler) awaitReadablePrice(ctx context.Context,
 		return
 	}
 
-	dispatched, serr := h.scanner.EnsureShipyardReadable(ctx, cmd.PlayerID, obs.HomeSystem, purchaser, borrow)
+	dispatched, exhausted, serr := h.scanner.EnsureShipyardReadable(ctx, cmd.PlayerID, obs.HomeSystem, shipType, purchaser, borrow)
 	if serr != nil {
 		res.Blocker = "price_unreadable"
 		logger.Log("WARN", fmt.Sprintf("Bootstrap %s price unreadable and sending a hull to the home shipyard failed — failing closed (no buy): %v", subject, serr), map[string]interface{}{
 			"action":       "bootstrap_price_blocked",
 			"container_id": cmd.ContainerID,
 			"blocker":      "price_unreadable",
+		})
+		return
+	}
+	if exhausted {
+		res.Blocker = "shipyard_type_unavailable"
+		logger.Log("WARN", fmt.Sprintf("Bootstrap %s: every known home-system SHIPYARD waypoint has a scan on record and NONE of them sells %s — no candidate left to try (a genuine dead end, not a transient cold yard); this needs a newly-discovered yard or an operator's attention", subject, shipType), map[string]interface{}{
+			"action":       "bootstrap_shipyard_type_unavailable",
+			"container_id": cmd.ContainerID,
+			"blocker":      "shipyard_type_unavailable",
+			"ship_type":    shipType,
 		})
 		return
 	}

@@ -76,15 +76,18 @@ func (f *fakeAcquirer) Buy(ctx context.Context, playerID int, shipType, yard str
 	return BuyResult{ShipSymbol: "PROBE-NEW", Price: f.price}, nil
 }
 
-// fakeScanner is the shipyard-readability port. dispatched/err are what it returns; it records the
-// purchaser each call named ("" = the scanner picks a free hull itself). readyAcq/readyHaul/readyGate
-// (optional) are flipped readable when it "dispatches", modeling the hull arriving at the yard so the
-// NEXT tick's live price read succeeds; world (optional) stands the named purchaser idle at the yard.
+// fakeScanner is the shipyard-readability port. dispatched/exhausted/err are what it returns; it
+// records the shipType and purchaser each call named ("" purchaser = the scanner picks a free hull
+// itself). readyAcq/readyHaul/readyGate (optional) are flipped readable when it "dispatches", modeling
+// the hull arriving at the yard so the NEXT tick's live price read succeeds; world (optional) stands the
+// named purchaser idle at the yard.
 type fakeScanner struct {
 	dispatched  bool
+	exhausted   bool
 	err         error
 	calls       int
 	homeSystems []string
+	shipTypes   []string // the ship type each call was asked to warm a price for (order = call order)
 	purchasers  []string // the hull each call was asked to send (order = call order)
 	borrows     []string // the tagged-but-free hull each call was offered to lend ("" = none)
 	readyAcq    *fakeAcquirer
@@ -93,13 +96,17 @@ type fakeScanner struct {
 	world       *incomeWorld
 }
 
-func (f *fakeScanner) EnsureShipyardReadable(ctx context.Context, playerID int, homeSystem, purchaser, borrow string) (bool, error) {
+func (f *fakeScanner) EnsureShipyardReadable(ctx context.Context, playerID int, homeSystem, shipType, purchaser, borrow string) (bool, bool, error) {
 	f.calls++
 	f.homeSystems = append(f.homeSystems, homeSystem)
+	f.shipTypes = append(f.shipTypes, shipType)
 	f.purchasers = append(f.purchasers, purchaser)
 	f.borrows = append(f.borrows, borrow)
 	if f.err != nil {
-		return false, f.err
+		return false, false, f.err
+	}
+	if f.exhausted {
+		return false, true, nil
 	}
 	if f.dispatched {
 		if f.readyAcq != nil {
@@ -115,7 +122,7 @@ func (f *fakeScanner) EnsureShipyardReadable(ctx context.Context, playerID int, 
 			f.world.purchaserAtYard() // the hull now stands idle at the yard as the purchaser
 		}
 	}
-	return f.dispatched, nil
+	return f.dispatched, false, nil
 }
 
 type fakeMetrics struct {

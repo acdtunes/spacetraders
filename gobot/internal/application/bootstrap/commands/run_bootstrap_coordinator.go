@@ -187,22 +187,25 @@ type HomeTourStarter interface {
 	StartHomeMarketTour(ctx context.Context, playerID int, homeSystem string) (int, error)
 }
 
-// ShipyardScanner makes a cold home shipyard readable. A yard's ship listing is presence-gated —
-// priced only while a hull stands at it — so on a fresh universe nothing has ever visited the home
-// yard, every PriceCheck reads unreadable, and cold start never leaves the ground. Sending a hull is
-// what turns the read into evidence; it does NOT weaken the price guard (RULINGS #4), because the
-// tick that sends a hull still buys nothing. Unset (nil) → the reconciler simply fails closed.
+// ShipyardScanner makes a cold home shipyard readable for a specific ship type. A yard's ship listing
+// is presence-gated — priced only while a hull stands at it — so on a fresh universe nothing has ever
+// visited the home yard, every PriceCheck reads unreadable, and cold start never leaves the ground.
+// Sending a hull is what turns the read into evidence; it does NOT weaken the price guard (RULINGS #4),
+// because the tick that sends a hull still buys nothing. Unset (nil) → the reconciler simply fails closed.
 type ShipyardScanner interface {
-	// EnsureShipyardReadable sends a hull to a home-system shipyard so the next tick's price read
-	// succeeds. purchaser names the hull to send — the committed purchasing frigate, whose dedication
-	// puts it outside the free-hull search; empty means "pick a free hull", which never takes one
-	// another controller owns (RULINGS #7). borrow lends a TAGGED but free hull when that search is
-	// empty, re-tagging nothing and refusing one back on tour. Presence is enough to price; buys dock.
+	// EnsureShipyardReadable sends a hull toward a home-system SHIPYARD waypoint that can plausibly
+	// sell shipType, so the next tick's price read succeeds — weighing the persisted shipyard-inventory
+	// record over the bare candidate list (prefer a confirmed seller, never resend to a confirmed
+	// non-seller). purchaser names the hull to send — the committed purchasing frigate, whose
+	// dedication puts it outside the free-hull search; empty means "pick a free hull", which never
+	// takes one another controller owns (RULINGS #7). borrow lends a TAGGED but free hull when that
+	// search is empty, re-tagging nothing and refusing one back on tour. Presence is enough to price;
+	// buys dock.
 	//
-	// Idempotent and best-effort: dispatched=false is a WAIT, not a failure — a hull already standing
-	// at a yard, one already en route from an earlier tick, no free hull, or no home shipyard known
-	// yet — so calling it on every unreadable tick never re-navigates or thrashes.
-	EnsureShipyardReadable(ctx context.Context, playerID int, homeSystem, purchaser, borrow string) (dispatched bool, err error)
+	// Idempotent and best-effort: dispatched=false is a WAIT — a hull at a VIABLE yard, one en route,
+	// no free hull, or no home shipyard known yet. exhausted is the distinct dead end where every known
+	// candidate is confirmed not to sell shipType.
+	EnsureShipyardReadable(ctx context.Context, playerID int, homeSystem, shipType, purchaser, borrow string) (dispatched bool, exhausted bool, err error)
 }
 
 // MetricsSink records the bootstrap's observation series (spec §Observability). Pure observation:
@@ -280,10 +283,12 @@ type YardSentinelAcquirer interface {
 	// BuyAndReserve buys ONE shipType at yard and reserves the bought hull for the captain with
 	// `reason`. purchaserSymbol mirrors HaulerAcquirer.BuyAndDedicate ("" ⇒ any idle hull buys).
 	BuyAndReserve(ctx context.Context, playerID int, shipType, yard, reason, purchaserSymbol string) (BuyResult, error)
-	// EnsureParked flies the sentinel to the home shipyard and docks it — idempotent, re-derived from
-	// live ship state every call like ShipyardScanner.EnsureShipyardReadable: docked ⇒ no-op; mid-
-	// flight ⇒ wait; at the yard undocked ⇒ dock; otherwise ⇒ navigate.
-	EnsureParked(ctx context.Context, playerID int, homeSystem, shipSymbol string) (docked bool, err error)
+	// EnsureParked flies the sentinel toward a home-system shipyard that can plausibly sell shipType,
+	// idempotent and re-derived every call like ShipyardScanner.EnsureShipyardReadable (shares its
+	// candidate selection): docked at a VIABLE yard ⇒ no-op; mid-flight ⇒ wait; otherwise ⇒ navigate,
+	// then dock. shipType is bootstrap's CURRENT need, re-read every call so a hull docked at a yard
+	// confirmed wrong for it is redirected toward one that is.
+	EnsureParked(ctx context.Context, playerID int, homeSystem, shipType, shipSymbol string) (docked bool, err error)
 	// Release clears the sentinel's captain reservation at the EXPANSION hand-off.
 	Release(ctx context.Context, playerID int, shipSymbol, reason string) error
 }

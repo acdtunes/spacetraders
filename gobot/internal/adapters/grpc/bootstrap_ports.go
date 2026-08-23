@@ -79,10 +79,11 @@ func NewBootstrapCoordinatorHandler(
 	// The cold-start shipyard-readability scanner. On a fresh universe nothing has visited the home
 	// shipyard, so its live (presence-gated) price is unreadable and the buy fails closed forever; this
 	// flies a hull to the yard so the next tick's live PriceCheck reads. Same deps as the acquirer
-	// (mediator navigate + ship/waypoint repos) — builds nothing new.
+	// (mediator navigate + ship/waypoint repos), plus the SAME savedYards instance so it can prefer a
+	// yard confirmed to sell the sought type over one confirmed not to.
 	// The cold-start market tour: bootstrap starts it through the operator's own verb.
 	h.SetHomeTourStarter(&bootstrapHomeTourStarter{server: server})
-	h.SetShipyardScanner(&bootstrapShipyardScanner{med: med, shipRepo: shipRepo, waypointRepo: waypointRepo})
+	h.SetShipyardScanner(&bootstrapShipyardScanner{med: med, shipRepo: shipRepo, waypointRepo: waypointRepo, savedYards: acq.savedYards})
 	// The standing yard-sentinel's whole lifecycle: buy+reserve, positioning, and the
 	// EXPANSION-hand-off release. Same acq instance (asset-agnostic PriceCheck/buyWith), so this is a
 	// thin sibling of the hauler/gate-worker acquirers above — builds nothing new.

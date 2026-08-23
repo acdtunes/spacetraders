@@ -40,17 +40,23 @@ func (a *bootstrapYardSentinelAcquirer) BuyAndReserve(ctx context.Context, playe
 	return bought, nil
 }
 
-// EnsureParked flies the sentinel to the home shipyard and docks it — idempotent and best-effort,
-// re-derived from a live ship read on every call exactly like ShipyardScanner.EnsureShipyardReadable
-// (whose home-yard discovery this reuses, over the SAME waypointTraitLister): already docked at the
-// yard ⇒ no-op (docked=true, no port call); mid-flight ⇒ wait (docked=false); standing at the yard
-// undocked ⇒ dock; otherwise ⇒ navigate (arrives in ORBIT — presence alone is what a shipyard price
-// read needs; docking is this function's OWN next call, once the arrival is observed).
+// EnsureParked flies the sentinel toward a home-system SHIPYARD waypoint that can plausibly sell
+// shipType and docks it there — idempotent and best-effort, re-derived from a live ship read on every
+// call exactly like ShipyardScanner.EnsureShipyardReadable, whose candidate selection this shares via
+// selectCandidateYard: already docked at a VIABLE yard ⇒ no-op; mid-flight ⇒ wait; standing at a viable
+// yard undocked ⇒ dock; otherwise ⇒ navigate (arrives in ORBIT — presence alone is enough to price;
+// docking is this function's own next call, once arrival is observed).
+//
+// shipType is bootstrap's CURRENT purchasing need, re-read every call rather than fixed at the sentinel's
+// own buy: calling this every tick — not just until the first dock — is what lets a hull already docked
+// at a yard confirmed wrong for the current shipType be redirected toward a viable one instead of
+// standing there permanently. The "already docked" no-op above only fires when the current yard is still
+// in the viable set selectCandidateYard returns for the current shipType.
 //
 // docked=false on every non-terminal branch is a WAIT, never a failure, mirroring
-// EnsureShipyardReadable's own dispatched=false contract — a hull already en route from an earlier
-// call must not be re-navigated, and a fresh buy the roster has not synced yet simply retries next tick.
-func (a *bootstrapYardSentinelAcquirer) EnsureParked(ctx context.Context, playerID int, homeSystem, shipSymbol string) (bool, error) {
+// EnsureShipyardReadable's own dispatched=false contract. No known home-system shipyard, or every known
+// candidate confirmed not to sell shipType, both retry a later tick rather than travel blind.
+func (a *bootstrapYardSentinelAcquirer) EnsureParked(ctx context.Context, playerID int, homeSystem, shipType, shipSymbol string) (bool, error) {
 	pid, err := shared.NewPlayerID(playerID)
 	if err != nil {
 		return false, nil
@@ -73,30 +79,20 @@ func (a *bootstrapYardSentinelAcquirer) EnsureParked(ctx context.Context, player
 		return false, nil // an earlier navigate is still under way
 	}
 
-	yardWps, err := a.waypointRepo.ListBySystemWithTrait(ctx, homeSystem, shipyardTrait)
-	if err != nil {
-		return false, nil
-	}
-	dest := ""
-	isYard := map[string]struct{}{}
-	for _, wp := range yardWps {
-		if wp == nil {
-			continue
-		}
-		isYard[wp.Symbol] = struct{}{}
-		if dest == "" {
-			dest = wp.Symbol
-		}
-	}
-	if dest == "" {
+	candidates := yardCandidates(ctx, a.waypointRepo, homeSystem)
+	if len(candidates) == 0 {
 		return false, nil // no known home-system shipyard yet — retry once waypoint data arrives
 	}
-
-	atYard := false
-	if loc := sentinel.CurrentLocation(); loc != nil {
-		_, atYard = isYard[loc.Symbol]
+	dest, isYard, exhausted := selectCandidateYard(ctx, a.savedYards, playerID, shipType, candidates)
+	if exhausted {
+		return false, nil // every known candidate confirmed wrong for shipType — hold, never travel blind
 	}
-	if !atYard {
+
+	atViableYard := false
+	if loc := sentinel.CurrentLocation(); loc != nil {
+		_, atViableYard = isYard[loc.Symbol]
+	}
+	if !atViableYard {
 		if _, nerr := a.med.Send(ctx, &navCmd.NavigateRouteCommand{ShipSymbol: shipSymbol, Destination: dest, PlayerID: pid}); nerr != nil {
 			return false, fmt.Errorf("navigate yard sentinel %s to home shipyard %s: %w", shipSymbol, dest, nerr)
 		}

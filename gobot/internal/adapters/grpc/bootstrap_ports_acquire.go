@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	bootstrapCmd "github.com/andrescamacho/spacetraders-go/internal/application/bootstrap/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	navCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
@@ -340,65 +339,149 @@ func (a *bootstrapHaulerAcquirer) BuyAndDedicate(ctx context.Context, playerID i
 	return bought, nil
 }
 
-// bootstrapShipyardScanner sends a hull to the home yard so a cold shipyard price becomes readable.
+// bootstrapShipyardScanner sends a hull to a home yard so a cold shipyard price becomes readable.
 type bootstrapShipyardScanner struct {
 	med          common.Mediator
 	shipRepo     navigation.ShipRepository
-	waypointRepo *persistence.GormWaypointRepository
+	waypointRepo waypointTraitLister
+	// savedYards is the same shipyard-inventory record bootstrapAcquirer.savedYards reads, so a
+	// candidate confirmed to sell shipType can be preferred over one confirmed not to. Nil-safe:
+	// unset degrades to picking the first candidate.
+	savedYards savedYardReader
 }
 
-// EnsureShipyardReadable sends a hull to a home-system SHIPYARD waypoint so the next tick's live
-// GetShipyard (bootstrapAcquirer.PriceCheck) returns priced listings. The SpaceTraders shipyard ship
-// listing is PRESENCE-GATED — empty unless a hull is at the waypoint — so on a fresh universe the price
-// is unreadable until something visits the yard. The trip reuses NavigateRouteCommand, the same
-// high-level route+refuel path BuyAndPlace uses; presence (in orbit) is enough for the listing to read,
-// and the buy path docks.
+// EnsureShipyardReadable sends a hull toward a home-system SHIPYARD waypoint that can plausibly sell
+// shipType, so the next tick's live GetShipyard (bootstrapAcquirer.PriceCheck) returns a priced listing.
+// The listing is PRESENCE-GATED, so on a fresh universe the price stays unreadable until something
+// visits a yard that sells shipType. Reuses NavigateRouteCommand; presence alone is enough to price.
 //
-// Idempotent + best-effort (returns dispatched=false, nil rather than churn): a hull already standing at
-// a yard means the price reads next tick; a hull already IN_TRANSIT is an earlier dispatch still under
-// way; and no free hull or no known home shipyard just retries a later tick.
-//
-// It NEVER buys and NEVER weakens the price guard — the reconciler still spends nothing while unreadable.
-func (s *bootstrapShipyardScanner) EnsureShipyardReadable(ctx context.Context, playerID int, homeSystem, purchaser, borrow string) (bool, error) {
+// selectCandidateYard picks which candidate. Idempotent + best-effort: a hull already standing at a
+// VIABLE yard or already IN_TRANSIT means nothing to do this tick; exhausted reports every known
+// candidate confirmed not to sell shipType. Never buys, never weakens the price guard.
+func (s *bootstrapShipyardScanner) EnsureShipyardReadable(ctx context.Context, playerID int, homeSystem, shipType, purchaser, borrow string) (bool, bool, error) {
 	if homeSystem == "" {
-		return false, nil
+		return false, false, nil
 	}
 	pid, err := shared.NewPlayerID(playerID)
 	if err != nil {
-		return false, nil
+		return false, false, nil
 	}
-	yardWps, werr := s.waypointRepo.ListBySystemWithTrait(ctx, homeSystem, shipyardTrait)
-	if werr != nil {
-		return false, nil
+	candidates := yardCandidates(ctx, s.waypointRepo, homeSystem)
+	if len(candidates) == 0 {
+		return false, false, nil // no known home-system shipyard yet — retry once waypoint data arrives
 	}
-	isYard := map[string]struct{}{}
-	dest := ""
-	for _, wp := range yardWps {
-		if wp == nil {
-			continue
-		}
-		isYard[wp.Symbol] = struct{}{}
-		if dest == "" {
-			dest = wp.Symbol
-		}
-	}
-	if dest == "" {
-		return false, nil // no known home-system shipyard yet — retry once waypoint data arrives
+
+	dest, isYard, exhausted := selectCandidateYard(ctx, s.savedYards, playerID, shipType, candidates)
+	if exhausted {
+		return false, true, nil
 	}
 
 	ships, serr := s.shipRepo.FindAllByPlayer(ctx, pid)
 	if serr != nil {
-		return false, nil
+		return false, false, nil
 	}
 	send, ok := hullToSend(ships, isYard, purchaser, borrow)
 	if !ok {
-		return false, nil
+		return false, false, nil
 	}
 
 	if _, nerr := s.med.Send(ctx, &navCmd.NavigateRouteCommand{ShipSymbol: send, Destination: dest, PlayerID: pid}); nerr != nil {
-		return false, fmt.Errorf("navigate %s to home shipyard %s: %w", send, dest, nerr)
+		return false, false, fmt.Errorf("navigate %s to home shipyard %s: %w", send, dest, nerr)
 	}
-	return true, nil
+	return true, false, nil
+}
+
+// yardCandidates lists a system's SHIPYARD-trait waypoint symbols, shared by EnsureShipyardReadable and
+// the yard sentinel's EnsureParked so both agree on the candidate set. A read error swallows to nil,
+// which every caller already treats as "retry once waypoint data arrives."
+func yardCandidates(ctx context.Context, lister waypointTraitLister, homeSystem string) []string {
+	yardWps, err := lister.ListBySystemWithTrait(ctx, homeSystem, shipyardTrait)
+	if err != nil {
+		return nil
+	}
+	var candidates []string
+	for _, wp := range yardWps {
+		if wp == nil {
+			continue
+		}
+		candidates = append(candidates, wp.Symbol)
+	}
+	return candidates
+}
+
+// selectCandidateYard picks which SHIPYARD-trait waypoint to warm/stand at for shipType, using the
+// persisted shipyard-inventory record: prefer a candidate CONFIRMED to sell it (cheapest first, since
+// ListSavedYards orders that way), else one never scanned yet (send a hull to discover it), else report
+// exhausted when every candidate is confirmed wrong. Shared by EnsureShipyardReadable and the yard
+// sentinel's EnsureParked so both use one implementation.
+//
+// The returned isYard set EXCLUDES a candidate confirmed not to sell shipType, so a hull idling there is
+// redirected toward a viable one instead of being read as already in position. Nil-safe: no inventory
+// reader, or a read error, degrades to the first candidate.
+func selectCandidateYard(ctx context.Context, saved savedYardReader, playerID int, shipType string, candidates []string) (string, map[string]struct{}, bool) {
+	allCandidates := make(map[string]struct{}, len(candidates))
+	for _, wp := range candidates {
+		allCandidates[wp] = struct{}{}
+	}
+
+	if saved == nil {
+		return candidates[0], allCandidates, false
+	}
+	rows, rerr := saved.ListSavedYards(ctx, playerID, nil)
+	if rerr != nil {
+		common.LoggerFromContext(ctx).Log("WARN", fmt.Sprintf("Bootstrap could not read the shipyard-inventory record while choosing a %s candidate yard — proceeding on the bare candidate list alone: %v", shipType, rerr), map[string]interface{}{
+			"action":    "bootstrap_shipyard_inventory_read_error",
+			"ship_type": shipType,
+		})
+		return candidates[0], allCandidates, false
+	}
+
+	scanned := map[string]struct{}{}
+	sells := map[string]struct{}{}
+	for _, row := range rows {
+		if _, isCandidate := allCandidates[row.WaypointSymbol]; !isCandidate {
+			continue
+		}
+		scanned[row.WaypointSymbol] = struct{}{}
+		if row.ShipType == shipType {
+			sells[row.WaypointSymbol] = struct{}{}
+		}
+	}
+
+	dest := "" // cheapest confirmed seller, per ListSavedYards' own ordering
+	for _, row := range rows {
+		if row.ShipType != shipType {
+			continue
+		}
+		if _, ok := sells[row.WaypointSymbol]; !ok {
+			continue
+		}
+		dest = row.WaypointSymbol
+		break
+	}
+
+	viable := make(map[string]struct{}, len(candidates))
+	var unscanned []string
+	for _, wp := range candidates {
+		_, sold := sells[wp]
+		_, seen := scanned[wp]
+		switch {
+		case sold:
+			viable[wp] = struct{}{}
+		case seen: // confirmed wrong — excluded
+		default:
+			unscanned = append(unscanned, wp)
+			viable[wp] = struct{}{}
+		}
+	}
+
+	if dest != "" {
+		return dest, viable, false
+	}
+	if len(unscanned) > 0 {
+		return unscanned[0], viable, false
+	}
+	return "", nil, true // every candidate scanned, none sells shipType
 }
 
 // hullToSend picks the hull to send to the yard, or reports that nothing should move this tick.

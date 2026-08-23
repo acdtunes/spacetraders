@@ -91,7 +91,7 @@ type probeSeqScanner struct {
 	sent       []string
 }
 
-func (s *probeSeqScanner) EnsureShipyardReadable(ctx context.Context, playerID int, homeSystem, purchaser, borrow string) (bool, error) {
+func (s *probeSeqScanner) EnsureShipyardReadable(ctx context.Context, playerID int, homeSystem, shipType, purchaser, borrow string) (bool, bool, error) {
 	send := ""
 	switch {
 	case s.world.frigateIdle && s.world.frigateFleet == "":
@@ -100,12 +100,12 @@ func (s *probeSeqScanner) EnsureShipyardReadable(ctx context.Context, playerID i
 		send = borrow
 	}
 	if send == "" {
-		return false, nil
+		return false, false, nil
 	}
 	s.dispatches++
 	s.sent = append(s.sent, send)
 	s.world.enRouteToYard = true
-	return true, nil
+	return true, false, nil
 }
 
 type probeSeqRetirer struct {
