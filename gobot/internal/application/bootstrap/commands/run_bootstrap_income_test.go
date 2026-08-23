@@ -2,9 +2,12 @@ package commands
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
+
+	domainContract "github.com/andrescamacho/spacetraders-go/internal/domain/contract"
 )
 
 // --- contract fakes (black-box: the reconciler is driven through its ports only) ---
@@ -95,10 +98,15 @@ func (f *fakeHaulerAcquirer) BuyAndPlace(ctx context.Context, playerID int, ship
 	f.buys++
 	f.placedOn = append(f.placedOn, hubWaypoint)
 	f.purchasers = append(f.purchasers, purchaserSymbol)
+	// A distinct, incrementing symbol per buy — mirroring how real ship symbols increment on every
+	// purchase (domainContract.AssignedSlot's own documented append case). Load-bearing since sp-94quv:
+	// placement ownership is now decided by SYMBOL, so a fake that gave every bought hull the same
+	// literal symbol would collapse the roster and silently re-launder the very bug this fixes.
+	symbol := fmt.Sprintf("HAULER-%d", f.buys)
 	if f.world != nil {
-		f.world.addHauler(hubWaypoint)
+		f.world.addHauler(symbol, hubWaypoint)
 	}
-	return BuyResult{ShipSymbol: "HAULER-NEW", Price: f.price}, nil
+	return BuyResult{ShipSymbol: symbol, Price: f.price}, nil
 }
 
 // BuyAndDedicate is the trade-seed buy: it records the fleet tag + purchaser it was told to use and
@@ -288,10 +296,10 @@ func (w *incomeWorld) startBatch() {
 	w.batchRunning = true
 }
 
-func (w *incomeWorld) addHauler(hub string) {
+func (w *incomeWorld) addHauler(symbol, hub string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.haulers = append(w.haulers, HaulerSnapshot{Symbol: "HAULER-NEW", Waypoint: hub})
+	w.haulers = append(w.haulers, HaulerSnapshot{Symbol: symbol, Waypoint: hub})
 }
 
 // addTradeHull models the trade-seed: the bought hull is dedicated 'trade', so the observable
@@ -633,6 +641,61 @@ func TestBootstrap_Income_PlacementSkipsServedSlot(t *testing.T) {
 	}
 }
 
+// --- sp-94quv: placement ownership must track domainContract.AssignedSlot — the SAME deterministic,
+// roster-based ownership the contract-fleet coordinator's between-legs homing already uses — never a
+// hauler's CURRENT LIVE POSITION. Contract haulers spend nearly all their time away from their home slot
+// (sourcing/delivering IS the job), so a live-position proxy for "is this slot taken" is wrong on almost
+// every call: it reads an away incumbent's owned slot as free and piles the new hull on top of it.
+//
+// THE LIVE INCIDENT (era torwind-2026-08-23, player 9, system X1-MG48): TORWIND-7's assigned slot
+// (X1-MG48-J61, stable all night per AssignedSlot) was mid-contract-cycle — nowhere near J61 — when
+// bootstrap bought TORWIND-9. firstUnservedSlot saw TORWIND-7's live Waypoint didn't equal J61, called
+// the slot "unserved", and placed TORWIND-9 there — a 313730cr hull wasted on redundant coverage instead
+// of the genuinely free slot.
+
+func TestFirstUnservedSlot_IgnoresLivePosition_UsesAssignedSlotOwnership(t *testing.T) {
+	// Placement priority order — deliberately not symbol- or alphabetically-sorted, mirroring the
+	// era-invariant anchor-first shape AssignedSlot's own tests use.
+	slots := []string{"X1-MG48-H54", "X1-MG48-J61", "X1-MG48-K20"}
+
+	// Fixture invariant: by AssignedSlot's own symbol-sorted zip, TORWIND-6 and TORWIND-7 own H54 and
+	// J61 respectively — fixed by SYMBOL, regardless of where either hull is standing right now.
+	existing := []string{"TORWIND-6", "TORWIND-7"}
+	if slot, ok := domainContract.AssignedSlot("TORWIND-6", existing, slots); !ok || slot != "X1-MG48-H54" {
+		t.Fatalf("fixture invariant broken: TORWIND-6 must own X1-MG48-H54 per AssignedSlot, got %q,%v", slot, ok)
+	}
+	if slot, ok := domainContract.AssignedSlot("TORWIND-7", existing, slots); !ok || slot != "X1-MG48-J61" {
+		t.Fatalf("fixture invariant broken: TORWIND-7 must own X1-MG48-J61 per AssignedSlot, got %q,%v", slot, ok)
+	}
+
+	haulers := []HaulerSnapshot{
+		{Symbol: "TORWIND-6", Waypoint: "X1-MG48-H54"}, // idle AT its own slot
+		{Symbol: "TORWIND-7", Waypoint: "X1-MG48-B12"}, // mid-contract-cycle, AWAY from its owned slot
+	}
+
+	got := firstUnservedSlot(slots, haulers, 4)
+	if got == "X1-MG48-J61" {
+		t.Fatalf("firstUnservedSlot placed the new hull on TORWIND-7's OWNED slot %s merely because TORWIND-7 is away from it right now — this is the sp-94quv duplicate-slot bug (the live TORWIND-9 incident)", got)
+	}
+	if got != "X1-MG48-K20" {
+		t.Fatalf("firstUnservedSlot = %q, want X1-MG48-K20 — the genuinely next-unclaimed slot, not one already owned by an away incumbent", got)
+	}
+}
+
+// A fleet already AT the placement cap must report "no slot" — matching AssignedSlot's ok=false surplus
+// case (sp-94quv acceptance #2) — never defaulting to some slot anyway just because both incumbents
+// happen to be away from their own slots at read time.
+func TestFirstUnservedSlot_FullFleetReportsNoSlot_MatchingAssignedSlotSurplus(t *testing.T) {
+	slots := []string{"X1-A", "X1-B"}
+	haulers := []HaulerSnapshot{
+		{Symbol: "H-1", Waypoint: "X1-FAR-AWAY-1"}, // both away from their own owned slots
+		{Symbol: "H-2", Waypoint: "X1-FAR-AWAY-2"},
+	}
+	if got := firstUnservedSlot(slots, haulers, 4); got != "" {
+		t.Fatalf("firstUnservedSlot = %q, want \"\" — H-1 and H-2 already own the only 2 known slots per AssignedSlot, so a 3rd hull is surplus over the delivery knee", got)
+	}
+}
+
 // --- the fixed hauler target is met → no buy ---
 
 func TestBootstrap_Income_NoBuyWhenTargetMet(t *testing.T) {
@@ -777,9 +840,13 @@ func TestBootstrap_IncomeAcceptance_TradesLaunchesRampsHaulers(t *testing.T) {
 }
 
 // --- REGRESSION: the ramp's hauler target is the FIXED Phase-1 constant, NOT the size of whatever set the
-// tick happened to sense. A sparse read (here: two resolved parks, with both haulers out on deliveries
-// rather than sitting on them) must not shrink the fleet the ramp is climbing to — sizing the target from
-// the sensed set stalls the ramp at 2 forever, which is the stall this pins against. ---
+// tick happened to sense. A sparse read (here: two resolved parks, already fully OWNED by the two existing
+// haulers per AssignedSlot — sp-94quv: ownership is symbol-based, so both correctly count as served even
+// though both are reported away delivering, not sitting on them) must not be mistaken for "nothing to do":
+// the needed-gate (len(Haulers) < haulerTarget) still fires on the FIXED target and the buy act is
+// ATTEMPTED — which then correctly finds no room among the sensed set and fails closed (no_placement_slot),
+// rather than either silently skipping the tick as if the sensed 2 were the real target (the stall this
+// originally pinned against) or duplicating one of the two already-owned slots (the sp-94quv bug). ---
 
 func TestBootstrap_Income_HaulerTargetIsFixed_NotTheSensedSetSize(t *testing.T) {
 	obs := incomeObs()
@@ -787,11 +854,22 @@ func TestBootstrap_Income_HaulerTargetIsFixed_NotTheSensedSetSize(t *testing.T) 
 	obs.TradeHullCount = 1 // post-seed: this is a contract buy, not the trade seed
 	obs.ContractPlacementSlots = []string{"X1-HUBA", "X1-HUBB"}
 	obs.Haulers = []HaulerSnapshot{{Symbol: "H1", Waypoint: "X1-SINK"}, {Symbol: "H2", Waypoint: "X1-SINK"}}
+	// Fixture invariant: H1/H2 genuinely own the two sensed slots per AssignedSlot, so there is no
+	// free slot among them for a 3rd hull regardless of the fixed target being larger.
+	if slot, ok := domainContract.AssignedSlot("H1", []string{"H1", "H2"}, obs.ContractPlacementSlots); !ok || slot != "X1-HUBA" {
+		t.Fatalf("fixture invariant broken: H1 must own X1-HUBA per AssignedSlot, got %q,%v", slot, ok)
+	}
+	if slot, ok := domainContract.AssignedSlot("H2", []string{"H1", "H2"}, obs.ContractPlacementSlots); !ok || slot != "X1-HUBB" {
+		t.Fatalf("fixture invariant broken: H2 must own X1-HUBB per AssignedSlot, got %q,%v", slot, ok)
+	}
 	acq := &fakeHaulerAcquirer{price: 100000, yard: "Y", readable: true}
 	h := newIncomeHandler(obs, &fakeRetirer{}, acq, &fakeContractRunner{})
 	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
-	if acq.buys != 1 || res.HaulersBought != 1 {
-		t.Fatalf("2 haulers against the fixed target of %d must still buy (sensed slots=%d): buys=%d bought=%d blocker=%q",
-			haulerTarget, len(obs.ContractPlacementSlots), acq.buys, res.HaulersBought, res.Blocker)
+	if res.Blocker != "no_placement_slot" {
+		t.Fatalf("2 haulers against the fixed target of %d (sensed slots=%d, both already owned): expected the buy act to be ATTEMPTED (needed-gate on the FIXED target) and fail closed on no_placement_slot, got blocker=%q buys=%d",
+			haulerTarget, len(obs.ContractPlacementSlots), res.Blocker, acq.buys)
+	}
+	if acq.buys != 0 {
+		t.Fatalf("no genuinely free slot among the sensed set: must NOT buy, got %d", acq.buys)
 	}
 }

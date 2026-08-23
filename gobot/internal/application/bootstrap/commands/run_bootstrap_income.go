@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	domainContract "github.com/andrescamacho/spacetraders-go/internal/domain/contract"
 )
 
 // tradeFleetTag is the dedicated-fleet tag the standing trade-fleet coordinator selects on (matches the
@@ -1057,23 +1058,33 @@ func (h *RunBootstrapCoordinatorHandler) awaitHaulerPrice(ctx context.Context, c
 }
 
 // firstUnservedSlot returns the first fixed delivery slot (within the ramp's cap) that no existing
-// hauler is placed on, or "" when every capped slot is served. A slot is "served" when some hauler's
-// Waypoint is on it (idle at, or heading to) — so a hauler bought last tick and still en route keeps
-// its slot from being re-selected, which is what spreads the ramp's hulls one per park. The count
-// guard caps total buys regardless, so a placement can never overshoot the hauler target.
+// hauler OWNS, or "" when every capped slot is owned. Ownership matches domainContract.AssignedSlot
+// against the existing roster (sorted symbols zipped to the priority-ordered slot list), never a
+// hauler's current live position — which a working hauler is normally away from. The not-yet-bought
+// hull has no symbol yet to ask AssignedSlot about directly, but its zip always gives an existing
+// N-hauler roster exactly its first N slots in priority order, so the first slot none of them own is
+// that same answer.
 func firstUnservedSlot(slots []string, haulers []HaulerSnapshot, slotCap int) string {
-	served := make(map[string]struct{}, len(haulers))
+	existing := make([]string, 0, len(haulers))
 	for _, hl := range haulers {
-		if hl.Waypoint != "" {
-			served[hl.Waypoint] = struct{}{}
+		if hl.Symbol != "" {
+			existing = append(existing, hl.Symbol)
 		}
 	}
+
+	owned := make(map[string]struct{}, len(existing))
+	for _, symbol := range existing {
+		if slot, ok := domainContract.AssignedSlot(symbol, existing, slots); ok {
+			owned[slot] = struct{}{}
+		}
+	}
+
 	limit := len(slots)
 	if limit > slotCap {
 		limit = slotCap
 	}
 	for i := 0; i < limit; i++ {
-		if _, ok := served[slots[i]]; !ok {
+		if _, ok := owned[slots[i]]; !ok {
 			return slots[i]
 		}
 	}
