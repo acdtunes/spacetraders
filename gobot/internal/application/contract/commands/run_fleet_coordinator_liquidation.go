@@ -12,32 +12,32 @@ import (
 	"github.com/andrescamacho/spacetraders-go/pkg/utils"
 )
 
-// liquidationDispatchCooldown is how long a hull stays off the auto-liquidation
-// re-dispatch list after one attempt. It bounds a spawn-storm on a genuinely
-// stuck hull — no in-system market bids its cargo and jettison is off, so each
-// pass would otherwise re-park then re-dispatch it. A sellable hull clears on
-// the first attempt and never comes back to the parked list, so the cooldown
-// only governs the unsellable-hold tail; the hull is retried after it, since a
+// liquidationDispatchCooldown bounds how often a hull CONFIRMED still holding
+// unrelated cargo gets a new cargo_liquidation worker — never how often its hold
+// is re-read. It bounds a spawn-storm on a genuinely stuck hull; a sellable hull
+// clears on the first attempt and never returns to the parked list, so the
+// cooldown only governs the unsellable-hold tail, retried after it since a
 // market may appear (scouts scan) — a deferral, never a permanent skip
 // (RULINGS #1).
 const liquidationDispatchCooldown = 5 * time.Minute
 
 // reconcileParkedHulls settles every hull FilterUnrelatedCargo parked for unrelated
 // cargo against ONE hold read taken HERE, at dispatch, never the older fleet-snapshot
-// read the parking decision was made on. A hull whose hold is CLEAR is READMITTED
-// (first return) to the candidate pool for THIS pass — its exclusion premise is void,
-// and deferring that correction to the next pass is what once flew a 766-unit ferry
-// past a hull docked on the source market. A hull whose strand is confirmed stays
-// parked (second return) behind the NO-CARGO-DUMP guard and gets a one-shot
-// cargo_liquidation worker, so it re-enters candidacy later rather than never.
+// read the parking decision was made on, and runs that read UNCONDITIONALLY on every
+// pass for every parked hull. A hull whose hold is CLEAR is READMITTED (first return)
+// to the candidate pool for THIS pass — its exclusion premise is void, and deferring
+// that correction to the next pass is what once flew a 766-unit ferry past a hull
+// docked on the source market. A hull whose strand is confirmed stays parked (second
+// return) behind the NO-CARGO-DUMP guard and, cooldown permitting, gets a one-shot
+// cargo_liquidation worker so it re-enters candidacy later rather than never.
 //
 // The liquidation half is STANDING, gated by the AutoLiquidationDisabled escape hatch
-// and a per-hull cooldown so an unsellable hold never storms. RE-ADMISSION IGNORES
-// THAT ESCAPE HATCH: opting out of liquidation is a choice about spawning workers,
-// never a licence to select over a pool already known to be wrong. It does honor the
-// cooldown, which is what stops an unverifiable hull being re-read every pass — an
-// unexamined hull keeps its parking (fail closed, RULINGS #1). A spawn failure is
-// logged and left on cooldown so a persistent failure cannot spin.
+// and a per-hull cooldown so an unsellable hold never storms — both gate only the
+// spawn, never the read above. RE-ADMISSION IGNORES THE ESCAPE HATCH TOO: opting out
+// of liquidation is a choice about spawning workers, never a licence to select over a
+// pool already known to be wrong. An unverifiable hold leaves the hull parked without
+// arming the cooldown, fail closed (RULINGS #1); a spawn failure IS left on cooldown
+// so a persistent failure cannot spin.
 func (h *RunFleetCoordinatorHandler) reconcileParkedHulls(
 	ctx context.Context,
 	cmd *RunFleetCoordinatorCommand,
@@ -51,16 +51,9 @@ func (h *RunFleetCoordinatorHandler) reconcileParkedHulls(
 	logger := common.LoggerFromContext(ctx)
 	now := h.clock.Now()
 	for _, shipSymbol := range parkedShips {
-		if until, ok := cooldown[shipSymbol]; ok && now.Before(until) {
-			// Unexamined this pass, so the parking premise stands.
-			stillParked = append(stillParked, shipSymbol)
-			continue
-		}
-		cooldown[shipSymbol] = now.Add(liquidationDispatchCooldown)
-
 		ship, err := h.verifyParkedHold(ctx, cmd, shipSymbol)
 		if err != nil {
-			logger.Log("WARNING", fmt.Sprintf("Hold of parked hull %s is unverifiable (%v) - it stays parked and is retried after cooldown", shipSymbol, err), map[string]interface{}{
+			logger.Log("WARNING", fmt.Sprintf("Hold of parked hull %s is unverifiable (%v) - it stays parked and is retried next pass", shipSymbol, err), map[string]interface{}{
 				"action":      "parked_hold_unverifiable",
 				"ship_symbol": shipSymbol,
 			})
@@ -81,6 +74,11 @@ func (h *RunFleetCoordinatorHandler) reconcileParkedHulls(
 		if cmd.AutoLiquidationDisabled {
 			continue
 		}
+		if until, ok := cooldown[shipSymbol]; ok && now.Before(until) {
+			continue // already dispatched for this confirmed strand within the window
+		}
+		cooldown[shipSymbol] = now.Add(liquidationDispatchCooldown)
+
 		workerID, err := h.spawnLiquidationWorker(ctx, cmd, ship)
 		if err != nil {
 			logger.Log("WARNING", fmt.Sprintf("Auto-liquidation dispatch for parked hull %s failed: %v - will retry after cooldown", shipSymbol, err), map[string]interface{}{

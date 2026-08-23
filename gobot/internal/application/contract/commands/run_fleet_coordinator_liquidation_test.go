@@ -412,9 +412,12 @@ func TestFleetCoordinator_LiveReadFails_PersistedHoldClear_NoSpawn(t *testing.T)
 	require.Empty(t, stillParked)
 }
 
-// Fail-closed still applies where it belongs: BOTH reads unavailable and nothing is claimed. The
-// cooldown bounds the retry, so a persistent double failure cannot spin.
-func TestFleetCoordinator_BothReadsFail_NoSpawn_CooldownBoundsRetry(t *testing.T) {
+// Fail-closed still applies where it belongs: BOTH reads unavailable and nothing is claimed.
+// sp-5koz4: the read itself is retried on EVERY pass with no cooldown gate — a hull whose
+// state can't be read is not left waiting out liquidationDispatchCooldown before its next
+// chance to self-clear, because the cooldown only ever bounds a SPAWN, and an unverifiable
+// hold never reaches that decision to arm it.
+func TestFleetCoordinator_BothReadsFail_NoSpawn_RetriesReadEveryPass(t *testing.T) {
 	repo := &liquidationE2EShipRepo{
 		ship:    ladenHull(t, "TORWIND-9", "FABRICS", "X1-KA42-A1", 54),
 		syncErr: errors.New("ship fetch failed: 503"),
@@ -432,14 +435,61 @@ func TestFleetCoordinator_BothReadsFail_NoSpawn_CooldownBoundsRetry(t *testing.T
 	require.Equal(t, 1, repo.syncCalls)
 	require.Empty(t, readmitted, "an unverifiable hold is never re-admitted to candidacy — fail closed")
 	require.Equal(t, []string{"TORWIND-9"}, stillParked)
+	require.Empty(t, cooldown, "an unverifiable hold never arms the spawn cooldown - it never reaches a spawn decision")
 
+	// Immediately-following pass, no clock advance: nothing gates the read, so it is
+	// attempted again rather than deferred behind a cooldown it never armed.
 	readmitted, stillParked = handler.reconcileParkedHulls(context.Background(), cmd, []string{"TORWIND-9"}, "IRON_ORE", cooldown)
-	require.Equal(t, 1, repo.syncCalls, "a hull within its cooldown is not re-verified — a persistent failure cannot spin")
-	require.Empty(t, readmitted, "and an unexamined hull keeps its parking rather than being guessed back into the pool")
+	require.Equal(t, 2, repo.syncCalls, "the read is retried every pass — no cooldown ever gated it")
+	require.Empty(t, daemonClient.persistedKinds, "still both reads failing, still nothing spawned")
+	require.Empty(t, readmitted, "and an unverifiable hold keeps its parking rather than being guessed back into the pool")
 	require.Equal(t, []string{"TORWIND-9"}, stillParked)
 
-	clock.Advance(liquidationDispatchCooldown + time.Minute)
 	repo.syncErr, repo.findErr = nil, nil
 	handler.reconcileParkedHulls(context.Background(), cmd, []string{"TORWIND-9"}, "IRON_ORE", cooldown)
-	require.Len(t, daemonClient.persistedKinds, 1, "once verification recovers the confirmed strand is dispatched — deferred, never skipped")
+	require.Len(t, daemonClient.persistedKinds, 1, "the instant verification recovers the confirmed strand is dispatched — no cooldown wait, since none was ever armed for a hull never before confirmed stuck")
+}
+
+// REGRESSION (sp-5koz4): a hull examined and READMITTED for one delivery must still get a
+// fresh, unconditional cargo-clear check the next time it is parked for a DIFFERENT
+// delivery, even while still inside the first examination's liquidation-dispatch cooldown.
+// A contract hauler routinely negotiates its next contract on delivering the current one, so
+// the same hull can be parked twice for two unrelated reasons within minutes. The cooldown
+// exists to bound re-SPAWNING a worker on a hull confirmed still stuck - it must never gate
+// the cheap, side-effect-free read that decides readmission, or the closest eligible hull can
+// lose sourcing to a farther one on a stale administrative timer that has nothing to do with
+// its current, unrelated parking.
+func TestFleetCoordinator_ReadmittedHull_LaterParkedForDifferentDelivery_StillGetsFreshCheck(t *testing.T) {
+	repo := &liquidationE2EShipRepo{
+		ship:       ladenHull(t, "TORWIND-6", "FABRICS", "X1-KA42-A1", 40),
+		serverShip: ladenHull(t, "TORWIND-6", "FABRICS", "X1-KA42-A1", 0),
+	}
+	daemonClient := &liquidationCapturingDaemonClient{}
+	clock := &shared.MockClock{}
+	handler := newLiquidationDispatchHandler(repo, daemonClient, clock)
+	cooldown := map[string]time.Time{}
+	cmd := liquidationCommand(false, 0)
+
+	// PASS 1 - parked for a FABRICS delivery's handoff; the live read shows the hold is
+	// already clear, so the hull is readmitted and can win sourcing on distance.
+	readmitted, stillParked := handler.reconcileParkedHulls(context.Background(), cmd, []string{"TORWIND-6"}, "FABRICS", cooldown)
+	require.Equal(t, []string{"TORWIND-6"}, readmitted, "precondition: pass 1 readmits the cleared hull")
+	require.Empty(t, stillParked)
+	require.Empty(t, daemonClient.persistedKinds, "nothing spawned - the hull was never confirmed stuck")
+
+	// ~4 minutes later (well inside liquidationDispatchCooldown), TORWIND-6 delivered
+	// FABRICS and immediately negotiated a different contract needing IRON_ORE, picking up
+	// an unrelated COPPER_ORE lot along the way and getting parked again for THAT. The hold
+	// is genuinely clear again by the time this pass runs.
+	clock.Advance(4 * time.Minute)
+	repo.ship = ladenHull(t, "TORWIND-6", "COPPER_ORE", "X1-KA42-A1", 12)
+	repo.serverShip = ladenHull(t, "TORWIND-6", "COPPER_ORE", "X1-KA42-A1", 0)
+
+	// PASS 2 - a DIFFERENT delivery's parking, still inside pass 1's cooldown window. The
+	// fresh read must run regardless and readmit the hull; it must not be skipped on a
+	// cooldown armed by an unrelated earlier examination.
+	readmitted, stillParked = handler.reconcileParkedHulls(context.Background(), cmd, []string{"TORWIND-6"}, "IRON_ORE", cooldown)
+	require.Equal(t, []string{"TORWIND-6"}, readmitted, "a cooldown armed by delivery A's examination must not suppress delivery B's fresh cargo-clear check")
+	require.Empty(t, stillParked, "the hull must not be left parked on an unexamined premise")
+	require.Empty(t, daemonClient.persistedKinds, "still nothing spawned - the hull was clear both times")
 }
