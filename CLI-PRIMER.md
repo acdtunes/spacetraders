@@ -232,7 +232,7 @@ That is exactly what makes an out-of-date table here dangerous.
 | `database`, `routing`, `daemon`, `metrics` | infra (pools, timeouts, rate-limit, health) | **BOOT** — process restart |
 | `captain` | watchkeeper supervisor (separate process) | **BOOT** — watchkeeper restart (see below) |
 | `contract` | contract fleet: `idle_arb.*`, `auto_liquidation.*`, `pre_positioning.*`, `min_home_contract_workers` | **B** (idle-arb + auto-liquidation halves) |
-| `absorption` | idle-hull absorption/harvest (`executed_hard_cap`, `shadow_floor_fraction`, `planned_ttl_slack`) | A/B |
+| `absorption` | idle-hull absorption/harvest (`executed_hard_cap`, `shadow_floor_fraction`, `planned_ttl_slack`), plus `sink_depth_scaling.*` — the depth-conditioned crush prior, **BOOT**: `enabled` is the arm (ships off = uniform prior), `thin_listings`/`min_crush_scale` are the refit shape, and `min_crush_scale: 1.0` reverts to the uniform prior with no rebuild | A/B |
 | `trade_fleet` | standing trade fleet — biggest credit mover (`enabled`, `working_capital_reserve`, `max_spend`, `min_margin`, `max_hops`, `cooldown_seconds`, `max_concurrent_tours`, mass-park knobs) | **B** |
 | `trade_impact` | market-impact decay model (`buy_impact`, `sell_impact`, `cooldown_tau_minutes`) | B |
 | `trading` | trade-ranker activity-conditioned listing-freshness caps (`ranker_age_cap_minutes`, `trade_saturation.*`) | BOOT |

@@ -37,6 +37,14 @@ type circuitWiring struct {
 	chartGateOnArrival bool
 }
 
+// armAbsorptionSinkDepth hands the SHARED absorption ledger its depth-conditioned crush
+// prior. Called at every handoff of that one instance — idempotent, but the rule is then
+// structural rather than a fact about boot order. A disabled policy (the default) leaves
+// the uniform prior in place.
+func (w circuitWiring) armAbsorptionSinkDepth() {
+	w.absorption.SetSinkDepthScaling(w.cfg.Absorption.ResolvedSinkDepthScaling())
+}
+
 func (w circuitWiring) configureTradeRouteCoordinator(h *tradeRouteCmd.RunTradeRouteCoordinatorHandler) {
 	h.SetGateGraph(w.gateGraph)
 	// The working-capital spend floor reads treasury through the shared ledger-backed
@@ -48,6 +56,7 @@ func (w circuitWiring) configureTradeRouteCoordinator(h *tradeRouteCmd.RunTradeR
 	h.SetEventSubscriber(w.shipEventBus)
 	// Read-only absorption consult: scanLanes excludes a lane whose sell side is
 	// shadowed or whose reserved depth can't absorb a circuit tranche.
+	w.armAbsorptionSinkDepth()
 	h.SetAbsorptionLedger(w.absorption)
 	// Ranks on the effective spread: snapshot less this hull's own self-compression
 	// plus the live shared cooldown debt; runCircuit accrues each leg's debt back.
@@ -74,6 +83,7 @@ func (w circuitWiring) configureArbCoordinator(h *tradeRouteCmd.RunArbCoordinato
 	h.SetCostPersister(grpc.NewArbCostConfigPersister(w.containerRepo))
 	// Converts a PLANNED absorption hold into an EXECUTED recovery shadow at sale
 	// completion (shared ledger instance).
+	w.armAbsorptionSinkDepth()
 	h.SetAbsorptionLedger(w.absorption)
 }
 
@@ -102,6 +112,7 @@ func (w circuitWiring) configureTourCoordinator(h *tradeRouteCmd.RunTourCoordina
 	h.SetRelocationOfferPersister(tourRepositionPersister)
 	// Shared absorption ledger: the tour reserves its planned tranches, nets outstanding
 	// depth into each plan, and converts sold sinks into recovery shadows.
+	w.armAbsorptionSinkDepth()
 	h.SetAbsorptionLedger(w.absorption, w.cfg.Absorption.PlannedTTLSlack)
 	h.SetEventRecorder(w.captainEventRepo) // coordinator error-loop event when the dynamic-budget resolve stays unreadable
 	// Blocks low-value noise goods from tour cargo selection; absent/empty is byte-identical.

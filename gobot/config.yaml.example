@@ -705,3 +705,28 @@ capacity_reconciler:
 # more than an over-refuelled one); 0 or an absent section resolves to the floor.
 # refuel:
 #   threshold: 0.9
+
+# Cross-engine market-absorption ledger. Every trade engine nets against ONE ledger of
+# in-flight PLANNED depth and decaying EXECUTED recovery shadows, so a sink one hull is
+# dumping into is not depth another may plan against. Every key is OPTIONAL and every
+# absent key takes the documented default.
+# absorption:
+#   executed_hard_cap: 4h          # outer bound on an EXECUTED shadow regardless of decay
+#   shadow_floor_fraction: 0.5     # fraction of one tranche below which a shadow stops blocking
+#   planned_ttl_slack: 15m         # padding on a PLANNED hold's projected round-trip TTL
+#
+#   # Depth-conditioned crush prior. A recovery shadow claims the units a sale took out of
+#   # the sink until the fitted curve says it regrew, and charging every market the same
+#   # claim embargoes deep hubs for a sale they barely felt while thin markets need exactly
+#   # that protection. The sink's LISTING BREADTH — how many goods its cached market trades
+#   # — scales the claim: at or under thin_listings it is charged in full, above it the
+#   # claim is discounted in proportion to breadth, and min_crush_scale floors the discount
+#   # so no market is ever treated as bottomless.
+#   #
+#   # SHIPS DISABLED: enabled is the arm, and false reproduces the uniform prior exactly.
+#   # A sink whose breadth cannot be read keeps the uniform prior whether armed or not.
+#   # To revert the refit on a live fleet without disarming, set min_crush_scale: 1.0.
+#   sink_depth_scaling:
+#     enabled: false
+#     thin_listings: 2
+#     min_crush_scale: 0.10

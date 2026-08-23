@@ -133,6 +133,7 @@ type AbsorptionLedgerGORM struct {
 	recovery *absorptionRecoveryModel
 	cfg      AbsorptionLedgerConfig
 	liveness ContainerLivenessProvider
+	depth    absorption.SinkDepthScaling
 }
 
 // NewAbsorptionLedger builds a ledger that reads recovery half-lives from the
@@ -301,6 +302,7 @@ func (r *AbsorptionLedgerGORM) Outstanding(ctx context.Context, playerID int) (m
 		return nil, fmt.Errorf("read outstanding absorption: %w", err)
 	}
 
+	breadth := r.sinkBreadthFor(r.db.WithContext(ctx), playerID, rows)
 	out := make(map[absorption.LaneKey]absorption.KeyOccupancy, len(rows))
 	for i := range rows {
 		row := &rows[i]
@@ -310,7 +312,7 @@ func (r *AbsorptionLedgerGORM) Outstanding(ctx context.Context, playerID int) (m
 		case absorptionStatePlanned:
 			occ.PlannedUnits += row.Units
 		case absorptionStateExecuted:
-			occ.RecoveringResidual += r.blockingResidual(row, now)
+			occ.RecoveringResidual += r.blockingResidual(row, now, breadth[row.Waypoint])
 		}
 		out[k] = occ
 	}
@@ -487,6 +489,7 @@ func (r *AbsorptionLedgerGORM) HoldersForKeys(ctx context.Context, playerID int,
 		).Find(&rows).Error; err != nil {
 			return nil, fmt.Errorf("read holders for %s/%s/%s: %w", k.Waypoint, k.Good, k.Side, err)
 		}
+		breadth := r.sinkBreadthFor(r.db.WithContext(ctx), playerID, rows)
 		var holders []absorption.Holder
 		for i := range rows {
 			row := &rows[i]
@@ -503,7 +506,7 @@ func (r *AbsorptionLedgerGORM) HoldersForKeys(ctx context.Context, playerID int,
 				// The SAME decay+floor arithmetic occupiedDepthTx uses for the cap
 				// check, so a holder reported here is exactly one Reserve would have
 				// counted — never a phantom "blocker" the real gate already ignores.
-				residual := r.blockingResidual(row, now)
+				residual := r.blockingResidual(row, now, breadth[row.Waypoint])
 				if residual <= 0 {
 					continue
 				}
@@ -627,6 +630,7 @@ func (r *AbsorptionLedgerGORM) occupiedDepthTx(tx *gorm.DB, playerID int, key ab
 	).Find(&rows).Error; err != nil {
 		return 0, fmt.Errorf("read sink depth for cap check: %w", err)
 	}
+	breadth := r.sinkBreadthFor(tx, playerID, rows)
 	var occupied float64
 	for i := range rows {
 		row := &rows[i]
@@ -634,7 +638,7 @@ func (r *AbsorptionLedgerGORM) occupiedDepthTx(tx *gorm.DB, playerID int, key ab
 		case absorptionStatePlanned:
 			occupied += float64(row.Units)
 		case absorptionStateExecuted:
-			occupied += r.blockingResidual(row, now)
+			occupied += r.blockingResidual(row, now, breadth[row.Waypoint])
 		}
 	}
 	return occupied, nil
@@ -643,18 +647,24 @@ func (r *AbsorptionLedgerGORM) occupiedDepthTx(tx *gorm.DB, playerID int, key ab
 // blockingResidual is an EXECUTED row's decayed occupied depth, but only while it is
 // still AT OR ABOVE its own recovery floor (ShadowFloorFraction × trade_volume). A
 // shadow that has recovered past the floor no longer blocks — it contributes 0, so a
-// new sell may take the recovered depth. A row with no stored tranche size falls back
-// to blocking on any positive residual (fail closed).
-func (r *AbsorptionLedgerGORM) blockingResidual(row *MarketAbsorptionLedgerModel, now time.Time) float64 {
+// new sell may take the recovered depth.
+//
+// sinkListings is the sink market's listing breadth, scaling the claim the sale makes on
+// that sink's depth: the same tranche costs a broad hub proportionally less than a
+// micro-market. Unknown breadth (0) is the uniform prior. A row with no stored tranche
+// size is already in the fail-closed branch — it blocks on any positive residual, having
+// no floor to fall under — so it earns no breadth discount either.
+func (r *AbsorptionLedgerGORM) blockingResidual(row *MarketAbsorptionLedgerModel, now time.Time, sinkListings int) float64 {
 	if row.ExecutedAt == nil {
 		return 0
 	}
 	decayed := r.recovery.decayedUnits(row.Units, row.TierAtWrite, now.Sub(*row.ExecutedAt))
-	if row.TrancheSize > 0 {
-		floor := r.cfg.ShadowFloorFraction * float64(row.TrancheSize)
-		if decayed < floor {
-			return 0
-		}
+	if row.TrancheSize <= 0 {
+		return decayed
+	}
+	decayed *= r.depth.CrushScale(sinkListings)
+	if decayed < r.cfg.ShadowFloorFraction*float64(row.TrancheSize) {
+		return 0
 	}
 	return decayed
 }
