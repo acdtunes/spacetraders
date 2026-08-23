@@ -519,6 +519,135 @@ func TestAbsorptionLedger_HeldByContainer_EmptyWhenNoneHeld(t *testing.T) {
 	require.Empty(t, held)
 }
 
+// --- HoldersForKeys: refusal attribution (sp-cddfs) ---
+//
+// A "could not reserve tour depth (sinks contended by other containers)" refusal
+// named nobody: no way to tell WHICH container held the depth, on what good, for
+// how many units, or for how much longer. HoldersForKeys is the read a refusal
+// log enriches with — per requested LaneKey, the individual rows actually
+// occupying it — so the aggregate KeyOccupancy Outstanding() already reports can
+// be broken back down to concrete holders. Observation-only: it is a pure read,
+// added nowhere near Reserve's cap check.
+
+// Two rivals both hold PLANNED sinks on the SAME key — the shape a refusal's
+// contention actually has (sp-cddfs's live suspect: two trade hulls' own
+// retry loops contending with each other). Both must be named, each with its
+// own units and a positive TTL remaining close to its reserved TTL.
+func TestAbsorptionLedger_HoldersForKeys_NamesEveryPlannedHolderOnAKey(t *testing.T) {
+	ledger, _ := setupAbsorptionLedger(t, nil)
+	ctx := context.Background()
+	key := absorption.LaneKey{Waypoint: "WP-1", Good: "IRON", Side: "sell"}
+
+	_, ok, err := ledger.Reserve(ctx, 1, "rival-a", "tour",
+		[]absorption.ReserveEntry{sellEntry("WP-1", "IRON", 50, 200, time.Hour)})
+	require.NoError(t, err)
+	require.True(t, ok)
+	_, ok, err = ledger.Reserve(ctx, 1, "rival-b", "idle-arb",
+		[]absorption.ReserveEntry{sellEntry("WP-1", "IRON", 30, 200, time.Hour)})
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	holders, err := ledger.HoldersForKeys(ctx, 1, []absorption.LaneKey{key})
+	require.NoError(t, err)
+	require.Len(t, holders[key], 2, "both rivals' rows must be attributed to the same key")
+
+	byContainer := map[string]absorption.Holder{}
+	for _, h := range holders[key] {
+		byContainer[h.ContainerID] = h
+	}
+	require.Contains(t, byContainer, "rival-a")
+	require.Contains(t, byContainer, "rival-b")
+
+	a := byContainer["rival-a"]
+	require.Equal(t, "tour", a.Engine)
+	require.Equal(t, "PLANNED", a.State)
+	require.Equal(t, 50, a.Units)
+	require.InDelta(t, time.Hour, a.TTLRemaining, float64(time.Minute), "TTL remaining tracks the reserved 1h TTL")
+
+	b := byContainer["rival-b"]
+	require.Equal(t, "idle-arb", b.Engine)
+	require.Equal(t, "PLANNED", b.State)
+	require.Equal(t, 30, b.Units)
+}
+
+// A requested key with no rows at all is simply absent from the result — never
+// a present-but-empty slice — so a caller can range over the map and only see
+// keys that actually explain a breach.
+func TestAbsorptionLedger_HoldersForKeys_OmitsKeysWithNoHolders(t *testing.T) {
+	ledger, _ := setupAbsorptionLedger(t, nil)
+	ctx := context.Background()
+	empty := absorption.LaneKey{Waypoint: "WP-EMPTY", Good: "IRON", Side: "sell"}
+
+	holders, err := ledger.HoldersForKeys(ctx, 1, []absorption.LaneKey{empty})
+	require.NoError(t, err)
+	_, present := holders[empty]
+	require.False(t, present, "a key nobody holds must not appear in the result at all")
+}
+
+// HoldersForKeys only ever returns rows for the keys it was ASKED about — a
+// container holding an unrelated sink must never leak into a different key's
+// attribution.
+func TestAbsorptionLedger_HoldersForKeys_ScopedToRequestedKeysOnly(t *testing.T) {
+	ledger, _ := setupAbsorptionLedger(t, nil)
+	ctx := context.Background()
+	asked := absorption.LaneKey{Waypoint: "WP-1", Good: "IRON", Side: "sell"}
+	unrelated := absorption.LaneKey{Waypoint: "WP-2", Good: "COPPER", Side: "sell"}
+
+	_, ok, err := ledger.Reserve(ctx, 1, "ctr-A", "tour", []absorption.ReserveEntry{
+		sellEntry("WP-1", "IRON", 40, 400, time.Hour),
+		sellEntry("WP-2", "COPPER", 25, 400, time.Hour),
+	})
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	holders, err := ledger.HoldersForKeys(ctx, 1, []absorption.LaneKey{asked})
+	require.NoError(t, err)
+	require.Len(t, holders, 1, "only the asked-about key may appear")
+	require.Len(t, holders[asked], 1)
+	_, gotUnrelated := holders[unrelated]
+	require.False(t, gotUnrelated, "a key never asked about must not appear even though ctr-A holds it too")
+}
+
+// An EXECUTED recovery shadow still above its floor is a real holder too (the
+// live suspect on sp-cddfs's bead names retry-loop self-contention, but a
+// decaying shadow from a PRIOR sale is just as real a blocker) — reported at
+// its CURRENT decayed residual, the same number Reserve's cap check would add
+// up, not the original realized units.
+func TestAbsorptionLedger_HoldersForKeys_IncludesBlockingExecutedShadow(t *testing.T) {
+	ledger, db := setupAbsorptionLedger(t, nil)
+	ctx := context.Background()
+	key := absorption.LaneKey{Waypoint: "WP-1", Good: "IRON", Side: "sell"}
+
+	// WEAK half-life 60min; one half-life elapsed → 100 decays to ~50, tranche
+	// 10 floors blocking at 5 so 50 is well above it.
+	insertExecuted(t, db, key, 100, 10, "WEAK", time.Duration(testWeakHalfLifeMin)*time.Minute, 12*time.Hour)
+
+	holders, err := ledger.HoldersForKeys(ctx, 1, []absorption.LaneKey{key})
+	require.NoError(t, err)
+	require.Len(t, holders[key], 1)
+	shadow := holders[key][0]
+	require.Equal(t, "dead", shadow.ContainerID) // insertExecuted's fixture container id
+	require.Equal(t, "EXECUTED", shadow.State)
+	require.InDelta(t, 50, shadow.Units, 1, "reports the CURRENT decayed residual, not the original 100")
+}
+
+// An EXECUTED shadow that has recovered PAST its floor no longer occupies
+// depth for the cap check (trade-analyst Q2) — HoldersForKeys must agree and
+// omit it, or the enriched log would name a "blocker" that Reserve itself
+// would not have counted.
+func TestAbsorptionLedger_HoldersForKeys_ExcludesShadowRecoveredPastFloor(t *testing.T) {
+	ledger, db := setupAbsorptionLedger(t, nil)
+	ctx := context.Background()
+	key := absorption.LaneKey{Waypoint: "WP-1", Good: "IRON", Side: "sell"}
+
+	// tranche 100 -> floor 50; three half-lives decays 100 to 12.5, well below.
+	insertExecuted(t, db, key, 100, 100, "WEAK", 3*time.Duration(testWeakHalfLifeMin)*time.Minute, 12*time.Hour)
+
+	holders, err := ledger.HoldersForKeys(ctx, 1, []absorption.LaneKey{key})
+	require.NoError(t, err)
+	require.Empty(t, holders[key], "a shadow recovered past its floor must not be reported as a blocker")
+}
+
 // --- ReleaseByContainerExcept: the laden re-plan preserve seam (sp-pcxju) ---
 
 // A laden hull's re-plan must NOT drop the sink reservation backing cargo already in the

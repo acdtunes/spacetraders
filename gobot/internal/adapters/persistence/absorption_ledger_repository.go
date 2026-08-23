@@ -15,6 +15,9 @@ import (
 // AbsorptionLedgerGORM implements the domain absorption.Ledger port.
 var _ absorption.Ledger = (*AbsorptionLedgerGORM)(nil)
 
+// AbsorptionLedgerGORM also implements the optional absorption.HolderLister capability.
+var _ absorption.HolderLister = (*AbsorptionLedgerGORM)(nil)
+
 // Absorption-ledger tuning. All three flow in as config (RULINGS #5) — the constants
 // are only the fail-safe defaults NewAbsorptionLedger applies when a caller passes the
 // zero value.
@@ -462,6 +465,60 @@ func (r *AbsorptionLedgerGORM) HeldByContainer(ctx context.Context, containerID 
 	for i := range rows {
 		row := &rows[i]
 		out[absorption.LaneKey{Waypoint: row.Waypoint, Good: row.Good, Side: row.Side}] += row.Units
+	}
+	return out, nil
+}
+
+// HoldersForKeys returns, per requested key, the individual non-expired rows
+// backing its occupied depth — a refusal log's attribution read, never the hot
+// Reserve loop. keys is expected small (one plan's contended sinks), so this
+// runs one indexed query per key rather than one OR-composite across columns.
+func (r *AbsorptionLedgerGORM) HoldersForKeys(ctx context.Context, playerID int, keys []absorption.LaneKey) (map[absorption.LaneKey][]absorption.Holder, error) {
+	out := make(map[absorption.LaneKey][]absorption.Holder, len(keys))
+	if len(keys) == 0 {
+		return out, nil
+	}
+	now := time.Now()
+	for _, k := range keys {
+		var rows []MarketAbsorptionLedgerModel
+		if err := r.db.WithContext(ctx).Where(
+			"player_id = ? AND waypoint_symbol = ? AND good_symbol = ? AND side = ? AND expires_at > ?",
+			playerID, k.Waypoint, k.Good, k.Side, now,
+		).Find(&rows).Error; err != nil {
+			return nil, fmt.Errorf("read holders for %s/%s/%s: %w", k.Waypoint, k.Good, k.Side, err)
+		}
+		var holders []absorption.Holder
+		for i := range rows {
+			row := &rows[i]
+			switch row.State {
+			case absorptionStatePlanned:
+				holders = append(holders, absorption.Holder{
+					ContainerID:  row.ContainerID,
+					Engine:       row.Engine,
+					State:        absorptionStatePlanned,
+					Units:        row.Units,
+					TTLRemaining: row.ExpiresAt.Sub(now),
+				})
+			case absorptionStateExecuted:
+				// The SAME decay+floor arithmetic occupiedDepthTx uses for the cap
+				// check, so a holder reported here is exactly one Reserve would have
+				// counted — never a phantom "blocker" the real gate already ignores.
+				residual := r.blockingResidual(row, now)
+				if residual <= 0 {
+					continue
+				}
+				holders = append(holders, absorption.Holder{
+					ContainerID:  row.ContainerID,
+					Engine:       row.Engine,
+					State:        absorptionStateExecuted,
+					Units:        int(residual),
+					TTLRemaining: row.ExpiresAt.Sub(now),
+				})
+			}
+		}
+		if len(holders) > 0 {
+			out[k] = holders
+		}
 	}
 	return out, nil
 }

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
@@ -44,6 +46,15 @@ const (
 	// absorptionEngineTour stamps this engine's ledger rows (telemetry + reclaim
 	// attribution), matching the "tour" tier the design names.
 	absorptionEngineTour = "tour"
+	// tourContendedHolderLogCooldown bounds how often the sp-cddfs enriched
+	// contended-holder log may fire PER CONTAINER. A persistently-contended lane
+	// retries every plan cycle (bounded only by planner RTT — no backoff on this
+	// path), so an ungated log here would flood daemon.log exactly when the fleet
+	// is busiest contending for depth. One line per container per window is
+	// enough to attribute the contention; it is a log-noise safety valve, not an
+	// operational lever an operator would retune from observed economy behavior
+	// (RULINGS #5 bounds the parametrize-don't-hardcode rule to values like that).
+	tourContendedHolderLogCooldown = 60 * time.Second
 )
 
 // SetAbsorptionLedger wires the cross-engine absorption ledger (sp-78ai L3) so the tour
@@ -90,6 +101,8 @@ func (h *RunTourCoordinatorHandler) planAndReserve(
 	// shadows are left untouched (real damage still recovering — the plan must avoid them).
 	h.releaseTourReservations(ctx, cmd)
 
+	var lastPlan *routing.TourPlan
+	var lastSnapshot []routing.TourGoodSnapshot
 	for attempt := 0; attempt <= tourReserveMaxRetries; attempt++ {
 		plan, snapshot, absorptionView, err := h.plan(ctx, ship, cmd, budget)
 		if err != nil {
@@ -98,6 +111,7 @@ func (h *RunTourCoordinatorHandler) planAndReserve(
 		if !plan.Feasible {
 			return nil, nil, fmt.Sprintf("tour unavailable: %s", plan.InfeasibleReason), false, nil
 		}
+		lastPlan, lastSnapshot = plan, snapshot
 		reserved, rerr := h.reserveTourPlan(ctx, cmd, plan, snapshot)
 		if rerr == nil && reserved {
 			// Q3 (REPORT-ONLY): log the recovery burden this accepted plan projects onto
@@ -114,6 +128,13 @@ func (h *RunTourCoordinatorHandler) planAndReserve(
 		// Breach (ok=false) or a ledger-gate error (fail-closed for THIS attempt): re-plan
 		// against fresh ledger state — the contested sink now shows occupied to the netting.
 	}
+	// sp-cddfs (OBSERVABILITY ONLY): every retry exhausted against the same request —
+	// attribute the refusal to its actual holders before returning the SAME unattributed
+	// reason string as before. This never changes what gets reserved, refused, or
+	// selected: it is a best-effort read AFTER the real gate already decided, gated by
+	// its own per-container cooldown so a persistently-contended lane logs this once per
+	// window rather than once per retry.
+	h.logContendedHolders(ctx, cmd, lastPlan, lastSnapshot)
 	return nil, nil, "tour unavailable: could not reserve tour depth (sinks contended by other containers)", false, nil
 }
 
@@ -151,6 +172,135 @@ func (h *RunTourCoordinatorHandler) reserveTourPlan(ctx context.Context, cmd *Ru
 		})
 	}
 	return ok, nil
+}
+
+// tourContendedHolderLine is one attributed holder in the sp-cddfs enriched refusal log's
+// structured "holders" payload — the JSON tags are for the eventual DB-persisted log row
+// (logging.FormatFields marshals metadata to JSON), not consumed by any Go reader.
+type tourContendedHolderLine struct {
+	Waypoint    string `json:"waypoint"`
+	Good        string `json:"good"`
+	Side        string `json:"side"`
+	ContainerID string `json:"container_id"`
+	Engine      string `json:"engine"`
+	State       string `json:"state"`
+	Units       int    `json:"units"`
+	TTLSeconds  int    `json:"ttl_remaining_seconds"`
+}
+
+// logContendedHolders enriches a "could not reserve tour depth" refusal (sp-cddfs) with
+// WHO holds each contended sink — container id, good, sink waypoint, reserved units, and
+// TTL/recovery remaining — turning "sinks contended by other containers" into
+// attributable data. It re-derives the LAST attempted plan's reserve entries (the exact
+// keys reserveTourPlan just tried and failed on) and lists their CURRENT holder rows.
+//
+// OBSERVABILITY ONLY: this runs strictly AFTER planAndReserve's retry loop has already
+// exhausted and decided to refuse — it changes nothing about what gets reserved, refused,
+// or selected. Every exit is a silent skip, never an error the caller must handle: a nil
+// ledger, a ledger that does not support the optional HolderLister capability, an empty
+// plan, a cooldown still in effect, or a read error all leave the caller's existing
+// unattributed reason string as the only signal (byte-identical fail-open). Cooldown-gated
+// per container so a persistently-contended lane logs this ONCE per
+// tourContendedHolderLogCooldown, not once per retry.
+func (h *RunTourCoordinatorHandler) logContendedHolders(ctx context.Context, cmd *RunTourCoordinatorCommand, plan *routing.TourPlan, snapshot []routing.TourGoodSnapshot) {
+	if h.absorptionLedger == nil || cmd.ContainerID == "" || plan == nil {
+		return
+	}
+	lister, ok := h.absorptionLedger.(absorption.HolderLister)
+	if !ok {
+		return
+	}
+	if !h.allowContendedHolderLog(cmd.ContainerID) {
+		return
+	}
+
+	// Same derivation reserveTourPlan used on this attempt, dropPreservedSinks included —
+	// so the keys queried here are EXACTLY what was submitted to Reserve and breached,
+	// never a sink this container preserved (and so never even sent to the failed call).
+	entries := h.dropPreservedSinks(ctx, cmd, h.buildTourReserveEntries(plan, snapshot))
+	if len(entries) == 0 {
+		return
+	}
+	keys := make([]absorption.LaneKey, 0, len(entries))
+	seen := make(map[absorption.LaneKey]bool, len(entries))
+	for _, e := range entries {
+		k := absorption.LaneKey{Waypoint: e.Waypoint, Good: e.Good, Side: e.Side}
+		if !seen[k] {
+			seen[k] = true
+			keys = append(keys, k)
+		}
+	}
+
+	logger := common.LoggerFromContext(ctx)
+	holdersByKey, err := lister.HoldersForKeys(ctx, cmd.PlayerID, keys)
+	if err != nil {
+		logger.Log("WARNING", fmt.Sprintf(
+			"Tour depth refusal for %s: holder attribution read failed, reason stands unattributed: %v", cmd.ContainerID, err), map[string]interface{}{
+			"ship_symbol": cmd.ShipSymbol, "container_id": cmd.ContainerID,
+		})
+		return
+	}
+	if len(holdersByKey) == 0 {
+		return // nothing to attribute (the breach may already have cleared by this read)
+	}
+
+	var lines []tourContendedHolderLine
+	var summary strings.Builder
+	for _, k := range keys {
+		holders := holdersByKey[k]
+		if len(holders) == 0 {
+			continue
+		}
+		// Deterministic order (map iteration is not) so the log line and the
+		// structured payload are stable and testable.
+		sort.Slice(holders, func(i, j int) bool { return holders[i].ContainerID < holders[j].ContainerID })
+		for _, holder := range holders {
+			ttlSeconds := int(holder.TTLRemaining.Seconds())
+			lines = append(lines, tourContendedHolderLine{
+				Waypoint: k.Waypoint, Good: k.Good, Side: k.Side,
+				ContainerID: holder.ContainerID, Engine: holder.Engine, State: holder.State,
+				Units: holder.Units, TTLSeconds: ttlSeconds,
+			})
+			if summary.Len() > 0 {
+				summary.WriteString("; ")
+			}
+			fmt.Fprintf(&summary, "%s holds %d %s/%s@%s (%s, %ds remaining)",
+				holder.ContainerID, holder.Units, k.Good, k.Side, k.Waypoint, holder.State, ttlSeconds)
+		}
+	}
+	if len(lines) == 0 {
+		return
+	}
+	// NAME the holders in the message TEXT, not just metadata — this file's own
+	// discipline elsewhere (run_tour_coordinator.go's starvation-stop / re-plan logs)
+	// inlines the concrete cause into the message string alongside the structured
+	// payload, so an operator reading `container logs`/daemon.log sees the attribution
+	// without needing to parse JSON.
+	logger.Log("WARNING", fmt.Sprintf(
+		"Tour depth refusal for %s: %d holder(s) blocking %d contended sink(s) - %s",
+		cmd.ContainerID, len(lines), len(holdersByKey), summary.String()), map[string]interface{}{
+		"ship_symbol": cmd.ShipSymbol, "container_id": cmd.ContainerID, "holders": lines,
+	})
+}
+
+// allowContendedHolderLog reports whether containerID's enriched contended-holder log may
+// fire now, advancing its cooldown clock when it does (sp-cddfs). Mirrors the
+// depositParked/strandedStreak per-container de-dup discipline elsewhere in this handler:
+// a shared singleton dispatched concurrently for every touring hull, so the map is
+// guarded by its own mutex. Lazily inits the map so a handler built by struct literal
+// (several tests bypass NewRunTourCoordinatorHandler) never nil-map-panics here.
+func (h *RunTourCoordinatorHandler) allowContendedHolderLog(containerID string) bool {
+	now := h.clock.Now()
+	h.contendedHolderLogMu.Lock()
+	defer h.contendedHolderLogMu.Unlock()
+	if h.contendedHolderLogAt == nil {
+		h.contendedHolderLogAt = make(map[string]time.Time)
+	}
+	if last, ok := h.contendedHolderLogAt[containerID]; ok && now.Sub(last) < tourContendedHolderLogCooldown {
+		return false
+	}
+	h.contendedHolderLogAt[containerID] = now
+	return true
 }
 
 // buildTourReserveEntries aggregates a plan's planned units per (waypoint, good, side) —

@@ -106,3 +106,28 @@ type Ledger interface {
 	// Returns the number of PLANNED rows dropped.
 	ReleaseByContainerExcept(ctx context.Context, containerID string, playerID int, keep []LaneKey) (int, error)
 }
+
+// Holder is one reservation row backing a LaneKey's occupied depth, so a
+// refusal can name a holder instead of only the pool's aggregate KeyOccupancy.
+// Read-only: nothing consults it to gate a reservation.
+type Holder struct {
+	ContainerID string
+	Engine      string
+	// State is "PLANNED" (an in-flight hold) or "EXECUTED" (a decaying
+	// recovery shadow), the adapter's own state vocabulary.
+	State string
+	// Units is this row's CURRENT blocking depth: raw reserved units for
+	// PLANNED, or the still-blocking decayed residual for EXECUTED.
+	Units int
+	// TTLRemaining is how long before this row's own expiry frees it. Never negative.
+	TTLRemaining time.Duration
+}
+
+// HolderLister is an OPTIONAL Ledger capability for listing the individual rows
+// backing a set of LaneKeys' occupied depth. Additive to Ledger: callers
+// type-assert and skip enrichment when absent, so no implementer must add it.
+type HolderLister interface {
+	// HoldersForKeys returns, per requested LaneKey, its non-expired holder
+	// rows. A key with none is absent from the result, never an empty slice.
+	HoldersForKeys(ctx context.Context, playerID int, keys []LaneKey) (map[LaneKey][]Holder, error)
+}

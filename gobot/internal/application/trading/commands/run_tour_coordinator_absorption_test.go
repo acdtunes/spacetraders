@@ -166,6 +166,97 @@ func TestTourAbsorption_ReserveBreachRePlansThenInfeasible(t *testing.T) {
 	require.False(t, r.Completed)
 }
 
+// sp-cddfs: "could not reserve tour depth (sinks contended by other containers)" named
+// nobody — no way to tell WHICH container held the depth, on what good, for how many
+// units, or for how much longer. A live suspect named on the bead: the fleet's OWN trade
+// hulls contending with each other via their failed-tour retry loops. This pins the fix —
+// when the bounded reserve-retry loop exhausts, the coordinator attributes the refusal to
+// its actual holders in ONE structured log event (never one line per holder, never one
+// event per retry).
+func TestTourAbsorption_ReserveBreachLogsBlockingHolders(t *testing.T) {
+	ledger, _ := setupTourLedger(t)
+	ctx := context.Background()
+	// TWO rival containers TOGETHER saturate sink B's fleet-wide cap (80 units) — the
+	// self-contention-between-hulls shape the bead names as the live suspect. Both must
+	// be named in the enriched log, not just one.
+	_, ok, err := ledger.Reserve(ctx, 1, "rival-a", "tour", []absorption.ReserveEntry{{
+		Waypoint: "X1-S1-B", Good: "G1", Side: absorption.SideSell,
+		Units: 50, CapUnits: 80, TTL: time.Hour,
+	}})
+	require.NoError(t, err)
+	require.True(t, ok)
+	_, ok, err = ledger.Reserve(ctx, 1, "rival-b", "idle-arb", []absorption.ReserveEntry{{
+		Waypoint: "X1-S1-B", Good: "G1", Side: absorption.SideSell,
+		Units: 30, CapUnits: 80, TTL: time.Hour,
+	}})
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	fx := arbFixture(40) // tv 40 -> tour CapUnits = 2*40 = 80, already saturated by the two rivals
+	planner := &tourFakeRoutingClient{plans: []*routing.TourPlan{arbPlan()}}
+	h := newTourHandler(t, fx, planner, &tourFakeTelemetry{})
+	h.SetAbsorptionLedger(ledger, 0)
+
+	logger := &laneLogCapturingLogger{}
+	ctx = common.WithLogger(ctx, logger)
+	resp, err := h.Handle(ctx, &RunTourCoordinatorCommand{
+		ShipSymbol: "TOUR-1", PlayerID: 1, ContainerID: "ctr-1", ModelArtifactPath: writeTourArtifact(t),
+	})
+	require.NoError(t, err)
+	require.True(t, tourResponse(t, resp).TourUnavailable)
+
+	var matches []laneLogEntry
+	for _, e := range logger.entries {
+		if strings.HasPrefix(e.message, "Tour depth refusal") {
+			matches = append(matches, e)
+		}
+	}
+	require.Len(t, matches, 1, "exactly ONE enriched refusal event, not one per holder or per retry: %+v", logger.entries)
+	found := matches[0]
+
+	// Both holders NAMED in the message TEXT (container_runner renders message+metadata
+	// together today, but every sibling log call in this file still inlines the key facts
+	// into the message per the sp-149h/sp-iqyq discipline — belt and suspenders here too).
+	for _, want := range []string{"rival-a", "rival-b", "G1", "X1-S1-B"} {
+		require.Contains(t, found.message, want)
+	}
+
+	holders, ok := found.metadata["holders"].([]tourContendedHolderLine)
+	require.True(t, ok, "expected metadata[\"holders\"] as a structured []tourContendedHolderLine, got %T: %v", found.metadata["holders"], found.metadata["holders"])
+	require.Len(t, holders, 2, "both rivals must be attributed")
+
+	byContainer := map[string]tourContendedHolderLine{}
+	for _, hl := range holders {
+		byContainer[hl.ContainerID] = hl
+	}
+	require.Equal(t, "G1", byContainer["rival-a"].Good)
+	require.Equal(t, "X1-S1-B", byContainer["rival-a"].Waypoint)
+	require.Equal(t, absorption.SideSell, byContainer["rival-a"].Side)
+	require.Equal(t, "tour", byContainer["rival-a"].Engine)
+	require.Equal(t, 50, byContainer["rival-a"].Units)
+	require.Equal(t, "idle-arb", byContainer["rival-b"].Engine)
+	require.Equal(t, 30, byContainer["rival-b"].Units)
+}
+
+// sp-cddfs: the enriched contended-holder log is cooldown-gated PER CONTAINER (the
+// planAndReserve retry loop has no backoff, so a persistently-contended lane would
+// otherwise re-attribute and re-log every plan cycle). Direct white-box check of the
+// gate itself, mirroring how TestTourRateFloor_Dwell_StaysWhenRecentlyRelocated pins
+// the sibling rate-floor dwell window: seed/read the per-container timestamp map
+// directly rather than waiting out a real 60s window.
+func TestTourAbsorption_ContendedHolderLog_CooldownGatesRepeats(t *testing.T) {
+	h := newTourHandler(t, arbFixture(1000), &tourFakeRoutingClient{}, &tourFakeTelemetry{})
+
+	require.True(t, h.allowContendedHolderLog("ctr-1"), "the first call for a fresh container must be allowed")
+	require.False(t, h.allowContendedHolderLog("ctr-1"), "a second call inside the cooldown window must be suppressed")
+	require.True(t, h.allowContendedHolderLog("ctr-2"), "a DIFFERENT container must not be gated by ctr-1's cooldown")
+
+	// A container whose last log is already past the cooldown (backdated, mirroring the
+	// insertExecuted style of simulating elapsed time without a real sleep) is allowed again.
+	h.contendedHolderLogAt["ctr-3"] = time.Now().Add(-2 * tourContendedHolderLogCooldown)
+	require.True(t, h.allowContendedHolderLog("ctr-3"), "a cooldown that has already elapsed must allow a fresh log")
+}
+
 // Restart de-dup: a container re-adopted after a daemon restart still holds its pre-restart
 // PLANNED rows (L1 liveness keeps them). The release-before-(re)plan invariant drops those
 // stale holds before reserving fresh, so the resumed plan does NOT double-reserve — exactly

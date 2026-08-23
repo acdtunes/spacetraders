@@ -346,6 +346,16 @@ type RunTourCoordinatorHandler struct {
 	// tourPlannedTTLSlack pads a plan's projected round-trip TTL (backstop to the sweep +
 	// dead-container reclaim). 0 → defaultTourPlannedTTLSlack.
 	tourPlannedTTLSlack time.Duration
+	// contendedHolderLogAt de-dups the sp-cddfs enriched "could not reserve tour depth"
+	// refusal log so a persistently-contended lane — retried every plan cycle, bounded
+	// only by planner RTT — logs its holder attribution ONCE per tourContendedHolderLogCooldown
+	// PER CONTAINER instead of flooding daemon.log on every retry. Keyed by container id;
+	// guarded by its own mutex because the handler is a SHARED singleton dispatched
+	// concurrently for every touring hull (the same per-hull discipline as
+	// strandedStreak/depositParked). In-memory only: a daemon restart clears every hull's
+	// cooldown, which is harmless (worst case, one extra enriched log after a restart).
+	contendedHolderLogMu sync.Mutex
+	contendedHolderLogAt map[string]time.Time
 	// planGates holds one per-player planning gate, so the netting read and the reservation
 	// that follows it are one critical section: concurrent planners otherwise all net
 	// against the same pre-reservation snapshot and converge on one sink. This handler is a

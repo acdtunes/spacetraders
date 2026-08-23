@@ -62,6 +62,7 @@ func NewRunTourCoordinatorHandler(
 		obligationSeeded:           make(map[int]bool),
 		rateFloorLastRelocation:    make(map[string]time.Time),
 		pendingRelocationsBySystem: make(map[string]int),
+		contendedHolderLogAt:       make(map[string]time.Time),
 	}
 }
 
