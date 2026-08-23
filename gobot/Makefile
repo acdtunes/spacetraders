@@ -99,6 +99,13 @@ assert-prod-env:
 		exit 1; \
 	fi
 
+# How long the non-launchd fallback below actively waits for the outgoing
+# daemon's OWN graceful shutdown to finish before starting a replacement.
+# Sized with margin over GracefulShutdownTimeout (30s, daemon's own budget for
+# draining active containers -- daemon_server_lifecycle.go) -- see
+# wait-for-pid-exit.sh for why a fixed sleep here is unsafe (sp-tb5px).
+RESTART_DAEMON_WAIT_TIMEOUT ?= 40
+
 # Restart the daemon (used by the watchkeeper fix pipeline's default restart_cmd)
 restart-daemon: assert-prod-env build-daemon
 	@if launchctl list com.spacetraders.daemon >/dev/null 2>&1; then \
@@ -106,8 +113,9 @@ restart-daemon: assert-prod-env build-daemon
 		echo "daemon restarted via launchd"; \
 	else \
 		if [ -f /tmp/spacetraders-daemon.pid ]; then \
-			kill $$(cat /tmp/spacetraders-daemon.pid) 2>/dev/null || true; \
-			sleep 2; \
+			old_pid=$$(cat /tmp/spacetraders-daemon.pid); \
+			kill $$old_pid 2>/dev/null || true; \
+			./scripts/wait-for-pid-exit.sh $$old_pid $(RESTART_DAEMON_WAIT_TIMEOUT) || exit $$?; \
 		fi; \
 		nohup ./bin/spacetraders-daemon >> daemon.log 2>&1 & \
 		echo "daemon restarted (log: daemon.log)"; \
