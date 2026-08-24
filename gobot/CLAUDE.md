@@ -217,20 +217,18 @@ Infrastructure implementations:
 
 **Python gRPC microservice** using Google OR-Tools:
 
+Single-route pathfinding is NOT served here — the daemon plans routes in-process
+(`internal/domain/routing`, fuel-state Dijkstra). `find_optimal_path` survives inside
+the service as the cost model the solvers below build their matrices from.
+
 #### Algorithms
 
-1. **PlanRoute (Dijkstra)** - Fuel-constrained pathfinding
-   - 90% fuel rule: Force refuel at start if below 90% capacity
-   - Automatic refuel stop insertion
-   - Flight mode selection: BURN > CRUISE > DRIFT
-   - 4-unit fuel safety margin
-
-2. **OptimizeTour (TSP)** - Multi-waypoint tour optimization
+1. **OptimizeTour (TSP)** - Multi-waypoint tour optimization
    - OR-Tools Constraint Programming with Guided Local Search
    - Configurable return-to-start
    - Default timeout: 5 seconds
 
-3. **PartitionFleet (VRP)** - Distribute markets across ships
+2. **PartitionFleet (VRP)** - Distribute markets across ships
    - Vehicle Routing Problem solver
    - Balanced load distribution
    - Disjunction penalty: 10x max distance

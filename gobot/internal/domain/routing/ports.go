@@ -6,9 +6,15 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 )
 
-// RoutingClient defines operations for route planning (OR-Tools gRPC service)
-type RoutingClient interface {
+// RoutePlanner plans one fuel-constrained route across a system graph. The whole
+// graph travels in the request, so an implementation needs no state of its own
+// and callers may plan concurrently.
+type RoutePlanner interface {
 	PlanRoute(ctx context.Context, request *RouteRequest) (*RouteResponse, error)
+}
+
+// RoutingClient defines the operations served by the OR-Tools gRPC service.
+type RoutingClient interface {
 	OptimizeTour(ctx context.Context, request *TourRequest) (*TourResponse, error)
 	OptimizeFueledTour(ctx context.Context, request *FueledTourRequest) (*FueledTourResponse, error)
 	PartitionFleet(ctx context.Context, request *VRPRequest) (*VRPResponse, error)

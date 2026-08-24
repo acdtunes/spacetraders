@@ -1,7 +1,10 @@
 """
-gRPC service handler for routing operations.
+gRPC service handler for the OR-Tools solvers.
 
-Implements the RoutingService interface defined in routing.proto
+Implements the RoutingService interface defined in routing.proto. Single-route
+pathfinding is not served here: the daemon plans routes in-process
+(internal/domain/routing). find_optimal_path survives as the cost model the tour
+and fleet solvers below build their matrices from.
 """
 import logging
 from typing import Dict
@@ -23,11 +26,11 @@ logger = logging.getLogger(__name__)
 
 class RoutingServiceHandler(TourHandlerMixin, routing_pb2_grpc.RoutingServiceServicer):
     """
-    gRPC service implementation for routing operations.
+    gRPC service implementation for the OR-Tools solvers.
 
-    Delegates to ORToolsRoutingEngine for actual routing logic.
-    OptimizeTradeTour (sp-1ek0) comes from TourHandlerMixin so this stays
-    the single registered servicer.
+    Delegates to ORToolsRoutingEngine for tour and fleet optimisation.
+    OptimizeTradeTour comes from TourHandlerMixin so this stays the single
+    registered servicer.
     """
 
     def __init__(self, tsp_timeout: int = 5, vrp_timeout: int = 30,
@@ -44,80 +47,6 @@ class RoutingServiceHandler(TourHandlerMixin, routing_pb2_grpc.RoutingServiceSer
         self.engine = ORToolsRoutingEngine(tsp_timeout=tsp_timeout, vrp_timeout=vrp_timeout)
         self.tour_model = load_model_artifact(tour_artifact_path)
         logger.info(f"RoutingServiceHandler initialized (TSP timeout={tsp_timeout}s, VRP timeout={vrp_timeout}s)")
-
-    def PlanRoute(self, request: routing_pb2.PlanRouteRequest, context) -> routing_pb2.PlanRouteResponse:
-        """
-        Plan a fuel-constrained route using Dijkstra pathfinding.
-
-        Args:
-            request: PlanRouteRequest with start, goal, fuel constraints, and waypoint graph
-            context: gRPC context
-
-        Returns:
-            PlanRouteResponse with route steps, fuel cost, time, and distance
-        """
-        try:
-            logger.info(f"PlanRoute: {request.start_waypoint} -> {request.goal_waypoint}")
-
-            # Build waypoint graph
-            graph = self._build_waypoint_graph(request.waypoints)
-
-            # Find optimal path
-            result = self.engine.find_optimal_path(
-                graph=graph,
-                start=request.start_waypoint,
-                goal=request.goal_waypoint,
-                current_fuel=request.current_fuel,
-                fuel_capacity=request.fuel_capacity,
-                engine_speed=request.engine_speed,
-                fuel_efficient=request.fuel_efficient,
-                prefer_cruise=request.prefer_cruise
-            )
-
-            if result is None:
-                return routing_pb2.PlanRouteResponse(
-                    success=False,
-                    error_message=f"No path found from {request.start_waypoint} to {request.goal_waypoint}"
-                )
-
-            # Convert result to protobuf
-            steps = []
-            for step in result['steps']:
-                action = routing_pb2.ROUTE_ACTION_TRAVEL if step['action'] == 'TRAVEL' else routing_pb2.ROUTE_ACTION_REFUEL
-
-                # Debug: log mode extraction
-                mode = step.get('mode', 'CRUISE')
-                logger.info(f"PlanRoute step: action={step['action']}, waypoint={step['waypoint']}, mode_from_engine='{step.get('mode')}', final_mode='{mode}'")
-
-                route_step = routing_pb2.RouteStep(
-                    action=action,
-                    waypoint=step['waypoint'],
-                    fuel_cost=step['fuel_cost'],
-                    time_seconds=step['time'],
-                    distance=step.get('distance', 0.0),
-                    mode=mode  # Include flight mode from routing engine
-                )
-
-                # Add refuel_amount if this is a refuel action
-                if step['action'] == 'REFUEL' and 'refuel_amount' in step:
-                    route_step.refuel_amount = step['refuel_amount']
-
-                steps.append(route_step)
-
-            return routing_pb2.PlanRouteResponse(
-                steps=steps,
-                total_fuel_cost=result['total_fuel_cost'],
-                total_time_seconds=result['total_time'],
-                total_distance=result['total_distance'],
-                success=True
-            )
-
-        except Exception as e:
-            logger.error(f"PlanRoute error: {e}", exc_info=True)
-            return routing_pb2.PlanRouteResponse(
-                success=False,
-                error_message=str(e)
-            )
 
     def OptimizeTour(self, request: routing_pb2.OptimizeTourRequest, context) -> routing_pb2.OptimizeTourResponse:
         """

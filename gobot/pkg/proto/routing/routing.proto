@@ -4,13 +4,11 @@ package routing;
 
 option go_package = "github.com/andrescamacho/spacetraders-go/pkg/proto/routing";
 
-// RoutingService defines the gRPC API for Daemon <-> OR-Tools communication
-// Provides route planning, TSP optimization, and VRP fleet partitioning
-// This service runs as a separate Python process using OR-Tools library
+// RoutingService defines the gRPC API for Daemon <-> OR-Tools communication.
+// Provides TSP optimization, VRP fleet partitioning and the multi-hop trade-tour
+// solver. This service runs as a separate Python process using OR-Tools; route
+// planning is in-process Go (internal/domain/routing) and is NOT served here.
 service RoutingService {
-  // PlanRoute computes optimal route with fuel constraints using Dijkstra
-  rpc PlanRoute(PlanRouteRequest) returns (PlanRouteResponse);
-
   // OptimizeTour solves TSP for visiting multiple waypoints optimally
   rpc OptimizeTour(OptimizeTourRequest) returns (OptimizeTourResponse);
 
@@ -25,40 +23,6 @@ service RoutingService {
   // Beam search over hop sequences + tranche allocation over the fitted
   // market-impact model. Request-carried snapshot; the service stays stateless.
   rpc OptimizeTradeTour(OptimizeTradeTourRequest) returns (OptimizeTradeTourResponse);
-}
-
-// PlanRouteRequest requests a fuel-constrained route
-message PlanRouteRequest {
-  // System symbol (e.g., "X1-GZ7")
-  string system_symbol = 1;
-
-  // Starting waypoint symbol
-  string start_waypoint = 2;
-
-  // Goal/destination waypoint symbol
-  string goal_waypoint = 3;
-
-  // Current fuel level
-  int32 current_fuel = 4;
-
-  // Maximum fuel capacity
-  int32 fuel_capacity = 5;
-
-  // Ship engine speed (for time calculations)
-  int32 engine_speed = 6;
-
-  // All waypoints in the system (graph nodes)
-  repeated Waypoint waypoints = 7;
-
-  // Optional: Enable fuel-efficient routing mode
-  // When true, removes DRIFT penalty to allow DRIFT-assisted routes
-  // Useful for mining operations where fuel preservation is important
-  bool fuel_efficient = 8;
-
-  // Optional: Prefer CRUISE mode over BURN
-  // When true, routes will use CRUISE instead of BURN for fuel efficiency
-  // DRIFT penalty still applies (use fuel_efficient to remove DRIFT penalty)
-  bool prefer_cruise = 9;
 }
 
 message Waypoint {
@@ -76,26 +40,6 @@ message Waypoint {
 
   // Optional: fuel price at this waypoint
   optional int32 fuel_price = 5;
-}
-
-message PlanRouteResponse {
-  // Route steps in order
-  repeated RouteStep steps = 1;
-
-  // Total fuel cost for entire route
-  int32 total_fuel_cost = 2;
-
-  // Total travel time in seconds
-  int32 total_time_seconds = 3;
-
-  // Total distance traveled
-  double total_distance = 4;
-
-  // Whether route was successfully found
-  bool success = 5;
-
-  // Error message if route planning failed
-  optional string error_message = 6;
 }
 
 message RouteStep {

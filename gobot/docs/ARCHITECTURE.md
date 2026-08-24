@@ -130,6 +130,10 @@ graph TB
         RoutingClient[Routing Client]
     end
 
+    subgraph Domain_Routing["Domain Routing"]
+        FuelStatePlanner[Fuel-State Planner]
+    end
+
     subgraph Routing_Container["Routing Service"]
         RoutingHandler[Routing Handler]
         RoutingEngine[Routing Engine]
@@ -146,7 +150,7 @@ graph TB
     ShipCmds --> ShipEntity
     ShipCmds --> ShipRepo
     ShipRepo --> APIClient
-    RoutePlanner --> RoutingClient
+    RoutePlanner --> FuelStatePlanner
     RoutingClient --> RoutingHandler
     RoutingHandler --> RoutingEngine
 ```
@@ -458,9 +462,13 @@ classDiagram
         +ListBySystemWithTrait(ctx, system, trait) Waypoint[]
     }
 
-    class RoutingClient {
+    class RoutePlanner {
         <<interface>>
         +PlanRoute(ctx, request) RouteResponse
+    }
+
+    class RoutingClient {
+        <<interface>>
         +OptimizeTour(ctx, request) TourResponse
         +PartitionFleet(ctx, request) VRPResponse
     }
@@ -724,7 +732,6 @@ classDiagram
 
     class RoutingServiceHandler {
         -engine ORToolsRoutingEngine
-        +PlanRoute(request, ctx) PlanRouteResponse
         +OptimizeTour(request, ctx) OptimizeTourResponse
         +OptimizeFueledTour(request, ctx) FueledTourResponse
         +PartitionFleet(request, ctx) PartitionFleetResponse
@@ -757,7 +764,7 @@ classDiagram
 
 ```mermaid
 graph TB
-    subgraph Dijkstra["PlanRoute - Dijkstra"]
+    subgraph Dijkstra["find_optimal_path - Dijkstra cost model"]
         D1[Initialize Priority Queue]
         D2[Pop Min-Time State]
         D3{Goal Reached?}
@@ -808,28 +815,9 @@ graph TB
 classDiagram
     class RoutingService {
         <<service>>
-        +PlanRoute(request) response
         +OptimizeTour(request) response
         +OptimizeFueledTour(request) response
         +PartitionFleet(request) response
-    }
-
-    class PlanRouteRequest {
-        +system_symbol string
-        +start_waypoint string
-        +goal_waypoint string
-        +current_fuel int32
-        +fuel_capacity int32
-        +engine_speed int32
-        +waypoints Waypoint[]
-    }
-
-    class PlanRouteResponse {
-        +steps RouteStep[]
-        +total_fuel_cost int32
-        +total_time_seconds int32
-        +total_distance double
-        +success bool
     }
 
     class RouteStep {
@@ -841,9 +829,7 @@ classDiagram
         +mode string
     }
 
-    RoutingService --> PlanRouteRequest
-    RoutingService --> PlanRouteResponse
-    PlanRouteResponse --> RouteStep
+    RoutingService --> RouteStep
 ```
 
 ---
@@ -860,8 +846,7 @@ sequenceDiagram
     participant Med as Mediator
     participant NH as NavHandler
     participant RP as RoutePlanner
-    participant RC as RoutingClient
-    participant RS as RoutingService
+    participant FP as FuelStatePlanner
     participant RE as RouteExecutor
     participant SR as ShipRepo
     participant API
@@ -877,11 +862,9 @@ sequenceDiagram
     SR-->>NH: Ship entity
 
     NH->>RP: PlanRoute
-    RP->>RC: PlanRoute request
-    RC->>RS: gRPC PlanRouteRequest
-    RS->>RS: Dijkstra pathfinding
-    RS-->>RC: PlanRouteResponse
-    RC-->>RP: RouteResponse
+    RP->>FP: PlanRoute request
+    FP->>FP: Fuel-state Dijkstra
+    FP-->>RP: RouteResponse
     RP-->>NH: Route entity
 
     NH->>RE: ExecuteRoute
@@ -959,43 +942,36 @@ sequenceDiagram
 
 ```mermaid
 sequenceDiagram
-    participant Go as GoClient
-    participant RC as RoutingClient
-    participant RS as RoutingService
-    participant RE as RoutingEngine
+    participant Go as Caller
+    participant FP as FuelStatePlanner
 
-    Go->>RC: PlanRoute start goal fuel
-    RC->>RS: gRPC PlanRouteRequest
-    RS->>RE: find optimal path
-
-    RE->>RE: Initialize priority queue
+    Go->>FP: PlanRoute start goal fuel
+    FP->>FP: Initialize priority queue
 
     alt Current fuel less than 90 percent
-        RE->>RE: Add refuel at start
+        FP->>FP: Add refuel at start
     end
 
     loop Dijkstra search
-        RE->>RE: Pop min-time state
+        FP->>FP: Pop min-time state
 
         alt Goal reached
-            RE->>RE: Backtrack path
+            FP->>FP: Backtrack path
         else Continue
             alt At fuel station
-                RE->>RE: Add refuel option
+                FP->>FP: Add refuel option
             end
 
             loop For each neighbor
-                RE->>RE: Calculate fuel costs
-                Note over RE: BURN 2x fuel, CRUISE 1x fuel, DRIFT 0.003x fuel
-                RE->>RE: Select viable modes
-                RE->>RE: Add states to queue
+                FP->>FP: Calculate fuel costs
+                Note over FP: BURN 2x fuel, CRUISE 1x fuel, DRIFT 0.003x fuel
+                FP->>FP: Select viable modes
+                FP->>FP: Add states to queue
             end
         end
     end
 
-    RE-->>RS: Path with steps
-    RS-->>RC: PlanRouteResponse
-    RC-->>Go: RouteResponse
+    FP-->>Go: RouteResponse
 ```
 
 ### Fleet Partitioning VRP

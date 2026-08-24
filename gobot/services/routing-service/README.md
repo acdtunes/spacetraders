@@ -4,11 +4,15 @@ A standalone Python gRPC service that provides advanced route optimization using
 
 ## Overview
 
-The Routing Service is a microservice architecture component that separates complex OR-Tools routing logic from the main Go daemon. It provides three core capabilities:
+The Routing Service is a microservice architecture component that separates complex OR-Tools solver logic from the main Go daemon. It provides two core capabilities:
 
-1. **PlanRoute** - Dijkstra-based pathfinding with fuel constraints
-2. **OptimizeTour** - TSP (Traveling Salesman Problem) optimization for multi-waypoint tours
-3. **PartitionFleet** - VRP (Vehicle Routing Problem) for distributing waypoints across multiple ships
+1. **OptimizeTour** - TSP (Traveling Salesman Problem) optimization for multi-waypoint tours
+2. **PartitionFleet** - VRP (Vehicle Routing Problem) for distributing waypoints across multiple ships
+
+Single-route pathfinding is NOT served here. The Go daemon plans routes in-process
+(`internal/domain/routing`), so concurrent planners are genuinely concurrent rather than
+serialised behind this process's GIL. `find_optimal_path` below survives as the internal
+cost model the two solvers build their travel-time matrices from.
 
 ## Architecture
 
@@ -34,7 +38,7 @@ The Routing Service is a microservice architecture component that separates comp
 
 ## Algorithms
 
-### 1. Dijkstra Pathfinding (PlanRoute)
+### 1. Dijkstra Pathfinding (`find_optimal_path`, internal)
 
 **Algorithm**: Modified Dijkstra's algorithm with fuel constraints
 
@@ -198,35 +202,6 @@ go test ./internal/adapters/routing/... -v
 
 ## gRPC API
 
-### PlanRoute
-
-Finds optimal fuel-constrained path between two waypoints.
-
-**Request**:
-```protobuf
-message PlanRouteRequest {
-  string system_symbol = 1;
-  string start_waypoint = 2;
-  string goal_waypoint = 3;
-  int32 current_fuel = 4;
-  int32 fuel_capacity = 5;
-  int32 engine_speed = 6;
-  repeated Waypoint waypoints = 7;
-}
-```
-
-**Response**:
-```protobuf
-message PlanRouteResponse {
-  repeated RouteStep steps = 1;
-  int32 total_fuel_cost = 2;
-  int32 total_time_seconds = 3;
-  double total_distance = 4;
-  bool success = 5;
-  optional string error_message = 6;
-}
-```
-
 ### OptimizeTour
 
 Optimizes visit order for multiple waypoints using TSP.
@@ -284,11 +259,6 @@ message PartitionFleetResponse {
 ```
 
 ## Performance Characteristics
-
-### PlanRoute
-- **Typical**: <10ms for 50-node graphs
-- **Large**: ~100ms for 200-node graphs
-- **Worst Case**: 1s for complex fuel constraints
 
 ### OptimizeTour
 - **Small** (5 waypoints): <100ms

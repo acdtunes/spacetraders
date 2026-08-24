@@ -62,6 +62,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/goods"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/ledger"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	domainRouting "github.com/andrescamacho/spacetraders-go/internal/domain/routing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	domainTrading "github.com/andrescamacho/spacetraders-go/internal/domain/trading"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/buildinfo"
@@ -586,6 +587,9 @@ func run(cfg *config.Config) error {
 		return err
 	}
 
+	// In-process and stateless, so concurrent callers plan concurrently.
+	routeFinder := domainRouting.NewFuelStatePlanner()
+
 	graphBuilder := api.NewGraphBuilder(apiClient, playerRepo, waypointRepo)
 	fmt.Println("Graph builder initialized")
 
@@ -629,7 +633,7 @@ func run(cfg *config.Config) error {
 
 	// Create extracted services for NavigateRouteHandler
 	waypointEnricher := ship.NewWaypointEnricher(waypointRepo)
-	routePlanner := ship.NewRoutePlanner(routingClient)
+	routePlanner := ship.NewRoutePlanner(routeFinder)
 
 	// Market scanner for automatic market data collection during navigation.
 	marketScanner := newMarketScanner(cfg.MarketScan, apiClient, marketRepo, playerRepo, priceHistoryRepo)
@@ -922,7 +926,7 @@ func run(cfg *config.Config) error {
 	// (the natural off-switch). Mirrors SetIdleArbLauncher(daemonServer) above.
 	contractFleetCoordinatorHandler.SetDepotRegistryProvider(daemonServer)
 	// A nil clock is fail-open here too (EstimateAll guards e.clock == nil); production always wires the real one.
-	contractFleetCoordinatorHandler.SetRouteETAEstimator(appContract.NewRouteETAEstimator(routingClient, shared.NewRealClock(), cfg.Contract.RouteETABudget()))
+	contractFleetCoordinatorHandler.SetRouteETAEstimator(appContract.NewRouteETAEstimator(routeFinder, shared.NewRealClock(), cfg.Contract.RouteETABudget()))
 	if err := mediator.RegisterHandler[*contractCmd.RunFleetCoordinatorCommand](med, contractFleetCoordinatorHandler); err != nil {
 		return fmt.Errorf("failed to register ContractFleetCoordinator handler: %w", err)
 	}

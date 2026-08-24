@@ -102,7 +102,7 @@ func TestSummarizeCandidates_NilLocationDroppedCandidateDoesNotPanic(t *testing.
 //
 // These fakes/helpers reuse the same-package fixtures already established for
 // the pool (stubShipRepo, ship_pool_manager_test.go), the route ETA estimator
-// (fakeRoutingClient/fakeAnswer/testClock, route_eta_test.go) and the graph
+// (fakeRoutePlanner/fakeAnswer/testClock, route_eta_test.go) and the graph
 // provider (fakeGraphProvider, idle_arb_test.go) rather than redeclaring them.
 
 // shipSelectorLogEntry captures one structured log call so a test can assert
@@ -137,7 +137,7 @@ func (l *shipSelectorCapturingLogger) findByAction(action string) (shipSelectorL
 
 // newRankedCandidateShip builds an idle, docked hauler at (x,y) under its own
 // waypoint symbol, so a test can control straight-line distance (via x,y) and
-// route ETA (keyed by waypointSymbol in fakeRoutingClient.perShip)
+// route ETA (keyed by waypointSymbol in fakeRoutePlanner.perShip)
 // independently - neither newCandidateShip (one shared waypoint symbol for
 // every ship) nor newETAShip (fixed origin coordinates) can vary both at once.
 func newRankedCandidateShip(t *testing.T, symbol, waypointSymbol string, x, y float64) *navigation.Ship {
@@ -255,7 +255,7 @@ func TestSelectClosestShip_EstimatorOKFalse_ExcludesUnclaimedInTransitFromFallba
 	repo, graph := selectClosestShipHarness([]*navigation.Ship{idle, transiting}, target)
 	logger := &shipSelectorCapturingLogger{}
 	ctx := common.WithLogger(context.Background(), logger)
-	fake := &fakeRoutingClient{perShip: map[string]fakeAnswer{
+	fake := &fakeRoutePlanner{perShip: map[string]fakeAnswer{
 		"X1-TW-IDLE": {err: context.DeadlineExceeded}, // transport-class error: fails the whole batch open
 	}}
 	estimator := NewRouteETAEstimator(fake, testClock(), 0)
@@ -295,7 +295,7 @@ func TestSelectClosestShip_EstimatorInvertsOrder_ETAWinnerSelected(t *testing.T)
 	repo, graph := selectClosestShipHarness([]*navigation.Ship{near, far}, target)
 	logger := &shipSelectorCapturingLogger{}
 	ctx := common.WithLogger(context.Background(), logger)
-	fake := &fakeRoutingClient{perShip: map[string]fakeAnswer{
+	fake := &fakeRoutePlanner{perShip: map[string]fakeAnswer{
 		"X1-TW-NEAR": {seconds: 500}, // slow route despite being straight-line-nearest
 		"X1-TW-FAR":  {seconds: 10},  // fast route despite being straight-line-farthest
 	}}
@@ -336,7 +336,7 @@ func TestSelectClosestShip_EstimatorFailsGlobally_FallsBackWithWarning(t *testin
 	repo, graph := selectClosestShipHarness([]*navigation.Ship{near, far}, target)
 	logger := &shipSelectorCapturingLogger{}
 	ctx := common.WithLogger(context.Background(), logger)
-	fake := &fakeRoutingClient{perShip: map[string]fakeAnswer{
+	fake := &fakeRoutePlanner{perShip: map[string]fakeAnswer{
 		"X1-TW-NEAR": {err: context.DeadlineExceeded}, // transport-class error: fails the whole batch open
 		"X1-TW-FAR":  {seconds: 10},
 	}}
@@ -385,7 +385,7 @@ func TestSelectClosestShip_DroppedCandidateNeverWins(t *testing.T) {
 	repo, graph := selectClosestShipHarness([]*navigation.Ship{unroutable, routable}, target)
 	logger := &shipSelectorCapturingLogger{}
 	ctx := common.WithLogger(context.Background(), logger)
-	fake := &fakeRoutingClient{perShip: map[string]fakeAnswer{
+	fake := &fakeRoutePlanner{perShip: map[string]fakeAnswer{
 		"X1-TW-NEAR": {err: errors.New("no route found")}, // unroutable: this hull only, does not fail the batch
 		"X1-TW-FAR":  {seconds: 20},
 	}}

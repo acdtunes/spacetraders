@@ -11,15 +11,16 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 )
 
-// RoutePlanner handles route planning using routing client
+// RoutePlanner turns a fuel-constrained route plan into the navigation Route
+// entity the executor flies.
 type RoutePlanner struct {
-	routingClient domainRouting.RoutingClient
+	planner domainRouting.RoutePlanner
 }
 
 // NewRoutePlanner creates a new route planner
-func NewRoutePlanner(routingClient domainRouting.RoutingClient) *RoutePlanner {
+func NewRoutePlanner(planner domainRouting.RoutePlanner) *RoutePlanner {
 	return &RoutePlanner{
-		routingClient: routingClient,
+		planner: planner,
 	}
 }
 
@@ -54,17 +55,16 @@ func (p *RoutePlanner) PlanRoute(
 		PreferCruise:  preferCruise,
 	}
 
-	// Call routing client
-	routeResponse, err := p.routingClient.PlanRoute(ctx, request)
+	routeResponse, err := p.planner.PlanRoute(ctx, request)
 	if err != nil {
-		return nil, fmt.Errorf("routing client error: %w", err)
+		return nil, fmt.Errorf("route planning failed: %w", err)
 	}
 
 	// Convert route response to Route domain entity
 	return p.createRouteFromPlan(ctx, routeResponse, ship, waypoints)
 }
 
-// createRouteFromPlan creates Route entity from routing engine plan
+// createRouteFromPlan creates Route entity from a planned route
 func (p *RoutePlanner) createRouteFromPlan(
 	ctx context.Context,
 	routePlan *domainRouting.RouteResponse,
@@ -72,7 +72,7 @@ func (p *RoutePlanner) createRouteFromPlan(
 	waypointObjects map[string]*shared.Waypoint,
 ) (*domainNavigation.Route, error) {
 	if len(routePlan.Steps) == 0 {
-		return nil, fmt.Errorf("no route found: routing engine returned empty plan")
+		return nil, fmt.Errorf("no route found: the planner returned an empty plan")
 	}
 
 	p.logRoutePlan(ctx, routePlan, ship)
@@ -99,7 +99,7 @@ func (p *RoutePlanner) createRouteFromPlan(
 
 func (p *RoutePlanner) logRoutePlan(ctx context.Context, routePlan *domainRouting.RouteResponse, ship *domainNavigation.Ship) {
 	logger := common.LoggerFromContext(ctx)
-	logger.Log("INFO", "Route planning completed by routing service", map[string]interface{}{
+	logger.Log("INFO", "Route planning completed", map[string]interface{}{
 		"ship_symbol": ship.ShipSymbol(),
 		"action":      "route_plan_received",
 		"step_count":  len(routePlan.Steps),

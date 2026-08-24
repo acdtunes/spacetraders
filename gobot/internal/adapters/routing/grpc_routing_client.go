@@ -76,37 +76,6 @@ func (c *GRPCRoutingClient) Close() error {
 	return nil
 }
 
-// PlanRoute implements RoutingClient.PlanRoute using gRPC
-func (c *GRPCRoutingClient) PlanRoute(ctx context.Context, req *domainRouting.RouteRequest) (*domainRouting.RouteResponse, error) {
-	pbReq := &pb.PlanRouteRequest{
-		SystemSymbol:  req.SystemSymbol,
-		StartWaypoint: req.StartWaypoint,
-		GoalWaypoint:  req.GoalWaypoint,
-		CurrentFuel:   int32(req.CurrentFuel),
-		FuelCapacity:  int32(req.FuelCapacity),
-		EngineSpeed:   int32(req.EngineSpeed),
-		Waypoints:     convertWaypointsToPb(req.Waypoints),
-		FuelEfficient: req.FuelEfficient,
-		PreferCruise:  req.PreferCruise,
-	}
-
-	pbResp, err := c.client.PlanRoute(ctx, pbReq)
-	if err != nil {
-		return nil, fmt.Errorf("gRPC PlanRoute failed: %w", err)
-	}
-
-	if !pbResp.Success {
-		return nil, fmt.Errorf("routing failed: %s", responseErrorMessage(pbResp.ErrorMessage))
-	}
-
-	return &domainRouting.RouteResponse{
-		Steps:            convertRouteStepsFromPb(pbResp.Steps),
-		TotalFuelCost:    int(pbResp.TotalFuelCost),
-		TotalTimeSeconds: int(pbResp.TotalTimeSeconds),
-		TotalDistance:    pbResp.TotalDistance,
-	}, nil
-}
-
 // OptimizeTour implements RoutingClient.OptimizeTour using gRPC
 // Tours always return to start by definition
 func (c *GRPCRoutingClient) OptimizeTour(ctx context.Context, req *domainRouting.TourRequest) (*domainRouting.TourResponse, error) {

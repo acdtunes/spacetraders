@@ -21,23 +21,21 @@ type ETAResult struct {
 	Dropped []string           // genuinely unroutable candidates - excluded from selection
 	OK      bool               // false => caller must fall back to straight-line for ALL candidates
 	// Cause names why OK is false: "budget_exceeded" (this estimator's own budget expired),
-	// "transport_error" (the routing client failed independent of the budget), or
+	// "transport_error" (the planner failed independent of the budget), or
 	// "all_candidates_unroutable" (every candidate individually failed to route). Best-effort -
 	// under a genuine race between two failure kinds this names whichever was observed first.
 	// Empty when OK is true.
 	Cause string
 	// Elapsed is the batch's measured wall time, so a caller logging a fallback reports
-	// how much of the budget the routing service consumed, not merely that it was hit.
+	// how much of the budget planning consumed, not merely that it was hit.
 	Elapsed time.Duration
 }
 
 // DefaultRouteETABudget bounds EstimateAll's wall-clock cost when the operator has
-// configured none, so a slow or wedged routing service degrades the batch to OK=false
-// rather than stalling a dispatch decision. The routing service prices one candidate at a
-// time, so a batch costs the candidate count times one route and a budget sized for a
-// small contract fleet expires on a larger one; this one covers the fleet at the delivery
-// saturation the contract scaler grows toward. Selection runs once per contract cycle, so
-// that headroom costs nothing operationally.
+// configured none, so a wedged planner degrades the batch to OK=false rather than
+// stalling a dispatch decision. It covers the fleet at the delivery saturation the
+// contract scaler grows toward; selection runs once per contract cycle, so that
+// headroom costs nothing operationally.
 const DefaultRouteETABudget = 6 * time.Second
 
 // RouteETAEstimator prices sourcing candidates on the fuel-aware planner the
@@ -46,20 +44,20 @@ const DefaultRouteETABudget = 6 * time.Second
 // resolves to OK=false (caller keeps the straight-line ranking) or a dropped
 // candidate - never a blocked dispatch.
 type RouteETAEstimator struct {
-	client routing.RoutingClient
-	clock  shared.Clock
-	budget time.Duration
+	planner routing.RoutePlanner
+	clock   shared.Clock
+	budget  time.Duration
 }
 
 // NewRouteETAEstimator wires the estimator to the routing port already used
 // for real dispatch, so ranking and execution price routes identically. A non-positive
 // budget takes DefaultRouteETABudget - a zero budget would expire before the first route
 // answers and demote every selection to straight-line ranking.
-func NewRouteETAEstimator(client routing.RoutingClient, clock shared.Clock, budget time.Duration) *RouteETAEstimator {
+func NewRouteETAEstimator(planner routing.RoutePlanner, clock shared.Clock, budget time.Duration) *RouteETAEstimator {
 	if budget <= 0 {
 		budget = DefaultRouteETABudget
 	}
-	return &RouteETAEstimator{client: client, clock: clock, budget: budget}
+	return &RouteETAEstimator{planner: planner, clock: clock, budget: budget}
 }
 
 // Budget reports the wall-clock ceiling EstimateAll runs under so a caller logging a
@@ -73,12 +71,12 @@ func (e *RouteETAEstimator) Budget() time.Duration {
 
 // EstimateAll prices one route per ship in parallel and returns as soon as
 // every call answers or the budget expires, whichever comes first. A nil
-// receiver/client/clock or an empty fleet answers OK=false immediately rather
+// receiver/planner/clock or an empty fleet answers OK=false immediately rather
 // than doing any work - every exit is fail-open, never an error the caller
 // must handle specially. The nil-clock case guards e.clock.Now() below, the
 // one call in this file that would otherwise panic on a zero-value estimator.
 func (e *RouteETAEstimator) EstimateAll(ctx context.Context, ships []*navigation.Ship, systemSymbol, goalWaypoint string, waypoints map[string]*shared.Waypoint) ETAResult {
-	if e == nil || e.client == nil || e.clock == nil || len(ships) == 0 {
+	if e == nil || e.planner == nil || e.clock == nil || len(ships) == 0 {
 		return ETAResult{OK: false}
 	}
 	ctx, cancel := context.WithTimeout(ctx, e.budget)
@@ -95,7 +93,7 @@ func (e *RouteETAEstimator) EstimateAll(ctx context.Context, ships []*navigation
 		drop   bool
 		global bool
 		cause  string // set alongside global - see ETAResult.Cause
-		// routeCall is this candidate's PlanRoute duration, carried back rather than logged
+		// routeCall is this candidate's planning duration, carried back rather than logged
 		// in the goroutine so batch timing is reported off the concurrent path.
 		routeCall time.Duration
 	}
@@ -139,7 +137,7 @@ func (e *RouteETAEstimator) EstimateAll(ctx context.Context, ships []*navigation
 			// Fuel is deducted at departure in this game, so an in-transit
 			// hull's current fuel already IS its arrival fuel - no adjustment.
 			callStart := e.clock.Now()
-			resp, err := e.client.PlanRoute(ctx, &routing.RouteRequest{
+			resp, err := e.planner.PlanRoute(ctx, &routing.RouteRequest{
 				SystemSymbol:  systemSymbol,
 				StartWaypoint: loc.Symbol, // invariant: destination while in transit
 				GoalWaypoint:  goalWaypoint,
@@ -154,12 +152,12 @@ func (e *RouteETAEstimator) EstimateAll(ctx context.Context, ships []*navigation
 				switch {
 				case ctx.Err() != nil:
 					// OUR OWN budget (or the caller's ctx) has already expired - checked first
-					// because a client that itself honors ctx will often return a
+					// because a planner that itself honors ctx will often return a
 					// context.DeadlineExceeded-shaped error once that happens, and that shape
 					// must not be mistaken for an independent transport-class failure below.
 					answers <- answer{symbol: ship.ShipSymbol(), global: true, cause: "budget_exceeded", routeCall: routeCall}
 				case errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled):
-					// The client failed with a deadline/cancellation shape on its own, while OUR
+					// The planner failed with a deadline/cancellation shape on its own, while OUR
 					// ctx is still healthy - a downstream timeout or cancellation, not our budget.
 					answers <- answer{symbol: ship.ShipSymbol(), global: true, cause: "transport_error", routeCall: routeCall}
 				default:
@@ -171,8 +169,7 @@ func (e *RouteETAEstimator) EstimateAll(ctx context.Context, ships []*navigation
 		}(ship)
 	}
 
-	// The slowest single call is what a batch's wall time tracks, because the routing
-	// service prices candidates one at a time however many the estimator asks for at once.
+	// The slowest single call is what a batch's wall time tracks.
 	var slowestCall time.Duration
 	slowestShip := ""
 	for range routable {

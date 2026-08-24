@@ -56,10 +56,13 @@ func TestGRPCRoutingClient_RPCFailsPromptlyWhenServiceDown(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, rpcErr := client.PlanRoute(ctx, &domainRouting.RouteRequest{
-			SystemSymbol:  "X1-TEST",
-			StartWaypoint: "X1-TEST-A1",
-			GoalWaypoint:  "X1-TEST-B2",
+		_, rpcErr := client.PartitionFleet(ctx, &domainRouting.VRPRequest{
+			SystemSymbol:    "X1-TEST",
+			ShipSymbols:     []string{"TEST-1"},
+			MarketWaypoints: []string{"X1-TEST-B2"},
+			ShipConfigs: map[string]*domainRouting.ShipConfigData{
+				"TEST-1": {CurrentLocation: "X1-TEST-A1", FuelCapacity: 400, EngineSpeed: 30},
+			},
 		})
 		done <- rpcErr
 	}()

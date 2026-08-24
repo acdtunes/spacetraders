@@ -19,9 +19,9 @@ const (
 	etaTestGoal   = "X1-TW-GOAL"
 )
 
-// fakeRoutingClient records concurrency (peak in-flight calls) and answers
+// fakeRoutePlanner records concurrency (peak in-flight calls) and answers
 // PlanRoute per candidate, keyed by the request's StartWaypoint.
-type fakeRoutingClient struct {
+type fakeRoutePlanner struct {
 	mu          sync.Mutex
 	inFlight    int32
 	maxInFlight int32
@@ -34,7 +34,7 @@ type fakeAnswer struct {
 	err     error
 }
 
-func (f *fakeRoutingClient) PlanRoute(ctx context.Context, req *routing.RouteRequest) (*routing.RouteResponse, error) {
+func (f *fakeRoutePlanner) PlanRoute(ctx context.Context, req *routing.RouteRequest) (*routing.RouteResponse, error) {
 	cur := atomic.AddInt32(&f.inFlight, 1)
 	defer atomic.AddInt32(&f.inFlight, -1)
 	for {
@@ -55,32 +55,6 @@ func (f *fakeRoutingClient) PlanRoute(ctx context.Context, req *routing.RouteReq
 		return nil, a.err
 	}
 	return &routing.RouteResponse{TotalTimeSeconds: a.seconds}, nil
-}
-
-// The remaining RoutingClient methods are unused by RouteETAEstimator; stubbed
-// only so fakeRoutingClient satisfies the port.
-func (f *fakeRoutingClient) OptimizeTour(ctx context.Context, req *routing.TourRequest) (*routing.TourResponse, error) {
-	return nil, errors.New("fakeRoutingClient: OptimizeTour not used by RouteETAEstimator")
-}
-
-func (f *fakeRoutingClient) OptimizeFueledTour(ctx context.Context, req *routing.FueledTourRequest) (*routing.FueledTourResponse, error) {
-	return nil, errors.New("fakeRoutingClient: OptimizeFueledTour not used by RouteETAEstimator")
-}
-
-func (f *fakeRoutingClient) PartitionFleet(ctx context.Context, req *routing.VRPRequest) (*routing.VRPResponse, error) {
-	return nil, errors.New("fakeRoutingClient: PartitionFleet not used by RouteETAEstimator")
-}
-
-func (f *fakeRoutingClient) OptimizeTradeTour(
-	ctx context.Context,
-	snapshot []routing.TourGoodSnapshot,
-	waypoints []routing.TourWaypoint,
-	ship routing.TourShipState,
-	cons routing.TourConstraints,
-	deposits []routing.TourDepositCandidate,
-	absorption []routing.TourMarketAbsorption,
-) (*routing.TourPlan, error) {
-	return nil, errors.New("fakeRoutingClient: OptimizeTradeTour not used by RouteETAEstimator")
 }
 
 func testClock() *shared.MockClock {
@@ -129,7 +103,7 @@ func newETAShipWithStatus(t *testing.T, symbol, waypointSymbol string, status na
 func TestRouteETA_HappyPath_AllPriced_OKTrue(t *testing.T) {
 	shipA := newETAShip(t, "TORWIND-A", "X1-TW-A1")
 	shipB := newETAShip(t, "TORWIND-B", "X1-TW-A2")
-	fake := &fakeRoutingClient{perShip: map[string]fakeAnswer{
+	fake := &fakeRoutePlanner{perShip: map[string]fakeAnswer{
 		"X1-TW-A1": {seconds: 42},
 		"X1-TW-A2": {seconds: 77},
 	}}
@@ -156,7 +130,7 @@ func TestRouteETA_InTransitHull_AddsRemainingTransit(t *testing.T) {
 	arrival := clock.CurrentTime.Add(90 * time.Second)
 	transiting := newInTransitETAShip(t, "TORWIND-C", "X1-TW-C", &arrival)
 	unpriceable := newInTransitETAShip(t, "TORWIND-D", "X1-TW-D", nil)
-	fake := &fakeRoutingClient{perShip: map[string]fakeAnswer{
+	fake := &fakeRoutePlanner{perShip: map[string]fakeAnswer{
 		"X1-TW-C": {seconds: 60},
 	}}
 	estimator := NewRouteETAEstimator(fake, clock, 0)
@@ -180,7 +154,7 @@ func TestRouteETA_InTransitHull_AddsRemainingTransit(t *testing.T) {
 func TestRouteETA_OneUnroutable_DroppedOthersKept(t *testing.T) {
 	good := newETAShip(t, "TORWIND-E", "X1-TW-E")
 	bad := newETAShip(t, "TORWIND-F", "X1-TW-F")
-	fake := &fakeRoutingClient{perShip: map[string]fakeAnswer{
+	fake := &fakeRoutePlanner{perShip: map[string]fakeAnswer{
 		"X1-TW-E": {seconds: 55},
 		"X1-TW-F": {err: errors.New("no route found")},
 	}}
@@ -221,7 +195,7 @@ func newETAShipNilLocation(t *testing.T, symbol string) *navigation.Ship {
 func TestRouteETA_NilCurrentLocation_DroppedOthersKept(t *testing.T) {
 	good := newETAShip(t, "TORWIND-M", "X1-TW-M")
 	noLocation := newETAShipNilLocation(t, "TORWIND-N")
-	fake := &fakeRoutingClient{perShip: map[string]fakeAnswer{
+	fake := &fakeRoutePlanner{perShip: map[string]fakeAnswer{
 		"X1-TW-M": {seconds: 21},
 	}}
 	estimator := NewRouteETAEstimator(fake, testClock(), 0)
@@ -245,7 +219,7 @@ func TestRouteETA_NilCurrentLocation_DroppedOthersKept(t *testing.T) {
 func TestRouteETA_AllUnroutable_OKFalse(t *testing.T) {
 	shipG := newETAShip(t, "TORWIND-G", "X1-TW-G")
 	shipH := newETAShip(t, "TORWIND-H", "X1-TW-H")
-	fake := &fakeRoutingClient{perShip: map[string]fakeAnswer{
+	fake := &fakeRoutePlanner{perShip: map[string]fakeAnswer{
 		"X1-TW-G": {err: errors.New("no route found")},
 		"X1-TW-H": {err: errors.New("no route found")},
 	}}
@@ -268,7 +242,7 @@ func TestRouteETA_AllUnroutable_OKFalse(t *testing.T) {
 
 func TestRouteETA_BudgetOverrun_OKFalse(t *testing.T) {
 	ship := newETAShip(t, "TORWIND-I", "X1-TW-I")
-	fake := &fakeRoutingClient{delay: 2 * time.Second}
+	fake := &fakeRoutePlanner{delay: 2 * time.Second}
 	estimator := NewRouteETAEstimator(fake, testClock(), 50*time.Millisecond)
 
 	start := time.Now()
@@ -291,7 +265,7 @@ func TestRouteETA_BudgetOverrun_OKFalse(t *testing.T) {
 // A configured budget is the one EstimateAll enforces - the knob is not merely stored.
 func TestRouteETA_ConfiguredBudget_IsTheOneEnforced(t *testing.T) {
 	ship := newETAShip(t, "TORWIND-P", "X1-TW-P")
-	fake := &fakeRoutingClient{delay: 5 * time.Second}
+	fake := &fakeRoutePlanner{delay: 5 * time.Second}
 	estimator := NewRouteETAEstimator(fake, testClock(), 120*time.Millisecond)
 
 	if estimator.Budget() != 120*time.Millisecond {
@@ -318,7 +292,7 @@ func TestRouteETA_ConfiguredBudget_IsTheOneEnforced(t *testing.T) {
 // every selection to straight-line ranking.
 func TestRouteETA_NonPositiveBudget_TakesTheDefault(t *testing.T) {
 	for _, budget := range []time.Duration{0, -1 * time.Second} {
-		estimator := NewRouteETAEstimator(&fakeRoutingClient{}, testClock(), budget)
+		estimator := NewRouteETAEstimator(&fakeRoutePlanner{}, testClock(), budget)
 		if estimator.Budget() != DefaultRouteETABudget {
 			t.Fatalf("budget %v: expected the default %v, got %v", budget, DefaultRouteETABudget, estimator.Budget())
 		}
@@ -336,7 +310,7 @@ func TestRouteETA_NilEstimator_BudgetIsZeroNotAPanic(t *testing.T) {
 func TestRouteETA_TransportClassError_OKFalse(t *testing.T) {
 	timedOut := newETAShip(t, "TORWIND-J", "X1-TW-J")
 	fine := newETAShip(t, "TORWIND-K", "X1-TW-K")
-	fake := &fakeRoutingClient{perShip: map[string]fakeAnswer{
+	fake := &fakeRoutePlanner{perShip: map[string]fakeAnswer{
 		"X1-TW-J": {err: fmt.Errorf("upstream: %w", context.DeadlineExceeded)},
 		"X1-TW-K": {seconds: 33},
 	}}
@@ -363,7 +337,7 @@ func TestRouteETA_TransportClassError_OKFalse(t *testing.T) {
 // TestRouteETA_NilClock_OKFalse: a RouteETAEstimator built without its clock (the zero value, or
 // a caller that skips NewRouteETAEstimator) must fail open rather than panic on e.clock.Now().
 func TestRouteETA_NilClock_OKFalse(t *testing.T) {
-	estimator := &RouteETAEstimator{client: &fakeRoutingClient{perShip: map[string]fakeAnswer{
+	estimator := &RouteETAEstimator{planner: &fakeRoutePlanner{perShip: map[string]fakeAnswer{
 		"X1-TW-Z": {seconds: 10},
 	}}}
 	ship := newETAShip(t, "TORWIND-Z", "X1-TW-Z")
@@ -382,7 +356,7 @@ func TestRouteETA_CallsRunInParallel(t *testing.T) {
 		newETAShip(t, "TORWIND-L3", "X1-TW-L3"),
 		newETAShip(t, "TORWIND-L4", "X1-TW-L4"),
 	}
-	fake := &fakeRoutingClient{
+	fake := &fakeRoutePlanner{
 		delay: 50 * time.Millisecond,
 		perShip: map[string]fakeAnswer{
 			"X1-TW-L1": {seconds: 10},

@@ -1,0 +1,3042 @@
+{
+  "cases": [
+    {
+      "graph": "X1-MG48",
+      "name": "mg48_full_tank_long_haul",
+      "request": {
+        "current_fuel": 400,
+        "engine_speed": 36,
+        "fuel_capacity": 400,
+        "fuel_efficient": false,
+        "goal_waypoint": "X1-MG48-J86",
+        "prefer_cruise": false,
+        "start_waypoint": "X1-MG48-J70",
+        "system_symbol": "X1-MG48"
+      },
+      "response": {
+        "error_message": "",
+        "steps": [
+          {
+            "action": "TRAVEL",
+            "distance": 71.84010022264724,
+            "fuel_cost": 144,
+            "mode": "BURN",
+            "refuel_amount": 0,
+            "time_seconds": 29,
+            "waypoint": "X1-MG48-J73"
+          },
+          {
+            "action": "TRAVEL",
+            "distance": 1489.0063801072176,
+            "fuel_cost": 5,
+            "mode": "DRIFT",
+            "refuel_amount": 0,
+            "time_seconds": 101075,
+            "waypoint": "X1-MG48-J86"
+          }
+        ],
+        "success": true,
+        "total_distance": 1560.8464803298648,
+        "total_fuel_cost": 149,
+        "total_time_seconds": 101104
+      },
+      "tie_class": "exact",
+      "waypoint_order": "sorted"
+    },
+    {
+      "graph": "X1-MG48",
+      "name": "mg48_full_tank_freighter",
+      "request": {
+        "current_fuel": 600,
+        "engine_speed": 15,
+        "fuel_capacity": 600,
+        "fuel_efficient": false,
+        "goal_waypoint": "X1-MG48-J86",
+        "prefer_cruise": false,
+        "start_waypoint": "X1-MG48-J70",
+        "system_symbol": "X1-MG48"
+      },
+      "response": {
+        "error_message": "",
+        "steps": [
+          {
+            "action": "TRAVEL",
+            "distance": 71.84010022264724,
+            "fuel_cost": 144,
+            "mode": "BURN",
+            "refuel_amount": 0,
+            "time_seconds": 71,
+            "waypoint": "X1-MG48-J73"
+          },
+          {
+            "action": "TRAVEL",
+            "distance": 461.0249450951651,
+            "fuel_cost": 2,
+            "mode": "DRIFT",
+            "refuel_amount": 0,
+            "time_seconds": 100799,
+            "waypoint": "X1-MG48-B29"
+          },
+          {
+            "action": "TRAVEL",
+            "distance": 174.4706279005151,
+            "fuel_cost": 349,
+            "mode": "BURN",
+            "refuel_amount": 0,
+            "time_seconds": 174,
+            "waypoint": "X1-MG48-I59"
+          },
+          {
+            "action": "REFUEL",
+            "distance": 0.0,
+            "fuel_cost": 0,
+            "mode": "CRUISE",
+            "refuel_amount": 495,
+            "time_seconds": 0,
+            "waypoint": "X1-MG48-I59"
+          },
+          {
+            "action": "TRAVEL",
+            "distance": 204.37710243566914,
+            "fuel_cost": 409,
+            "mode": "BURN",
+            "refuel_amount": 0,
+            "time_seconds": 204,
+            "waypoint": "X1-MG48-F50"
+          },
+          {
+            "action": "REFUEL",
+            "distance": 0.0,
+            "fuel_cost": 0,
+            "mode": "CRUISE",
+            "refuel_amount": 409,
+            "time_seconds": 0,
+            "waypoint": "X1-MG48-F50"
+          },
+          {
+            "action": "TRAVEL",
+            "distance": 146.53668482670133,
+            "fuel_cost": 294,
+            "mode": "BURN",
+            "refuel_amount": 0,
+            "time_seconds": 146,
+            "waypoint": "X1-MG48-B6"
+          },
+          {
+            "action": "REFUEL",
+            "distance": 0.0,
+            "fuel_cost": 0,
+            "mode": "CRUISE",
+            "refuel_amount": 294,
+            "time_seconds": 0,
+            "waypoint": "X1-MG48-B6"
+          },
+          {
+            "action": "TRAVEL",
+            "distance": 592.3926063009227,
+            "fuel_cost": 593,
+            "mode": "CRUISE",
+            "refuel_amount": 0,
+            "time_seconds": 1224,
+            "waypoint": "X1-MG48-J86"
+          }
+        ],
+        "success": true,
+        "total_distance": 1650.6420667816205,
+        "total_fuel_cost": 1791,
+        "total_time_seconds": 102618
+      },
+      "tie_class": "exact",
+      "waypoint_order": "sorted"
+    },
+    {
+      "graph": "X1-MG48",
+      "name": "mg48_mid_range_partial_tank",
+      "request": {
+        "current_fuel": 210,
+        "engine_speed": 36,
+        "fuel_capacity": 400,
+        "fuel_efficient": false,
+        "goal_waypoint": "X1-MG48-K90",
+        "prefer_cruise": false,
+        "start_waypoint": "X1-MG48-B10",
+        "system_symbol": "X1-MG48"
+      },
+      "response": {
+        "error_message": "",
+        "steps": [
+          {
+            "action": "TRAVEL",
+            "distance": 247.25695136840946,
+            "fuel_cost": 1,
+            "mode": "DRIFT",
+            "refuel_amount": 0,
+            "time_seconds": 100178,
+            "waypoint": "X1-MG48-D43"
+          },
+          {
+            "action": "REFUEL",
+            "distance": 0.0,
+            "fuel_cost": 0,
+            "mode": "CRUISE",
+            "refuel_amount": 191,
+            "time_seconds": 0,
+            "waypoint": "X1-MG48-D43"
+          },
+          {
+            "action": "TRAVEL",
+            "distance": 83.73768566183328,
+            "fuel_cost": 168,
+            "mode": "BURN",
+            "refuel_amount": 0,
+            "time_seconds": 34,
+            "waypoint": "X1-MG48-A1"
+          },
+          {
+            "action": "TRAVEL",
+            "distance": 102.80077820717118,
+            "fuel_cost": 206,
+            "mode": "BURN",
+            "refuel_amount": 0,
+            "time_seconds": 42,
+            "waypoint": "X1-MG48-K90"
+          }
+        ],
+        "success": true,
+        "total_distance": 433.7954152374139,
+        "total_fuel_cost": 375,
+        "total_time_seconds": 100254
+      },
+      "tie_class": "exact",
+      "waypoint_order": "sorted"
+    },
+    {
+      "graph": "X1-MG48",
+      "name": "mg48_orbital_cluster_hop",
+      "request": {
+        "current_fuel": 400,
+        "engine_speed": 36,
+        "fuel_capacity": 400,
+        "fuel_efficient": false,
+        "goal_waypoint": "X1-MG48-A4",
+        "prefer_cruise": false,
+        "start_waypoint": "X1-MG48-A1",
+        "system_symbol": "X1-MG48"
+      },
+      "response": {
+        "error_message": "",
+        "steps": [
+          {
+            "action": "TRAVEL",
+            "distance": 0.0,
+            "fuel_cost": 0,
+            "mode": "CRUISE",
+            "refuel_amount": 0,
+            "time_seconds": 1,
+            "waypoint": "X1-MG48-A4"
+          }
+        ],
+        "success": true,
+        "total_distance": 0.0,
+        "total_fuel_cost": 0,
+        "total_time_seconds": 1
+      },
+      "tie_class": "exact",
+      "waypoint_order": "sorted"
+    },
+    {
+      "graph": "X1-MG48",
+      "name": "mg48_same_waypoint",
+      "request": {
+        "current_fuel": 400,
+        "engine_speed": 36,
+        "fuel_capacity": 400,
+        "fuel_efficient": false,
+        "goal_waypoint": "X1-MG48-A1",
+        "prefer_cruise": false,
+        "start_waypoint": "X1-MG48-A1",
+        "system_symbol": "X1-MG48"
+      },
+      "response": {
+        "error_message": "",
+        "steps": [],
+        "success": true,
+        "total_distance": 0.0,
+        "total_fuel_cost": 0,
+        "total_time_seconds": 0
+      },
+      "tie_class": "exact",
+      "waypoint_order": "sorted"
+    },
+    {
+      "graph": "X1-MG48",
+      "name": "mg48_start_below_ninety_percent",
+      "request": {
+        "current_fuel": 300,
+        "engine_speed": 36,
+        "fuel_capacity": 400,
+        "fuel_efficient": false,
+        "goal_waypoint": "X1-MG48-E47",
+        "prefer_cruise": false,
+        "start_waypoint": "X1-MG48-A1",
+        "system_symbol": "X1-MG48"
+      },
+      "response": {
+        "error_message": "",
+        "steps": [
+          {
+            "action": "REFUEL",
+            "distance": 0.0,
+            "fuel_cost": 0,
+            "mode": "CRUISE",
+            "refuel_amount": 100,
+            "time_seconds": 0,
+            "waypoint": "X1-MG48-A1"
+          },
+          {
+            "action": "TRAVEL",
+            "distance": 55.02726596879042,
+            "fuel_cost": 111,
+            "mode": "BURN",
+            "refuel_amount": 0,
+            "time_seconds": 22,
+            "waypoint": "X1-MG48-E47"
+          }
+        ],
+        "success": true,
+        "total_distance": 55.02726596879042,
+        "total_fuel_cost": 111,
+        "total_time_seconds": 22
+      },
+      "tie_class": "exact",
+      "waypoint_order": "sorted"
+    },
+    {
+      "graph": "X1-MG48",
+      "name": "mg48_start_above_ninety_percent",
+      "request": {
+        "current_fuel": 399,
+        "engine_speed": 36,
+        "fuel_capacity": 400,
+        "fuel_efficient": false,
+        "goal_waypoint": "X1-MG48-AX5C",
+        "prefer_cruise": false,
+        "start_waypoint": "X1-MG48-A1",
+        "system_symbol": "X1-MG48"
+      },
+      "response": {
+        "error_message": "",
+        "steps": [
+          {
+            "action": "TRAVEL",
+            "distance": 39.319206502675,
+            "fuel_cost": 79,
+            "mode": "BURN",
+            "refuel_amount": 0,
+            "time_seconds": 16,
+            "waypoint": "X1-MG48-AX5C"
+          }
+        ],
+        "success": true,
+        "total_distance": 39.319206502675,
+        "total_fuel_cost": 79,
+        "total_time_seconds": 16
+      },
+      "tie_class": "exact",
+      "waypoint_order": "sorted"
+    },
+    {
+      "graph": "X1-MG48",
+      "name": "mg48_long_refuel_chain",
+      "request": {
+        "current_fuel": 400,
+        "engine_speed": 36,
+        "fuel_capacity": 400,
+        "fuel_efficient": false,
+        "goal_waypoint": "X1-MG48-B39",
+        "prefer_cruise": false,
+        "start_waypoint": "X1-MG48-J74",
+        "system_symbol": "X1-MG48"
+      },
+      "response": {
+        "error_message": "",
+        "steps": [
+          {
+            "action": "TRAVEL",
+            "distance": 126.19429464123962,
+            "fuel_cost": 253,
+            "mode": "BURN",
+            "refuel_amount": 0,
+            "time_seconds": 52,
+            "waypoint": "X1-MG48-J61"
+          },
+          {
+            "action": "REFUEL",
+            "distance": 0.0,
+            "fuel_cost": 0,
+            "mode": "CRUISE",
+            "refuel_amount": 253,
+            "time_seconds": 0,
+            "waypoint": "X1-MG48-J61"
+          },
+          {
+            "action": "TRAVEL",
+            "distance": 120.91732712891069,
+            "fuel_cost": 242,
+            "mode": "BURN",
+            "refuel_amount": 0,
+            "time_seconds": 50,
+            "waypoint": "X1-MG48-J60"
+          },
+          {
+            "action": "REFUEL",
+            "distance": 0.0,
+            "fuel_cost": 0,
+            "mode": "CRUISE",
+            "refuel_amount": 242,
+            "time_seconds": 0,
+            "waypoint": "X1-MG48-J60"
+          },
+          {
+            "action": "TRAVEL",
+            "distance": 149.21461054467824,
+            "fuel_cost": 299,
+            "mode": "BURN",
+            "refuel_amount": 0,
+            "time_seconds": 62,
+            "waypoint": "X1-MG48-I58"
+          },
+          {
+            "action": "REFUEL",
+            "distance": 0.0,
+            "fuel_cost": 0,
+            "mode": "CRUISE",
+            "refuel_amount": 299,
+            "time_seconds": 0,
+            "waypoint": "X1-MG48-I58"
+          },
+          {
+            "action": "TRAVEL",
+            "distance": 95.13148795220224,
+            "fuel_cost": 96,
+            "mode": "CRUISE",
+            "refuel_amount": 0,
+            "time_seconds": 81,
+            "waypoint": "X1-MG48-B32"
+          },
+          {
+            "action": "TRAVEL",
+            "distance": 123.43419299367578,
+            "fuel_cost": 247,
+            "mode": "BURN",
+            "refuel_amount": 0,
+            "time_seconds": 51,
+            "waypoint": "X1-MG48-I59"
+          },
+          {
+            "action": "REFUEL",
+            "distance": 0.0,
+            "fuel_cost": 0,
+            "mode": "CRUISE",
+            "refuel_amount": 343,
+            "time_seconds": 0,
+            "waypoint": "X1-MG48-I59"
+          },
+          {
+            "action": "TRAVEL",
+            "distance": 125.87692401707312,
+            "fuel_cost": 252,
+            "mode": "BURN",
+            "refuel_amount": 0,
+            "time_seconds": 52,
+            "waypoint": "X1-MG48-K90"
+          },
+          {
+            "action": "REFUEL",
+            "distance": 0.0,
+            "fuel_cost": 0,
+            "mode": "CRUISE",
+            "refuel_amount": 252,
+            "time_seconds": 0,
+            "waypoint": "X1-MG48-K90"
+          },
+          {
+            "action": "TRAVEL",
+            "distance": 85.84287972802403,
+            "fuel_cost": 172,
+            "mode": "BURN",
+            "refuel_amount": 0,
+            "time_seconds": 35,
+            "waypoint": "X1-MG48-F50"
+          },
+          {
+            "action": "REFUEL",
+            "distance": 0.0,
+            "fuel_cost": 0,
+            "mode": "CRUISE",
+            "refuel_amount": 172,
+            "time_seconds": 0,
+            "waypoint": "X1-MG48-F50"
+          },
+          {
+            "action": "TRAVEL",
+            "distance": 146.53668482670133,
+            "fuel_cost": 294,
+            "mode": "BURN",
+            "refuel_amount": 0,
+            "time_seconds": 61,
+            "waypoint": "X1-MG48-B6"
+          },
+          {
+            "action": "REFUEL",
+            "distance": 0.0,
+            "fuel_cost": 0,
+            "mode": "CRUISE",
+            "refuel_amount": 294,
+            "time_seconds": 0,
+            "waypoint": "X1-MG48-B6"
+          },
+          {
+            "action": "TRAVEL",
+            "distance": 183.56470248934025,
+            "fuel_cost": 368,
+            "mode": "BURN",
+            "refuel_amount": 0,
+            "time_seconds": 76,
+            "waypoint": "X1-MG48-B39"
+          }
+        ],
+        "success": true,
+        "total_distance": 1156.7131043218453,
+        "total_fuel_cost": 2223,
+        "total_time_seconds": 520
+      },
+      "tie_class": "exact",
+      "waypoint_order": "sorted"
+    },
+    {
+      "graph": "X1-MG48",
+      "name": "mg48_long_refuel_chain_prefer_cruise",
+      "request": {
+        "current_fuel": 400,
+        "engine_speed": 36,
+        "fuel_capacity": 400,
+        "fuel_efficient": false,
+        "goal_waypoint": "X1-MG48-B39",
+        "prefer_cruise": true,
+        "start_waypoint": "X1-MG48-J74",
+        "system_symbol": "X1-MG48"
+      },
+      "response": {
+        "error_message": "",
+        "steps": [
+          {
+            "action": "TRAVEL",
+            "distance": 343.02332282222443,
+            "fuel_cost": 344,
+            "mode": "CRUISE",
+            "refuel_amount": 0,
+            "time_seconds": 295,
+            "waypoint": "X1-MG48-I58"
+          },
+          {
+            "action": "REFUEL",
+            "distance": 0.0,
+            "fuel_cost": 0,
+            "mode": "CRUISE",
+            "refuel_amount": 344,
+            "time_seconds": 0,
+            "waypoint": "X1-MG48-I58"
+          },
+          {
+            "action": "TRAVEL",
+            "distance": 217.79348015953096,
+            "fuel_cost": 218,
+            "mode": "CRUISE",
+            "refuel_amount": 0,
+            "time_seconds": 187,
+            "waypoint": "X1-MG48-I59"
+          },
+          {
+            "action": "REFUEL",
+            "distance": 0.0,
+            "fuel_cost": 0,
+            "mode": "CRUISE",
+            "refuel_amount": 218,
+            "time_seconds": 0,
+            "waypoint": "X1-MG48-I59"
+          },
+          {
+            "action": "TRAVEL",
+            "distance": 331.2959402105616,
+            "fuel_cost": 332,
+            "mode": "CRUISE",
+            "refuel_amount": 0,
+            "time_seconds": 285,
+            "waypoint": "X1-MG48-B6"
+          },
+          {
+            "action": "REFUEL",
+            "distance": 0.0,
+            "fuel_cost": 0,
+            "mode": "CRUISE",
+            "refuel_amount": 332,
+            "time_seconds": 0,
+            "waypoint": "X1-MG48-B6"
+          },
+          {
+            "action": "TRAVEL",
+            "distance": 183.56470248934025,
+            "fuel_cost": 184,
+            "mode": "CRUISE",
+            "refuel_amount": 0,
+            "time_seconds": 158,
+            "waypoint": "X1-MG48-B39"
+          }
+        ],
+        "success": true,
+        "total_distance": 1075.6774456816572,
+        "total_fuel_cost": 1078,
+        "total_time_seconds": 925
+      },
+      "tie_class": "exact",
+      "waypoint_order": "sorted"
+    },
+    {
+      "graph": "X1-MG48",
+      "name": "mg48_long_refuel_chain_freighter",
+      "request": {
+        "current_fuel": 600,
+        "engine_speed": 15,
+        "fuel_capacity": 600,
+        "fuel_efficient": false,
+        "goal_waypoint": "X1-MG48-B39",
+        "prefer_cruise": false,
+        "start_waypoint": "X1-MG48-J74",
+        "system_symbol": "X1-MG48"
+      },
+      "response": {
+        "error_message": "",
+        "steps": [
+          {
+            "action": "TRAVEL",
+            "distance": 208.6911593719293,
+            "fuel_cost": 418,
+            "mode": "BURN",
+            "refuel_amount": 0,
+            "time_seconds": 208,
+            "waypoint": "X1-MG48-J60"
+          },
+          {
+            "action": "REFUEL",
+            "distance": 0.0,
+            "fuel_cost": 0,
+            "mode": "CRUISE",
+            "refuel_amount": 418,
+            "time_seconds": 0,
+            "waypoint": "X1-MG48-J60"
+          },
+          {
+            "action": "TRAVEL",
+            "distance": 149.21461054467824,
+            "fuel_cost": 299,
+            "mode": "BURN",
+            "refuel_amount": 0,
+            "time_seconds": 149,
+            "waypoint": "X1-MG48-I58"
+          },
+          {
+            "action": "REFUEL",
+            "distance": 0.0,
+            "fuel_cost": 0,
+            "mode": "CRUISE",
+            "refuel_amount": 299,
+            "time_seconds": 0,
+            "waypoint": "X1-MG48-I58"
+          },
+          {
+            "action": "TRAVEL",
+            "distance": 217.79348015953096,
+            "fuel_cost": 436,
+            "mode": "BURN",
+            "refuel_amount": 0,
+            "time_seconds": 217,
+            "waypoint": "X1-MG48-I59"
+          },
+          {
+            "action": "REFUEL",
+            "distance": 0.0,
+            "fuel_cost": 0,
+            "mode": "CRUISE",
+            "refuel_amount": 436,
+            "time_seconds": 0,
+            "waypoint": "X1-MG48-I59"
+          },
+          {
+            "action": "TRAVEL",
+            "distance": 204.37710243566914,
+            "fuel_cost": 409,
+            "mode": "BURN",
+            "refuel_amount": 0,
+            "time_seconds": 204,
+            "waypoint": "X1-MG48-F50"
+          },
+          {
+            "action": "REFUEL",
+            "distance": 0.0,
+            "fuel_cost": 0,
+            "mode": "CRUISE",
+            "refuel_amount": 409,
+            "time_seconds": 0,
+            "waypoint": "X1-MG48-F50"
+          },
+          {
+            "action": "TRAVEL",
+            "distance": 146.53668482670133,
+            "fuel_cost": 294,
+            "mode": "BURN",
+            "refuel_amount": 0,
+            "time_seconds": 146,
+            "waypoint": "X1-MG48-B6"
+          },
+          {
+            "action": "REFUEL",
+            "distance": 0.0,
+            "fuel_cost": 0,
+            "mode": "CRUISE",
+            "refuel_amount": 294,
+            "time_seconds": 0,
+            "waypoint": "X1-MG48-B6"
+          },
+          {
+            "action": "TRAVEL",
+            "distance": 183.56470248934025,
+            "fuel_cost": 368,
+            "mode": "BURN",
+            "refuel_amount": 0,
+            "time_seconds": 183,
+            "waypoint": "X1-MG48-B39"
+          }
+        ],
+        "success": true,
+        "total_distance": 1110.177739827849,
+        "total_fuel_cost": 2224,
+        "total_time_seconds": 1107
+      },
+      "tie_class": "exact",
+      "waypoint_order": "sorted"
+    },
+    {
+      "graph": "X1-MG48",
+      "name": "mg48_refuel_chain_from_dry_station",
+      "request": {
+        "current_fuel": 60,
+        "engine_speed": 36,
+        "fuel_capacity": 400,
+        "fuel_efficient": false,
+        "goal_waypoint": "X1-MG48-B38",
+        "prefer_cruise": false,
+        "start_waypoint": "X1-MG48-J61",
+        "system_symbol": "X1-MG48"
+      },
+      "response": {
+        "error_message": "",
+        "steps": [
+          {
+            "action": "REFUEL",
+            "distance": 0.0,
+            "fuel_cost": 0,
+            "mode": "CRUISE",
+            "refuel_amount": 340,
+            "time_seconds": 0,
+            "waypoint": "X1-MG48-J61"
+          },
+          {
+            "action": "TRAVEL",
+            "distance": 120.91732712891069,
+            "fuel_cost": 242,
+            "mode": "BURN",
+            "refuel_amount": 0,
+            "time_seconds": 50,
+            "waypoint": "X1-MG48-J60"
+          },
+          {
+            "action": "REFUEL",
+            "distance": 0.0,
+            "fuel_cost": 0,
+            "mode": "CRUISE",
+            "refuel_amount": 242,
+            "time_seconds": 0,
+            "waypoint": "X1-MG48-J60"
+          },
+          {
+            "action": "TRAVEL",
+            "distance": 149.21461054467824,
+            "fuel_cost": 299,
+            "mode": "BURN",
+            "refuel_amount": 0,
+            "time_seconds": 62,
+            "waypoint": "X1-MG48-I58"
+          },
+          {
+            "action": "REFUEL",
+            "distance": 0.0,
+            "fuel_cost": 0,
+            "mode": "CRUISE",
+            "refuel_amount": 299,
+            "time_seconds": 0,
+            "waypoint": "X1-MG48-I58"
+          },
+          {
+            "action": "TRAVEL",
+            "distance": 95.13148795220224,
+            "fuel_cost": 96,
+            "mode": "CRUISE",
+            "refuel_amount": 0,
+            "time_seconds": 81,
+            "waypoint": "X1-MG48-B32"
+          },
+          {
+            "action": "TRAVEL",
+            "distance": 123.43419299367578,
+            "fuel_cost": 247,
+            "mode": "BURN",
+            "refuel_amount": 0,
+            "time_seconds": 51,
+            "waypoint": "X1-MG48-I59"
+          },
+          {
+            "action": "REFUEL",
+            "distance": 0.0,
+            "fuel_cost": 0,
+            "mode": "CRUISE",
+            "refuel_amount": 343,
+            "time_seconds": 0,
+            "waypoint": "X1-MG48-I59"
+          },
+          {
+            "action": "TRAVEL",
+            "distance": 125.87692401707312,
+            "fuel_cost": 252,
+            "mode": "BURN",
+            "refuel_amount": 0,
+            "time_seconds": 52,
+            "waypoint": "X1-MG48-K90"
+          },
+          {
+            "action": "REFUEL",
+            "distance": 0.0,
+            "fuel_cost": 0,
+            "mode": "CRUISE",
+            "refuel_amount": 252,
+            "time_seconds": 0,
+            "waypoint": "X1-MG48-K90"
+          },
+          {
+            "action": "TRAVEL",
+            "distance": 85.84287972802403,
+            "fuel_cost": 172,
+            "mode": "BURN",
+            "refuel_amount": 0,
+            "time_seconds": 35,
+            "waypoint": "X1-MG48-F50"
+          },
+          {
+            "action": "REFUEL",
+            "distance": 0.0,
+            "fuel_cost": 0,
+            "mode": "CRUISE",
+            "refuel_amount": 172,
+            "time_seconds": 0,
+            "waypoint": "X1-MG48-F50"
+          },
+          {
+            "action": "TRAVEL",
+            "distance": 146.53668482670133,
+            "fuel_cost": 294,
+            "mode": "BURN",
+            "refuel_amount": 0,
+            "time_seconds": 61,
+            "waypoint": "X1-MG48-B6"
+          },
+          {
+            "action": "REFUEL",
+            "distance": 0.0,
+            "fuel_cost": 0,
+            "mode": "CRUISE",
+            "refuel_amount": 294,
+            "time_seconds": 0,
+            "waypoint": "X1-MG48-B6"
+          },
+          {
+            "action": "TRAVEL",
+            "distance": 157.54364474646383,
+            "fuel_cost": 316,
+            "mode": "BURN",
+            "refuel_amount": 0,
+            "time_seconds": 65,
+            "waypoint": "X1-MG48-B38"
+          }
+        ],
+        "success": true,
+        "total_distance": 1004.4977519377293,
+        "total_fuel_cost": 1918,
+        "total_time_seconds": 457
+      },
+      "tie_class": "exact",
+      "waypoint_order": "sorted"
+    },
+    {
+      "graph": "X1-MG48",
+      "name": "mg48_refuel_chain_partial_tank_no_station",
+      "request": {
+        "current_fuel": 150,
+        "engine_speed": 36,
+        "fuel_capacity": 400,
+        "fuel_efficient": false,
+        "goal_waypoint": "X1-MG48-J78",
+        "prefer_cruise": false,
+        "start_waypoint": "X1-MG48-B10",
+        "system_symbol": "X1-MG48"
+      },
+      "response": {
+        "error_message": "",
+        "steps": [
+          {
+            "action": "TRAVEL",
+            "distance": 247.25695136840946,
+            "fuel_cost": 1,
+            "mode": "DRIFT",
+            "refuel_amount": 0,
+            "time_seconds": 100178,
+            "waypoint": "X1-MG48-D43"
+          },
+          {
+            "action": "REFUEL",
+            "distance": 0.0,
+            "fuel_cost": 0,
+            "mode": "CRUISE",
+            "refuel_amount": 251,
+            "time_seconds": 0,
+            "waypoint": "X1-MG48-D43"
+          },
+          {
+            "action": "TRAVEL",
+            "distance": 83.73768566183328,
+            "fuel_cost": 168,
+            "mode": "BURN",
+            "refuel_amount": 0,
+            "time_seconds": 34,
+            "waypoint": "X1-MG48-A1"
+          },
+          {
+            "action": "TRAVEL",
+            "distance": 102.80077820717118,
+            "fuel_cost": 206,
+            "mode": "BURN",
+            "refuel_amount": 0,
+            "time_seconds": 42,
+            "waypoint": "X1-MG48-K90"
+          },
+          {
+            "action": "REFUEL",
+            "distance": 0.0,
+            "fuel_cost": 0,
+            "mode": "CRUISE",
+            "refuel_amount": 374,
+            "time_seconds": 0,
+            "waypoint": "X1-MG48-K90"
+          },
+          {
+            "action": "TRAVEL",
+            "distance": 125.87692401707312,
+            "fuel_cost": 252,
+            "mode": "BURN",
+            "refuel_amount": 0,
+            "time_seconds": 52,
+            "waypoint": "X1-MG48-I59"
+          },
+          {
+            "action": "REFUEL",
+            "distance": 0.0,
+            "fuel_cost": 0,
+            "mode": "CRUISE",
+            "refuel_amount": 252,
+            "time_seconds": 0,
+            "waypoint": "X1-MG48-I59"
+          },
+          {
+            "action": "TRAVEL",
+            "distance": 123.43419299367578,
+            "fuel_cost": 247,
+            "mode": "BURN",
+            "refuel_amount": 0,
+            "time_seconds": 51,
+            "waypoint": "X1-MG48-B32"
+          },
+          {
+            "action": "TRAVEL",
+            "distance": 95.13148795220224,
+            "fuel_cost": 96,
+            "mode": "CRUISE",
+            "refuel_amount": 0,
+            "time_seconds": 81,
+            "waypoint": "X1-MG48-I58"
+          },
+          {
+            "action": "REFUEL",
+            "distance": 0.0,
+            "fuel_cost": 0,
+            "mode": "CRUISE",
+            "refuel_amount": 343,
+            "time_seconds": 0,
+            "waypoint": "X1-MG48-I58"
+          },
+          {
+            "action": "TRAVEL",
+            "distance": 149.21461054467824,
+            "fuel_cost": 299,
+            "mode": "BURN",
+            "refuel_amount": 0,
+            "time_seconds": 62,
+            "waypoint": "X1-MG48-J60"
+          },
+          {
+            "action": "REFUEL",
+            "distance": 0.0,
+            "fuel_cost": 0,
+            "mode": "CRUISE",
+            "refuel_amount": 299,
+            "time_seconds": 0,
+            "waypoint": "X1-MG48-J60"
+          },
+          {
+            "action": "TRAVEL",
+            "distance": 120.91732712891069,
+            "fuel_cost": 242,
+            "mode": "BURN",
+            "refuel_amount": 0,
+            "time_seconds": 50,
+            "waypoint": "X1-MG48-J61"
+          },
+          {
+            "action": "REFUEL",
+            "distance": 0.0,
+            "fuel_cost": 0,
+            "mode": "CRUISE",
+            "refuel_amount": 242,
+            "time_seconds": 0,
+            "waypoint": "X1-MG48-J61"
+          },
+          {
+            "action": "TRAVEL",
+            "distance": 169.799882214329,
+            "fuel_cost": 340,
+            "mode": "BURN",
+            "refuel_amount": 0,
+            "time_seconds": 70,
+            "waypoint": "X1-MG48-J78"
+          }
+        ],
+        "success": true,
+        "total_distance": 1218.1698400882829,
+        "total_fuel_cost": 1851,
+        "total_time_seconds": 100620
+      },
+      "tie_class": "exact",
+      "waypoint_order": "sorted"
+    },
+    {
+      "graph": "X1-MG48",
+      "name": "mg48_refuel_chain_fuel_efficient",
+      "request": {
+        "current_fuel": 400,
+        "engine_speed": 36,
+        "fuel_capacity": 400,
+        "fuel_efficient": true,
+        "goal_waypoint": "X1-MG48-J78",
+        "prefer_cruise": false,
+        "start_waypoint": "X1-MG48-B10",
+        "system_symbol": "X1-MG48"
+      },
+      "response": {
+        "error_message": "",
+        "steps": [
+          {
+            "action": "TRAVEL",
+            "distance": 141.90489773083945,
+            "fuel_cost": 284,
+            "mode": "BURN",
+            "refuel_amount": 0,
+            "time_seconds": 59,
+            "waypoint": "X1-MG48-B9"
+          },
+          {
+            "action": "TRAVEL",
+            "distance": 150.136604464068,
+            "fuel_cost": 1,
+            "mode": "DRIFT",
+            "refuel_amount": 0,
+            "time_seconds": 108,
+            "waypoint": "X1-MG48-B6"
+          },
+          {
+            "action": "REFUEL",
+            "distance": 0.0,
+            "fuel_cost": 0,
+            "mode": "CRUISE",
+            "refuel_amount": 285,
+            "time_seconds": 0,
+            "waypoint": "X1-MG48-B6"
+          },
+          {
+            "action": "TRAVEL",
+            "distance": 146.53668482670133,
+            "fuel_cost": 294,
+            "mode": "BURN",
+            "refuel_amount": 0,
+            "time_seconds": 61,
+            "waypoint": "X1-MG48-F50"
+          },
+          {
+            "action": "REFUEL",
+            "distance": 0.0,
+            "fuel_cost": 0,
+            "mode": "CRUISE",
+            "refuel_amount": 294,
+            "time_seconds": 0,
+            "waypoint": "X1-MG48-F50"
+          },
+          {
+            "action": "TRAVEL",
+            "distance": 85.84287972802403,
+            "fuel_cost": 172,
+            "mode": "BURN",
+            "refuel_amount": 0,
+            "time_seconds": 35,
+            "waypoint": "X1-MG48-K90"
+          },
+          {
+            "action": "REFUEL",
+            "distance": 0.0,
+            "fuel_cost": 0,
+            "mode": "CRUISE",
+            "refuel_amount": 172,
+            "time_seconds": 0,
+            "waypoint": "X1-MG48-K90"
+          },
+          {
+            "action": "TRAVEL",
+            "distance": 125.87692401707312,
+            "fuel_cost": 252,
+            "mode": "BURN",
+            "refuel_amount": 0,
+            "time_seconds": 52,
+            "waypoint": "X1-MG48-I59"
+          },
+          {
+            "action": "REFUEL",
+            "distance": 0.0,
+            "fuel_cost": 0,
+            "mode": "CRUISE",
+            "refuel_amount": 252,
+            "time_seconds": 0,
+            "waypoint": "X1-MG48-I59"
+          },
+          {
+            "action": "TRAVEL",
+            "distance": 123.43419299367578,
+            "fuel_cost": 247,
+            "mode": "BURN",
+            "refuel_amount": 0,
+            "time_seconds": 51,
+            "waypoint": "X1-MG48-B32"
+          },
+          {
+            "action": "TRAVEL",
+            "distance": 95.13148795220224,
+            "fuel_cost": 96,
+            "mode": "CRUISE",
+            "refuel_amount": 0,
+            "time_seconds": 81,
+            "waypoint": "X1-MG48-I58"
+          },
+          {
+            "action": "REFUEL",
+            "distance": 0.0,
+            "fuel_cost": 0,
+            "mode": "CRUISE",
+            "refuel_amount": 343,
+            "time_seconds": 0,
+            "waypoint": "X1-MG48-I58"
+          },
+          {
+            "action": "TRAVEL",
+            "distance": 149.21461054467824,
+            "fuel_cost": 299,
+            "mode": "BURN",
+            "refuel_amount": 0,
+            "time_seconds": 62,
+            "waypoint": "X1-MG48-J60"
+          },
+          {
+            "action": "REFUEL",
+            "distance": 0.0,
+            "fuel_cost": 0,
+            "mode": "CRUISE",
+            "refuel_amount": 299,
+            "time_seconds": 0,
+            "waypoint": "X1-MG48-J60"
+          },
+          {
+            "action": "TRAVEL",
+            "distance": 120.91732712891069,
+            "fuel_cost": 242,
+            "mode": "BURN",
+            "refuel_amount": 0,
+            "time_seconds": 50,
+            "waypoint": "X1-MG48-J61"
+          },
+          {
+            "action": "REFUEL",
+            "distance": 0.0,
+            "fuel_cost": 0,
+            "mode": "CRUISE",
+            "refuel_amount": 242,
+            "time_seconds": 0,
+            "waypoint": "X1-MG48-J61"
+          },
+          {
+            "action": "TRAVEL",
+            "distance": 169.799882214329,
+            "fuel_cost": 340,
+            "mode": "BURN",
+            "refuel_amount": 0,
+            "time_seconds": 70,
+            "waypoint": "X1-MG48-J78"
+          }
+        ],
+        "success": true,
+        "total_distance": 1308.795491600502,
+        "total_fuel_cost": 2227,
+        "total_time_seconds": 629
+      },
+      "tie_class": "exact",
+      "waypoint_order": "sorted"
+    },
+    {
+      "graph": "X1-MG48",
+      "name": "mg48_unreachable_hop_drifts",
+      "request": {
+        "current_fuel": 120,
+        "engine_speed": 36,
+        "fuel_capacity": 400,
+        "fuel_efficient": false,
+        "goal_waypoint": "X1-MG48-J86",
+        "prefer_cruise": false,
+        "start_waypoint": "X1-MG48-B10",
+        "system_symbol": "X1-MG48"
+      },
+      "response": {
+        "error_message": "",
+        "steps": [
+          {
+            "action": "TRAVEL",
+            "distance": 552.2508487997098,
+            "fuel_cost": 2,
+            "mode": "DRIFT",
+            "refuel_amount": 0,
+            "time_seconds": 100398,
+            "waypoint": "X1-MG48-J86"
+          }
+        ],
+        "success": true,
+        "total_distance": 552.2508487997098,
+        "total_fuel_cost": 2,
+        "total_time_seconds": 100398
+      },
+      "tie_class": "exact",
+      "waypoint_order": "sorted"
+    },
+    {
+      "graph": "X1-MG48",
+      "name": "mg48_starved_drift",
+      "request": {
+        "current_fuel": 3,
+        "engine_speed": 36,
+        "fuel_capacity": 400,
+        "fuel_efficient": false,
+        "goal_waypoint": "X1-MG48-B11",
+        "prefer_cruise": false,
+        "start_waypoint": "X1-MG48-B10",
+        "system_symbol": "X1-MG48"
+      },
+      "response": {
+        "error_message": "",
+        "steps": [
+          {
+            "action": "TRAVEL",
+            "distance": 68.0294054067798,
+            "fuel_cost": 1,
+            "mode": "DRIFT",
+            "refuel_amount": 0,
+            "time_seconds": 100049,
+            "waypoint": "X1-MG48-B11"
+          }
+        ],
+        "success": true,
+        "total_distance": 68.0294054067798,
+        "total_fuel_cost": 1,
+        "total_time_seconds": 100049
+      },
+      "tie_class": "exact",
+      "waypoint_order": "sorted"
+    },
+    {
+      "graph": "X1-MG48",
+      "name": "mg48_starved_drift_fuel_efficient",
+      "request": {
+        "current_fuel": 3,
+        "engine_speed": 36,
+        "fuel_capacity": 400,
+        "fuel_efficient": true,
+        "goal_waypoint": "X1-MG48-B11",
+        "prefer_cruise": false,
+        "start_waypoint": "X1-MG48-B10",
+        "system_symbol": "X1-MG48"
+      },
+      "response": {
+        "error_message": "",
+        "steps": [
+          {
+            "action": "TRAVEL",
+            "distance": 68.0294054067798,
+            "fuel_cost": 1,
+            "mode": "DRIFT",
+            "refuel_amount": 0,
+            "time_seconds": 49,
+            "waypoint": "X1-MG48-B11"
+          }
+        ],
+        "success": true,
+        "total_distance": 68.0294054067798,
+        "total_fuel_cost": 1,
+        "total_time_seconds": 49
+      },
+      "tie_class": "exact",
+      "waypoint_order": "sorted"
+    },
+    {
+      "graph": "X1-MG48",
+      "name": "mg48_prefer_cruise",
+      "request": {
+        "current_fuel": 400,
+        "engine_speed": 36,
+        "fuel_capacity": 400,
+        "fuel_efficient": false,
+        "goal_waypoint": "X1-MG48-J86",
+        "prefer_cruise": true,
+        "start_waypoint": "X1-MG48-J70",
+        "system_symbol": "X1-MG48"
+      },
+      "response": {
+        "error_message": "",
+        "steps": [
+          {
+            "action": "TRAVEL",
+            "distance": 1560.6630001380825,
+            "fuel_cost": 5,
+            "mode": "DRIFT",
+            "refuel_amount": 0,
+            "time_seconds": 101127,
+            "waypoint": "X1-MG48-J86"
+          }
+        ],
+        "success": true,
+        "total_distance": 1560.6630001380825,
+        "total_fuel_cost": 5,
+        "total_time_seconds": 101127
+      },
+      "tie_class": "exact",
+      "waypoint_order": "sorted"
+    },
+    {
+      "graph": "X1-MG48",
+      "name": "mg48_probe_zero_capacity",
+      "request": {
+        "current_fuel": 0,
+        "engine_speed": 9,
+        "fuel_capacity": 0,
+        "fuel_efficient": false,
+        "goal_waypoint": "X1-MG48-J86",
+        "prefer_cruise": false,
+        "start_waypoint": "X1-MG48-B10",
+        "system_symbol": "X1-MG48"
+      },
+      "response": {
+        "error_message": "",
+        "steps": [
+          {
+            "action": "TRAVEL",
+            "distance": 552.2508487997098,
+            "fuel_cost": 0,
+            "mode": "CRUISE",
+            "refuel_amount": 0,
+            "time_seconds": 1902,
+            "waypoint": "X1-MG48-J86"
+          }
+        ],
+        "success": true,
+        "total_distance": 552.2508487997098,
+        "total_fuel_cost": 0,
+        "total_time_seconds": 1902
+      },
+      "tie_class": "exact",
+      "waypoint_order": "sorted"
+    },
+    {
+      "graph": "X1-MG48",
+      "name": "mg48_probe_zero_capacity_orbital",
+      "request": {
+        "current_fuel": 0,
+        "engine_speed": 9,
+        "fuel_capacity": 0,
+        "fuel_efficient": false,
+        "goal_waypoint": "X1-MG48-A4",
+        "prefer_cruise": false,
+        "start_waypoint": "X1-MG48-A1",
+        "system_symbol": "X1-MG48"
+      },
+      "response": {
+        "error_message": "",
+        "steps": [
+          {
+            "action": "TRAVEL",
+            "distance": 0.0,
+            "fuel_cost": 0,
+            "mode": "CRUISE",
+            "refuel_amount": 0,
+            "time_seconds": 1,
+            "waypoint": "X1-MG48-A4"
+          }
+        ],
+        "success": true,
+        "total_distance": 0.0,
+        "total_fuel_cost": 0,
+        "total_time_seconds": 1
+      },
+      "tie_class": "exact",
+      "waypoint_order": "sorted"
+    },
+    {
+      "graph": "X1-MG48",
+      "name": "mg48_unknown_goal",
+      "request": {
+        "current_fuel": 400,
+        "engine_speed": 36,
+        "fuel_capacity": 400,
+        "fuel_efficient": false,
+        "goal_waypoint": "X1-MG48-NOWHERE",
+        "prefer_cruise": false,
+        "start_waypoint": "X1-MG48-B10",
+        "system_symbol": "X1-MG48"
+      },
+      "response": {
+        "error_message": "No path found from X1-MG48-B10 to X1-MG48-NOWHERE",
+        "steps": [],
+        "success": false,
+        "total_distance": 0.0,
+        "total_fuel_cost": 0,
+        "total_time_seconds": 0
+      },
+      "tie_class": "exact",
+      "waypoint_order": "sorted"
+    },
+    {
+      "graph": "X1-MG48",
+      "name": "mg48_shuffled_waypoint_order",
+      "request": {
+        "current_fuel": 400,
+        "engine_speed": 36,
+        "fuel_capacity": 400,
+        "fuel_efficient": false,
+        "goal_waypoint": "X1-MG48-B39",
+        "prefer_cruise": false,
+        "start_waypoint": "X1-MG48-J74",
+        "system_symbol": "X1-MG48",
+        "waypoints": [
+          {
+            "has_fuel": true,
+            "symbol": "X1-MG48-E46",
+            "x": -37.0,
+            "y": -39.0
+          },
+          {
+            "has_fuel": false,
+            "symbol": "X1-MG48-B33",
+            "x": -19.0,
+            "y": -321.0
+          },
+          {
+            "has_fuel": true,
+            "symbol": "X1-MG48-F50",
+            "x": 18.0,
+            "y": -71.0
+          },
+          {
+            "has_fuel": false,
+            "symbol": "X1-MG48-B8",
+            "x": 293.0,
+            "y": -183.0
+          },
+          {
+            "has_fuel": false,
+            "symbol": "X1-MG48-B36",
+            "x": -135.0,
+            "y": -348.0
+          },
+          {
+            "has_fuel": false,
+            "symbol": "X1-MG48-J71",
+            "x": -426.0,
+            "y": 592.0
+          },
+          {
+            "has_fuel": false,
+            "symbol": "X1-MG48-B29",
+            "x": -323.0,
+            "y": -88.0
+          },
+          {
+            "has_fuel": false,
+            "symbol": "X1-MG48-E47",
+            "x": -37.0,
+            "y": -39.0
+          },
+          {
+            "has_fuel": false,
+            "symbol": "X1-MG48-J73",
+            "x": -683.0,
+            "y": 200.0
+          },
+          {
+            "has_fuel": true,
+            "symbol": "X1-MG48-H56",
+            "x": 23.0,
+            "y": 38.0
+          },
+          {
+            "has_fuel": false,
+            "symbol": "X1-MG48-B35",
+            "x": -128.0,
+            "y": -300.0
+          },
+          {
+            "has_fuel": false,
+            "symbol": "X1-MG48-J64",
+            "x": 731.0,
+            "y": 149.0
+          },
+          {
+            "has_fuel": true,
+            "symbol": "X1-MG48-B6",
+            "x": 161.0,
+            "y": -103.0
+          },
+          {
+            "has_fuel": false,
+            "symbol": "X1-MG48-J78",
+            "x": -397.0,
+            "y": -628.0
+          },
+          {
+            "has_fuel": false,
+            "symbol": "X1-MG48-J67",
+            "x": -568.0,
+            "y": 545.0
+          },
+          {
+            "has_fuel": true,
+            "symbol": "X1-MG48-D44",
+            "x": 79.0,
+            "y": 33.0
+          },
+          {
+            "has_fuel": false,
+            "symbol": "X1-MG48-J65",
+            "x": 368.0,
+            "y": 614.0
+          },
+          {
+            "has_fuel": false,
+            "symbol": "X1-MG48-B34",
+            "x": 48.0,
+            "y": -382.0
+          },
+          {
+            "has_fuel": false,
+            "symbol": "X1-MG48-B32",
+            "x": -259.0,
+            "y": -242.0
+          },
+          {
+            "has_fuel": false,
+            "symbol": "X1-MG48-B9",
+            "x": 307.0,
+            "y": -68.0
+          },
+          {
+            "has_fuel": true,
+            "symbol": "X1-MG48-H54",
+            "x": 23.0,
+            "y": 38.0
+          },
+          {
+            "has_fuel": false,
+            "symbol": "X1-MG48-B27",
+            "x": -308.0,
+            "y": -76.0
+          },
+          {
+            "has_fuel": false,
+            "symbol": "X1-MG48-J66",
+            "x": 282.0,
+            "y": 656.0
+          },
+          {
+            "has_fuel": false,
+            "symbol": "X1-MG48-J83",
+            "x": 34.0,
+            "y": -711.0
+          },
+          {
+            "has_fuel": true,
+            "symbol": "X1-MG48-K90",
+            "x": -67.0,
+            "y": -83.0
+          },
+          {
+            "has_fuel": false,
+            "symbol": "X1-MG48-B37",
+            "x": 256.0,
+            "y": -252.0
+          },
+          {
+            "has_fuel": false,
+            "symbol": "X1-MG48-B25",
+            "x": -45.0,
+            "y": 386.0
+          },
+          {
+            "has_fuel": true,
+            "symbol": "X1-MG48-AX5C",
+            "x": 20.0,
+            "y": 18.0
+          },
+          {
+            "has_fuel": false,
+            "symbol": "X1-MG48-E48",
+            "x": -37.0,
+            "y": -39.0
+          },
+          {
+            "has_fuel": false,
+            "symbol": "X1-MG48-B28",
+            "x": -216.0,
+            "y": 242.0
+          },
+          {
+            "has_fuel": false,
+            "symbol": "X1-MG48-B39",
+            "x": 341.0,
+            "y": -139.0
+          },
+          {
+            "has_fuel": false,
+            "symbol": "X1-MG48-J86",
+            "x": 713.0,
+            "y": -318.0
+          },
+          {
+            "has_fuel": false,
+            "symbol": "X1-MG48-B13",
+            "x": 370.0,
+            "y": -41.0
+          },
+          {
+            "has_fuel": false,
+            "symbol": "X1-MG48-J84",
+            "x": 428.0,
+            "y": -643.0
+          },
+          {
+            "has_fuel": true,
+            "symbol": "X1-MG48-F51",
+            "x": 18.0,
+            "y": -71.0
+          },
+          {
+            "has_fuel": true,
+            "symbol": "X1-MG48-A1",
+            "x": 15.0,
+            "y": -21.0
+          },
+          {
+            "has_fuel": false,
+            "symbol": "X1-MG48-J81",
+            "x": -67.0,
+            "y": -725.0
+          },
+          {
+            "has_fuel": true,
+            "symbol": "X1-MG48-I59",
+            "x": -165.0,
+            "y": -162.0
+          },
+          {
+            "has_fuel": true,
+            "symbol": "X1-MG48-J60",
+            "x": -427.0,
+            "y": -419.0
+          },
+          {
+            "has_fuel": false,
+            "symbol": "X1-MG48-J69",
+            "x": -534.0,
+            "y": 578.0
+          },
+          {
+            "has_fuel": false,
+            "symbol": "X1-MG48-B19",
+            "x": 292.0,
+            "y": 198.0
+          },
+          {
+            "has_fuel": false,
+            "symbol": "X1-MG48-B22",
+            "x": -234.0,
+            "y": 210.0
+          },
+          {
+            "has_fuel": true,
+            "symbol": "X1-MG48-A2",
+            "x": 15.0,
+            "y": -21.0
+          },
+          {
+            "has_fuel": false,
+            "symbol": "X1-MG48-B12",
+            "x": 275.0,
+            "y": 175.0
+          },
+          {
+            "has_fuel": false,
+            "symbol": "X1-MG48-C40",
+            "x": -119.0,
+            "y": 100.0
+          },
+          {
+            "has_fuel": false,
+            "symbol": "X1-MG48-B15",
+            "x": 375.0,
+            "y": 4.0
+          },
+          {
+            "has_fuel": false,
+            "symbol": "X1-MG48-J72",
+            "x": -740.0,
+            "y": -230.0
+          },
+          {
+            "has_fuel": true,
+            "symbol": "X1-MG48-G52",
+            "x": -23.0,
+            "y": 60.0
+          },
+          {
+            "has_fuel": false,
+            "symbol": "X1-MG48-J89",
+            "x": 651.0,
+            "y": 291.0
+          },
+          {
+            "has_fuel": false,
+            "symbol": "X1-MG48-B23",
+            "x": -130.0,
+            "y": 299.0
+          },
+          {
+            "has_fuel": true,
+            "symbol": "X1-MG48-E49",
+            "x": -37.0,
+            "y": -39.0
+          },
+          {
+            "has_fuel": true,
+            "symbol": "X1-MG48-E45",
+            "x": -37.0,
+            "y": -39.0
+          },
+          {
+            "has_fuel": false,
+            "symbol": "X1-MG48-J76",
+            "x": -188.0,
+            "y": -725.0
+          },
+          {
+            "has_fuel": true,
+            "symbol": "X1-MG48-H57",
+            "x": 23.0,
+            "y": 38.0
+          },
+          {
+            "has_fuel": false,
+            "symbol": "X1-MG48-J62",
+            "x": 720.0,
+            "y": 254.0
+          },
+          {
+            "has_fuel": false,
+            "symbol": "X1-MG48-B11",
+            "x": 295.0,
+            "y": 135.0
+          },
+          {
+            "has_fuel": false,
+            "symbol": "X1-MG48-J85",
+            "x": 711.0,
+            "y": 211.0
+          },
+          {
+            "has_fuel": true,
+            "symbol": "X1-MG48-A3",
+            "x": 15.0,
+            "y": -21.0
+          },
+          {
+            "has_fuel": false,
+            "symbol": "X1-MG48-B20",
+            "x": 223.0,
+            "y": 278.0
+          },
+          {
+            "has_fuel": true,
+            "symbol": "X1-MG48-B7",
+            "x": 120.0,
+            "y": -322.0
+          },
+          {
+            "has_fuel": false,
+            "symbol": "X1-MG48-J77",
+            "x": -354.0,
+            "y": -636.0
+          },
+          {
+            "has_fuel": false,
+            "symbol": "X1-MG48-B10",
+            "x": 323.0,
+            "y": 73.0
+          },
+          {
+            "has_fuel": false,
+            "symbol": "X1-MG48-J70",
+            "x": -752.0,
+            "y": 220.0
+          },
+          {
+            "has_fuel": false,
+            "symbol": "X1-MG48-J63",
+            "x": 706.0,
+            "y": 303.0
+          },
+          {
+            "has_fuel": false,
+            "symbol": "X1-MG48-B16",
+            "x": 117.0,
+            "y": 334.0
+          },
+          {
+            "has_fuel": true,
+            "symbol": "X1-MG48-H55",
+            "x": 23.0,
+            "y": 38.0
+          },
+          {
+            "has_fuel": false,
+            "symbol": "X1-MG48-J68",
+            "x": -308.0,
+            "y": 672.0
+          },
+          {
+            "has_fuel": true,
+            "symbol": "X1-MG48-D43",
+            "x": 79.0,
+            "y": 33.0
+          },
+          {
+            "has_fuel": false,
+            "symbol": "X1-MG48-J75",
+            "x": -682.0,
+            "y": -320.0
+          },
+          {
+            "has_fuel": false,
+            "symbol": "X1-MG48-B30",
+            "x": -320.0,
+            "y": -41.0
+          },
+          {
+            "has_fuel": false,
+            "symbol": "X1-MG48-B31",
+            "x": -279.0,
+            "y": -165.0
+          },
+          {
+            "has_fuel": false,
+            "symbol": "X1-MG48-J79",
+            "x": 255.0,
+            "y": -741.0
+          },
+          {
+            "has_fuel": true,
+            "symbol": "X1-MG48-I58",
+            "x": -320.0,
+            "y": -315.0
+          },
+          {
+            "has_fuel": true,
+            "symbol": "X1-MG48-J61",
+            "x": -513.0,
+            "y": -504.0
+          },
+          {
+            "has_fuel": true,
+            "symbol": "X1-MG48-C41",
+            "x": -119.0,
+            "y": 100.0
+          },
+          {
+            "has_fuel": false,
+            "symbol": "X1-MG48-B21",
+            "x": 154.0,
+            "y": 357.0
+          },
+          {
+            "has_fuel": false,
+            "symbol": "X1-MG48-B18",
+            "x": 152.0,
+            "y": 348.0
+          },
+          {
+            "has_fuel": false,
+            "symbol": "X1-MG48-B14",
+            "x": 191.0,
+            "y": 302.0
+          },
+          {
+            "has_fuel": false,
+            "symbol": "X1-MG48-J80",
+            "x": -297.0,
+            "y": -692.0
+          },
+          {
+            "has_fuel": true,
+            "symbol": "X1-MG48-G53",
+            "x": -23.0,
+            "y": 60.0
+          },
+          {
+            "has_fuel": true,
+            "symbol": "X1-MG48-A4",
+            "x": 15.0,
+            "y": -21.0
+          },
+          {
+            "has_fuel": false,
+            "symbol": "X1-MG48-B26",
+            "x": -89.0,
+            "y": 302.0
+          },
+          {
+            "has_fuel": false,
+            "symbol": "X1-MG48-J74",
+            "x": -471.0,
+            "y": -623.0
+          },
+          {
+            "has_fuel": true,
+            "symbol": "X1-MG48-C42",
+            "x": -88.0,
+            "y": 74.0
+          },
+          {
+            "has_fuel": false,
+            "symbol": "X1-MG48-B17",
+            "x": 113.0,
+            "y": 343.0
+          },
+          {
+            "has_fuel": false,
+            "symbol": "X1-MG48-J82",
+            "x": 47.0,
+            "y": -742.0
+          },
+          {
+            "has_fuel": false,
+            "symbol": "X1-MG48-J87",
+            "x": 742.0,
+            "y": 37.0
+          },
+          {
+            "has_fuel": false,
+            "symbol": "X1-MG48-B38",
+            "x": 237.0,
+            "y": -241.0
+          },
+          {
+            "has_fuel": false,
+            "symbol": "X1-MG48-B24",
+            "x": -114.0,
+            "y": 332.0
+          },
+          {
+            "has_fuel": false,
+            "symbol": "X1-MG48-J88",
+            "x": 540.0,
+            "y": 506.0
+          }
+        ]
+      },
+      "response": {
+        "error_message": "",
+        "steps": [
+          {
+            "action": "TRAVEL",
+            "distance": 126.19429464123962,
+            "fuel_cost": 253,
+            "mode": "BURN",
+            "refuel_amount": 0,
+            "time_seconds": 52,
+            "waypoint": "X1-MG48-J61"
+          },
+          {
+            "action": "REFUEL",
+            "distance": 0.0,
+            "fuel_cost": 0,
+            "mode": "CRUISE",
+            "refuel_amount": 253,
+            "time_seconds": 0,
+            "waypoint": "X1-MG48-J61"
+          },
+          {
+            "action": "TRAVEL",
+            "distance": 120.91732712891069,
+            "fuel_cost": 242,
+            "mode": "BURN",
+            "refuel_amount": 0,
+            "time_seconds": 50,
+            "waypoint": "X1-MG48-J60"
+          },
+          {
+            "action": "REFUEL",
+            "distance": 0.0,
+            "fuel_cost": 0,
+            "mode": "CRUISE",
+            "refuel_amount": 242,
+            "time_seconds": 0,
+            "waypoint": "X1-MG48-J60"
+          },
+          {
+            "action": "TRAVEL",
+            "distance": 149.21461054467824,
+            "fuel_cost": 299,
+            "mode": "BURN",
+            "refuel_amount": 0,
+            "time_seconds": 62,
+            "waypoint": "X1-MG48-I58"
+          },
+          {
+            "action": "REFUEL",
+            "distance": 0.0,
+            "fuel_cost": 0,
+            "mode": "CRUISE",
+            "refuel_amount": 299,
+            "time_seconds": 0,
+            "waypoint": "X1-MG48-I58"
+          },
+          {
+            "action": "TRAVEL",
+            "distance": 95.13148795220224,
+            "fuel_cost": 96,
+            "mode": "CRUISE",
+            "refuel_amount": 0,
+            "time_seconds": 81,
+            "waypoint": "X1-MG48-B32"
+          },
+          {
+            "action": "TRAVEL",
+            "distance": 123.43419299367578,
+            "fuel_cost": 247,
+            "mode": "BURN",
+            "refuel_amount": 0,
+            "time_seconds": 51,
+            "waypoint": "X1-MG48-I59"
+          },
+          {
+            "action": "REFUEL",
+            "distance": 0.0,
+            "fuel_cost": 0,
+            "mode": "CRUISE",
+            "refuel_amount": 343,
+            "time_seconds": 0,
+            "waypoint": "X1-MG48-I59"
+          },
+          {
+            "action": "TRAVEL",
+            "distance": 125.87692401707312,
+            "fuel_cost": 252,
+            "mode": "BURN",
+            "refuel_amount": 0,
+            "time_seconds": 52,
+            "waypoint": "X1-MG48-K90"
+          },
+          {
+            "action": "REFUEL",
+            "distance": 0.0,
+            "fuel_cost": 0,
+            "mode": "CRUISE",
+            "refuel_amount": 252,
+            "time_seconds": 0,
+            "waypoint": "X1-MG48-K90"
+          },
+          {
+            "action": "TRAVEL",
+            "distance": 85.84287972802403,
+            "fuel_cost": 172,
+            "mode": "BURN",
+            "refuel_amount": 0,
+            "time_seconds": 35,
+            "waypoint": "X1-MG48-F50"
+          },
+          {
+            "action": "REFUEL",
+            "distance": 0.0,
+            "fuel_cost": 0,
+            "mode": "CRUISE",
+            "refuel_amount": 172,
+            "time_seconds": 0,
+            "waypoint": "X1-MG48-F50"
+          },
+          {
+            "action": "TRAVEL",
+            "distance": 146.53668482670133,
+            "fuel_cost": 294,
+            "mode": "BURN",
+            "refuel_amount": 0,
+            "time_seconds": 61,
+            "waypoint": "X1-MG48-B6"
+          },
+          {
+            "action": "REFUEL",
+            "distance": 0.0,
+            "fuel_cost": 0,
+            "mode": "CRUISE",
+            "refuel_amount": 294,
+            "time_seconds": 0,
+            "waypoint": "X1-MG48-B6"
+          },
+          {
+            "action": "TRAVEL",
+            "distance": 183.56470248934025,
+            "fuel_cost": 368,
+            "mode": "BURN",
+            "refuel_amount": 0,
+            "time_seconds": 76,
+            "waypoint": "X1-MG48-B39"
+          }
+        ],
+        "success": true,
+        "total_distance": 1156.7131043218453,
+        "total_fuel_cost": 2223,
+        "total_time_seconds": 520
+      },
+      "tie_class": "cost_only",
+      "waypoint_order": "shuffled"
+    },
+    {
+      "graph": "corridor",
+      "name": "corridor_multi_refuel",
+      "request": {
+        "current_fuel": 220,
+        "engine_speed": 30,
+        "fuel_capacity": 220,
+        "fuel_efficient": false,
+        "goal_waypoint": "COR-E",
+        "prefer_cruise": false,
+        "start_waypoint": "COR-A",
+        "system_symbol": "corridor"
+      },
+      "response": {
+        "error_message": "",
+        "steps": [
+          {
+            "action": "TRAVEL",
+            "distance": 200.0,
+            "fuel_cost": 200,
+            "mode": "CRUISE",
+            "refuel_amount": 0,
+            "time_seconds": 206,
+            "waypoint": "COR-C"
+          },
+          {
+            "action": "REFUEL",
+            "distance": 0.0,
+            "fuel_cost": 0,
+            "mode": "CRUISE",
+            "refuel_amount": 200,
+            "time_seconds": 0,
+            "waypoint": "COR-C"
+          },
+          {
+            "action": "TRAVEL",
+            "distance": 200.0,
+            "fuel_cost": 200,
+            "mode": "CRUISE",
+            "refuel_amount": 0,
+            "time_seconds": 206,
+            "waypoint": "COR-E"
+          }
+        ],
+        "success": true,
+        "total_distance": 400.0,
+        "total_fuel_cost": 400,
+        "total_time_seconds": 412
+      },
+      "tie_class": "exact",
+      "waypoint_order": "sorted"
+    },
+    {
+      "graph": "corridor",
+      "name": "corridor_empty_tank_at_fuelled_start",
+      "request": {
+        "current_fuel": 0,
+        "engine_speed": 30,
+        "fuel_capacity": 220,
+        "fuel_efficient": false,
+        "goal_waypoint": "COR-E",
+        "prefer_cruise": false,
+        "start_waypoint": "COR-A",
+        "system_symbol": "corridor"
+      },
+      "response": {
+        "error_message": "",
+        "steps": [
+          {
+            "action": "REFUEL",
+            "distance": 0.0,
+            "fuel_cost": 0,
+            "mode": "CRUISE",
+            "refuel_amount": 220,
+            "time_seconds": 0,
+            "waypoint": "COR-A"
+          },
+          {
+            "action": "TRAVEL",
+            "distance": 200.0,
+            "fuel_cost": 200,
+            "mode": "CRUISE",
+            "refuel_amount": 0,
+            "time_seconds": 206,
+            "waypoint": "COR-C"
+          },
+          {
+            "action": "REFUEL",
+            "distance": 0.0,
+            "fuel_cost": 0,
+            "mode": "CRUISE",
+            "refuel_amount": 200,
+            "time_seconds": 0,
+            "waypoint": "COR-C"
+          },
+          {
+            "action": "TRAVEL",
+            "distance": 200.0,
+            "fuel_cost": 200,
+            "mode": "CRUISE",
+            "refuel_amount": 0,
+            "time_seconds": 206,
+            "waypoint": "COR-E"
+          }
+        ],
+        "success": true,
+        "total_distance": 400.0,
+        "total_fuel_cost": 400,
+        "total_time_seconds": 412
+      },
+      "tie_class": "exact",
+      "waypoint_order": "sorted"
+    },
+    {
+      "graph": "corridor",
+      "name": "corridor_no_refuel_needed",
+      "request": {
+        "current_fuel": 220,
+        "engine_speed": 30,
+        "fuel_capacity": 220,
+        "fuel_efficient": false,
+        "goal_waypoint": "COR-B",
+        "prefer_cruise": false,
+        "start_waypoint": "COR-A",
+        "system_symbol": "corridor"
+      },
+      "response": {
+        "error_message": "",
+        "steps": [
+          {
+            "action": "TRAVEL",
+            "distance": 100.0,
+            "fuel_cost": 200,
+            "mode": "BURN",
+            "refuel_amount": 0,
+            "time_seconds": 50,
+            "waypoint": "COR-B"
+          }
+        ],
+        "success": true,
+        "total_distance": 100.0,
+        "total_fuel_cost": 200,
+        "total_time_seconds": 50
+      },
+      "tie_class": "exact",
+      "waypoint_order": "sorted"
+    },
+    {
+      "graph": "starved",
+      "name": "starved_unreachable",
+      "request": {
+        "current_fuel": 0,
+        "engine_speed": 30,
+        "fuel_capacity": 100,
+        "fuel_efficient": false,
+        "goal_waypoint": "STV-Q",
+        "prefer_cruise": false,
+        "start_waypoint": "STV-P",
+        "system_symbol": "starved"
+      },
+      "response": {
+        "error_message": "No path found from STV-P to STV-Q",
+        "steps": [],
+        "success": false,
+        "total_distance": 0.0,
+        "total_fuel_cost": 0,
+        "total_time_seconds": 0
+      },
+      "tie_class": "exact",
+      "waypoint_order": "sorted"
+    },
+    {
+      "graph": "starved",
+      "name": "starved_drift_to_goal",
+      "request": {
+        "current_fuel": 2,
+        "engine_speed": 30,
+        "fuel_capacity": 100,
+        "fuel_efficient": false,
+        "goal_waypoint": "STV-Q",
+        "prefer_cruise": false,
+        "start_waypoint": "STV-P",
+        "system_symbol": "starved"
+      },
+      "response": {
+        "error_message": "",
+        "steps": [
+          {
+            "action": "TRAVEL",
+            "distance": 500.0,
+            "fuel_cost": 2,
+            "mode": "DRIFT",
+            "refuel_amount": 0,
+            "time_seconds": 100433,
+            "waypoint": "STV-Q"
+          }
+        ],
+        "success": true,
+        "total_distance": 500.0,
+        "total_fuel_cost": 2,
+        "total_time_seconds": 100433
+      },
+      "tie_class": "exact",
+      "waypoint_order": "sorted"
+    },
+    {
+      "graph": "tie",
+      "name": "tie_takes_first_of_two_equal_detours",
+      "request": {
+        "current_fuel": 150,
+        "engine_speed": 30,
+        "fuel_capacity": 150,
+        "fuel_efficient": false,
+        "goal_waypoint": "TIE-G",
+        "prefer_cruise": false,
+        "start_waypoint": "TIE-A",
+        "system_symbol": "tie"
+      },
+      "response": {
+        "error_message": "",
+        "steps": [
+          {
+            "action": "TRAVEL",
+            "distance": 141.4213562373095,
+            "fuel_cost": 142,
+            "mode": "CRUISE",
+            "refuel_amount": 0,
+            "time_seconds": 146,
+            "waypoint": "TIE-N"
+          },
+          {
+            "action": "REFUEL",
+            "distance": 0.0,
+            "fuel_cost": 0,
+            "mode": "CRUISE",
+            "refuel_amount": 142,
+            "time_seconds": 0,
+            "waypoint": "TIE-N"
+          },
+          {
+            "action": "TRAVEL",
+            "distance": 141.4213562373095,
+            "fuel_cost": 142,
+            "mode": "CRUISE",
+            "refuel_amount": 0,
+            "time_seconds": 146,
+            "waypoint": "TIE-G"
+          }
+        ],
+        "success": true,
+        "total_distance": 282.842712474619,
+        "total_fuel_cost": 284,
+        "total_time_seconds": 292
+      },
+      "tie_class": "exact",
+      "waypoint_order": "sorted"
+    }
+  ],
+  "engine": "services/routing-service utils.routing_engine.find_optimal_path",
+  "graphs": {
+    "X1-MG48": [
+      {
+        "has_fuel": true,
+        "symbol": "X1-MG48-A1",
+        "x": 15.0,
+        "y": -21.0
+      },
+      {
+        "has_fuel": true,
+        "symbol": "X1-MG48-A2",
+        "x": 15.0,
+        "y": -21.0
+      },
+      {
+        "has_fuel": true,
+        "symbol": "X1-MG48-A3",
+        "x": 15.0,
+        "y": -21.0
+      },
+      {
+        "has_fuel": true,
+        "symbol": "X1-MG48-A4",
+        "x": 15.0,
+        "y": -21.0
+      },
+      {
+        "has_fuel": true,
+        "symbol": "X1-MG48-AX5C",
+        "x": 20.0,
+        "y": 18.0
+      },
+      {
+        "has_fuel": false,
+        "symbol": "X1-MG48-B10",
+        "x": 323.0,
+        "y": 73.0
+      },
+      {
+        "has_fuel": false,
+        "symbol": "X1-MG48-B11",
+        "x": 295.0,
+        "y": 135.0
+      },
+      {
+        "has_fuel": false,
+        "symbol": "X1-MG48-B12",
+        "x": 275.0,
+        "y": 175.0
+      },
+      {
+        "has_fuel": false,
+        "symbol": "X1-MG48-B13",
+        "x": 370.0,
+        "y": -41.0
+      },
+      {
+        "has_fuel": false,
+        "symbol": "X1-MG48-B14",
+        "x": 191.0,
+        "y": 302.0
+      },
+      {
+        "has_fuel": false,
+        "symbol": "X1-MG48-B15",
+        "x": 375.0,
+        "y": 4.0
+      },
+      {
+        "has_fuel": false,
+        "symbol": "X1-MG48-B16",
+        "x": 117.0,
+        "y": 334.0
+      },
+      {
+        "has_fuel": false,
+        "symbol": "X1-MG48-B17",
+        "x": 113.0,
+        "y": 343.0
+      },
+      {
+        "has_fuel": false,
+        "symbol": "X1-MG48-B18",
+        "x": 152.0,
+        "y": 348.0
+      },
+      {
+        "has_fuel": false,
+        "symbol": "X1-MG48-B19",
+        "x": 292.0,
+        "y": 198.0
+      },
+      {
+        "has_fuel": false,
+        "symbol": "X1-MG48-B20",
+        "x": 223.0,
+        "y": 278.0
+      },
+      {
+        "has_fuel": false,
+        "symbol": "X1-MG48-B21",
+        "x": 154.0,
+        "y": 357.0
+      },
+      {
+        "has_fuel": false,
+        "symbol": "X1-MG48-B22",
+        "x": -234.0,
+        "y": 210.0
+      },
+      {
+        "has_fuel": false,
+        "symbol": "X1-MG48-B23",
+        "x": -130.0,
+        "y": 299.0
+      },
+      {
+        "has_fuel": false,
+        "symbol": "X1-MG48-B24",
+        "x": -114.0,
+        "y": 332.0
+      },
+      {
+        "has_fuel": false,
+        "symbol": "X1-MG48-B25",
+        "x": -45.0,
+        "y": 386.0
+      },
+      {
+        "has_fuel": false,
+        "symbol": "X1-MG48-B26",
+        "x": -89.0,
+        "y": 302.0
+      },
+      {
+        "has_fuel": false,
+        "symbol": "X1-MG48-B27",
+        "x": -308.0,
+        "y": -76.0
+      },
+      {
+        "has_fuel": false,
+        "symbol": "X1-MG48-B28",
+        "x": -216.0,
+        "y": 242.0
+      },
+      {
+        "has_fuel": false,
+        "symbol": "X1-MG48-B29",
+        "x": -323.0,
+        "y": -88.0
+      },
+      {
+        "has_fuel": false,
+        "symbol": "X1-MG48-B30",
+        "x": -320.0,
+        "y": -41.0
+      },
+      {
+        "has_fuel": false,
+        "symbol": "X1-MG48-B31",
+        "x": -279.0,
+        "y": -165.0
+      },
+      {
+        "has_fuel": false,
+        "symbol": "X1-MG48-B32",
+        "x": -259.0,
+        "y": -242.0
+      },
+      {
+        "has_fuel": false,
+        "symbol": "X1-MG48-B33",
+        "x": -19.0,
+        "y": -321.0
+      },
+      {
+        "has_fuel": false,
+        "symbol": "X1-MG48-B34",
+        "x": 48.0,
+        "y": -382.0
+      },
+      {
+        "has_fuel": false,
+        "symbol": "X1-MG48-B35",
+        "x": -128.0,
+        "y": -300.0
+      },
+      {
+        "has_fuel": false,
+        "symbol": "X1-MG48-B36",
+        "x": -135.0,
+        "y": -348.0
+      },
+      {
+        "has_fuel": false,
+        "symbol": "X1-MG48-B37",
+        "x": 256.0,
+        "y": -252.0
+      },
+      {
+        "has_fuel": false,
+        "symbol": "X1-MG48-B38",
+        "x": 237.0,
+        "y": -241.0
+      },
+      {
+        "has_fuel": false,
+        "symbol": "X1-MG48-B39",
+        "x": 341.0,
+        "y": -139.0
+      },
+      {
+        "has_fuel": true,
+        "symbol": "X1-MG48-B6",
+        "x": 161.0,
+        "y": -103.0
+      },
+      {
+        "has_fuel": true,
+        "symbol": "X1-MG48-B7",
+        "x": 120.0,
+        "y": -322.0
+      },
+      {
+        "has_fuel": false,
+        "symbol": "X1-MG48-B8",
+        "x": 293.0,
+        "y": -183.0
+      },
+      {
+        "has_fuel": false,
+        "symbol": "X1-MG48-B9",
+        "x": 307.0,
+        "y": -68.0
+      },
+      {
+        "has_fuel": false,
+        "symbol": "X1-MG48-C40",
+        "x": -119.0,
+        "y": 100.0
+      },
+      {
+        "has_fuel": true,
+        "symbol": "X1-MG48-C41",
+        "x": -119.0,
+        "y": 100.0
+      },
+      {
+        "has_fuel": true,
+        "symbol": "X1-MG48-C42",
+        "x": -88.0,
+        "y": 74.0
+      },
+      {
+        "has_fuel": true,
+        "symbol": "X1-MG48-D43",
+        "x": 79.0,
+        "y": 33.0
+      },
+      {
+        "has_fuel": true,
+        "symbol": "X1-MG48-D44",
+        "x": 79.0,
+        "y": 33.0
+      },
+      {
+        "has_fuel": true,
+        "symbol": "X1-MG48-E45",
+        "x": -37.0,
+        "y": -39.0
+      },
+      {
+        "has_fuel": true,
+        "symbol": "X1-MG48-E46",
+        "x": -37.0,
+        "y": -39.0
+      },
+      {
+        "has_fuel": false,
+        "symbol": "X1-MG48-E47",
+        "x": -37.0,
+        "y": -39.0
+      },
+      {
+        "has_fuel": false,
+        "symbol": "X1-MG48-E48",
+        "x": -37.0,
+        "y": -39.0
+      },
+      {
+        "has_fuel": true,
+        "symbol": "X1-MG48-E49",
+        "x": -37.0,
+        "y": -39.0
+      },
+      {
+        "has_fuel": true,
+        "symbol": "X1-MG48-F50",
+        "x": 18.0,
+        "y": -71.0
+      },
+      {
+        "has_fuel": true,
+        "symbol": "X1-MG48-F51",
+        "x": 18.0,
+        "y": -71.0
+      },
+      {
+        "has_fuel": true,
+        "symbol": "X1-MG48-G52",
+        "x": -23.0,
+        "y": 60.0
+      },
+      {
+        "has_fuel": true,
+        "symbol": "X1-MG48-G53",
+        "x": -23.0,
+        "y": 60.0
+      },
+      {
+        "has_fuel": true,
+        "symbol": "X1-MG48-H54",
+        "x": 23.0,
+        "y": 38.0
+      },
+      {
+        "has_fuel": true,
+        "symbol": "X1-MG48-H55",
+        "x": 23.0,
+        "y": 38.0
+      },
+      {
+        "has_fuel": true,
+        "symbol": "X1-MG48-H56",
+        "x": 23.0,
+        "y": 38.0
+      },
+      {
+        "has_fuel": true,
+        "symbol": "X1-MG48-H57",
+        "x": 23.0,
+        "y": 38.0
+      },
+      {
+        "has_fuel": true,
+        "symbol": "X1-MG48-I58",
+        "x": -320.0,
+        "y": -315.0
+      },
+      {
+        "has_fuel": true,
+        "symbol": "X1-MG48-I59",
+        "x": -165.0,
+        "y": -162.0
+      },
+      {
+        "has_fuel": true,
+        "symbol": "X1-MG48-J60",
+        "x": -427.0,
+        "y": -419.0
+      },
+      {
+        "has_fuel": true,
+        "symbol": "X1-MG48-J61",
+        "x": -513.0,
+        "y": -504.0
+      },
+      {
+        "has_fuel": false,
+        "symbol": "X1-MG48-J62",
+        "x": 720.0,
+        "y": 254.0
+      },
+      {
+        "has_fuel": false,
+        "symbol": "X1-MG48-J63",
+        "x": 706.0,
+        "y": 303.0
+      },
+      {
+        "has_fuel": false,
+        "symbol": "X1-MG48-J64",
+        "x": 731.0,
+        "y": 149.0
+      },
+      {
+        "has_fuel": false,
+        "symbol": "X1-MG48-J65",
+        "x": 368.0,
+        "y": 614.0
+      },
+      {
+        "has_fuel": false,
+        "symbol": "X1-MG48-J66",
+        "x": 282.0,
+        "y": 656.0
+      },
+      {
+        "has_fuel": false,
+        "symbol": "X1-MG48-J67",
+        "x": -568.0,
+        "y": 545.0
+      },
+      {
+        "has_fuel": false,
+        "symbol": "X1-MG48-J68",
+        "x": -308.0,
+        "y": 672.0
+      },
+      {
+        "has_fuel": false,
+        "symbol": "X1-MG48-J69",
+        "x": -534.0,
+        "y": 578.0
+      },
+      {
+        "has_fuel": false,
+        "symbol": "X1-MG48-J70",
+        "x": -752.0,
+        "y": 220.0
+      },
+      {
+        "has_fuel": false,
+        "symbol": "X1-MG48-J71",
+        "x": -426.0,
+        "y": 592.0
+      },
+      {
+        "has_fuel": false,
+        "symbol": "X1-MG48-J72",
+        "x": -740.0,
+        "y": -230.0
+      },
+      {
+        "has_fuel": false,
+        "symbol": "X1-MG48-J73",
+        "x": -683.0,
+        "y": 200.0
+      },
+      {
+        "has_fuel": false,
+        "symbol": "X1-MG48-J74",
+        "x": -471.0,
+        "y": -623.0
+      },
+      {
+        "has_fuel": false,
+        "symbol": "X1-MG48-J75",
+        "x": -682.0,
+        "y": -320.0
+      },
+      {
+        "has_fuel": false,
+        "symbol": "X1-MG48-J76",
+        "x": -188.0,
+        "y": -725.0
+      },
+      {
+        "has_fuel": false,
+        "symbol": "X1-MG48-J77",
+        "x": -354.0,
+        "y": -636.0
+      },
+      {
+        "has_fuel": false,
+        "symbol": "X1-MG48-J78",
+        "x": -397.0,
+        "y": -628.0
+      },
+      {
+        "has_fuel": false,
+        "symbol": "X1-MG48-J79",
+        "x": 255.0,
+        "y": -741.0
+      },
+      {
+        "has_fuel": false,
+        "symbol": "X1-MG48-J80",
+        "x": -297.0,
+        "y": -692.0
+      },
+      {
+        "has_fuel": false,
+        "symbol": "X1-MG48-J81",
+        "x": -67.0,
+        "y": -725.0
+      },
+      {
+        "has_fuel": false,
+        "symbol": "X1-MG48-J82",
+        "x": 47.0,
+        "y": -742.0
+      },
+      {
+        "has_fuel": false,
+        "symbol": "X1-MG48-J83",
+        "x": 34.0,
+        "y": -711.0
+      },
+      {
+        "has_fuel": false,
+        "symbol": "X1-MG48-J84",
+        "x": 428.0,
+        "y": -643.0
+      },
+      {
+        "has_fuel": false,
+        "symbol": "X1-MG48-J85",
+        "x": 711.0,
+        "y": 211.0
+      },
+      {
+        "has_fuel": false,
+        "symbol": "X1-MG48-J86",
+        "x": 713.0,
+        "y": -318.0
+      },
+      {
+        "has_fuel": false,
+        "symbol": "X1-MG48-J87",
+        "x": 742.0,
+        "y": 37.0
+      },
+      {
+        "has_fuel": false,
+        "symbol": "X1-MG48-J88",
+        "x": 540.0,
+        "y": 506.0
+      },
+      {
+        "has_fuel": false,
+        "symbol": "X1-MG48-J89",
+        "x": 651.0,
+        "y": 291.0
+      },
+      {
+        "has_fuel": true,
+        "symbol": "X1-MG48-K90",
+        "x": -67.0,
+        "y": -83.0
+      }
+    ],
+    "corridor": [
+      {
+        "has_fuel": true,
+        "symbol": "COR-A",
+        "x": 0.0,
+        "y": 0.0
+      },
+      {
+        "has_fuel": false,
+        "symbol": "COR-B",
+        "x": 100.0,
+        "y": 0.0
+      },
+      {
+        "has_fuel": true,
+        "symbol": "COR-C",
+        "x": 200.0,
+        "y": 0.0
+      },
+      {
+        "has_fuel": false,
+        "symbol": "COR-D",
+        "x": 300.0,
+        "y": 0.0
+      },
+      {
+        "has_fuel": false,
+        "symbol": "COR-E",
+        "x": 400.0,
+        "y": 0.0
+      }
+    ],
+    "starved": [
+      {
+        "has_fuel": false,
+        "symbol": "STV-P",
+        "x": 0.0,
+        "y": 0.0
+      },
+      {
+        "has_fuel": false,
+        "symbol": "STV-Q",
+        "x": 500.0,
+        "y": 0.0
+      }
+    ],
+    "tie": [
+      {
+        "has_fuel": true,
+        "symbol": "TIE-A",
+        "x": 0.0,
+        "y": 0.0
+      },
+      {
+        "has_fuel": false,
+        "symbol": "TIE-G",
+        "x": 200.0,
+        "y": 0.0
+      },
+      {
+        "has_fuel": true,
+        "symbol": "TIE-N",
+        "x": 100.0,
+        "y": 100.0
+      },
+      {
+        "has_fuel": true,
+        "symbol": "TIE-S",
+        "x": 100.0,
+        "y": -100.0
+      }
+    ]
+  },
+  "regenerate": "internal/domain/routing/testdata/generate_route_goldens.py"
+}
