@@ -9,9 +9,9 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 )
 
-// chartcrew_test.go pins the partitioned charting tour: how many hulls a dark
-// system earns, which waypoints each of them owns, and that no two of them ever
-// own the same one.
+// chartcrew_test.go pins how many hulls a dark system earns, the roster the
+// partition is solved over, and the angular fallback that answers when the fleet
+// partitioner cannot. The solved partition itself is chartshare_test.go.
 
 // ringStops lays n uncharted waypoints evenly around the system centre, which is
 // the only shape that lets a sector partition be checked for BALANCE as well as
@@ -76,13 +76,13 @@ func TestChartHulls_KnobsOverrideTheThresholds(t *testing.T) {
 	}
 }
 
-// --- the partition -----------------------------------------------------------
+// --- the angular fallback ----------------------------------------------------
 
-// THE PROPERTY THE WHOLE FEATURE RESTS ON: the crew's partitions are disjoint and
-// together cover every outstanding stop. Two probes charting the same waypoint is
-// a hull-hour spent on nothing; a waypoint owned by nobody leaves the system's
+// The fallback holds THE SAME PROPERTY the solved partition does: shares disjoint
+// and together covering every outstanding stop. Two probes charting one waypoint
+// is a hull-hour spent on nothing; a waypoint owned by nobody leaves the system's
 // count stuck above zero and the system permanently re-seeded.
-func TestPartitionOf_IsDisjointAndCoversEveryStop(t *testing.T) {
+func TestSectorFallback_IsDisjointAndCoversEveryStop(t *testing.T) {
 	stops := ringStops("X1-DARK", 31)
 	crew := []string{"PROBE-A", "PROBE-B", "PROBE-C"}
 
@@ -107,7 +107,7 @@ func TestPartitionOf_IsDisjointAndCoversEveryStop(t *testing.T) {
 
 // A partition keeps the catalog's own visiting ORDER, which is what puts a
 // system's shipyard-bearing waypoints in front of its dead rock.
-func TestPartitionOf_KeepsTheCatalogOrder(t *testing.T) {
+func TestSectorFallback_KeepsTheCatalogOrder(t *testing.T) {
 	stops := ringStops("X1-DARK", 12)
 	crew := []string{"PROBE-A", "PROBE-B"}
 
@@ -128,7 +128,7 @@ func TestPartitionOf_KeepsTheCatalogOrder(t *testing.T) {
 // A hull's share must not depend on WHICH waypoints its crewmates have already
 // charted, or a partition boundary walks across the system every tick and two
 // hulls chase the same waypoint in turn.
-func TestPartitionOf_OwnershipSurvivesTheRestOfTheSetBeingCharted(t *testing.T) {
+func TestSectorFallback_OwnershipSurvivesTheRestOfTheSetBeingCharted(t *testing.T) {
 	stops := ringStops("X1-DARK", 24)
 	crew := []string{"PROBE-A", "PROBE-B", "PROBE-C"}
 	before := partitionOf(stops, crew, "PROBE-B")
@@ -158,7 +158,7 @@ func TestPartitionOf_OwnershipSurvivesTheRestOfTheSetBeingCharted(t *testing.T) 
 
 // A hull that is not on the crew owns nothing: the roster is what grants a share,
 // and a stale errand must never be handed the whole system by default.
-func TestPartitionOf_AShipOffTheCrewOwnsNothing(t *testing.T) {
+func TestSectorFallback_AShipOffTheCrewOwnsNothing(t *testing.T) {
 	stops := ringStops("X1-DARK", 9)
 	if own := partitionOf(stops, []string{"PROBE-A", "PROBE-B"}, "PROBE-GHOST"); len(own) != 0 {
 		t.Fatalf("an off-crew hull owns %v, want nothing", own)
@@ -302,9 +302,14 @@ func TestAdvanceExpansion_AHullStandsDownWhenItsOwnShareIsCharted(t *testing.T) 
 	h := newExpandHarness()
 	stops := ringStops("X1-DARK", 30)
 	crew := []string{"PROBE-A", "PROBE-B", "PROBE-C"}
+	shares := dealtShares("X1-DARK", crew, stops)
 	mine := map[string]bool{}
-	for _, waypoint := range partitionOf(stops, crew, "PROBE-A") {
-		mine[waypoint] = true
+	for _, share := range shares {
+		if share.Ship == "PROBE-A" {
+			for _, waypoint := range share.Waypoints {
+				mine[waypoint] = true
+			}
+		}
 	}
 	// Everything PROBE-A owns is already charted; the rest of the system is not.
 	remaining := make([]ChartStop, 0, len(stops))
@@ -315,6 +320,7 @@ func TestAdvanceExpansion_AHullStandsDownWhenItsOwnShareIsCharted(t *testing.T) 
 	}
 	uncharted := darkSystemCrew(h, remaining)
 	h.ledger.systems[0].UnchartedCount = len(remaining)
+	h.ledger.chartShares = shares
 	h.screen.verdicts["X1-DARK"] = VerdictNoWhitelist
 
 	if _, err := h.run(t, uncharted); err != nil {
@@ -415,7 +421,14 @@ func TestAdvanceExpansion_AShareCharteredElsewhereLeavesTheTourWalking(t *testin
 	h := newExpandHarness()
 	stops := ringStops("X1-DARK", 30)
 	uncharted := darkSystemCrew(h, stops)
-	own := partitionOf(stops, []string{"PROBE-A", "PROBE-B", "PROBE-C"}, "PROBE-A")
+	shares := dealtShares("X1-DARK", []string{"PROBE-A", "PROBE-B", "PROBE-C"}, stops)
+	h.ledger.chartShares = shares
+	var own []string
+	for _, share := range shares {
+		if share.Ship == "PROBE-A" {
+			own = share.Waypoints
+		}
+	}
 	if len(own) < 2 {
 		t.Fatalf("fixture gives PROBE-A only %v", own)
 	}
@@ -436,6 +449,9 @@ func TestAdvanceExpansion_AShareCharteredElsewhereLeavesTheTourWalking(t *testin
 		if call.ship == "PROBE-A" && call.verb == "navigate" && call.arg == own[0] {
 			t.Fatalf("PROBE-A flew at %s, which is no longer uncharted", own[0])
 		}
+	}
+	if h.partitioner.calls() != 0 {
+		t.Fatalf("a stop leaving a stored share re-solved the partition %d time(s)", h.partitioner.calls())
 	}
 }
 

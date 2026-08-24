@@ -3,6 +3,7 @@ package parkedsensing
 import (
 	"math"
 	"sort"
+	"strings"
 )
 
 // chartcrew.go divides ONE dark system's charting work across several hulls.
@@ -17,6 +18,10 @@ import (
 // waypoints each of them owns. The budget bounds what the seeder raises, the
 // partition bounds what an errand already running may touch, and a budget of one
 // leaves both exactly as a single-hull tour.
+//
+// The partition itself is SOLVED by the fleet-partitioning VRP and stored
+// (chartshare.go); what lives here is the budget, the roster the partition is
+// solved over, and the angular fallback that answers when the solver cannot.
 
 const (
 	// defaultChartHullCap is the most hulls one dark system may draw. Every hull
@@ -217,25 +222,39 @@ func HullsOnChartingErrand(systems []ExpandSystem) map[string]bool {
 	return newSeedRoster(systems).hulls()
 }
 
-// partitionOf is the share of a system's outstanding stops one hull owns, in the
-// catalog's own visiting order.
+// crewKey names a crew as one value, so a stored share can say which membership
+// it was solved for. Symbol order, matching seedRoster.crew, so the key is a
+// property of WHO is aboard and not of the order the ledger handed the rows back.
+func crewKey(crew []string) string {
+	ordered := append([]string(nil), crew...)
+	sort.Strings(ordered)
+	return strings.Join(ordered, "|")
+}
+
+// partitionBySector is the DECLARED FALLBACK, reached only when the fleet
+// partitioner cannot answer (see solveShares). It divides the outstanding stops by
+// ANGLE AROUND THE SYSTEM CENTRE into as many equal sectors as the crew has hulls,
+// each hull taking the sector matching its rank.
 //
-// THE DIVISION IS BY ANGLE AROUND THE SYSTEM CENTRE, into as many equal sectors
-// as the crew has hulls, and each hull takes the sector matching its rank. A
-// sector is a property of the WAYPOINT ALONE — its coordinates and the crew size
-// — so a stop never changes owner because its neighbours were charted. That is
-// the property the whole scheme rests on: a boundary that moved as the set shrank
-// would walk across the system every tick and hand two hulls the same waypoint in
-// turn. Sectors can be uneven where a system's waypoints bunch, and that resolves
-// itself: a hull with nothing left stands down, the crew shrinks, and the ones
-// still working re-divide what remains.
+// It stands here because charting must never stall on the routing service: a
+// sector needs nothing but a waypoint's own coordinates and the crew size, so it
+// is answerable with every collaborator down. It buys that with a worse partition
+// — sectors are uneven wherever a system's waypoints bunch — which is why it is
+// the fallback and not the rule.
+func partitionBySector(stops []ChartStop, crew []string) map[string][]string {
+	byShip := make(map[string][]string, len(crew))
+	for _, ship := range crew {
+		byShip[ship] = partitionOf(stops, crew, ship)
+	}
+	return byShip
+}
+
+// partitionOf is the sector share one hull owns, in the catalog's own visiting
+// order — which is the tier order, so the value-bearing stops of a share stay
+// ahead of its dead rock.
 //
 // A ship not on the crew owns NOTHING. The roster is what grants a share, so a
 // stale errand cannot fall through to the whole system by default.
-//
-// THE CATALOG ORDER IS PRESERVED WITHIN A SHARE, never re-sorted by geometry: a
-// tour charts the head of its list, and that order is what puts a system's
-// shipyard- and market-bearing waypoints ahead of its dead rock.
 func partitionOf(stops []ChartStop, crew []string, ship string) []string {
 	rank := -1
 	for i, member := range crew {

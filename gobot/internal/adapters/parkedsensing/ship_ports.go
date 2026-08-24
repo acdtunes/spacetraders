@@ -270,9 +270,11 @@ func (p *ShipPositionPort) ShipAt(ctx context.Context, playerID int, shipSymbol 
 		return appSensing.ShipPos{}, fmt.Errorf("failed to read position of %q: %w", shipSymbol, err)
 	}
 	return appSensing.ShipPos{
-		Waypoint:  model.LocationSymbol,
-		NavStatus: navigation.NavStatus(model.NavStatus),
-		Found:     true,
+		Waypoint:     model.LocationSymbol,
+		NavStatus:    navigation.NavStatus(model.NavStatus),
+		Found:        true,
+		FuelCapacity: model.FuelCapacity,
+		EngineSpeed:  model.EngineSpeed,
 	}, nil
 }
 

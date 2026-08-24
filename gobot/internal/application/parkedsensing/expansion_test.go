@@ -199,12 +199,15 @@ type fakeExpandLedger struct {
 	systems []ExpandSystem
 	slots   []QueuedSlot
 
+	chartShares []ChartShare
+
 	systemsErr, slotsErr           error
 	setSeedErr, deleteErr          error
 	stampErr                       error
 	setSeedErrOn                   map[string]error
 	upsertSlotErr, upsertSystemErr error
 	transitionErr                  error
+	shareErr, setShareErr          error
 
 	setSeeds       []setSeedCall
 	extraSeeds     []extraSeedCall
@@ -214,8 +217,10 @@ type fakeExpandLedger struct {
 	upsertedSlots  []SlotRecord
 	upsertedSystem []SystemRecord
 	transitions    []transitionCall
+	setShares      []setSharesCall
+	clearedShares  []string
 
-	systemsCalls, slotsCalls int
+	systemsCalls, slotsCalls, shareCalls int
 }
 
 func (f *fakeExpandLedger) Systems(_ context.Context, _ int) ([]ExpandSystem, error) {
@@ -373,6 +378,53 @@ func (f *fakeExpandLedger) ClearExtraSeed(_ context.Context, _ int, ship string)
 		return f.setSeedErr
 	}
 	f.dropExtra(ship)
+	return nil
+}
+
+// setSharesCall records one whole-system partition write, which is the only shape
+// the real ledger accepts: a partition is meaningful as a set, never per hull.
+type setSharesCall struct {
+	system string
+	shares []ChartShare
+}
+
+func (f *fakeExpandLedger) ChartShares(_ context.Context, _ int) ([]ChartShare, error) {
+	f.shareCalls++
+	if f.shareErr != nil {
+		// Adversarial: a full partition alongside the error, so a caller that
+		// ignores err flies an assignment it never legitimately read.
+		return f.chartShares, f.shareErr
+	}
+	return f.chartShares, nil
+}
+
+func (f *fakeExpandLedger) SetChartShares(_ context.Context, _ int, system string, shares []ChartShare) error {
+	f.setShares = append(f.setShares, setSharesCall{system: system, shares: shares})
+	if f.setShareErr != nil {
+		return f.setShareErr
+	}
+	var kept []ChartShare
+	for _, share := range f.chartShares {
+		if share.System != system {
+			kept = append(kept, share)
+		}
+	}
+	f.chartShares = append(kept, shares...)
+	return nil
+}
+
+func (f *fakeExpandLedger) ClearChartShare(_ context.Context, _ int, ship string) error {
+	f.clearedShares = append(f.clearedShares, ship)
+	if f.setShareErr != nil {
+		return f.setShareErr
+	}
+	var kept []ChartShare
+	for _, share := range f.chartShares {
+		if share.Ship != ship {
+			kept = append(kept, share)
+		}
+	}
+	f.chartShares = kept
 	return nil
 }
 
@@ -565,14 +617,18 @@ func (s *screenStub) screener() SystemScreener {
 // --- harness -----------------------------------------------------------------
 
 type expandHarness struct {
-	gates     *fakeGates
-	ledger    *fakeExpandLedger
-	seed      *fakeSeedCommander
-	ships     *fakeExpandShips
-	yards     *fakeExpandYards
-	markets   *fakeExpandMarkets
-	screen    *screenStub
-	whitelist map[string]bool
+	gates *fakeGates
+	// partitioner answers every crew partition. Wired by default: the fleet
+	// partitioner is the PRIMARY, so a fixture that left it out would exercise the
+	// fallback and read as though it had tested the solver.
+	partitioner *fakePartitioner
+	ledger      *fakeExpandLedger
+	seed        *fakeSeedCommander
+	ships       *fakeExpandShips
+	yards       *fakeExpandYards
+	markets     *fakeExpandMarkets
+	screen      *screenStub
+	whitelist   map[string]bool
 	// unswept names the systems whose waypoint catalog has NEVER been swept.
 	// Everything else defaults to swept — see run().
 	unswept map[string]bool
@@ -580,15 +636,16 @@ type expandHarness struct {
 
 func newExpandHarness() *expandHarness {
 	return &expandHarness{
-		gates:     &fakeGates{adjacency: map[string][]string{}},
-		ledger:    &fakeExpandLedger{},
-		seed:      &fakeSeedCommander{isMarket: map[string]bool{}},
-		ships:     &fakeExpandShips{positions: map[string]ShipPos{}},
-		yards:     &fakeExpandYards{bySystem: map[string][]string{}},
-		markets:   &fakeExpandMarkets{goods: map[string][]string{}, rows: map[string][]scouting.MarketDepthRow{}},
-		screen:    &screenStub{verdicts: map[string]string{}},
-		whitelist: map[string]bool{"FUEL": true},
-		unswept:   map[string]bool{},
+		gates:       &fakeGates{adjacency: map[string][]string{}},
+		partitioner: &fakePartitioner{},
+		ledger:      &fakeExpandLedger{},
+		seed:        &fakeSeedCommander{isMarket: map[string]bool{}},
+		ships:       &fakeExpandShips{positions: map[string]ShipPos{}},
+		yards:       &fakeExpandYards{bySystem: map[string][]string{}},
+		markets:     &fakeExpandMarkets{goods: map[string][]string{}, rows: map[string][]scouting.MarketDepthRow{}},
+		screen:      &screenStub{verdicts: map[string]string{}},
+		whitelist:   map[string]bool{"FUEL": true},
+		unswept:     map[string]bool{},
 	}
 }
 
@@ -601,6 +658,7 @@ func (h *expandHarness) ports() ExpandPorts {
 		Ships:       h.ships,
 		Yards:       h.yards,
 		MarketGoods: h.markets,
+		Partitioner: h.partitioner,
 		Uncharted:   &fakeUncharted{bySystem: map[string][]string{}},
 	}
 }
@@ -623,6 +681,15 @@ func (h *expandHarness) run(t *testing.T, uncharted *fakeUncharted) (ExpandRepor
 // runWithKnobs is run with the tick's knobs named, for the tests that turn one.
 func (h *expandHarness) runWithKnobs(t *testing.T, uncharted *fakeUncharted, k ExpandKnobs) (ExpandReport, error) {
 	t.Helper()
+	return h.runWithContext(t, context.Background(), uncharted, k)
+}
+
+// runWithContext is runWithKnobs with the context named, for the tests that read
+// what the tick logged.
+func (h *expandHarness) runWithContext(
+	t *testing.T, ctx context.Context, uncharted *fakeUncharted, k ExpandKnobs,
+) (ExpandReport, error) {
+	t.Helper()
 	for i := range h.ledger.systems {
 		h.ledger.systems[i].CatalogKnown = !h.unswept[h.ledger.systems[i].System]
 	}
@@ -630,7 +697,7 @@ func (h *expandHarness) runWithKnobs(t *testing.T, uncharted *fakeUncharted, k E
 	if uncharted != nil {
 		p.Uncharted = uncharted
 	}
-	return AdvanceExpansion(context.Background(), p, 1, k, 1.0)
+	return AdvanceExpansion(ctx, p, 1, k, 1.0)
 }
 
 // assertIdle proves the tick touched nothing at all — the only way to show a

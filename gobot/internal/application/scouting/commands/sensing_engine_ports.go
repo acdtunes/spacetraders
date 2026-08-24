@@ -163,16 +163,18 @@ type SensingEnginePorts struct {
 	GateRead  parkedsensing.GateReader
 	Uncharted parkedsensing.UnchartedCatalog
 	SeedShip  parkedsensing.SeedCommander
-	Scan      parkedsensing.MarketScanRunner
-	SpreadOf  parkedsensing.SpreadObserver
-	Home      HomeSystemReader
-	Budget    BudgetRateReader
+	// Partitioner cuts a dark system's stops into per-hull charting tours. Absent, a
+	// crew falls back to angular sectors, so it is NOT in ready() below.
+	Partitioner parkedsensing.FleetPartitioner
+	Scan        parkedsensing.MarketScanRunner
+	SpreadOf    parkedsensing.SpreadObserver
+	Home        HomeSystemReader
+	Budget      BudgetRateReader
 	// UnpricedPool is the sensing surge's work list: the charted systems the fleet
-	// holds no price for (sp-zvywu). REQUIRED, and checked in ready() below rather
-	// than nil-tolerated: a nil-tolerant pool read is what a dormant feature looks
-	// like — the tick would report healthy forever while ~300 surplus probes stood
-	// idle against 1,067 unpriced systems, which is precisely the blind spot this
-	// port exists to close. Held fail-closed and LOUD instead.
+	// holds no price for. REQUIRED, and checked in ready() below rather than
+	// nil-tolerated: a nil-tolerant pool read is what a dormant feature looks like —
+	// the tick reports healthy forever while surplus probes stand idle against the
+	// unpriced map. Held fail-closed and LOUD instead.
 	UnpricedPool UnpricedSystemPool
 	// Wave answers which regime the tick is in: probe buying pauses on the HEAVY wave so
 	// the treasury can reach a hull's ask, and runs at full speed on the PROBE one. The
@@ -356,6 +358,7 @@ func (p SensingEnginePorts) expandPorts(playerID int, whitelist map[string]bool)
 		MarketGoods: p.MarketGoods,
 		Yards:       p.Waypoints,
 		Uncharted:   p.Uncharted,
+		Partitioner: p.Partitioner,
 		// The SAME stored-listing read the buy queue's memo makes, so staging can prefer a
 		// yard we have EVIDENCE sells probes over one the trait fallback merely guessed at —
 		// and never stage onto one the memo has already answered probe-less. Without this

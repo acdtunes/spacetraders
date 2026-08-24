@@ -415,3 +415,92 @@ func TestSensingLedger_CountOwnedProbes_CountsCrewHullsAndDedupesThem(t *testing
 	require.NoError(t, err)
 	require.Equal(t, int64(3), owned, "one hull, named twice, is one hull")
 }
+
+// --- the crew's charting shares ----------------------------------------------
+
+// A partition is written as a SET and read back whole, order intact.
+func TestSensingLedger_SetChartShares_RoundTripsTheWholePartition(t *testing.T) {
+	db := newSensingLedgerDB(t)
+	repo := persistence.NewSensingLedgerRepository(db)
+	ctx := context.Background()
+
+	require.NoError(t, repo.SetChartShares(ctx, 1, "X1-BB", []persistence.SensingChartShareModel{
+		{PlayerID: 1, ShipSymbol: "PROBE-2", SystemSymbol: "X1-BB", Waypoints: `["X1-BB-B","X1-BB-A"]`, CrewKey: "PROBE-1|PROBE-2"},
+		{PlayerID: 1, ShipSymbol: "PROBE-1", SystemSymbol: "X1-BB", Waypoints: `["X1-BB-C"]`, CrewKey: "PROBE-1|PROBE-2"},
+	}))
+
+	shares, err := repo.ChartShares(ctx, 1)
+	require.NoError(t, err)
+	require.Len(t, shares, 2)
+	require.Equal(t, "PROBE-1", shares[0].ShipSymbol, "shares are hull-ordered for a reproducible tick")
+	require.Equal(t, `["X1-BB-C"]`, shares[0].Waypoints)
+	require.Equal(t, `["X1-BB-B","X1-BB-A"]`, shares[1].Waypoints, "the solved ORDER survives the round trip")
+	require.Equal(t, "PROBE-1|PROBE-2", shares[1].CrewKey)
+}
+
+// A RE-SOLVE REPLACES THE PARTITION RATHER THAN ADDING TO IT: a hull that left the
+// crew must not keep a row naming stops the survivors were re-dealt.
+func TestSensingLedger_SetChartShares_ReplacesTheSystemsWholePartition(t *testing.T) {
+	db := newSensingLedgerDB(t)
+	repo := persistence.NewSensingLedgerRepository(db)
+	ctx := context.Background()
+
+	require.NoError(t, repo.SetChartShares(ctx, 1, "X1-BB", []persistence.SensingChartShareModel{
+		{PlayerID: 1, ShipSymbol: "PROBE-1", SystemSymbol: "X1-BB", Waypoints: `["X1-BB-A"]`, CrewKey: "PROBE-1|PROBE-2"},
+		{PlayerID: 1, ShipSymbol: "PROBE-2", SystemSymbol: "X1-BB", Waypoints: `["X1-BB-B"]`, CrewKey: "PROBE-1|PROBE-2"},
+	}))
+	require.NoError(t, repo.SetChartShares(ctx, 1, "X1-BB", []persistence.SensingChartShareModel{
+		{PlayerID: 1, ShipSymbol: "PROBE-1", SystemSymbol: "X1-BB", Waypoints: `["X1-BB-A","X1-BB-B"]`, CrewKey: "PROBE-1"},
+	}))
+
+	shares, err := repo.ChartShares(ctx, 1)
+	require.NoError(t, err)
+	require.Len(t, shares, 1, "the departed hull's share is gone, not left beside the survivor's")
+	require.Equal(t, "PROBE-1", shares[0].ShipSymbol)
+	require.Equal(t, "PROBE-1", shares[0].CrewKey)
+}
+
+// Keyed on the HULL, so a probe re-crewed elsewhere carries its share rather than
+// leaving one behind.
+func TestSensingLedger_SetChartShares_MovesAHullRatherThanNamingItTwice(t *testing.T) {
+	db := newSensingLedgerDB(t)
+	repo := persistence.NewSensingLedgerRepository(db)
+	ctx := context.Background()
+
+	require.NoError(t, repo.SetChartShares(ctx, 1, "X1-BB", []persistence.SensingChartShareModel{
+		{PlayerID: 1, ShipSymbol: "PROBE-2", SystemSymbol: "X1-BB", Waypoints: `["X1-BB-A"]`, CrewKey: "PROBE-2"},
+	}))
+	require.NoError(t, repo.SetChartShares(ctx, 1, "X1-CC", []persistence.SensingChartShareModel{
+		{PlayerID: 1, ShipSymbol: "PROBE-2", SystemSymbol: "X1-CC", Waypoints: `["X1-CC-A"]`, CrewKey: "PROBE-2"},
+	}))
+
+	shares, err := repo.ChartShares(ctx, 1)
+	require.NoError(t, err)
+	require.Len(t, shares, 1, "one probe, one share")
+	require.Equal(t, "X1-CC", shares[0].SystemSymbol)
+
+	// The clear is idempotent, so a half-finished stand-down can be re-run.
+	require.NoError(t, repo.ClearChartShare(ctx, 1, "PROBE-2"))
+	require.NoError(t, repo.ClearChartShare(ctx, 1, "PROBE-2"))
+	shares, err = repo.ChartShares(ctx, 1)
+	require.NoError(t, err)
+	require.Empty(t, shares)
+}
+
+func TestSensingLedger_ChartShares_IsScopedToThePlayer(t *testing.T) {
+	db := newSensingLedgerDB(t)
+	repo := persistence.NewSensingLedgerRepository(db)
+	ctx := context.Background()
+
+	require.NoError(t, repo.SetChartShares(ctx, 1, "X1-BB", []persistence.SensingChartShareModel{
+		{PlayerID: 1, ShipSymbol: "PROBE-1", SystemSymbol: "X1-BB", Waypoints: `["X1-BB-A"]`, CrewKey: "PROBE-1"},
+	}))
+	require.NoError(t, repo.SetChartShares(ctx, 2, "X1-BB", []persistence.SensingChartShareModel{
+		{PlayerID: 2, ShipSymbol: "RIGEL-9", SystemSymbol: "X1-BB", Waypoints: `["X1-BB-B"]`, CrewKey: "RIGEL-9"},
+	}))
+
+	shares, err := repo.ChartShares(ctx, 1)
+	require.NoError(t, err)
+	require.Len(t, shares, 1)
+	require.Equal(t, "PROBE-1", shares[0].ShipSymbol)
+}

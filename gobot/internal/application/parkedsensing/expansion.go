@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+
+	"github.com/andrescamacho/spacetraders-go/internal/domain/routing"
 )
 
 // expansion.go pushes the sensing map outward: the screen judges systems we can
@@ -84,12 +86,48 @@ type GateGraph struct {
 }
 
 // ChartStop is one outstanding waypoint of a charting tour: the symbol a seed
-// charts, and where the waypoint sits in its system. The coordinates are
-// system-relative, so the system's centre is the origin — which is what lets a
-// crew's shares be cut from the plane rather than from the list (chartcrew.go).
+// charts, where the waypoint sits in its system, and what tier of charting value
+// its type carries. The coordinates are system-relative, so the system's centre is
+// the origin — which is the plane a crew's shares are solved over (chartcrew.go).
 type ChartStop struct {
 	Waypoint string
 	X, Y     float64
+	// Priority is the charting VALUE TIER, ascending: shipyard-bearing types ahead
+	// of market-bearing ones ahead of the rest. It travels with the stop because a
+	// solved tour comes back in geometric order and the tier has to survive that
+	// re-ordering — a system's yard is what makes it buyable, so a walk that leaves
+	// the tier to the geometry spends the tour on dead rock first.
+	Priority int
+}
+
+// ChartShare is one hull's charting assignment: the stops it owns, in the order it
+// works them, and the crew the assignment was solved for.
+//
+// It is DURABLE, and that is what makes a share stable. The partition is solved
+// once per crew membership and read back on every tick after, so a hull's share
+// does not depend on when in the tour it is asked for and a restart mid-tour
+// resumes on the shares already stored.
+type ChartShare struct {
+	Ship      string
+	System    string
+	Waypoints []string
+	// CrewKey names the crew this partition was solved for. A share whose key no
+	// longer matches the system's live crew is stale by construction, which is what
+	// makes membership — a hull finishing, dying or joining — the re-solve trigger
+	// rather than the tick.
+	CrewKey string
+}
+
+// FleetPartitioner splits a set of waypoints across a set of hulls. It is the
+// fleet's one VRP: the same OR-Tools fleet partitioning the scout reset routes
+// through, asked here to cut a dark system's outstanding stops into per-hull tours.
+//
+// A nil partitioner, an unreachable service and a refused solve are ONE case to
+// every caller: charting falls back to angular sectors and keeps running
+// (chartcrew.go). Nothing here may hold a charting tour open on the routing
+// service.
+type FleetPartitioner interface {
+	PartitionFleet(ctx context.Context, request *routing.VRPRequest) (*routing.VRPResponse, error)
 }
 
 // UnchartedCatalog reads which waypoints in a system are still uncharted.
@@ -221,6 +259,17 @@ type ExpandLedger interface {
 	// ClearExtraSeed ends the errand of a hull that is not a system's first. Clearing
 	// by HULL rather than by system for the same reason SetExtraSeed writes by it.
 	ClearExtraSeed(ctx context.Context, playerID int, shipSymbol string) error
+	// ChartShares returns every stored charting assignment, keyed on the hull for
+	// the same reason SetExtraSeed writes by it. A crew's shares are read as one set
+	// because staleness is a property of the CREW, not of any single hull's row.
+	ChartShares(ctx context.Context, playerID int) ([]ChartShare, error)
+	// SetChartShares replaces one system's whole partition. Whole rather than
+	// per-hull because a partition is only meaningful as a set: half-written, two
+	// hulls own one stop or none owns it, which are exactly the two states the
+	// partition exists to rule out.
+	SetChartShares(ctx context.Context, playerID int, system string, shares []ChartShare) error
+	// ClearChartShare drops one hull's assignment when its errand ends.
+	ClearChartShare(ctx context.Context, playerID int, shipSymbol string) error
 	// StampCatalogSynced records that a system's waypoint list has been swept and
 	// persisted. Another narrow write with a disjoint column set, for the same reason
 	// as SetSeed: it lands mid-tour, while the sweep may be re-screening the row.
@@ -248,6 +297,10 @@ type ExpandPorts struct {
 	// EVIDENCE sells probes over one the trait fallback merely guessed at. OPTIONAL:
 	// a nil memo leaves staging choosing the nearest staffed yard.
 	ListingMemo ProbeListingMemo
+	// Partitioner cuts a crewed system's outstanding stops into per-hull tours. A
+	// nil one is the DECLARED FALLBACK's trigger, not a wedge: charting partitions
+	// by angular sector instead and every tour keeps running (chartcrew.go).
+	Partitioner FleetPartitioner
 	// GateRead is the bounded, fetch-through jump-gate read — the pass that learns
 	// where a system connects WITHOUT waiting for a hull to fly there (gateread.go).
 	// A SECOND port beside Gates rather than a widening of it, because Gates is a
@@ -462,7 +515,7 @@ func AdvanceExpansion(
 	t := &expandTick{
 		p: p, playerID: playerID, k: k,
 		book: book, reach: reach,
-		roster: roster, hulls: hulls,
+		roster: roster, hulls: hulls, shares: newShareBook(),
 		probeYards: probeYards,
 		staffed:    map[string]bool{},
 		listings:   map[string]probeStock{},
@@ -554,6 +607,10 @@ type expandTick struct {
 	// a system from being crewed past its budget within one tick.
 	roster *seedRoster
 	hulls  chartHulls
+	// shares is the tick's view of the stored crew partitions: read lazily on the
+	// first crewed system, and re-solved only where the crew it was solved for no
+	// longer matches the roster above.
+	shares *shareBook
 	// None of the four can change while the tick runs. serving memoises whether
 	// staging would ever choose a yard in a system at all — see originServesATarget —
 	// and origins is that test's own index, built lazily because most ticks never

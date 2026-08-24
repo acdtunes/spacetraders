@@ -381,6 +381,67 @@ func (p *LedgerPort) ClearExtraSeed(ctx context.Context, playerID int, shipSymbo
 	return p.repo.ClearExtraSeed(ctx, playerID, shipSymbol)
 }
 
+// ChartShares returns every stored charting assignment.
+//
+// A share whose waypoint list will not decode comes back EMPTY rather than as an
+// error. An empty share is stale by the engine's own coverage test — its stops are
+// owned by nobody — so the crew re-solves and overwrites it, which is the recovery
+// a corrupt row wants; failing the read instead would stop every crew in the fleet
+// over one bad row.
+func (p *LedgerPort) ChartShares(ctx context.Context, playerID int) ([]appSensing.ChartShare, error) {
+	models, err := p.repo.ChartShares(ctx, playerID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]appSensing.ChartShare, 0, len(models))
+	for _, m := range models {
+		var waypoints []string
+		if err := json.Unmarshal([]byte(m.Waypoints), &waypoints); err != nil {
+			waypoints = nil
+		}
+		out = append(out, appSensing.ChartShare{
+			Ship: m.ShipSymbol, System: m.SystemSymbol, Waypoints: waypoints, CrewKey: m.CrewKey,
+		})
+	}
+	return out, nil
+}
+
+// SetChartShares replaces one system's whole partition.
+func (p *LedgerPort) SetChartShares(
+	ctx context.Context, playerID int, system string, shares []appSensing.ChartShare,
+) error {
+	models := make([]persistence.SensingChartShareModel, 0, len(shares))
+	for _, share := range shares {
+		waypoints, err := json.Marshal(nonNilStrings(share.Waypoints))
+		if err != nil {
+			return fmt.Errorf("failed to encode the charting share of %q: %w", share.Ship, err)
+		}
+		models = append(models, persistence.SensingChartShareModel{
+			PlayerID:     playerID,
+			ShipSymbol:   share.Ship,
+			SystemSymbol: share.System,
+			Waypoints:    string(waypoints),
+			CrewKey:      share.CrewKey,
+			UpdatedAt:    time.Now().UTC(),
+		})
+	}
+	return p.repo.SetChartShares(ctx, playerID, system, models)
+}
+
+// ClearChartShare drops one hull's charting assignment.
+func (p *LedgerPort) ClearChartShare(ctx context.Context, playerID int, shipSymbol string) error {
+	return p.repo.ClearChartShare(ctx, playerID, shipSymbol)
+}
+
+// nonNilStrings keeps an empty list encoding as `[]` rather than as `null`, so the
+// column's own default and what this writes agree.
+func nonNilStrings(values []string) []string {
+	if values == nil {
+		return []string{}
+	}
+	return values
+}
+
 // DeleteSlot removes ONE placement row outright — the one write that hands a
 // parked spare's hull from the ledger to a charting errand.
 //

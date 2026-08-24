@@ -351,6 +351,7 @@ type sensingWiring struct {
 	gateEdgeRepo     *persistence.GormGateEdgeRepository
 	gateGraphService *gategraph.Service
 	marketScanner    *ship.MarketScanner
+	routingClient    domainRouting.RoutingClient
 
 	shipyardScanner       *ship.ShipyardScanner
 	shipyardInventoryRepo *persistence.ShipyardInventoryRepositoryGORM
@@ -416,6 +417,8 @@ func (s sensingWiring) enginePorts(
 		Ledger:    s.ledger,
 		Waypoints: catalog,
 		Uncharted: catalog,
+		// The fleet's one VRP, shared with the scout reset.
+		Partitioner: s.routingClient,
 		// The same catalog instance again: it owns the shipyard_inventory reads,
 		// so the yard lookup and the listing memo read one store.
 		ListingMemo: catalog,
@@ -1410,6 +1413,7 @@ func run(cfg *config.Config) error {
 		gateEdgeRepo:     gateEdgeRepo,
 		gateGraphService: gateGraphService,
 		marketScanner:    marketScanner,
+		routingClient:    routingClient,
 
 		shipyardScanner:       shipyardScanner,
 		shipyardInventoryRepo: shipyardInventoryRepo,

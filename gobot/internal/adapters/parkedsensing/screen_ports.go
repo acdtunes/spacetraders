@@ -232,9 +232,10 @@ func (p *WaypointCatalogPort) ListUnchartedCount(ctx context.Context, system str
 // order would let it oscillate between two waypoints and never finish. Sorting
 // on the pair (priority, symbol) — rather than by priority alone — is what keeps
 // that true regardless of the order the rows arrive in.
-// Each stop carries its COORDINATES, which is what a crewed system's shares are
-// cut from: a share is an angular sector of the system, so it depends on where a
-// waypoint sits in the plane and not on where it sits in this list.
+// Each stop carries its COORDINATES and its own tier. A crewed system's shares are
+// solved over the plane and handed back in geometric order, so the tier has to
+// travel with the stop to survive that re-ordering — it cannot be read back off a
+// position in this list once a partitioner has shuffled it.
 func (p *WaypointCatalogPort) UnchartedStops(ctx context.Context, system string) ([]appSensing.ChartStop, error) {
 	waypoints, err := p.unchartedIn(ctx, system)
 	if err != nil {
@@ -249,7 +250,12 @@ func (p *WaypointCatalogPort) UnchartedStops(ctx context.Context, system string)
 	})
 	out := make([]appSensing.ChartStop, 0, len(waypoints))
 	for _, waypoint := range waypoints {
-		out = append(out, appSensing.ChartStop{Waypoint: waypoint.Symbol, X: waypoint.X, Y: waypoint.Y})
+		out = append(out, appSensing.ChartStop{
+			Waypoint: waypoint.Symbol,
+			X:        waypoint.X,
+			Y:        waypoint.Y,
+			Priority: shared.ChartPriority(waypoint.Type),
+		})
 	}
 	return out, nil
 }

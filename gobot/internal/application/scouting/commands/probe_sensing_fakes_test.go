@@ -112,6 +112,8 @@ type psLedger struct {
 	// two writes a pass performs FIRST, and that order is a money guard.
 	transitionErr map[string]error
 
+	chartShares []parkedsensing.ChartShare
+
 	// systemUpserts is every SystemRecord handed to UpsertSystem, kept raw so a
 	// test can assert the WRITE SET rather than only its effect — which is what
 	// pins "this row asserts nothing it does not know".
@@ -487,6 +489,43 @@ func (f *psLedger) ClearExtraSeed(_ context.Context, _ int, shipSymbol string) e
 	defer f.mu.Unlock()
 
 	f.dropExtraSeed(shipSymbol)
+	return nil
+}
+
+func (f *psLedger) ChartShares(context.Context, int) ([]parkedsensing.ChartShare, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return append([]parkedsensing.ChartShare(nil), f.chartShares...), nil
+}
+
+func (f *psLedger) SetChartShares(
+	_ context.Context, _ int, system string, shares []parkedsensing.ChartShare,
+) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	var kept []parkedsensing.ChartShare
+	for _, share := range f.chartShares {
+		if share.System != system {
+			kept = append(kept, share)
+		}
+	}
+	f.chartShares = append(kept, shares...)
+	return nil
+}
+
+func (f *psLedger) ClearChartShare(_ context.Context, _ int, shipSymbol string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	var kept []parkedsensing.ChartShare
+	for _, share := range f.chartShares {
+		if share.Ship != shipSymbol {
+			kept = append(kept, share)
+		}
+	}
+	f.chartShares = kept
 	return nil
 }
 

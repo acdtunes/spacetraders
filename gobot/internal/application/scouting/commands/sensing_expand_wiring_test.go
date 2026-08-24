@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/parkedsensing"
+	domainRouting "github.com/andrescamacho/spacetraders-go/internal/domain/routing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/yardscan"
 )
 
@@ -34,6 +35,24 @@ func TestSensingEnginePorts_ExpandPortsCarriesTheListingMemo(t *testing.T) {
 		t.Fatalf("expandPorts dropped the ListingMemo — seed staging would have no evidence to rank " +
 			"yards on and would quietly stage onto shipyard-trait guesses again, which is the exact " +
 			"defect this port was added to fix")
+	}
+}
+
+type wiringPartitioner struct{}
+
+func (wiringPartitioner) PartitionFleet(
+	context.Context, *domainRouting.VRPRequest,
+) (*domainRouting.VRPResponse, error) {
+	return &domainRouting.VRPResponse{}, nil
+}
+
+// …and the fleet partitioner. Dropped, charting runs on its angular fallback.
+func TestSensingEnginePorts_ExpandPortsCarriesTheFleetPartitioner(t *testing.T) {
+	ports := SensingEnginePorts{Partitioner: wiringPartitioner{}}
+
+	if got := ports.expandPorts(1, map[string]bool{"FUEL": true}).Partitioner; got == nil {
+		t.Fatalf("expandPorts dropped the Partitioner — every charting crew would fall back to " +
+			"angular sectors, with nothing reporting that the solver was never asked")
 	}
 }
 

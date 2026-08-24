@@ -162,7 +162,11 @@ func (t *expandTick) restampErrand(ctx context.Context, r chartSeedRun, state st
 	return t.p.Ledger.SetExtraSeed(ctx, t.playerID, r.system(), r.ship, state)
 }
 
-// clearErrand ends one hull's errand, addressed in the slot that holds it.
+// clearErrand ends one hull's errand, addressed in the slot that holds it, and
+// drops the charting share the errand carried. The share goes LAST: it is
+// bookkeeping for a hull that is no longer charting, where the errand row is what
+// keeps the hull attributable, so a failed share write must not leave the errand
+// standing.
 func (t *expandTick) clearErrand(ctx context.Context, r chartSeedRun) error {
 	if r.primary {
 		if err := t.p.Ledger.SetSeed(ctx, t.playerID, r.system(), "", ""); err != nil {
@@ -172,7 +176,7 @@ func (t *expandTick) clearErrand(ctx context.Context, r chartSeedRun) error {
 		return err
 	}
 	t.roster.leave(r.system(), r.ship)
-	return nil
+	return t.p.Ledger.ClearChartShare(ctx, t.playerID, r.ship)
 }
 
 // advanceSeed applies the one step available to a single errand and reports
@@ -252,15 +256,18 @@ func (t *expandTick) dispatchSeed(ctx context.Context, r chartSeedRun, pos ShipP
 //
 // THE TOUR IS THIS HULL'S SHARE OF THE SYSTEM, not the system: a crewed system is
 // divided into disjoint shares, so a hull's list ends — and its tour with it —
-// while its crewmates still have work (chartcrew.go). The share is re-derived from
-// the stored set every turn, so a waypoint charted meanwhile, by a crewmate or by
-// anybody else, simply leaves the list.
+// while its crewmates still have work (chartshare.go). The share is the STORED
+// assignment intersected with the outstanding set every turn, so a waypoint
+// charted meanwhile, by a crewmate or by anybody else, simply leaves the list.
 func (t *expandTick) chartSeed(ctx context.Context, r chartSeedRun, pos ShipPos) (bool, error) {
 	stops, err := t.p.Uncharted.UnchartedStops(ctx, r.system())
 	if err != nil {
 		return false, nil // unreadable: leave the tour alone and retry next tick
 	}
-	remaining := partitionOf(stops, t.roster.crew(r.system()), r.ship)
+	remaining, err := t.shareFor(ctx, r.system(), r.ship, stops)
+	if err != nil {
+		return false, err
+	}
 	if len(remaining) == 0 {
 		return t.finishTour(ctx, r, pos)
 	}

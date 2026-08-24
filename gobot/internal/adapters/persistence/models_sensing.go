@@ -145,6 +145,32 @@ func (SensingSeedHullModel) TableName() string {
 	return "sensing_seed_hulls"
 }
 
+// SensingChartShareModel is ONE charting hull's share of its system: the stops it
+// owns, in the order it works them. A crew's partition is solved by the
+// fleet-partitioning VRP and stored here, so a tour reads its next stop off a
+// durable assignment rather than re-deriving one that could differ turn to turn.
+//
+// A SIBLING OF sensing_seed_hulls RATHER THAN A COLUMN ON IT, because it covers
+// hulls that table does not: a system's FIRST hull lives in SensingSystemModel's
+// own seed columns, and every crew hull needs a share. Keyed on the HULL for the
+// reason the errand is. Waypoints is the JSON-encoded ordered share (defaulted
+// '[]'); CrewKey names the membership it was solved for, so a share whose key no
+// longer matches the live crew is stale — which makes a hull joining or leaving
+// the re-solve trigger.
+type SensingChartShareModel struct {
+	PlayerID     int    `gorm:"primaryKey;column:player_id"`
+	ShipSymbol   string `gorm:"primaryKey;column:ship_symbol;size:50"`
+	SystemSymbol string `gorm:"column:system_symbol;size:50;index;not null"`
+	Waypoints    string `gorm:"column:waypoints;type:text;not null;default:'[]'"`
+	CrewKey      string `gorm:"column:crew_key;type:text;not null;default:''"`
+	EraID        *int   `gorm:"column:era_id;index"`
+	UpdatedAt    time.Time
+}
+
+func (SensingChartShareModel) TableName() string {
+	return "sensing_chart_shares"
+}
+
 // SensingSlotModel is one probe PLACEMENT in the parked-probe sensing ledger
 // (sp-k6v8z) — the durable spine that makes the whole model re-derivable from
 // the database after a daemon restart (RULINGS #2). One row per (player,

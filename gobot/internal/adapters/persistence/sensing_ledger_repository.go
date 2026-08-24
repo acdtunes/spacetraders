@@ -190,6 +190,64 @@ func (r *SensingLedgerRepository) ClearExtraSeed(ctx context.Context, playerID i
 	return nil
 }
 
+// ChartShares returns the era-scoped charting assignments of every hull on a crew,
+// hull-ordered so a tick reads them reproducibly.
+func (r *SensingLedgerRepository) ChartShares(ctx context.Context, playerID int) ([]SensingChartShareModel, error) {
+	predicate, args := eraScopePredicate(r.openEraID(ctx))
+	var models []SensingChartShareModel
+	if err := r.db.WithContext(ctx).
+		Where("player_id = ?", playerID).
+		Where(predicate, args...).
+		Order("ship_symbol").
+		Find(&models).Error; err != nil {
+		return nil, fmt.Errorf("failed to list sensing charting shares: %w", err)
+	}
+	return models, nil
+}
+
+// SetChartShares replaces one system's whole partition in a TRANSACTION: a
+// half-applied partition is exactly the pair of states a partition exists to rule
+// out — a stop owned twice, or owned by nobody. The delete is scoped to the SYSTEM
+// while the rows are keyed on the hull, which is what re-homes a hull that moved.
+func (r *SensingLedgerRepository) SetChartShares(
+	ctx context.Context, playerID int, system string, shares []SensingChartShareModel,
+) error {
+	era := r.openEraID(ctx)
+	for i := range shares {
+		shares[i].EraID = era
+	}
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("player_id = ? AND system_symbol = ?", playerID, system).
+			Delete(&SensingChartShareModel{}).Error; err != nil {
+			return err
+		}
+		if len(shares) == 0 {
+			return nil
+		}
+		return tx.Clauses(clause.OnConflict{
+			Columns: []clause.Column{{Name: "player_id"}, {Name: "ship_symbol"}},
+			DoUpdates: clause.AssignmentColumns([]string{
+				"system_symbol", "waypoints", "crew_key", "era_id", "updated_at",
+			}),
+		}).Create(&shares).Error
+	})
+	if err != nil {
+		return fmt.Errorf("failed to record the charting partition of %q: %w", system, err)
+	}
+	return nil
+}
+
+// ClearChartShare drops one hull's share. Idempotent and era-AGNOSTIC, for the
+// reasons ClearExtraSeed is.
+func (r *SensingLedgerRepository) ClearChartShare(ctx context.Context, playerID int, shipSymbol string) error {
+	if err := r.db.WithContext(ctx).
+		Where("player_id = ? AND ship_symbol = ?", playerID, shipSymbol).
+		Delete(&SensingChartShareModel{}).Error; err != nil {
+		return fmt.Errorf("failed to drop the charting share of %q: %w", shipSymbol, err)
+	}
+	return nil
+}
+
 // nullableSeedValue maps the caller's "" onto a NULL column, so a cleared errand
 // leaves no empty-string residue for a "is a hull on this?" check to trip over.
 func nullableSeedValue(v string) *string {

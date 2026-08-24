@@ -13,6 +13,12 @@ type ShipPos struct {
 	// Found reports whether the ships table knows this hull at all. A hull we
 	// cannot locate is never acted on.
 	Found bool
+	// FuelCapacity and EngineSpeed are the hull's flight characteristics, carried
+	// so a charting crew's partition can be priced on the walk each hull actually
+	// faces (chartshare.go). Zero means the ships table has not recorded them; no
+	// decision here turns on that, and the solver prices such a hull on defaults.
+	FuelCapacity int
+	EngineSpeed  int
 }
 
 // QueuedSlot is one placement row as the buy queue and the placement machine
