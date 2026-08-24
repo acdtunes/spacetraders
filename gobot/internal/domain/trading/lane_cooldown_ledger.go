@@ -51,6 +51,11 @@ type LaneCooldownLedger struct {
 	// activity resolves a market's observed activity tier, for the decay rate. Nil leaves every
 	// key on tau, which is what every caller that does not wire it sees.
 	activity func(waypoint, good string) (string, bool)
+	// sourceDepth is the depth prior PacedDebt applies to a source-drain read, defaulted to the
+	// shipped fit at construction; sourceBreadth is the lookup it reads. A nil reader leaves every
+	// source-drain read on the uniform prior.
+	sourceDepth   SourceDepthScaling
+	sourceBreadth SourceBreadthReader
 }
 
 // cooldownEntry is one lane's accumulated compression debt as of a timestamp. Storing a
@@ -77,10 +82,11 @@ func NewLaneCooldownLedger(buyImpact, sellImpact float64, tau time.Duration) *La
 		tau = DefaultCooldownTau
 	}
 	return &LaneCooldownLedger{
-		buyImpact:  buyImpact,
-		sellImpact: sellImpact,
-		tau:        tau,
-		entries:    make(map[LaneKey]cooldownEntry),
+		buyImpact:   buyImpact,
+		sellImpact:  sellImpact,
+		tau:         tau,
+		entries:     make(map[LaneKey]cooldownEntry),
+		sourceDepth: DefaultSourceDepthScaling(),
 	}
 }
 

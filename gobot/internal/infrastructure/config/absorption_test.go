@@ -11,7 +11,7 @@ import (
 )
 
 // The keys config.yaml.example documents must land on the struct. Viper unmarshals
-// non-strictly, so a mistyped key is dropped in silence and the operator arms nothing.
+// non-strictly, so a mistyped key is dropped in silence and the operator tunes nothing.
 func TestLoadConfig_SinkDepthScalingKeysReachTheStruct(t *testing.T) {
 	cfgFile := filepath.Join(t.TempDir(), "config.yaml")
 	require.NoError(t, os.WriteFile(cfgFile, []byte(
@@ -28,19 +28,27 @@ func TestLoadConfig_SinkDepthScalingKeysReachTheStruct(t *testing.T) {
 	require.Equal(t, 0.25, policy.MinCrushScale)
 }
 
-// An absent [absorption] section resolves to the DISABLED sink-depth prior, so a
-// daemon that never heard of the knob keeps the uniform crush model.
-func TestResolvedSinkDepthScaling_AbsentSectionIsDisabled(t *testing.T) {
-	got := AbsorptionConfig{}.ResolvedSinkDepthScaling()
+// THE KILL SWITCH. An explicit false is the one way to charge every sink the full claim again,
+// and it has to survive the "absent means on" resolution.
+func TestLoadConfig_SinkDepthScalingDisablesOnExplicitFalse(t *testing.T) {
+	cfgFile := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(cfgFile, []byte(
+		"absorption:\n  sink_depth_scaling:\n    enabled: false\n"), 0o644))
+	t.Setenv("SPACETRADERS_CONFIG", cfgFile)
+	t.Chdir(t.TempDir())
 
-	require.False(t, got.Enabled)
-	require.Equal(t, 1.0, got.CrushScale(40), "a disabled policy charges every sink the full claim")
+	cfg, err := LoadConfig("")
+
+	require.NoError(t, err)
+	policy := cfg.Absorption.ResolvedSinkDepthScaling()
+	require.False(t, policy.Enabled)
+	require.Equal(t, 1.0, policy.CrushScale(40), "a disabled prior charges every sink the full claim")
 }
 
-// Arming with no shape given takes the shipped fit rather than a zero shape, which
-// would resolve to the uniform prior and make the arm silently inert.
-func TestResolvedSinkDepthScaling_ArmedWithoutShapeTakesTheDefaults(t *testing.T) {
-	got := AbsorptionConfig{SinkDepthScaling: SinkDepthScalingConfig{Enabled: true}}.ResolvedSinkDepthScaling()
+// An absent [absorption] section runs the shipped fit: the prior is in force with no config
+// present, so a fleet nobody configured is not a fleet running a different model.
+func TestResolvedSinkDepthScaling_AbsentSectionRunsTheShippedFit(t *testing.T) {
+	got := AbsorptionConfig{}.ResolvedSinkDepthScaling()
 
 	require.True(t, got.Enabled)
 	require.Equal(t, absorption.DefaultThinListings, got.ThinListings)
@@ -51,7 +59,7 @@ func TestResolvedSinkDepthScaling_ArmedWithoutShapeTakesTheDefaults(t *testing.T
 // A captain's refit overrides both shape terms without a rebuild.
 func TestResolvedSinkDepthScaling_ConfiguredShapeWins(t *testing.T) {
 	got := AbsorptionConfig{SinkDepthScaling: SinkDepthScalingConfig{
-		Enabled: true, ThinListings: 5, MinCrushScale: 0.25,
+		ThinListings: 5, MinCrushScale: 0.25,
 	}}.ResolvedSinkDepthScaling()
 
 	require.Equal(t, 5, got.ThinListings)
@@ -60,11 +68,11 @@ func TestResolvedSinkDepthScaling_ConfiguredShapeWins(t *testing.T) {
 	require.Equal(t, 0.25, got.CrushScale(1000))
 }
 
-// The documented fallback: min_crush_scale 1.0 reproduces the uniform model through
-// config alone, so the refit can be reverted on a live fleet without a rebuild.
-func TestResolvedSinkDepthScaling_UniformFallbackIsExpressible(t *testing.T) {
+// min_crush_scale 1.0 flattens the prior to the uniform model through config alone, so the shape
+// can be reverted on a live fleet without disabling the mechanism.
+func TestResolvedSinkDepthScaling_UniformShapeIsExpressible(t *testing.T) {
 	got := AbsorptionConfig{SinkDepthScaling: SinkDepthScalingConfig{
-		Enabled: true, MinCrushScale: 1.0,
+		MinCrushScale: 1.0,
 	}}.ResolvedSinkDepthScaling()
 
 	require.Equal(t, 1.0, got.CrushScale(1000))

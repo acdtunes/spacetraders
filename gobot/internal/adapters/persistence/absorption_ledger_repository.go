@@ -146,6 +146,7 @@ func NewAbsorptionLedger(db *gorm.DB, recoveryArtifactPath string, cfg Absorptio
 		recovery: loadAbsorptionRecoveryModel(recoveryArtifactPath),
 		cfg:      cfg.withDefaults(),
 		liveness: liveness,
+		depth:    absorption.DefaultSinkDepthScaling(),
 	}
 }
 

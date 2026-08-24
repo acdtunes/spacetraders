@@ -22,32 +22,31 @@ type AbsorptionConfig struct {
 	// PlannedTTLSlack pads a PLANNED hold's projected round-trip TTL — the backstop to
 	// the dead-container reclaim, not the primary cleanup. 0 → 15m default.
 	PlannedTTLSlack time.Duration `mapstructure:"planned_ttl_slack"`
-	// SinkDepthScaling conditions the crush prior on the sink's listing breadth.
-	// Absent/disabled runs the uniform prior, which is what every value here is
-	// measured against.
+	// SinkDepthScaling conditions the crush prior on the sink's listing breadth. An absent
+	// section runs the shipped fit.
 	SinkDepthScaling SinkDepthScalingConfig `mapstructure:"sink_depth_scaling"`
 }
 
-// SinkDepthScalingConfig is the refit surface for the depth-conditioned crush prior.
-// It ships DISABLED: arming it is a separate step, and the shape terms are per-era
-// refits an operator retunes from observed sink behaviour.
+// SinkDepthScalingConfig is the operator surface for the depth-conditioned crush prior: a kill
+// switch plus the two shape terms, which are per-era refits retuned from observed sink behaviour.
 type SinkDepthScalingConfig struct {
-	// Enabled arms the prior. False (the default) is byte-identical to the uniform model.
-	Enabled bool `mapstructure:"enabled"`
+	// Enabled is the kill switch. ABSENT MEANS ON — the prior is in force with no config
+	// present — and only an explicit false disables it, charging every sink the full claim.
+	Enabled *bool `mapstructure:"enabled"`
 	// ThinListings is the breadth at or under which a sink keeps the full crush claim.
 	// 0 → the shipped fit.
 	ThinListings int `mapstructure:"thin_listings"`
-	// MinCrushScale floors the discount a broad market may earn. 1.0 reproduces the
-	// uniform prior with the feature armed — the documented revert. 0 → the shipped fit.
+	// MinCrushScale floors the discount a broad market may earn. 1.0 flattens the prior to the
+	// uniform model without disabling the mechanism. 0 → the shipped fit.
 	MinCrushScale float64 `mapstructure:"min_crush_scale"`
 }
 
-// ResolvedSinkDepthScaling returns the ledger-facing policy, filling each unset shape
-// term with its shipped fit. Arming without a shape must not resolve to a zero shape:
-// that reads as the uniform prior and would make the arm silently inert.
+// ResolvedSinkDepthScaling returns the ledger-facing policy, filling each unset shape term with
+// its shipped fit. An unset shape must not resolve to a zero shape: that reads as the uniform
+// prior and would make the default silently inert.
 func (c AbsorptionConfig) ResolvedSinkDepthScaling() absorption.SinkDepthScaling {
 	policy := absorption.SinkDepthScaling{
-		Enabled:       c.SinkDepthScaling.Enabled,
+		Enabled:       c.SinkDepthScaling.Enabled == nil || *c.SinkDepthScaling.Enabled,
 		ThinListings:  c.SinkDepthScaling.ThinListings,
 		MinCrushScale: c.SinkDepthScaling.MinCrushScale,
 	}

@@ -715,18 +715,45 @@ capacity_reconciler:
 #   shadow_floor_fraction: 0.5     # fraction of one tranche below which a shadow stops blocking
 #   planned_ttl_slack: 15m         # padding on a PLANNED hold's projected round-trip TTL
 #
-#   # Depth-conditioned crush prior. A recovery shadow claims the units a sale took out of
-#   # the sink until the fitted curve says it regrew, and charging every market the same
-#   # claim embargoes deep hubs for a sale they barely felt while thin markets need exactly
-#   # that protection. The sink's LISTING BREADTH — how many goods its cached market trades
-#   # — scales the claim: at or under thin_listings it is charged in full, above it the
-#   # claim is discounted in proportion to breadth, and min_crush_scale floors the discount
-#   # so no market is ever treated as bottomless.
+#   # Depth-conditioned crush prior — ON with no config present. A recovery shadow claims the
+#   # units a sale took out of the sink until the fitted curve says it regrew, and charging
+#   # every market the same claim embargoes deep hubs for a sale they barely felt while thin
+#   # markets need exactly that protection. The sink's LISTING BREADTH — how many goods its
+#   # cached market trades — scales the claim: at or under thin_listings it is charged in full,
+#   # above it the claim is discounted in proportion to breadth, and min_crush_scale floors the
+#   # discount so no market is ever treated as bottomless.
 #   #
-#   # SHIPS DISABLED: enabled is the arm, and false reproduces the uniform prior exactly.
-#   # A sink whose breadth cannot be read keeps the uniform prior whether armed or not.
-#   # To revert the refit on a live fleet without disarming, set min_crush_scale: 1.0.
+#   # A sink whose breadth cannot be read keeps the full claim. `enabled: false` is the KILL
+#   # SWITCH and the only way to charge every sink in full again; to flatten the shape instead
+#   # while keeping the mechanism, set min_crush_scale: 1.0.
 #   sink_depth_scaling:
-#     enabled: false
+#     enabled: true
 #     thin_listings: 2
 #     min_crush_scale: 0.10
+
+# Market price-impact model. Its coefficients are refit per era; its compression debt is what
+# the trade ranker prices lanes against and what the gate-feed leg paces its buying by.
+# Every key is OPTIONAL; see internal/infrastructure/config/trade_impact.go for the rest.
+# trade_impact:
+#   # Depth-conditioned BUY-side pacing prior — ON with no config present. The gate-feed leg
+#   # yields a step whose source carries more than one tranche of undecayed drain — drain THAT
+#   # LEG PUT THERE ITSELF, since nothing else writes those keys — measured at one coefficient
+#   # that says nothing about how much depth the market had to give. A tranche out of a market
+#   # listing one good really does take its book off the board; the same tranche out of a broad
+#   # hub moves the ask by a fraction of that, and pacing both the same holds every hub feed
+#   # yielded for hours while the legs divert onto whatever droplet is untouched. The source's
+#   # LISTING BREADTH scales the debt the consult reads: at or under thin_listings it is read in
+#   # full, above it the debt is discounted in proportion to breadth, and min_debt_scale floors
+#   # the discount so no source is ever paced as bottomless.
+#   #
+#   # min_debt_scale sits ABOVE the sink side's floor: a repeat buy moves a hub's ask by a small
+#   # but real amount, where the matching dump barely moves its bid, so the buy side keeps more
+#   # caution at the deep end than the sell side does.
+#   #
+#   # A source whose breadth cannot be read is paced at its full debt. `enabled: false` is the
+#   # KILL SWITCH; to flatten the shape instead while keeping the mechanism, set
+#   # min_debt_scale: 1.0.
+#   source_depth_scaling:
+#     enabled: true
+#     thin_listings: 2
+#     min_debt_scale: 0.2

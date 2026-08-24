@@ -8,21 +8,31 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/absorption"
 )
 
-// The sink-depth crush prior. Every path that cannot positively confirm a sink's
-// breadth must return the uniform prior (1.0), because the uniform prior is the
-// conservative one: it charges a sale the full claim on the sink's depth.
+// The prior in force wherever no operator override replaces it, and it must be a usable shape:
+// a zero shape resolves to the uniform prior and would make the default silently inert.
+func TestDefaultSinkDepthScaling_IsTheShippedFitAndActive(t *testing.T) {
+	policy := absorption.DefaultSinkDepthScaling()
+
+	require.True(t, policy.Enabled, "the prior applies with no config present")
+	require.Equal(t, absorption.DefaultThinListings, policy.ThinListings)
+	require.Equal(t, absorption.DefaultMinCrushScale, policy.MinCrushScale)
+	require.Less(t, policy.CrushScale(40), 1.0, "a deep hub is discounted under the default")
+}
+
+// Every path that cannot positively confirm a sink's breadth returns the uniform prior, because
+// the uniform prior is the conservative one: it charges a sale the full claim on the sink's depth.
 func TestSinkDepthScaling_UnconfirmedBreadthKeepsTheUniformPrior(t *testing.T) {
-	armed := absorption.SinkDepthScaling{Enabled: true, ThinListings: 2, MinCrushScale: 0.1}
+	shipped := absorption.DefaultSinkDepthScaling()
 
 	cases := []struct {
 		name     string
 		policy   absorption.SinkDepthScaling
 		listings int
 	}{
-		{"disabled policy", absorption.SinkDepthScaling{ThinListings: 2, MinCrushScale: 0.1}, 40},
+		{"kill switch thrown", absorption.SinkDepthScaling{ThinListings: 2, MinCrushScale: 0.1}, 40},
 		{"zero-value policy", absorption.SinkDepthScaling{}, 40},
-		{"unreadable breadth", armed, 0},
-		{"negative breadth", armed, -3},
+		{"unreadable breadth", shipped, 0},
+		{"negative breadth", shipped, -3},
 		{"thin threshold unset", absorption.SinkDepthScaling{Enabled: true, MinCrushScale: 0.1}, 40},
 		{"floor unset", absorption.SinkDepthScaling{Enabled: true, ThinListings: 2}, 40},
 		{"floor above unity", absorption.SinkDepthScaling{Enabled: true, ThinListings: 2, MinCrushScale: 1.5}, 40},
@@ -34,20 +44,20 @@ func TestSinkDepthScaling_UnconfirmedBreadthKeepsTheUniformPrior(t *testing.T) {
 	}
 }
 
-// A market at or under the thin threshold is a micro-market: one tranche can take its
-// bid off the board, so it keeps the full prior even with the policy armed.
+// A market at or under the thin threshold is a micro-market: one tranche can take its bid off the
+// board, so it keeps the full prior.
 func TestSinkDepthScaling_ThinMarketKeepsTheFullPrior(t *testing.T) {
-	policy := absorption.SinkDepthScaling{Enabled: true, ThinListings: 2, MinCrushScale: 0.1}
+	policy := absorption.DefaultSinkDepthScaling()
 
-	require.Equal(t, 1.0, policy.CrushScale(1), "a single-listing micro-market is the class the prior was fitted on")
+	require.Equal(t, 1.0, policy.CrushScale(1), "a single-listing micro-market is the class the prior protects")
 	require.Equal(t, 1.0, policy.CrushScale(2))
 	require.Less(t, policy.CrushScale(3), 1.0, "past the threshold the discount starts")
 }
 
-// The discount is proportional to breadth and monotone in it — a broader market never
-// pays MORE for the same sale than a narrower one.
+// The discount is proportional to breadth and monotone in it — a broader market never pays MORE
+// for the same sale than a narrower one.
 func TestSinkDepthScaling_DiscountsInProportionToBreadth(t *testing.T) {
-	policy := absorption.SinkDepthScaling{Enabled: true, ThinListings: 2, MinCrushScale: 0.1}
+	policy := absorption.DefaultSinkDepthScaling()
 
 	require.InDelta(t, 0.5, policy.CrushScale(4), 1e-9)
 	require.InDelta(t, 0.2, policy.CrushScale(10), 1e-9)
@@ -62,28 +72,21 @@ func TestSinkDepthScaling_DiscountsInProportionToBreadth(t *testing.T) {
 	}
 }
 
-// No market is bottomless. The floor bounds how far breadth may discount a sale's
-// claim, so an arbitrarily broad hub still carries a fraction of it.
+// No market is bottomless. The floor bounds how far breadth may discount a sale's claim, so an
+// arbitrarily broad hub still carries a fraction of it.
 func TestSinkDepthScaling_FloorBoundsTheDiscount(t *testing.T) {
-	policy := absorption.SinkDepthScaling{Enabled: true, ThinListings: 2, MinCrushScale: 0.1}
+	policy := absorption.DefaultSinkDepthScaling()
 
 	require.Equal(t, 0.1, policy.CrushScale(1000))
 	require.Equal(t, 0.1, policy.CrushScale(20), "the floor binds at a breadth a real hub reaches")
 }
 
-// The documented fallback: the uniform model stays expressible through the same knobs,
-// so a captain can revert the refit without a rebuild.
+// The uniform model stays expressible through the shape terms alone, so a captain can flatten the
+// prior without disabling the mechanism.
 func TestSinkDepthScaling_UniformModelStaysExpressible(t *testing.T) {
 	uniform := absorption.SinkDepthScaling{Enabled: true, ThinListings: 2, MinCrushScale: 1.0}
 
 	for _, listings := range []int{1, 2, 5, 40, 400} {
 		require.Equal(t, 1.0, uniform.CrushScale(listings))
 	}
-}
-
-// The defaults are the shipped fit, and they must stay inside the shape's own bounds.
-func TestSinkDepthScaling_DefaultsAreWellFormed(t *testing.T) {
-	require.Positive(t, absorption.DefaultThinListings)
-	require.Greater(t, absorption.DefaultMinCrushScale, 0.0)
-	require.Less(t, absorption.DefaultMinCrushScale, 1.0)
 }

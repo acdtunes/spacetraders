@@ -6,21 +6,19 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/absorption"
 )
 
-// SetSinkDepthScaling arms the depth-conditioned crush prior every read path applies to
-// EXECUTED recovery shadows. Boot-time wiring: the shared ledger is configured before
-// any container reads it, and a policy left unset keeps the uniform prior.
+// SetSinkDepthScaling replaces the depth-conditioned crush prior every read path applies to
+// EXECUTED recovery shadows. Boot-time wiring: the shared ledger takes the operator's resolved
+// policy before any container reads it, and a ledger left alone runs the shipped fit.
 func (r *AbsorptionLedgerGORM) SetSinkDepthScaling(policy absorption.SinkDepthScaling) {
 	r.depth = policy
 }
 
-// sinkBreadthFor resolves the listing breadth — how many goods the cached market trades
-// — of every sink the given rows hold an EXECUTED shadow on, player-scoped so another
-// fleet's cache can never widen ours.
+// sinkBreadthFor resolves the listing breadth — how many goods the cached market trades — of every
+// sink the given rows hold an EXECUTED shadow on.
 //
-// It returns nil, which every caller reads as "breadth unknown" and therefore as the
-// uniform prior, when the policy is disarmed, when no shadow needs one, or when the
-// market cache cannot be read. Disarmed costs no query at all, which is what keeps the
-// unarmed path identical to the pre-refit one rather than merely equivalent.
+// It returns nil, which every caller reads as "breadth unknown" and therefore as the uniform prior,
+// when the prior is disabled, when no shadow needs one, or when the market cache cannot be read. A
+// disabled prior costs no query at all.
 func (r *AbsorptionLedgerGORM) sinkBreadthFor(db *gorm.DB, playerID int, rows []MarketAbsorptionLedgerModel) map[string]int {
 	if !r.depth.Enabled {
 		return nil
@@ -40,7 +38,14 @@ func (r *AbsorptionLedgerGORM) sinkBreadthFor(db *gorm.DB, playerID int, rows []
 	if len(waypoints) == 0 {
 		return nil
 	}
+	return marketListingBreadth(db, playerID, waypoints)
+}
 
+// marketListingBreadth counts the goods each named market lists in ONE grouped read, player-scoped
+// so another fleet's cache can never widen ours. An uncached waypoint is ABSENT from the result and
+// a read error returns nil: absence is "breadth unknown", which every caller keeps at the uniform
+// prior rather than discounting.
+func marketListingBreadth(db *gorm.DB, playerID int, waypoints []string) map[string]int {
 	var counted []struct {
 		WaypointSymbol string
 		Listings       int

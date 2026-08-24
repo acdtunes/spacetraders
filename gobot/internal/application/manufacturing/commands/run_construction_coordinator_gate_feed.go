@@ -682,18 +682,18 @@ func (h *RunConstructionCoordinatorHandler) planGateFeed(
 					continue
 				}
 			}
-			// THE PACING CONSULT. A source still carrying more than one tranche's worth of undecayed
-			// compression yields this leg to a less-drained step and recovers meanwhile: this fleet
-			// is the only large buyer of some of these exports, so their ask is the trace of our own
-			// last few legs rather than an outside condition. The subject is our OWN traded volume,
-			// never the observed price — a baseline read off the ask rises as we push the ask up,
-			// and the guard stops firing exactly when it is most needed.
+			// THE PACING CONSULT — THIS LEG PACING ITSELF. The source-drain keys it reads carry only
+			// its own buying, so a source over the bound is one this engine, the sole large buyer of
+			// these exports, drained. The subject is our OWN traded volume, never the observed price:
+			// a baseline read off the ask rises as we push it up, and the guard then stops firing.
 			//
-			// IT YIELDS, IT NEVER REFUSES. The step is remembered rather than dropped, and the
-			// fallback below feeds the least-compressed when nothing else survives, so pacing can
-			// reorder a leg but can never be the reason a factory goes unfed.
+			// IT YIELDS, IT NEVER REFUSES: the step is remembered, and the fallback below feeds the
+			// least-compressed when nothing else survives, so pacing can reorder a leg but can never
+			// be the reason a factory goes unfed. The read is scaled by the source's depth, so one
+			// tranche count paces a droplet and a broad hub differently; unarmed or with breadth
+			// uncached it is the uniform debt, and the fallback ranks on the value that decided.
 			if h.sourceCooldown != nil {
-				debt := h.sourceCooldown.Debt(trading.SourceDrainKey(source.WaypointSymbol, step.Input), h.clock.Now())
+				debt := h.sourceCooldown.PacedDebt(ctx, trading.SourceDrainKey(source.WaypointSymbol, step.Input), h.clock.Now())
 				if debt > h.sourceCooldown.TrancheDebt() {
 					logger.Log("INFO", fmt.Sprintf("Gate factory: yielding the %s feed for the %s factory — this fleet still has %.0f%% of a tranche's compression standing on %s, so the leg takes a less-drained step and lets it recover", step.Input, step.Target, 100*debt/h.sourceCooldown.TrancheDebt(), source.WaypointSymbol), map[string]interface{}{
 						"good": step.Input, "target": step.Target, "source": source.WaypointSymbol,

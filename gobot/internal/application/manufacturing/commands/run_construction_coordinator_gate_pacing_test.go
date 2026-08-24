@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -220,6 +221,146 @@ func TestFeedGateLeg_PerTargetLaneDebtAloneDoesNotPaceTheSource(t *testing.T) {
 
 	if named := strings.Join(f.feeder.feeds()[0].inputs, ","); named != "IRON" {
 		t.Fatalf("fed %q; a full-lane entry is the trade engine's and must not pace the source consult", named)
+	}
+}
+
+// gateBreadth is the stub listing-breadth cache the depth-conditioned pacing prior reads. A
+// waypoint absent from the map is the unreadable-breadth board state.
+type gateBreadth map[string]int
+
+func (g gateBreadth) ListingBreadth(_ context.Context, waypoint string) (int, bool) {
+	n, ok := g[waypoint]
+	return n, ok
+}
+
+// hammeredIronLedger is the board a run of the leg's OWN feeding leaves — nothing else writes these
+// keys. IRON's exporter carries several full tranches of undecayed drain while QUARTZ_SAND's is
+// untouched, so IRON — the scarcest input — is the one an unscaled read yields away.
+func hammeredIronLedger(f *gateFeedFixture) *trading.LaneCooldownLedger {
+	return pacedLedger(gateSourceFor("IRON"), "IRON", 2, f.handler.clock.Now())
+}
+
+// twoInputFixture stages the leg both depth cases share: IRON scarcest and freshly drained,
+// QUARTZ_SAND adequate and untouched, priced so nothing but the pacing consult can move the leg.
+func twoInputFixture(t *testing.T) *gateFeedFixture {
+	t.Helper()
+	f := newGateFactoryHandler(t)
+	f.topo.importSupply = map[string]string{
+		importSupplyKey(gateFactoryWaypoint, "IRON"):        "SCARCE",
+		importSupplyKey(gateFactoryWaypoint, "QUARTZ_SAND"): "MODERATE",
+	}
+	f.topo.priceByGood = map[string]int{"IRON": 23, "QUARTZ_SAND": 23}
+	return f
+}
+
+// THE BINDING CASE. A source the cache confirms is a deep hub takes a couple of tranches with an
+// ask move too small to price against, so pacing off it for hours is the engine diverting its own
+// legs onto whatever droplet is untouched while the factory the scarcest input belongs to starves.
+// A hub's standing drain reads under the bound and the scarcest input keeps its leg.
+func TestFeedGateLeg_DeepHubSourceKeepsItsLeg(t *testing.T) {
+	const hubListings = 20
+	f := twoInputFixture(t)
+	ledger := hammeredIronLedger(f)
+	ledger.SetSourceBreadthReader(gateBreadth{gateSourceFor("IRON"): hubListings})
+	f.handler.SetSourceCooldown(ledger)
+
+	f.runFeed(t, "GF-1")
+
+	if named := strings.Join(f.feeder.feeds()[0].inputs, ","); named != "IRON" {
+		t.Fatalf("fed %q; a confirmed deep hub's standing drain must read under the bound so the scarcest input keeps its leg", named)
+	}
+	if strings.Contains(f.logLines(), "yielding the IRON feed") {
+		t.Fatalf("a deep hub must not be yielded:\n%s", f.logLines())
+	}
+}
+
+// THE KILL SWITCH. A disabled prior paces the same hub at its full debt, so the leg yields exactly
+// as an unscaled read makes it.
+func TestFeedGateLeg_DeepHubSourceYieldsUnderTheKillSwitch(t *testing.T) {
+	f := twoInputFixture(t)
+	ledger := hammeredIronLedger(f)
+	ledger.SetSourceDepthScaling(
+		trading.SourceDepthScaling{ThinListings: 2, MinDebtScale: 0.2},
+		gateBreadth{gateSourceFor("IRON"): 20},
+	)
+	f.handler.SetSourceCooldown(ledger)
+
+	f.runFeed(t, "GF-1")
+
+	if named := strings.Join(f.feeder.feeds()[0].inputs, ","); named != "QUARTZ_SAND" {
+		t.Fatalf("fed %q; a disabled prior must pace the hub at its full debt and yield the leg", named)
+	}
+}
+
+// THE CLASS THE PROTECTION EXISTS FOR. A source listing one or two goods really is taken off the
+// board by a tranche, so it keeps full caution and yields its leg.
+func TestFeedGateLeg_ThinSourceYields(t *testing.T) {
+	for _, listings := range []int{1, 2} {
+		f := twoInputFixture(t)
+		ledger := hammeredIronLedger(f)
+		ledger.SetSourceBreadthReader(gateBreadth{gateSourceFor("IRON"): listings})
+		f.handler.SetSourceCooldown(ledger)
+
+		f.runFeed(t, "GF-1")
+
+		if named := strings.Join(f.feeder.feeds()[0].inputs, ","); named != "QUARTZ_SAND" {
+			t.Fatalf("fed %q with a %d-listing source; a thin source must keep full caution", named, listings)
+		}
+	}
+}
+
+// UNREADABLE BREADTH PACES AT THE FULL DEBT. Not merely the same decision: the consult compares
+// the debt against a fixed bound, so the value itself has to be the unscaled one.
+func TestFeedGateLeg_UnreadableSourceBreadthPacesAtTheFullDebt(t *testing.T) {
+	f := twoInputFixture(t)
+	ledger := hammeredIronLedger(f)
+	// The drained source is the one waypoint the cache cannot answer for.
+	ledger.SetSourceBreadthReader(gateBreadth{"SOME-OTHER-MARKET": 20})
+	f.handler.SetSourceCooldown(ledger)
+
+	now := f.handler.clock.Now()
+	key := trading.SourceDrainKey(gateSourceFor("IRON"), "IRON")
+	paced, raw := ledger.PacedDebt(context.Background(), key, now), ledger.Debt(key, now)
+	if paced != raw {
+		t.Fatalf("paced debt %v against the raw %v; an unreadable market may not buy any relief", paced, raw)
+	}
+
+	f.runFeed(t, "GF-1")
+
+	if named := strings.Join(f.feeder.feeds()[0].inputs, ","); named != "QUARTZ_SAND" {
+		t.Fatalf("fed %q; unreadable breadth must yield exactly as the full debt does", named)
+	}
+}
+
+// DEFER, NEVER REFUSE. Every source thin and drained means there is nothing to yield to, and the
+// leg must still feed the least-compressed rather than stand down.
+func TestFeedGateLeg_DepthPriorKeepsTheLeastCompressedFallback(t *testing.T) {
+	f := twoInputFixture(t)
+	now := f.handler.clock.Now()
+	ledger := trading.NewLaneCooldownLedger(0, 0, 0)
+	breadth := gateBreadth{}
+	for _, drained := range []struct {
+		good     string
+		tranches int
+	}{{"IRON", 8}, {"IRON_ORE", 6}, {"QUARTZ_SAND", 3}} {
+		ledger.Accrue(trading.SourceDrainKey(gateSourceFor(drained.good), drained.good),
+			drained.tranches*gateTestTradeVolume, gateTestTradeVolume, now)
+		breadth[gateSourceFor(drained.good)] = 1
+	}
+	ledger.SetSourceBreadthReader(breadth)
+	f.handler.SetSourceCooldown(ledger)
+
+	f.runFeed(t, "GF-1")
+
+	feeds := f.feeder.feeds()
+	if len(feeds) != 1 {
+		t.Fatalf("feeds = %+v; the depth prior may never let pacing starve the factory", feeds)
+	}
+	if named := strings.Join(feeds[0].inputs, ","); named != "QUARTZ_SAND" {
+		t.Fatalf("fed %q; the fallback must still pick the least-compressed step", named)
+	}
+	if want := "least-compressed"; !strings.Contains(f.logLines(), want) {
+		t.Fatalf("the fallback must announce itself:\n%s", f.logLines())
 	}
 }
 

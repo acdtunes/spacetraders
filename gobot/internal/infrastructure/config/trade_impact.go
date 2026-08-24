@@ -57,6 +57,43 @@ type TradeImpactConfig struct {
 	// who wants instrumentation OFF but the redundant-scan dedup kept ON flips this switch.
 	// Absent/false = the resolved ImpactSampleRate governs (sp-v34b unchanged).
 	ImpactSamplingDisabled bool `mapstructure:"impact_sampling_disabled"`
+
+	// SourceDepthScaling conditions the BUY-side pacing prior on the source's listing breadth.
+	// An absent section runs the shipped fit.
+	SourceDepthScaling SourceDepthScalingConfig `mapstructure:"source_depth_scaling"`
+}
+
+// SourceDepthScalingConfig is the operator surface for the depth-conditioned pacing prior the
+// gate-feed consult reads: a kill switch plus the two shape terms, which are per-era refits
+// retuned from observed source behaviour.
+type SourceDepthScalingConfig struct {
+	// Enabled is the kill switch. ABSENT MEANS ON — the prior is in force with no config
+	// present — and only an explicit false disables it, pacing every source at its full debt.
+	Enabled *bool `mapstructure:"enabled"`
+	// ThinListings is the breadth at or under which a source is paced at its full debt.
+	// 0 → the shipped fit.
+	ThinListings int `mapstructure:"thin_listings"`
+	// MinDebtScale floors the relief a broad source may earn. 1.0 flattens the prior to the
+	// uniform model without disabling the mechanism. 0 → the shipped fit.
+	MinDebtScale float64 `mapstructure:"min_debt_scale"`
+}
+
+// ResolvedSourceDepthScaling returns the ledger-facing policy, filling each unset shape term with
+// its shipped fit. An unset shape must not resolve to a zero shape: that reads as the uniform
+// prior and would make the default silently inert.
+func (c TradeImpactConfig) ResolvedSourceDepthScaling() trading.SourceDepthScaling {
+	policy := trading.SourceDepthScaling{
+		Enabled:      c.SourceDepthScaling.Enabled == nil || *c.SourceDepthScaling.Enabled,
+		ThinListings: c.SourceDepthScaling.ThinListings,
+		MinDebtScale: c.SourceDepthScaling.MinDebtScale,
+	}
+	if policy.ThinListings <= 0 {
+		policy.ThinListings = trading.DefaultSourceThinListings
+	}
+	if policy.MinDebtScale <= 0 {
+		policy.MinDebtScale = trading.DefaultMinSourceDebtScale
+	}
+	return policy
 }
 
 // Scan-load defaults (config package locals, not domain constants — they govern
