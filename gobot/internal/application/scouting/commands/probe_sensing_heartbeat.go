@@ -230,6 +230,9 @@ func (h *RunProbeSensingCoordinatorHandler) heartbeat(ctx context.Context, cmd *
 			"buy_spending_paused": hb.buy.SpendingPaused,
 			"buy_cap_held":        hb.buy.CapHeld,
 			"buy_floor_held":      hb.buy.FloorHeld,
+			// Beside the two ceilings above because it is the one way that guard can HARM:
+			// a standing non-zero here beside a zero buy_bought is starvation, not saving.
+			"buy_walkaway_held": hb.buy.WalkAwayHeld,
 			// The regime, which clause forced PROBE, what the pause is FOR, and the THIRD gate
 			// buy_wave cannot explain. An EMPTY wave means no regime could be derived — a third
 			// state, never a PROBE; an empty hold on a paused PROBE tick is the operator's switch.

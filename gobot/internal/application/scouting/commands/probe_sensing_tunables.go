@@ -31,9 +31,13 @@ func SensingTunableDefaults() map[string]int {
 		"quartermaster_cadence_secs": defaultQuartermasterCadenceSecs,
 		"surge_inflight_cap":         defaultSurgeInFlightCap,
 		"coverage_reserve":           defaultCoverageReserve,
-		"chart_hull_cap":             defaultChartHullCap,
-		"chart_hull_2_at":            defaultSecondChartHullAt,
-		"chart_hull_3_at":            defaultThirdChartHullAt,
+
+		// The probe-procurement pair, ARMED at these values with no config present.
+		"procurement_walkaway_mult":        defaultWalkAwayMult,
+		"procurement_jump_penalty_credits": defaultJumpPenaltyCredits,
+		"chart_hull_cap":                   defaultChartHullCap,
+		"chart_hull_2_at":                  defaultSecondChartHullAt,
+		"chart_hull_3_at":                  defaultThirdChartHullAt,
 
 		// The API client's limiter-pressure EWMA half-life. 30 mirrors the
 		// client's own default (api.defaultLimiterPressureHalfLife); the

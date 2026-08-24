@@ -124,6 +124,9 @@ func DrainBuyQueue(
 		// of those places can reach a placement, so a burst of placements reads the
 		// ledger once and each source's walk once.
 		ferry: &ferryBroker{},
+		// Per-TICK: the yard-price snapshot placements are ranked against and the ceiling
+		// derived from it — one bulk price read and one topology read for the whole tick.
+		procurement: newProcurementBroker(k),
 	}
 
 	// The attempts the FILLS may spend before standing aside for queued seeds — the
@@ -210,9 +213,17 @@ func (t *drainTick) fundPlacement(ctx context.Context, slot QueuedSlot, now time
 		return paused, false, err
 	}
 
-	buys, err := t.resolvePurchaseCandidates(ctx, slot, inSystem, now)
+	buys, walkedAway, err := t.resolvePurchaseCandidates(ctx, slot, inSystem, now)
 	if err != nil {
 		return false, false, err
+	}
+	if walkedAway {
+		// Every counter in reach asked above the ceiling. The placement is left WANTED —
+		// not claimed, and not counted as SkippedNoYard, which means something specific
+		// and would be a lie here — and retried next tick. It costs NO ATTEMPT: the
+		// refusal was decided from stored rows and touched no API.
+		t.rep.WalkAwayHeld++
+		return false, false, nil
 	}
 	if len(buys) == 0 {
 		// No yard in this system has a hull of ours we can buy through. For a SPARE
@@ -347,6 +358,16 @@ func (t *drainTick) fillSlot(ctx context.Context, slot QueuedSlot, buys []purcha
 			t.memo.record(BuyStepQuote, candidate.yard, "", err.Error())
 			continue
 		}
+		// THE WALK-AWAY, ON THE BILL RATHER THAN ON A READING. The ranking judged this
+		// counter's STORED ask; this is what it actually charges, and the two differ
+		// exactly when it matters — a yard whose price ran away between readings looks
+		// cheap in the snapshot and expensive here. BEFORE the floor, because the two say
+		// different things: the floor is "the fleet cannot afford this", this is "the
+		// fleet will not pay this". It only ever removes a counter (RULINGS #4).
+		if t.procurement.overCeiling(quote) {
+			t.memo.record(BuyStepWalkAway, candidate.yard, "", t.procurement.walkAwayReason(quote))
+			continue
+		}
 		// THE FLOOR BINDS ON LANDED COST, NOT STICKER. A probe bought at a counter in
 		// another system still has to be flown to its post, and every gate it crosses
 		// charges a fee the quote alone does not see. Landed cost can only ever make
@@ -477,10 +498,11 @@ type drainTick struct {
 	// mayBuy is the tick's ONE purchase verdict — the operator's switch AND the wave, resolved
 	// once at the top. Carried rather than re-derived so the loop's paused branch and the gate
 	// that set rep.SpendingPaused cannot answer differently.
-	mayBuy    bool
-	st        *drainState
-	rep       *BuyReport
-	memo      *refusalMemo
-	footholds *footholdBroker
-	ferry     *ferryBroker
+	mayBuy      bool
+	st          *drainState
+	rep         *BuyReport
+	memo        *refusalMemo
+	footholds   *footholdBroker
+	ferry       *ferryBroker
+	procurement *procurementBroker
 }

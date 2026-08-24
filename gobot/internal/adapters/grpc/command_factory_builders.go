@@ -195,6 +195,8 @@ func buildProbeSensingCoordinatorCommand(cfg *configReader, playerID int, contai
 		QuartermasterCadence:    cfg.OptionalInt("quartermaster_cadence_secs", 0),
 		SurgeInFlightCap:        cfg.OptionalInt("surge_inflight_cap", 0),
 		CoverageReserve:         cfg.OptionalInt("coverage_reserve", 0),
+		WalkAwayMult:            cfg.OptionalInt("procurement_walkaway_mult", 0),
+		JumpPenaltyCredits:      cfg.OptionalInt("procurement_jump_penalty_credits", 0),
 		ChartHullCap:            cfg.OptionalInt("chart_hull_cap", 0),
 		SecondChartHullAt:       cfg.OptionalInt("chart_hull_2_at", 0),
 		ThirdChartHullAt:        cfg.OptionalInt("chart_hull_3_at", 0),

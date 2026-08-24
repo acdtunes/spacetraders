@@ -119,7 +119,11 @@ type SensingEnginePorts struct {
 	// stock, so the drain can skip yards already known to sell no probe without
 	// spending a live quote on each one, every tick. OPTIONAL: nil quotes
 	// everything.
-	ListingMemo  parkedsensing.ProbeListingMemo
+	ListingMemo parkedsensing.ProbeListingMemo
+	// ProbeAsks is the stored yard PRICE snapshot the buy queue ranks counters with.
+	// OPTIONAL and deliberately absent from wired() below: every decision it feeds can
+	// only refuse or reorder a purchase, so an unwired reader is the older ordering.
+	ProbeAsks    parkedsensing.ProbeAskReader
 	MarketGoods  parkedsensing.MarketGoodsReader
 	RemoteMarket parkedsensing.RemoteMarketFetcher
 	// YardCatalog enumerates the charted shipyards whose catalogue we do not hold
@@ -302,6 +306,8 @@ func (p SensingEnginePorts) buyPorts(claimOwnerContainerID string, posts Sensing
 		// Same instance the yard lookup uses, so the two can never disagree about
 		// what the stored inventory says.
 		ListingMemo: p.ListingMemo,
+		// The price half of that same inventory.
+		Asks: p.ProbeAsks,
 		// The foothold path's two guard ports. Gates is the same topology store
 		// expansion walks, so "how far may a hull be sent" is answered from one
 		// place. The post reader is built here rather than memoised onto the port

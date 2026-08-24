@@ -228,6 +228,11 @@ type fakePurchaser struct {
 	// one counter unusable while leaving its neighbours healthy.
 	quoteErrAt map[string]error
 	buyErrAt   map[string]error
+	// priceAt, where it names a yard, is THAT counter's live quote — so a fixture
+	// can give two yards different asks, which is what the procurement ordering has
+	// to discriminate on. Unnamed yards fall back to `price`, so every
+	// fixture written before it is unaffected.
+	priceAt map[string]int64
 
 	quotes []string
 	buys   []buyCall
@@ -242,7 +247,16 @@ func (f *fakePurchaser) Quote(_ context.Context, _ int, yard string) (int64, err
 	if f.quoteErr != nil {
 		return 1, f.quoteErr
 	}
-	return f.price, nil
+	return f.askAt(yard), nil
+}
+
+// askAt is the counter's live price: its own where the fixture named one, the
+// fake's single price otherwise.
+func (f *fakePurchaser) askAt(yard string) int64 {
+	if price, named := f.priceAt[yard]; named {
+		return price
+	}
+	return f.price
 }
 
 func (f *fakePurchaser) Buy(_ context.Context, _ int, ship, yard, owner string) (BoughtProbe, error) {
@@ -254,7 +268,7 @@ func (f *fakePurchaser) Buy(_ context.Context, _ int, ship, yard, owner string) 
 		return BoughtProbe{}, f.buyErr
 	}
 	f.nextID++
-	charged := f.price
+	charged := f.askAt(yard)
 	if f.chargedPrice != 0 {
 		charged = f.chargedPrice
 	}

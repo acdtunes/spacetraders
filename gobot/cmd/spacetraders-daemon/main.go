@@ -422,6 +422,7 @@ func (s sensingWiring) enginePorts(
 		// The same catalog instance again: it owns the shipyard_inventory reads,
 		// so the yard lookup and the listing memo read one store.
 		ListingMemo: catalog,
+		ProbeAsks:   catalog,
 		// And once more for the shipyard blind spot: the set difference between
 		// the charted SHIPYARD-trait waypoints and the ones already carrying a
 		// stored reading. Same instance, so "which yards exist" and "which yards

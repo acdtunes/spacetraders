@@ -602,6 +602,65 @@ func (p *WaypointCatalogPort) ListProbeYards(ctx context.Context, system string)
 	return p.probeStockCandidates(ctx, universe)
 }
 
+// ProbeAsks returns every yard the fleet holds a PRICED probe reading for, with the
+// price and the moment it was taken — the snapshot the buy queue ranks counters
+// against and derives its walk-away ceiling from (appSensing.ProbeAskReader).
+//
+// FLEET-WIDE AND UNFILTERED BY DISTANCE, which is the whole point: the caller's two
+// questions — "which counters can reach this placement, and what do they charge" and
+// "what is the cheapest ask anywhere" — are questions about the SET, and answering
+// the second from a system-scoped query would measure the multiple against a
+// neighbourhood rather than against the fleet. One read serves both, so they cannot
+// disagree.
+//
+// PRICED ROWS ONLY. An unpriced row is a catalogue-only reading, taken with no hull
+// at the counter, and says the yard SELLS a probe rather than what it charges;
+// returning it as a zero would rank every never-visited yard as free. Those yards
+// still reach the drain — ListProbeYards' trait fallback carries them, and the buy
+// queue offers them behind every priced counter.
+//
+// ERA-SCOPED and FAIL-CLOSED on an unresolvable era, like every other yard read on
+// this port. A pre-reset row here is worse than absent in both directions at once: it
+// could rank a dead-universe counter at the head of the queue, and — because the
+// cheapest ask is what the walk-away is a multiple of — one stale-cheap row would
+// drag the ceiling down and hold live placements the fleet can well afford.
+//
+// DATABASE-ONLY, never a fetch-through. The drain calls this on every tick that has a
+// placement to fill.
+func (p *WaypointCatalogPort) ProbeAsks(ctx context.Context, playerID int) ([]appSensing.ProbeAsk, error) {
+	eraPredicate, eraArgs, err := persistence.OpenEraScope(ctx, p.db)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read the stored probe asks: %w", err)
+	}
+	var rows []struct {
+		WaypointSymbol string
+		SystemSymbol   string
+		PurchasePrice  int
+		LastScanned    time.Time
+	}
+	err = p.db.WithContext(ctx).
+		Table("shipyard_inventory").
+		Select("waypoint_symbol, system_symbol, purchase_price, last_scanned").
+		Where("player_id = ? AND ship_type = ?", playerID, probeShipType).
+		Where("purchase_price > 0").
+		Where(eraPredicate, eraArgs...).
+		Order("waypoint_symbol ASC, last_scanned DESC").
+		Scan(&rows).Error
+	if err != nil {
+		return nil, fmt.Errorf("failed to read the stored probe asks: %w", err)
+	}
+	out := make([]appSensing.ProbeAsk, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, appSensing.ProbeAsk{
+			Yard:      row.WaypointSymbol,
+			System:    row.SystemSymbol,
+			Price:     int64(row.PurchasePrice),
+			ScannedAt: row.LastScanned,
+		})
+	}
+	return out, nil
+}
+
 // chartedTraitYards is the fallback half of the candidate universe, in symbol order.
 // UNCHARTED is not yet a yard — its traits are a guess until someone charts it. The
 // priced half is deliberately NOT trait-filtered: a yard we have actually priced is

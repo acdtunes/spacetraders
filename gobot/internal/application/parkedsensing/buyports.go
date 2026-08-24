@@ -108,6 +108,36 @@ type ProbeYardCatalog interface {
 	ListProbeYards(ctx context.Context, system string) ([]string, error)
 }
 
+// ProbeAsk is one yard's STORED probe price and the moment it was read. The stamp
+// travels WITH the price because the two are only meaningful together: an ask with no
+// reading date cannot be told from one taken before the era reset.
+type ProbeAsk struct {
+	// Yard is the counter, System the system it stands in — carried rather than
+	// derived so the caller's reach test never parses a waypoint symbol.
+	Yard, System string
+	// Price is the recorded purchase price. Non-positive means the reading priced
+	// nothing (a catalogue-only read, taken with no hull present) and callers drop it:
+	// such a row is evidence the yard SELLS a probe, never evidence of what it charges.
+	Price     int64
+	ScannedAt time.Time
+}
+
+// ProbeAskReader reports what the fleet's OWN stored readings say a probe costs, so
+// the drain can COMPARE counters before spending an API call on one.
+//
+// A SEPARATE PORT FROM ProbeListingMemo, which answers only "does this yard sell a
+// probe": the memo removes dead counters, this one ORDERS the live ones and bounds
+// what may be paid at them, and the two fail in opposite directions.
+//
+// BULK, AND ONCE PER TICK, because both things the drain does with it — rank the
+// counters in reach, and take the fleet-wide cheapest ask the multiple is measured
+// against — are questions about the SET; asked per yard, the cheapest would be a
+// second query that could disagree with the first. A PURE STORE READ by contract,
+// like every other yard read here.
+type ProbeAskReader interface {
+	ProbeAsks(ctx context.Context, playerID int) ([]ProbeAsk, error)
+}
+
 // ProbeListingMemo reports what a PREVIOUS shipyard read persisted about a yard's
 // stock, so the drain can stop paying to re-learn a standing fact. OPTIONAL: a nil
 // memo quotes everything.
@@ -231,7 +261,16 @@ type BuyPorts struct {
 	// stock, so a yard already known to sell no probe costs no live quote.
 	// OPTIONAL: nil quotes everything.
 	ListingMemo ProbeListingMemo
-	Fleet       FleetTagger
+	// Asks carries the fleet's stored yard PRICES, which is what lets the drain buy at
+	// the cheapest counter within reach instead of the nearest (procurement.go).
+	//
+	// OPTIONAL AND FAIL-OPEN — the opposite direction from the money guards above, and
+	// deliberate. Everything it feeds can only REFUSE or REORDER a purchase the queue
+	// would already have made, so absent it the drain falls back to the nearest-first
+	// ordering and every downstream guard judges the purchase exactly as before.
+	// Failing closed would stop probe buying fleet-wide on an unreadable LOCAL table.
+	Asks  ProbeAskReader
+	Fleet FleetTagger
 	// Wave answers which regime this tick is in, and what the fleet is saving toward.
 	// OPTIONAL: a nil reader means no heavy buyer, which is the PROBE wave — an
 	// unwired seam must never pause probe buying. A read ERROR fails CLOSED: this is
@@ -310,4 +349,19 @@ type BuyKnobs struct {
 	// placement in a system the fleet has never entered. Zero (the default)
 	// leaves the saturate-first order in drainorder.go untouched.
 	CoverageReserve int
+	// WalkAwayMult is how many times the fleet's cheapest fresh ask a counter may
+	// charge before the queue refuses to buy there at all.
+	WalkAwayMult int
+	// JumpPenaltyCredits is charged per crossing ON TOP of the gate fee when counters
+	// are RANKED, so a marginally cheaper distant yard does not win on noise. Ranking
+	// only — no money guard reads it.
+	JumpPenaltyCredits int64
+	// AskFreshness is how recently a stored price must have been read for the ranking
+	// to compare it. DERIVED from `quartermaster_cadence_secs` rather than set
+	// independently: the cadence governs how often a price is refreshed, so tightening
+	// it must not need a second knob remembered.
+	//
+	// All three resolve their non-positive value to the documented default, so a
+	// coordinator launched with no config at all still runs armed (RULINGS #22).
+	AskFreshness time.Duration
 }

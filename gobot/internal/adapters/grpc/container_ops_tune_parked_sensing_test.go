@@ -67,6 +67,13 @@ func TestSensingTune_LiveKnobSet(t *testing.T) {
 		// The fill queue's coverage-reserve share. Unlike every other knob in this
 		// list, its documented default IS 0 — so this one ships off, not armed.
 		"coverage_reserve",
+		// Probe procurement: the refusal threshold over the fleet's cheapest
+		// fresh ask, and the per-crossing penalty the counter ranking adds to the gate
+		// fee. Both ship ARMED at their documented defaults. The freshness window they
+		// work against is deliberately NOT a key here — it is derived from
+		// quartermaster_cadence_secs, so tightening the re-read interval tightens the
+		// comparison window with it rather than leaving two knobs to keep in step.
+		"procurement_walkaway_mult", "procurement_jump_penalty_credits",
 		// A dark system's charting crew: the per-system hull ceiling, and the
 		// outstanding counts earning a second and a third. A cap of 1 is the
 		// single-hull tour, which is this feature's off switch.

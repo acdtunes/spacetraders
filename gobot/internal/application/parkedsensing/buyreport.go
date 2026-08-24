@@ -22,6 +22,12 @@ const (
 	// cycle summary must be able to tell "this counter refused us today" from "we did
 	// not ask, and here is why".
 	BuyStepMemo BuyStep = "memo"
+	// BuyStepWalkAway is US refusing THEM, the only step here that is: the counter
+	// quoted above the walk-away ceiling and the queue moved on (procurement.go).
+	// Named apart from BuyStepQuote, which it resembles, because the operator response
+	// is opposite — a quote refusal is a yard to investigate, while a run of these says
+	// the fleet's cheap counters have gone out of reach rather than that anything broke.
+	BuyStepWalkAway BuyStep = "walkaway"
 )
 
 // BuyRefusal is one counter's refusal this tick, with the number of placements that
@@ -111,6 +117,14 @@ type BuyReport struct {
 	SpendingPaused bool
 	// CapHeld and FloorHeld report which ceiling stopped the drain.
 	CapHeld, FloorHeld bool
+	// WalkAwayHeld counts placements left UNCLAIMED because every priced counter in
+	// reach asked more than the walk-away ceiling (procurement.go). A COUNT, not a
+	// flag, because it is a per-PLACEMENT verdict: the drain carries on to the next,
+	// which may have a cheap counter of its own. It is the number to watch for the one
+	// way this guard can harm — a standing non-zero beside a zero Bought is placements
+	// STARVING behind a ceiling. NOT SkippedNoYard, which means no counter could
+	// transact at all rather than that its price was refused.
+	WalkAwayHeld int
 	// YardsQueued, YardsAtHead and YardsFilled are the yard-aware ordering's accounting
 	// (yardqueue.go). They exist because a coordinator LOSING every one of these
 	// decisions would otherwise look identical to one with nothing to decide.

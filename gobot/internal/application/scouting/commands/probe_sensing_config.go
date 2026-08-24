@@ -8,6 +8,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/application/liveconfig"
 	"github.com/andrescamacho/spacetraders-go/internal/application/parkedsensing"
+	domainSensing "github.com/andrescamacho/spacetraders-go/internal/domain/parkedsensing"
 )
 
 const (
@@ -67,6 +68,18 @@ const (
 	// every other knob here, zero is the documented default rather than a revert
 	// to some positive one, so the saturate-first order runs unarmed until set.
 	defaultCoverageReserve = 0
+
+	// The probe-procurement pair, mirroring the engine's own values so the tune
+	// registry publishes a number rather than a zero (as the charting-crew defaults do).
+	defaultWalkAwayMult       = domainSensing.DefaultWalkAwayMult
+	defaultJumpPenaltyCredits = int(domainSensing.DefaultJumpPenaltyCredits)
+
+	// askFreshnessCadences is how many quartermaster cadences a stored yard price stays
+	// comparable for, and the multiple is load-bearing: the cadence is a FLOOR on a
+	// yard's re-read interval, never a target, so equating "fresh" with one cadence
+	// would mark almost every reading stale and leave the ranking failing open forever.
+	// A constant, not a knob (RULINGS #5 as bounded): the lever is the cadence itself.
+	askFreshnessCadences = 3
 
 	// The charting crew: how many probes one dark system may be worked by, and the
 	// outstanding counts earning the second and third. Mirrors of the engine's own
@@ -136,6 +149,9 @@ type sensingConfig struct {
 	SurgeInFlightCap int
 	// CoverageReserve is the buy queue's coverage-reserve share. See BuyKnobs.CoverageReserve.
 	CoverageReserve int
+	// The probe-procurement pair. See BuyKnobs.
+	WalkAwayMult       int
+	JumpPenaltyCredits int64
 	// ChartHullCap, SecondChartHullAt and ThirdChartHullAt size a dark system's
 	// charting crew. See ExpandKnobs for what each one binds.
 	ChartHullCap      int
@@ -193,6 +209,8 @@ func resolveSensingConfig(ctx context.Context, cmd *RunProbeSensingCoordinatorCo
 		QuartermasterCadence:    time.Duration(pick("quartermaster_cadence_secs", cmd.QuartermasterCadence)) * time.Second,
 		SurgeInFlightCap:        pick("surge_inflight_cap", cmd.SurgeInFlightCap),
 		CoverageReserve:         pick("coverage_reserve", cmd.CoverageReserve),
+		WalkAwayMult:            pick("procurement_walkaway_mult", cmd.WalkAwayMult),
+		JumpPenaltyCredits:      int64(pick("procurement_jump_penalty_credits", cmd.JumpPenaltyCredits)),
 		ChartHullCap:            pick("chart_hull_cap", cmd.ChartHullCap),
 		SecondChartHullAt:       pick("chart_hull_2_at", cmd.SecondChartHullAt),
 		ThirdChartHullAt:        pick("chart_hull_3_at", cmd.ThirdChartHullAt),
@@ -272,6 +290,15 @@ func applySensingDefaults(ctx context.Context, cmd *RunProbeSensingCoordinatorCo
 		warnNegativeSensingKnob(ctx, "coverage_reserve", c.CoverageReserve, defaultCoverageReserve)
 		c.CoverageReserve = defaultCoverageReserve
 	}
+	// Reverting on zero AND negative ships the pair ON with no config (RULINGS #22).
+	if c.WalkAwayMult <= 0 {
+		warnNegativeSensingKnob(ctx, "procurement_walkaway_mult", c.WalkAwayMult, defaultWalkAwayMult)
+		c.WalkAwayMult = defaultWalkAwayMult
+	}
+	if c.JumpPenaltyCredits <= 0 {
+		warnNegativeSensingKnob(ctx, "procurement_jump_penalty_credits", int(c.JumpPenaltyCredits), defaultJumpPenaltyCredits)
+		c.JumpPenaltyCredits = int64(defaultJumpPenaltyCredits)
+	}
 	if c.ChartHullCap <= 0 {
 		c.ChartHullCap = defaultChartHullCap
 	}
@@ -326,6 +353,10 @@ func buyKnobs(cfg sensingConfig) parkedsensing.BuyKnobs {
 		CapexReserve:    cfg.CapexReserveCredits,
 		KMilli:          cfg.CapitalMultiplierKMilli,
 		CoverageReserve: cfg.CoverageReserve,
+		// Freshness is DERIVED from the re-read cadence — see askFreshnessCadences.
+		WalkAwayMult:       cfg.WalkAwayMult,
+		JumpPenaltyCredits: cfg.JumpPenaltyCredits,
+		AskFreshness:       cfg.QuartermasterCadence * askFreshnessCadences,
 	}
 }
 

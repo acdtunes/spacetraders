@@ -95,10 +95,20 @@ func newPurchaseCandidate(system, yard, buyer string) purchaseCandidate {
 }
 
 // resolvePurchaseCandidates lists every executable place to buy for a placement,
-// best first: the yard recorded on the slot if a previous tick chose one, then each
-// probe-selling yard in the placement's OWN system, cheapest first. A purchase needs
-// a hull ALREADY STANDING at the yard — the purchase machinery navigates and docks
-// the buyer itself, so a buyer that cannot reach the counter is not a buyer.
+// best first. A purchase needs a hull ALREADY STANDING at the yard — the purchase
+// machinery navigates and docks the buyer itself, so a buyer that cannot reach the
+// counter is not a buyer.
+//
+// PRICE DECIDES, AND ONLY THEN DISTANCE. The procurement ranking judges every counter
+// within ferry reach on what a probe costs LANDED at the placement, so a cheap
+// frontier yard one gate out beats an expensive one underfoot. The second return is
+// that ranking's refusal — every counter in reach asked above the walk-away ceiling,
+// and the placement is left UNCLAIMED.
+//
+// THE NEAREST-FIRST PATH BELOW IS THE FALLBACK, NOT THE RULE, kept intact because the
+// ranking is evidence-driven and evidence runs out: a fleet whose readings have all
+// gone stale gets exactly the behaviour it had before this ordering existed. That path
+// is local first and only then across a gate.
 //
 // The recorded yard is a PREFERENCE, not a commitment — the rest of the list is
 // still tried. Treating it as binding lets a claimed placement stall permanently:
@@ -109,21 +119,32 @@ func newPurchaseCandidate(system, yard, buyer string) purchaseCandidate {
 // yard that is also a whitelisted market is slotted MARKET by the screen, so the
 // probe standing there sits under a MARKET-kind row; filtering for kind == YARD
 // would miss it and buy a second hull for a waypoint that already has one.
-//
-// LOCAL FIRST, AND ONLY THEN ACROSS A GATE. If the placement's own system can fund
-// it, that is the answer and nothing else is read — no topology, no remote yard
-// list, no cross-system purchase — which keeps the ordinary fill cheap. Only a
-// placement its own system cannot fund falls through to ferryBroker.candidates.
-func (t *drainTick) resolvePurchaseCandidates(ctx context.Context, slot QueuedSlot, inSystem []QueuedSlot, now time.Time) ([]purchaseCandidate, error) {
+func (t *drainTick) resolvePurchaseCandidates(ctx context.Context, slot QueuedSlot, inSystem []QueuedSlot, now time.Time) ([]purchaseCandidate, bool, error) {
+	ranked, verdict, err := t.procurement.candidates(ctx, t, slot, inSystem, now)
+	if err != nil {
+		return nil, false, err
+	}
+	switch verdict {
+	case procurementWalkedAway:
+		return nil, true, nil
+	case procurementRanked:
+		return ranked, false, nil
+	}
+
 	local, err := t.candidatesInSystem(ctx, slot, inSystem, now)
 	if err != nil || len(local) > 0 {
-		return local, err
+		return local, false, err
 	}
-	return t.ferry.candidates(ctx, t.p, t.playerID, slot)
+	ferry, err := t.ferry.candidates(ctx, t.p, t.playerID, slot)
+	return ferry, false, err
 }
 
 // candidatesInSystem lists the executable counters inside the placement's OWN
-// system — the only path taken whenever it can answer.
+// system, cheapest STORED price first (ListProbeYards' own ordering).
+//
+// TWO CALLERS, TWO ROLES. The nearest-first fallback takes this list whole, which is
+// the behaviour that predates the ranking; the ranking takes only the yards it has NO
+// fresh price for, since an unpriced counter is a guess where a reading is evidence.
 func (t *drainTick) candidatesInSystem(ctx context.Context, slot QueuedSlot, inSystem []QueuedSlot, now time.Time) ([]purchaseCandidate, error) {
 	listed, err := t.p.Yards.ListProbeYards(ctx, slot.System)
 	if err != nil {

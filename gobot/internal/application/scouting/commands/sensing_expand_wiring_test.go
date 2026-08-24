@@ -119,6 +119,35 @@ func TestSensingBuyKnobs_CarriesTheCoverageReserve(t *testing.T) {
 	}
 }
 
+// …and the same for the probe-procurement pair, plus the freshness window it is
+// DERIVED from rather than set beside. All three reach a decision that can refuse a
+// purchase, so a knob stopping at the struct would be a guard nobody consulted.
+func TestSensingBuyKnobs_CarryTheProcurementPairAndDerivedFreshness(t *testing.T) {
+	knobs := buyKnobs(resolveSensingConfig(context.Background(), &RunProbeSensingCoordinatorCommand{}, nil))
+
+	if knobs.WalkAwayMult != defaultWalkAwayMult {
+		t.Fatalf("walk-away multiple with no config = %d, want the documented default %d — the pair "+
+			"ships ARMED (RULINGS #22), never dormant", knobs.WalkAwayMult, defaultWalkAwayMult)
+	}
+	if knobs.JumpPenaltyCredits != int64(defaultJumpPenaltyCredits) {
+		t.Fatalf("jump penalty with no config = %d, want %d", knobs.JumpPenaltyCredits, defaultJumpPenaltyCredits)
+	}
+	if want := defaultQuartermasterCadenceSecs * askFreshnessCadences * time.Second; knobs.AskFreshness != want {
+		t.Fatalf("ask freshness = %v, want %v — it TRACKS quartermaster_cadence_secs, so tightening "+
+			"the re-read interval tightens the comparison window with it", knobs.AskFreshness, want)
+	}
+
+	got := buyKnobs(resolveSensingConfig(context.Background(), &RunProbeSensingCoordinatorCommand{
+		WalkAwayMult: 5, JumpPenaltyCredits: 9_000, QuartermasterCadence: 600,
+	}, nil))
+	if got.WalkAwayMult != 5 || got.JumpPenaltyCredits != 9_000 {
+		t.Fatalf("operator values did not reach the buy queue: %+v", got)
+	}
+	if want := 600 * askFreshnessCadences * time.Second; got.AskFreshness != want {
+		t.Fatalf("ask freshness = %v, want %v after tightening the cadence", got.AskFreshness, want)
+	}
+}
+
 // wiringYardDemand is a stand-in for the shipyard-read budget, identifiable by
 // pointer so a test can assert the drain and the presence pass got the SAME one.
 type wiringYardDemand struct{}
