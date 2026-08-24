@@ -19,6 +19,7 @@ import (
 	autooutfitCmd "github.com/andrescamacho/spacetraders-go/internal/application/autooutfit"
 	bootstrapCmd "github.com/andrescamacho/spacetraders-go/internal/application/bootstrap/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	appContract "github.com/andrescamacho/spacetraders-go/internal/application/contract"
 	contractCmd "github.com/andrescamacho/spacetraders-go/internal/application/contract/commands"
 	contractQuery "github.com/andrescamacho/spacetraders-go/internal/application/contract/queries"
 	contractServices "github.com/andrescamacho/spacetraders-go/internal/application/contract/services"
@@ -920,6 +921,8 @@ func run(cfg *config.Config) error {
 	// configured the registry is empty and contract routing is byte-identical to today
 	// (the natural off-switch). Mirrors SetIdleArbLauncher(daemonServer) above.
 	contractFleetCoordinatorHandler.SetDepotRegistryProvider(daemonServer)
+	// A nil clock is fail-open here too (EstimateAll guards e.clock == nil); production always wires the real one.
+	contractFleetCoordinatorHandler.SetRouteETAEstimator(appContract.NewRouteETAEstimator(routingClient, shared.NewRealClock()))
 	if err := mediator.RegisterHandler[*contractCmd.RunFleetCoordinatorCommand](med, contractFleetCoordinatorHandler); err != nil {
 		return fmt.Errorf("failed to register ContractFleetCoordinator handler: %w", err)
 	}

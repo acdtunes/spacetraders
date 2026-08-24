@@ -195,9 +195,9 @@ func availableNow(ship *navigation.Ship) bool {
 
 // FindIdleShipsByFleet looks up a coordinator's own dedicated fleet by name -
 // every ship whose persisted DedicatedFleet tag equals fleet - and returns
-// only the ones currently idle. Busy and in-transit ships are silently
-// skipped rather than erroring, since fleet composition legitimately varies
-// over the coordinator's lifetime.
+// only the ones currently idle. Busy ships are silently skipped rather than
+// erroring, since fleet composition legitimately varies over the
+// coordinator's lifetime.
 //
 // Reading DedicatedFleet() from the DB on every discovery pass (rather than a
 // remembered --dedicated-ships list) is what makes a `fleet assign`
@@ -206,32 +206,41 @@ func availableNow(ship *navigation.Ship) bool {
 // Unlike FindIdleLightHaulers, this never filters by ROLE: a ship qualifies
 // purely by carrying the fleet's tag, whatever hull it is (an excavator, the
 // command frigate) - the dedication itself is the authorization. Cargo-capacity
-// filtering, by contrast, is OPT-IN via CargoCapacityPolicy: the default keeps
-// every tagged member (idle-arb relies on this for its reserve accounting), and
-// the contract coordinator passes RequireCargoCapacity so a 0-cargo probe
-// mispinned into the contract fleet is UNSELECTABLE rather than
-// claimed-spawned-crashed.
+// filtering is OPT-IN via CargoCapacityPolicy: the default keeps every tagged
+// member (idle-arb relies on this for its reserve accounting), and the contract
+// coordinator passes RequireCargoCapacity so a 0-cargo probe mispinned into the
+// contract fleet is UNSELECTABLE rather than claimed-spawned-crashed.
+//
+// In-transit admission is OPT-IN via InTransitPolicy and defaults CLOSED: a
+// mid-flight hull is not physically at any market yet, so a caller with no
+// route-ETA ranking downstream would hand it work it cannot start. Only the
+// discovery feeding SelectClosestShip's route-ETA ranking passes
+// AdmitUnclaimedInTransit; every other caller (idle-arb, the construction
+// drain) keeps the closed default.
 //
 //   - fleet: The fleet name to look up; "" (no dedicated fleet) returns nothing,
 //     since an empty tag means "general pool", never a fleet of its own
-//   - policies: Optional cargo-capacity policy (default: AnyCargoCapacity). Pass
-//     RequireCargoCapacity to exclude 0-cargo hulls (probes/satellites) that can
-//     never carry a delivery.
+//   - opts: Optional pool knobs (default: AnyCargoCapacity, ExcludeAllInTransit).
+//     Pass RequireCargoCapacity to exclude 0-cargo hulls (probes/satellites) that
+//     can never carry a delivery; pass AdmitUnclaimedInTransit to admit an
+//     unclaimed mid-flight member.
 func FindIdleShipsByFleet(
 	ctx context.Context,
 	playerID shared.PlayerID,
 	shipRepo navigation.ShipRepository,
 	fleet string,
-	policies ...CargoCapacityPolicy,
+	opts ...FleetPoolOption,
 ) ([]*navigation.Ship, []string, error) {
 	if fleet == "" {
 		return nil, nil, nil
 	}
 
-	// Default: keep every tagged member regardless of cargo capacity.
-	cargoPolicy := AnyCargoCapacity
-	if len(policies) > 0 {
-		cargoPolicy = policies[0]
+	// Defaults: keep every tagged member regardless of cargo capacity, exclude every in-transit one.
+	options := fleetPoolOptions{cargoCapacity: AnyCargoCapacity, inTransit: ExcludeAllInTransit}
+	for _, opt := range opts {
+		if opt != nil {
+			opt.applyToFleetPool(&options)
+		}
 	}
 
 	logger := common.LoggerFromContext(ctx)
@@ -258,7 +267,7 @@ func FindIdleShipsByFleet(
 		// can see WHY a mispinned hull is being ignored (honest exclusion), and
 		// counted into the summary below so an all-probe fleet reads as "0
 		// dispatchable, N excluded for 0 cargo" rather than a silent empty pool.
-		if cargoPolicy == RequireCargoCapacity && ship.CargoCapacity() == 0 {
+		if options.cargoCapacity == RequireCargoCapacity && ship.CargoCapacity() == 0 {
 			zeroCargoExcluded++
 			logger.Log("WARNING", fmt.Sprintf(
 				"Dedicated %s-fleet hull %s excluded from contract worker selection: 0 cargo capacity (cannot deliver) - check hull class/pin",
@@ -270,9 +279,11 @@ func FindIdleShipsByFleet(
 			continue
 		}
 
-		// Exclude ships in transit (even without assignment), mirroring
-		// FindIdleLightHaulers: a hull mid-flight is not available to dispatch.
-		if ship.NavStatus() == navigation.NavStatusInTransit {
+		// Closed by default (see InTransitPolicy): only a caller that opted in treats an unclaimed
+		// mid-flight hull as dispatchable, so its remaining transit can be priced into the route-ETA
+		// ranking. A CLAIMED in-transit hull is excluded regardless of policy - a hull owned by
+		// another container is never fair game.
+		if ship.NavStatus() == navigation.NavStatusInTransit && (options.inTransit != AdmitUnclaimedInTransit || !ship.IsIdle()) {
 			continue
 		}
 		if ship.IsIdle() {

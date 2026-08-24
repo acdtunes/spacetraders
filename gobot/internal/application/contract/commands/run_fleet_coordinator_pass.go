@@ -20,10 +20,23 @@ type coordinatorPass struct {
 
 // shipPool is one pass's claimable pool. generalEntities backs the command frigate's
 // last-resort verdict; dedicatedFleetActive means the pool is sealed.
+//
+// available may include an unclaimed in-transit dedicated member; dockable excludes it. Every
+// consumer but the route-ETA selection - starting with contract negotiation - must read dockable.
 type shipPool struct {
 	available            []string
+	dockable             []string
 	generalEntities      []*navigation.Ship
 	dedicatedFleetActive bool
+}
+
+// negotiationCandidate names the pool member NegotiateContract may claim: it rejects a ship
+// mid-flight, so only a dockable member is ever offered - empty means the caller must wait.
+func (p shipPool) negotiationCandidate() string {
+	if len(p.dockable) > 0 {
+		return p.dockable[0]
+	}
+	return ""
 }
 
 // An empty checkpoint keeps the failure off the error monitor and the captain outbox.
@@ -79,13 +92,22 @@ func (p *coordinatorPass) discoverShipPool(ctx context.Context) (shipPool, bool)
 	// effect on the very next pass, no restart needed.
 	// RequireCargoCapacity: a 0-cargo hull mispinned into the contract fleet
 	// is UNSELECTABLE here — it can never carry a delivery, so claiming it
-	// just spawns a worker that dies instantly. The idle-arb dispatcher's own
-	// FindIdleShipsByFleet calls omit the policy and keep every tagged
-	// member, so its reserve accounting is unchanged.
-	_, dedicatedIdleShips, err := appContract.FindIdleShipsByFleet(ctx, p.cmd.PlayerID, p.h.shipRepo, dedicatedFleetContract, appContract.RequireCargoCapacity)
+	// just spawns a worker that dies instantly. AdmitUnclaimedInTransit prices
+	// an unclaimed mid-flight hull into SelectClosestShip's route-ETA ranking
+	// below; idle-arb's own calls omit both policies.
+	dedicatedIdleEntities, dedicatedIdleShips, err := appContract.FindIdleShipsByFleet(ctx, p.cmd.PlayerID, p.h.shipRepo, dedicatedFleetContract, appContract.RequireCargoCapacity, appContract.AdmitUnclaimedInTransit)
 	if err != nil {
 		p.retryAfterStepFailure(ctx, "", fmt.Sprintf("Failed to find idle dedicated ships: %v", err), err)
 		return shipPool{}, false
+	}
+
+	// Excludes exactly the members AdmitUnclaimedInTransit widened in for above, from the
+	// entities already fetched (no second query).
+	dedicatedDockableShips := make([]string, 0, len(dedicatedIdleEntities))
+	for _, ship := range dedicatedIdleEntities {
+		if ship.NavStatus() != navigation.NavStatusInTransit {
+			dedicatedDockableShips = append(dedicatedDockableShips, ship.ShipSymbol())
+		}
 	}
 
 	// EXCLUSIVE MODE: a dedicated fleet, once tagged (via --dedicated-ships at
@@ -97,8 +119,13 @@ func (p *coordinatorPass) discoverShipPool(ctx context.Context) (shipPool, bool)
 		p.retryAfterStepFailure(ctx, "", fmt.Sprintf("Failed to check dedicated fleet membership: %v", err), err)
 		return shipPool{}, false
 	}
+	// SelectAvailableShips appends onto generalShips in the non-EXCLUSIVE branch, so calling it
+	// twice with the same slice risks the second call overwriting the first's backing array. A
+	// fresh copy keeps available and dockable independent.
+	dockableGeneralShips := append([]string(nil), generalShips...)
 	return shipPool{
 		available:            appContract.SelectAvailableShips(generalShips, dedicatedIdleShips, dedicatedFleetActive),
+		dockable:             appContract.SelectAvailableShips(dockableGeneralShips, dedicatedDockableShips, dedicatedFleetActive),
 		generalEntities:      generalShipEntities,
 		dedicatedFleetActive: dedicatedFleetActive,
 	}, true

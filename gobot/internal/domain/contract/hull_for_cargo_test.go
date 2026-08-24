@@ -6,6 +6,8 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func hullFitTarget(t *testing.T) *shared.Waypoint {
@@ -19,8 +21,8 @@ func hullFitTarget(t *testing.T) *shared.Waypoint {
 
 func selectHull(t *testing.T, ships []*navigation.Ship, units int) *SelectionResult {
 	t.Helper()
-	// nil, nil: no ownership context; these tests exercise distance/capacity only.
-	result, err := SelectHullForCargo(ships, hullFitTarget(t), units, nil, nil)
+	// nil, nil, nil: no ETA/ownership context; these tests exercise distance/capacity only.
+	result, err := SelectHullForCargo(ships, hullFitTarget(t), units, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("SelectHullForCargo: %v", err)
 	}
@@ -82,7 +84,7 @@ func TestSelectHullForCargo_EqualTieBreaksOnDisplacedHullOverHomedHull(t *testin
 	deliveryFleet := []string{"TORWIND-6", "TORWIND-7"}
 	slots := []string{"X1-TW-OTHER", "X1-TW-A2"}
 
-	result, err := SelectHullForCargo([]*navigation.Ship{home, displaced}, hullFitTarget(t), 30, deliveryFleet, slots)
+	result, err := SelectHullForCargo([]*navigation.Ship{home, displaced}, hullFitTarget(t), 30, nil, deliveryFleet, slots)
 	if err != nil {
 		t.Fatalf("SelectHullForCargo: %v", err)
 	}
@@ -105,7 +107,7 @@ func TestSelectHullForCargo_OwnSlotTiebreakNeverOutranksADistanceDifference(t *t
 	deliveryFleet := []string{"TORWIND-3", "TORWIND-7"}
 	slots := []string{"X1-TW-OTHER", "X1-TW-A2"}
 
-	result, err := SelectHullForCargo([]*navigation.Ship{near, far}, hullFitTarget(t), 30, deliveryFleet, slots)
+	result, err := SelectHullForCargo([]*navigation.Ship{near, far}, hullFitTarget(t), 30, nil, deliveryFleet, slots)
 	if err != nil {
 		t.Fatalf("SelectHullForCargo: %v", err)
 	}
@@ -207,7 +209,7 @@ func TestSelectHullForCargo_CommandFrigateAsSoleCandidate(t *testing.T) {
 }
 
 func TestSelectHullForCargo_NoCandidates_ReturnsError(t *testing.T) {
-	if _, err := SelectHullForCargo(nil, hullFitTarget(t), 10, nil, nil); err == nil {
+	if _, err := SelectHullForCargo(nil, hullFitTarget(t), 10, nil, nil, nil); err == nil {
 		t.Fatalf("expected an error for an empty candidate list")
 	}
 }
@@ -229,4 +231,154 @@ func TestIsCommandHull_ByRoleOrSymbol(t *testing.T) {
 	if IsCommandHull(neither) {
 		t.Fatalf("expected a plain hauler not to be marked as command hull")
 	}
+}
+
+// newWaypointAt builds a test waypoint at the given coordinates - the
+// ETA-ranking tests need distinct near/far positions independent of any
+// hull's fixed test symbol.
+func newWaypointAt(t *testing.T, symbol string, x, y float64) *shared.Waypoint {
+	t.Helper()
+	wp, err := shared.NewWaypoint(symbol, x, y)
+	if err != nil {
+		t.Fatalf("build waypoint %s: %v", symbol, err)
+	}
+	return wp
+}
+
+// newTestHull builds a docked, idle HAULER at the given waypoint with the
+// given hold - the ETA-ranking tests vary only position, hold, and any
+// supplied ETA.
+func newTestHull(t *testing.T, symbol string, at *shared.Waypoint, cargoCapacity int) *navigation.Ship {
+	t.Helper()
+	return newSelectorTestShipWithHull(t, symbol, "HAULER", at.X, at.Y, 30, cargoCapacity)
+}
+
+// newTestHullInTransit builds an UNCLAIMED hull en route to destination by
+// driving a freshly-built idle hull through the real docked -> orbit ->
+// transit state machine, so its nav status and current location match what
+// production navigation ever produces (StartTransit relocates the hull to
+// destination).
+func newTestHullInTransit(t *testing.T, symbol string, destination *shared.Waypoint, cargoCapacity int) *navigation.Ship {
+	t.Helper()
+	ship := newSelectorTestShipWithHull(t, symbol, "HAULER", 0, 0, 30, cargoCapacity)
+	if _, err := ship.EnsureInOrbit(); err != nil {
+		t.Fatalf("EnsureInOrbit: %v", err)
+	}
+	if err := ship.StartTransit(destination); err != nil {
+		t.Fatalf("StartTransit: %v", err)
+	}
+	return ship
+}
+
+// Core behavior: with supplied ETAs, a hull whose TOTAL ETA is smaller wins even
+// if its straight-line distance is larger (the straight-line order would invert this).
+func TestSelectHullForCargo_SuppliedETAOutranksStraightLine(t *testing.T) {
+	target := hullFitTarget(t)
+	farWaypoint := newWaypointAt(t, "X1-TW-FAR", 500, 0)
+	nearWaypoint := newWaypointAt(t, "X1-TW-NEAR", 10, 0)
+
+	// far by distance, near by ETA (clean single hop)
+	fastArrival := newTestHull(t, "TORWIND-B", farWaypoint, 80)
+	// near by distance, slow by ETA (multi-hop + refuels)
+	slowNear := newTestHull(t, "TORWIND-C", nearWaypoint, 80)
+	etas := map[string]float64{"TORWIND-B": 120, "TORWIND-C": 600}
+
+	res, err := SelectHullForCargo([]*navigation.Ship{slowNear, fastArrival}, target, 40, etas, nil, nil)
+
+	require.NoError(t, err)
+	assert.Equal(t, "TORWIND-B", res.Ship.ShipSymbol())
+}
+
+// Nil map preserves today's ranking exactly (fallback path).
+func TestSelectHullForCargo_NilETAMapKeepsStraightLineRanking(t *testing.T) {
+	target := hullFitTarget(t)
+	farWaypoint := newWaypointAt(t, "X1-TW-FAR", 500, 0)
+	nearWaypoint := newWaypointAt(t, "X1-TW-NEAR", 10, 0)
+
+	near := newTestHull(t, "TORWIND-B", nearWaypoint, 80)
+	far := newTestHull(t, "TORWIND-C", farWaypoint, 80)
+
+	res, err := SelectHullForCargo([]*navigation.Ship{far, near}, target, 40, nil, nil, nil)
+
+	require.NoError(t, err)
+	assert.Equal(t, "TORWIND-B", res.Ship.ShipSymbol())
+}
+
+// Tie ladder preserved under supplied ETAs: equal ETA -> smaller hold; then the
+// existing displaced-hull tiebreak (reuses its landed fixtures for the slot context).
+func TestSelectHullForCargo_EqualETATieFallsToCapacityThenDisplacement(t *testing.T) {
+	target := hullFitTarget(t)
+	nearWaypoint := newWaypointAt(t, "X1-TW-NEAR", 10, 0)
+
+	small := newTestHull(t, "TORWIND-B", nearWaypoint, 40)
+	big := newTestHull(t, "TORWIND-C", nearWaypoint, 80)
+	etas := map[string]float64{"TORWIND-B": 300, "TORWIND-C": 300}
+	// Reuses TestSelectHullForCargo_EqualTieBreaksOnDisplacedHullOverHomedHull's
+	// roster: neither TORWIND-B nor TORWIND-C is in it, so the ownership
+	// tiebreak stays a no-op here and capacity alone decides - proving etas
+	// composes with a real (non-nil) ownership context, not just nil.
+	deliveryFleet := []string{"TORWIND-6", "TORWIND-7"}
+	slots := []string{"X1-TW-OTHER", "X1-TW-A2"}
+
+	res, err := SelectHullForCargo([]*navigation.Ship{big, small}, target, 30, etas, deliveryFleet, slots)
+
+	require.NoError(t, err)
+	assert.Equal(t, "TORWIND-B", res.Ship.ShipSymbol())
+}
+
+// The tie ladder's third rung - equal ETA -> capacity -> home-slot displacement - was previously
+// pinned only with etas == nil (TestSelectHullForCargo_EqualTieBreaksOnDisplacedHullOverHomedHull
+// above). Reuses that test's exact roster/slot fixtures, supplying an equal non-nil etas map
+// instead of nil, so an equal ETA AND equal capacity still falls through to the displacement
+// tiebreak rather than short-circuiting on some other key etas might have disturbed.
+func TestSelectHullForCargo_EqualETAAndCapacityFallsToDisplacementTiebreak(t *testing.T) {
+	home := newSelectorTestShipWithHull(t, "TORWIND-7", "HAULER", 100, 0, 30, 80)
+	displaced := newSelectorTestShipWithHull(t, "TORWIND-6", "HAULER", 100, 0, 30, 80)
+	etas := map[string]float64{"TORWIND-6": 300, "TORWIND-7": 300}
+
+	// Same slot context as TestSelectHullForCargo_EqualTieBreaksOnDisplacedHullOverHomedHull: the
+	// symbol-sorted zip gives TORWIND-6 a different slot (displaced) and TORWIND-7 exactly the
+	// slot it's standing on (home).
+	deliveryFleet := []string{"TORWIND-6", "TORWIND-7"}
+	slots := []string{"X1-TW-OTHER", "X1-TW-A2"}
+
+	result, err := SelectHullForCargo([]*navigation.Ship{home, displaced}, hullFitTarget(t), 30, etas, deliveryFleet, slots)
+	if err != nil {
+		t.Fatalf("SelectHullForCargo: %v", err)
+	}
+
+	if result.Ship.ShipSymbol() != "TORWIND-6" {
+		t.Fatalf("expected the displaced hull TORWIND-6 to win the exact ETA+capacity tie over the correctly-homed TORWIND-7, got %s (%s)",
+			result.Ship.ShipSymbol(), result.Reason)
+	}
+}
+
+// RULINGS #1 invariant stated as a test: candidates in, a hull always comes out.
+func TestSelectHullForCargo_SuppliedETAsNeverProduceNoSelection(t *testing.T) {
+	target := hullFitTarget(t)
+	farWaypoint := newWaypointAt(t, "X1-TW-FAR", 500, 0)
+
+	only := newTestHull(t, "TORWIND-B", farWaypoint, 80)
+	etas := map[string]float64{"TORWIND-B": 999999}
+
+	res, err := SelectHullForCargo([]*navigation.Ship{only}, target, 40, etas, nil, nil)
+
+	require.NoError(t, err)
+	require.NotNil(t, res)
+}
+
+// In-transit unclaimed hulls are RANKED, not skipped, when ETAs are supplied.
+func TestSelectOptimalShip_UnclaimedInTransitHullIsEligibleWithETA(t *testing.T) {
+	target := hullFitTarget(t)
+	farWaypoint := newWaypointAt(t, "X1-TW-FAR", 500, 0)
+	nearWaypoint := newWaypointAt(t, "X1-TW-NEAR", 10, 0)
+
+	inTransit := newTestHullInTransit(t, "TORWIND-B", nearWaypoint, 80) // unclaimed
+	idleFar := newTestHull(t, "TORWIND-C", farWaypoint, 80)
+	etas := map[string]float64{"TORWIND-B": 90, "TORWIND-C": 400}
+
+	res, err := NewShipSelector().SelectOptimalShip([]*navigation.Ship{inTransit, idleFar}, target, "", 40, etas, nil, nil)
+
+	require.NoError(t, err)
+	assert.Equal(t, "TORWIND-B", res.Ship.ShipSymbol())
 }

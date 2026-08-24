@@ -58,7 +58,7 @@ func IsDepotOperation(operation string) bool {
 type hullFit struct {
 	ship       *navigation.Ship
 	distance   float64
-	travelTime float64 // one-way cruise time to the target, speed-aware
+	travelTime float64 // ETA to the target: a supplied route ETA (possibly multi-hop/refuel/transit-inclusive) where one covers this hull, straight-line cruise time otherwise
 	capacity   int     // clamped to >=1 so trip math never divides by zero
 	trips      int     // ceil(cargoUnits / capacity): round trips to move the load
 	onOwnSlot  bool    // true iff standing exactly on its own assigned standby slot
@@ -72,13 +72,12 @@ type hullFit struct {
 // break ties:
 //
 //	Tier 1: among regular hulls whose capacity fits the whole load, the
-//	        NEAREST by cruise travel time. Equal travel times tie-break on the
-//	        smallest fitting hold, so a nearer adequate hull beats a farther
-//	        smaller one while two equidistant hulls still right-size. Travel
-//	        time is speed-aware, so a fast hull that clears the leg sooner
-//	        outranks a slow one nominally as close. A further exact tie on
-//	        both prefers the hull NOT parked on its own standby slot, leaving
-//	        the correctly-homed one in place.
+//	        NEAREST by travel time - a supplied ETA where the hull has one,
+//	        straight-line cruise time otherwise. Equal travel times tie-break
+//	        on the smallest fitting hold, so a nearer adequate hull beats a
+//	        farther smaller one while two equidistant hulls still right-size.
+//	        A further exact tie on both prefers the hull NOT parked on its
+//	        own standby slot, leaving the correctly-homed one in place.
 //	Tier 2: the command frigate, only when NO regular hull fits. It stays an
 //	        eligible candidate but is drafted strictly last-resort - mirroring
 //	        how IncludeCommandShip already gates its pool entry.
@@ -88,12 +87,14 @@ type hullFit struct {
 //	Tier 4: the command frigate as the sole remaining candidate.
 //
 // The caller owns availability filtering (idle/claimable) and claiming; this
-// function only ranks the candidates it is given. deliveryFleet/standbySlots
-// feed the Tier-1 ownership tiebreak; an empty one leaves it a no-op.
+// function only ranks the candidates it is given. etas is nil-safe per
+// candidate, falling back to the cruise estimate; deliveryFleet/standbySlots
+// feed the Tier-1 ownership tiebreak, a no-op when empty.
 func SelectHullForCargo(
 	candidates []*navigation.Ship,
 	target *shared.Waypoint,
 	cargoUnits int,
+	etas map[string]float64,
 	deliveryFleet []string,
 	standbySlots []string,
 ) (*SelectionResult, error) {
@@ -111,7 +112,7 @@ func SelectHullForCargo(
 
 	var regular, command []hullFit
 	for _, ship := range candidates {
-		fit := newHullFit(ship, target, units, deliveryFleet, standbySlots)
+		fit := newHullFit(ship, target, units, etas, deliveryFleet, standbySlots)
 		if IsCommandHull(ship) {
 			command = append(command, fit)
 		} else {
@@ -141,17 +142,24 @@ func SelectHullForCargo(
 	return nil, fmt.Errorf("no ships available for selection")
 }
 
-// newHullFit computes the ranking figures for one candidate hull.
-func newHullFit(ship *navigation.Ship, target *shared.Waypoint, units int, deliveryFleet, standbySlots []string) hullFit {
+// newHullFit computes the ranking figures for one candidate hull; a supplied
+// ETA replaces the straight-line estimate for a candidate it covers.
+func newHullFit(ship *navigation.Ship, target *shared.Waypoint, units int, etas map[string]float64, deliveryFleet, standbySlots []string) hullFit {
 	capacity := ship.CargoCapacity()
 	if capacity < 1 {
 		capacity = 1
 	}
 	distance := ship.CurrentLocation().DistanceTo(target)
+	travelTime := float64(shared.FlightModeCruise.TravelTime(distance, ship.EngineSpeed()))
+	if etas != nil {
+		if eta, ok := etas[ship.ShipSymbol()]; ok {
+			travelTime = eta
+		}
+	}
 	return hullFit{
 		ship:       ship,
 		distance:   distance,
-		travelTime: float64(shared.FlightModeCruise.TravelTime(distance, ship.EngineSpeed())),
+		travelTime: travelTime,
 		capacity:   capacity,
 		trips:      int(math.Ceil(float64(units) / float64(capacity))),
 		onOwnSlot:  isOnOwnAssignedSlot(ship, deliveryFleet, standbySlots),
@@ -185,10 +193,10 @@ func filterFits(fits []hullFit, keep func(hullFit) bool) []hullFit {
 	return out
 }
 
-// byNearestThenSmallest orders adequate hulls (Tier 1): shortest cruise travel
-// time first, smallest fitting hold second, standby-slot ownership breaking a
-// further exact tie - proximity and size-fit both outrank it, so it never
-// reorders candidates that differ on either.
+// byNearestThenSmallest orders adequate hulls (Tier 1): shortest travel time
+// first (etas override cruise time per candidate), smallest fitting hold second,
+// standby-slot ownership breaking a further exact tie - proximity and size-fit
+// both outrank it, so it never reorders candidates that differ on either.
 func byNearestThenSmallest(a, b hullFit) bool {
 	if a.travelTime != b.travelTime {
 		return a.travelTime < b.travelTime

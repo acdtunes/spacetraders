@@ -83,6 +83,13 @@ conservative fuel figure (current minus the in-flight leg's remaining burn, floo
 error inserts EXTRA refuel stops and returns a PESSIMISTIC ETA. Wrong only in the direction
 that under-favors the in-transit hull — never fabricates an optimistic win.
 
+**Correction (2026-08-23, final-review follow-up):** the adjustment above is deliberately NOT
+implemented, and the code is right to skip it. `ship.StartTransit` deducts the leg's fuel burn at
+DEPARTURE (`internal/adapters/api/ship_repository_actions.go`), so an in-transit hull's
+`Fuel().Current` already IS its post-arrival fuel — subtracting "remaining burn" again would
+double-deduct and manufacture spurious refuel stops. `route_eta.go` passes `Fuel().Current`
+unmodified to `PlanRoute`; this is correct as shipped. Do not "fix" it back to the rule above.
+
 ## Error handling — fail OPEN (RULINGS #1)
 
 This ranking spends no credits; it is not a money guard. It must never block a dispatch.

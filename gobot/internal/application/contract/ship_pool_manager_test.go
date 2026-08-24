@@ -492,9 +492,92 @@ func TestFindIdleShipsByFleet_ArbDispatcherNeverSurfacesContractDedicatedHull(t 
 	}
 }
 
-// A fleet member mid-flight is not dispatchable even without an active
-// assignment - mirroring FindIdleLightHaulers' in-transit exclusion.
-func TestFindIdleShipsByFleet_SkipsInTransitMembers(t *testing.T) {
+// A fleet member mid-flight AND claimed by another controller is not
+// dispatchable even under AdmitUnclaimedInTransit - mirroring
+// FindIdleLightHaulers' in-transit exclusion. An unclaimed in-transit member
+// is a different case; see TestFindIdleShipsByFleet_InTransitUnassignedMember_IsDispatchable below.
+func TestFindIdleShipsByFleet_SkipsInTransitAssignedMember(t *testing.T) {
+	cargo, err := shared.NewCargo(30, 0, nil)
+	if err != nil {
+		t.Fatalf("build cargo: %v", err)
+	}
+	fuel, err := shared.NewFuel(100, 100)
+	if err != nil {
+		t.Fatalf("build fuel: %v", err)
+	}
+	wp, err := shared.NewWaypoint("X1-TW-A2", 10, 0)
+	if err != nil {
+		t.Fatalf("build waypoint: %v", err)
+	}
+	inTransit, err := navigation.NewShip(
+		"TORWIND-4", shared.MustNewPlayerID(1), wp, fuel, 100, 30, cargo, 30,
+		"FRAME_FRIGATE", "HAULER", nil, navigation.NavStatusInTransit,
+	)
+	if err != nil {
+		t.Fatalf("build in-transit ship: %v", err)
+	}
+	inTransit.SetDedicatedFleet("contract")
+	if err := inTransit.AssignToContainer("contract-worker-TORWIND-4", shared.NewRealClock()); err != nil {
+		t.Fatalf("assign in-transit ship: %v", err)
+	}
+	repo := &stubShipRepo{ships: []*navigation.Ship{inTransit}}
+
+	_, symbols, err := FindIdleShipsByFleet(context.Background(), shared.MustNewPlayerID(1), repo, "contract", AdmitUnclaimedInTransit)
+	if err != nil {
+		t.Fatalf("FindIdleShipsByFleet: %v", err)
+	}
+
+	if len(symbols) != 0 {
+		t.Fatalf("expected no dispatchable ships while the only member is in transit and claimed, got %v", symbols)
+	}
+}
+
+// A fleet member mid-flight but UNCLAIMED stays dispatchable under
+// AdmitUnclaimedInTransit: its remaining transit is priced into route-ETA
+// ranking rather than making it invisible to discovery outright - the
+// discovery-side counterpart to the domain-level shouldSkipShipInTransit
+// widening. Only the caller feeding that ranking opts in; see
+// TestFindIdleShipsByFleet_DefaultPolicy_ExcludesUnclaimedInTransitMember for
+// every other caller's default.
+func TestFindIdleShipsByFleet_InTransitUnassignedMember_IsDispatchable(t *testing.T) {
+	cargo, err := shared.NewCargo(30, 0, nil)
+	if err != nil {
+		t.Fatalf("build cargo: %v", err)
+	}
+	fuel, err := shared.NewFuel(100, 100)
+	if err != nil {
+		t.Fatalf("build fuel: %v", err)
+	}
+	wp, err := shared.NewWaypoint("X1-TW-A2", 10, 0)
+	if err != nil {
+		t.Fatalf("build waypoint: %v", err)
+	}
+	inTransit, err := navigation.NewShip(
+		"TORWIND-4", shared.MustNewPlayerID(1), wp, fuel, 100, 30, cargo, 30,
+		"FRAME_FRIGATE", "HAULER", nil, navigation.NavStatusInTransit,
+	)
+	if err != nil {
+		t.Fatalf("build in-transit ship: %v", err)
+	}
+	inTransit.SetDedicatedFleet("contract")
+	repo := &stubShipRepo{ships: []*navigation.Ship{inTransit}}
+
+	_, symbols, err := FindIdleShipsByFleet(context.Background(), shared.MustNewPlayerID(1), repo, "contract", AdmitUnclaimedInTransit)
+	if err != nil {
+		t.Fatalf("FindIdleShipsByFleet: %v", err)
+	}
+
+	if len(symbols) != 1 || symbols[0] != "TORWIND-4" {
+		t.Fatalf("expected the unclaimed in-transit member to be dispatchable, got %v", symbols)
+	}
+}
+
+// Regression: the DEFAULT policy (no InTransitPolicy passed) excludes an
+// unclaimed in-transit member like any other in-transit hull - the construction
+// drain and the idle-arb dispatcher both omit the policy and have no route-ETA
+// ranking to price the remaining transit against, so their pool must stay
+// byte-identical to before AdmitUnclaimedInTransit existed.
+func TestFindIdleShipsByFleet_DefaultPolicy_ExcludesUnclaimedInTransitMember(t *testing.T) {
 	cargo, err := shared.NewCargo(30, 0, nil)
 	if err != nil {
 		t.Fatalf("build cargo: %v", err)
@@ -523,7 +606,7 @@ func TestFindIdleShipsByFleet_SkipsInTransitMembers(t *testing.T) {
 	}
 
 	if len(symbols) != 0 {
-		t.Fatalf("expected no dispatchable ships while the only member is in transit, got %v", symbols)
+		t.Fatalf("expected the default policy to exclude the unclaimed in-transit member, got %v", symbols)
 	}
 }
 

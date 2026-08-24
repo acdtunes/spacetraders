@@ -26,24 +26,22 @@ func NewShipSelector() *ShipSelector {
 //
 // Business Rules:
 //  1. Ships with required cargo have absolute priority (even if in transit)
-//  2. Ships in transit are excluded (unless they have cargo)
-//  3. Fallback: cargo-fit hull selection via SelectHullForCargo: among hulls
-//     whose hold fits the load, the NEAREST by cruise travel time (smallest
-//     fitting hold breaks a tie, standby-slot ownership breaks a further exact
-//     tie), the command frigate strictly last-resort, fewest-round-trips when
-//     nothing fits in one trip. This assigns the job to the nearest adequate
-//     hull rather than the smallest anywhere, so a nearer fitting hull is not
-//     passed over for a far smaller one idling at a hub.
+//  2. An in-transit ship claimed by another controller is excluded; an
+//     unclaimed one is a normal candidate.
+//  3. Fallback: cargo-fit hull selection via SelectHullForCargo - nearest by
+//     travel time (a supplied ETA where one covers the hull), command frigate
+//     last-resort; see that function's doc for the full tiebreak ladder.
 //
 // requiredCargoSymbol is optional and drives the priority rule above.
 // unitsNeeded is the quantity still outstanding, used to judge which hulls fit
-// the load (and trip counts when none do). deliveryFleet/standbySlots pass
-// through to SelectHullForCargo's ownership tiebreak.
+// the load (and trip counts when none do). etas/deliveryFleet/standbySlots
+// pass through to SelectHullForCargo's ranking and ownership tiebreak.
 func (s *ShipSelector) SelectOptimalShip(
 	ships []*navigation.Ship,
 	targetWaypoint *shared.Waypoint,
 	requiredCargoSymbol string,
 	unitsNeeded int,
+	etas map[string]float64,
 	deliveryFleet []string,
 	standbySlots []string,
 ) (*SelectionResult, error) {
@@ -78,7 +76,7 @@ func (s *ShipSelector) SelectOptimalShip(
 		return nil, fmt.Errorf("no available ships found (all are in transit)")
 	}
 
-	return SelectHullForCargo(available, targetWaypoint, unitsNeeded, deliveryFleet, standbySlots)
+	return SelectHullForCargo(available, targetWaypoint, unitsNeeded, etas, deliveryFleet, standbySlots)
 }
 
 func (s *ShipSelector) hasRequiredCargo(ship *navigation.Ship, requiredCargoSymbol string) bool {
@@ -89,8 +87,15 @@ func (s *ShipSelector) hasRequiredCargo(ship *navigation.Ship, requiredCargoSymb
 	return cargoUnits > 0
 }
 
+// shouldSkipShipInTransit drops a mid-flight hull only when another controller
+// owns it: an unclaimed in-transit hull is a legitimate candidate whose ETA
+// already counts its remaining flight, and interrupting an ownerless
+// repositioning for paying work is the point of ranking it.
 func (s *ShipSelector) shouldSkipShipInTransit(ship *navigation.Ship, shipWithCargo *navigation.Ship) bool {
-	return ship.NavStatus() == navigation.NavStatusInTransit && shipWithCargo != ship
+	if ship.NavStatus() != navigation.NavStatusInTransit || shipWithCargo == ship {
+		return false
+	}
+	return !ship.IsIdle()
 }
 
 func (s *ShipSelector) buildCargoSelectionResult(ship *navigation.Ship, requiredCargoSymbol string) *SelectionResult {

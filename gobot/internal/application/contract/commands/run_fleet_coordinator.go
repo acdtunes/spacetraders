@@ -142,6 +142,9 @@ type RunFleetCoordinatorHandler struct {
 	// consumers agree on ONE slot set. Nil leaves homing on the launch set; it is a READ, never a
 	// config write (RULINGS #3).
 	standbyPlacementProvider appContract.StandbyPlacementProvider
+
+	// routeETAEstimator, when set, prices routes for SelectClosestShip; nil falls back to straight-line ranking.
+	routeETAEstimator *appContract.RouteETAEstimator
 }
 
 // NewRunFleetCoordinatorHandler creates a new fleet coordinator handler
@@ -243,6 +246,11 @@ func (h *RunFleetCoordinatorHandler) SetDepotRegistryProvider(provider appContra
 // positioning consumers place hulls on one set.
 func (h *RunFleetCoordinatorHandler) SetStandbyPlacementProvider(provider appContract.StandbyPlacementProvider) {
 	h.standbyPlacementProvider = provider
+}
+
+// SetRouteETAEstimator wires the optional estimator described on the field above; nil is safe.
+func (h *RunFleetCoordinatorHandler) SetRouteETAEstimator(estimator *appContract.RouteETAEstimator) {
+	h.routeETAEstimator = estimator
 }
 
 // Handle executes the fleet coordinator command
@@ -444,9 +452,21 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 			continue
 		}
 
-		// Negotiate contract (use any ship from pool for negotiation)
+		// A ship must be at a waypoint to negotiate - an in-transit hull would be rejected by the
+		// API and drive a spurious fleet-wide resync. Wait for one to arrive when none is dockable.
+		negotiator := pool.negotiationCandidate()
+		if negotiator == "" {
+			logger.Log("INFO", "No dockable ship to negotiate a contract - every candidate is in transit, waiting for arrival...", map[string]interface{}{
+				"action": "await_dockable_for_negotiate",
+			})
+			if h.awaitWorkerSlot(ctx, idlePoolWait, &activeWorkerContainerID) {
+				return result, ctx.Err()
+			}
+			continue
+		}
+
 		logger.Log("INFO", "Negotiating new contract...", nil)
-		contract, err := h.contractMarketService.NegotiateContract(ctx, pool.available[0], cmd.PlayerID.Value())
+		contract, err := h.contractMarketService.NegotiateContract(ctx, negotiator, cmd.PlayerID.Value())
 		if err != nil {
 			pass.recordStepFailure(ctx, "negotiate_contract", fmt.Sprintf("Failed to negotiate contract: %v", err), err)
 			h.clock.Sleep(negotiateRetryBackoff)
@@ -680,6 +700,7 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 				requiredCargo,
 				unitsNeeded,
 				cmd.PlayerID.Value(),
+				h.routeETAEstimator,
 				deliveryFleet,
 				standbySlots,
 			)

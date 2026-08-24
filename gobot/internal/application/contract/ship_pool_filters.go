@@ -125,6 +125,39 @@ const (
 	RequireCargoCapacity
 )
 
+// FleetPoolOption is one knob on FindIdleShipsByFleet's dedicated-fleet lookup.
+// CargoCapacityPolicy and InTransitPolicy both implement it, so either, both, or
+// neither may be passed, in any order.
+type FleetPoolOption interface{ applyToFleetPool(*fleetPoolOptions) }
+
+// fleetPoolOptions is the resolved knob set for one FindIdleShipsByFleet call.
+type fleetPoolOptions struct {
+	cargoCapacity CargoCapacityPolicy
+	inTransit     InTransitPolicy
+}
+
+func (p CargoCapacityPolicy) applyToFleetPool(o *fleetPoolOptions) { o.cargoCapacity = p }
+
+// InTransitPolicy controls whether an unclaimed in-transit fleet member counts
+// as dispatchable in FindIdleShipsByFleet.
+type InTransitPolicy int
+
+const (
+	// ExcludeAllInTransit drops every in-transit hull, claimed or not - the
+	// default for every caller. A mid-flight hull is not physically at any
+	// market yet, so a caller with no route-ETA ranking downstream has no way
+	// to price the remaining transit and would hand the hull work it cannot
+	// start.
+	ExcludeAllInTransit InTransitPolicy = iota
+	// AdmitUnclaimedInTransit keeps an unclaimed in-transit hull dispatchable,
+	// for a caller whose selection ranks candidates on route ETA and can price
+	// the remaining leg. A CLAIMED in-transit hull stays excluded regardless -
+	// one container per hull.
+	AdmitUnclaimedInTransit
+)
+
+func (p InTransitPolicy) applyToFleetPool(o *fleetPoolOptions) { o.inTransit = p }
+
 // CommandCargoBaselineDefault is the minimum cargo capacity a command ship
 // must carry to stay a contract-selection candidate once IncludeCommandShip
 // has already opted it into FindIdleLightHaulers' pool. It matches the
