@@ -153,6 +153,11 @@ type repositionEpisode struct {
 	repositioned bool
 	fromSystem   string
 	toSystem     string
+	// dispersalTried marks that the crowded-ground nudge has already asked the reposition
+	// engine this episode. Bounding it to one attempt keeps the solver fan-out a ranking
+	// costs from being paid on every breathing retry; the confirmed margins-death rescue
+	// still ranks again, against market data re-read since.
+	dispersalTried bool
 }
 
 // repositionCandidate is one jump-reachable system in the reposition candidate set: the
@@ -772,10 +777,16 @@ func (h *RunTourCoordinatorHandler) excludeHerdedSystems(ctx context.Context, cm
 // activeTradeHullsBySystem tallies active TRADE-dedicated hulls per system for the anti-herd cap
 // (sp-uf64). It reads the existing FindActiveByPlayer seam — the scout coordinator's own
 // per-episode idiom — which is acceptable at the RARE margins-death boundary and is NOT a per-tick
-// full-fleet scan. ok=false (nil repo or read error) tells the caller to fail open. Only
-// DedicatedFleet()=="trade" hulls count: a scout/contract hull passing through a system is not part
-// of the trade herd that would re-drain it.
+// full-fleet scan. ok=false (nil repo or read error) tells the caller to fail open.
 func (h *RunTourCoordinatorHandler) activeTradeHullsBySystem(ctx context.Context, playerID int) (map[string]int, bool) {
+	return h.tradeHullsBySystem(ctx, playerID, "")
+}
+
+// tradeHullsBySystem is the shared per-system trade-hull tally, optionally excluding one hull
+// by symbol so a caller can ask how many OTHERS share a ground without a second fleet read.
+// Only DedicatedFleet()=="trade" hulls count: a scout/contract hull passing through a system is
+// not part of the trade herd that would re-drain it.
+func (h *RunTourCoordinatorHandler) tradeHullsBySystem(ctx context.Context, playerID int, exclude string) (map[string]int, bool) {
 	if h.legs == nil || h.legs.shipRepo == nil {
 		return nil, false
 	}
@@ -786,6 +797,9 @@ func (h *RunTourCoordinatorHandler) activeTradeHullsBySystem(ctx context.Context
 	counts := make(map[string]int, len(ships))
 	for _, ship := range ships {
 		if ship == nil || ship.DedicatedFleet() != tradeFleet {
+			continue
+		}
+		if exclude != "" && ship.ShipSymbol() == exclude {
 			continue
 		}
 		location := ship.CurrentLocation()

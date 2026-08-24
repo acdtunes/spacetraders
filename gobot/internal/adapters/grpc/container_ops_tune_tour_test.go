@@ -2,6 +2,7 @@ package grpc
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -38,8 +39,15 @@ func TestTourTune_OperationResolvesAndListsTheFreshnessFloor(t *testing.T) {
 	for _, k := range show.Knobs {
 		byKey[k.Key] = k
 	}
-	require.Len(t, show.Knobs, len(tradingCmd.TradeFleetTunableDefaults()))
-	require.Len(t, show.Knobs, 1,
+	require.Len(t, show.Knobs, len(tradingCmd.TradeFleetTunableDefaults()),
+		"--show must list every knob the defaults-of-record declares")
+	freshness := 0
+	for _, k := range show.Knobs {
+		if strings.Contains(k.Bound.Description, "cached market_data row") {
+			freshness++
+		}
+	}
+	require.Equal(t, 1, freshness,
 		"the tour operation must expose ONE market-freshness knob — two that must be kept in sync are worse than one (sp-ry4r8)")
 
 	const key = "market_data_max_age_minutes"
@@ -68,6 +76,58 @@ func TestTourTune_OperationResolvesAndListsTheFreshnessFloor(t *testing.T) {
 	for _, retired := range []string{"listing_max_age_minutes", "sink_freshness_max_minutes"} {
 		_, still := byKey[retired]
 		require.False(t, still, "%s was collapsed into %s and must not still be listed", retired, key)
+	}
+}
+
+// The churn guards are operator levers on the same surface: `tune --operation tour` lists
+// each with its documented default, and a tuned value lands in the column the by-type reader
+// serves the tour handler from. Without this an operator watching a hull round-trip a market
+// would have no way to widen the bar without a daemon bounce.
+func TestTourTune_ChurnGuardKnobsAreListedAndTunable(t *testing.T) {
+	db, repo, playerID := tuneTestDB(t)
+	seedTuneContainer(t, db, playerID, tuneTradeFleetContainerID,
+		string(container.ContainerTypeTradeFleetCoordinator), "trade_fleet_coordinator", "RUNNING",
+		map[string]interface{}{"container_id": tuneTradeFleetContainerID})
+	s := &DaemonServer{containerRepo: repo}
+	ctx := context.Background()
+
+	show, err := s.ShowTunableConfig(ctx, "", "tour", playerID)
+	require.NoError(t, err)
+	byKey := map[string]TunableKnobStatus{}
+	for _, k := range show.Knobs {
+		byKey[k.Key] = k
+	}
+
+	defaults := tradingCmd.TradeFleetTunableDefaults()
+	for _, tc := range []struct{ key, unit string }{
+		{tradingCmd.TuneKeySameMarketRebuyWindowMinutes, "minutes"},
+		{tradingCmd.TuneKeySpawnDispersalMinOtherHulls, "hulls"},
+	} {
+		knob, ok := byKey[tc.key]
+		require.True(t, ok, "%s must be reachable via --operation tour", tc.key)
+		require.Equal(t, defaults[tc.key], knob.Effective, "untuned, %s reports its documented default", tc.key)
+		require.Equal(t, "default", knob.Source)
+		require.Equal(t, tc.unit, knob.Bound.Unit)
+		require.Equal(t, 1, knob.Bound.Min, "%s may never be tuned to 0 as a VALUE — 0 is the revert verb", tc.key)
+		require.Contains(t, knob.Bound.Description, "next tick",
+			"%s must state its latency truthfully", tc.key)
+
+		out, merr := s.MutateContainerConfigKey(ctx, "", "tour", tc.key, defaults[tc.key]+5, playerID)
+		require.NoError(t, merr)
+		require.Equal(t, defaults[tc.key]+5, out.NewEffective)
+		require.Equal(t, "live-config", out.NewSource)
+
+		reader := NewCoordinatorConfigReader(repo, string(container.ContainerTypeTradeFleetCoordinator))
+		snap, serr := reader.Snapshot(ctx, playerID)
+		require.NoError(t, serr)
+		v, set := snap.PositiveInt(tc.key)
+		require.True(t, set, "the by-type reader the tour handler uses must see the operator's write")
+		require.Equal(t, defaults[tc.key]+5, v)
+
+		out, merr = s.MutateContainerConfigKey(ctx, "", "tour", tc.key, 0, playerID)
+		require.NoError(t, merr)
+		require.Equal(t, defaults[tc.key], out.NewEffective, "0 reverts %s to its documented default", tc.key)
+		require.Equal(t, "default", out.NewSource)
 	}
 }
 

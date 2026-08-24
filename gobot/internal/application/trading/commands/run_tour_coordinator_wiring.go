@@ -63,6 +63,7 @@ func NewRunTourCoordinatorHandler(
 		rateFloorLastRelocation:    make(map[string]time.Time),
 		pendingRelocationsBySystem: make(map[string]int),
 		contendedHolderLogAt:       make(map[string]time.Time),
+		recentSells:                make(map[string]map[marketGood]time.Time),
 	}
 }
 

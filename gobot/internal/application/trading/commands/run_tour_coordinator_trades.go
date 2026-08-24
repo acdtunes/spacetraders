@@ -346,6 +346,9 @@ func (h *RunTourCoordinatorHandler) executeSell(
 	response.TotalRevenue += int64(sellResp.TotalRevenue)
 	response.TradesExecuted++
 	dischargePurchaseObligation(netBought, trade.Good, sellResp.UnitsSold)
+	if sellResp.UnitsSold > 0 {
+		h.noteRecentSell(cmd.ShipSymbol, leg.Waypoint, trade.Good)
+	}
 	// Accumulate the realized units sold into this sink for the per-sink conversion
 	// at leg completion. The solver splits a sink's A-cap depth into SEPARATE
 	// price-tiered tranches (distinct trades), so a single sink can sell across several

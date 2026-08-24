@@ -108,7 +108,9 @@ const (
 // can pin them.
 func TradeFleetTunableDefaults() map[string]int {
 	return map[string]int{
-		TuneKeyMarketDataMaxAgeMinutes: defaultMarketDataMaxAgeMinutes,
+		TuneKeyMarketDataMaxAgeMinutes:      defaultMarketDataMaxAgeMinutes,
+		TuneKeySameMarketRebuyWindowMinutes: defaultSameMarketRebuyWindowMinutes,
+		TuneKeySpawnDispersalMinOtherHulls:  defaultSpawnDispersalMinOtherHulls,
 	}
 }
 
@@ -180,6 +182,21 @@ func (f *MarketFreshness) Cap(ctx context.Context, playerID int, key string, boo
 	}
 	budget, marketsKnown := f.rotationInputs(ctx)
 	return marketscan.FreshnessCap(floor, budget, marketsKnown)
+}
+
+// TunedInt reads one live trade-fleet knob off the SAME TTL-cached config snapshot the
+// freshness floor resolves from. ok=false — a nil resolver, an unwired reader, or a key
+// that is absent or non-positive — means the caller's documented default applies, which
+// is the `tune <key> 0` revert.
+//
+// It lives on this type because this type already owns the tour path's one snapshot of
+// the trade-fleet coordinator's config: a second reader would put another query on the
+// plan path and could serve two different views of the same column.
+func (f *MarketFreshness) TunedInt(ctx context.Context, playerID int, key string) (int, bool) {
+	if f == nil {
+		return 0, false
+	}
+	return f.snapshot(ctx, playerID).PositiveInt(key)
 }
 
 // RotationBound is the age the current rotation cannot explain, with no floor

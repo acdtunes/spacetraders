@@ -74,6 +74,11 @@ func (h *RunTourCoordinatorHandler) planForState(
 	allowedSystems = append(append([]string(nil), allowedSystems...), far.systems...)
 	snapshot = append(snapshot, far.rows...)
 	waypoints = append(waypoints, far.waypoints...)
+	// Take the BUY side away from any market this hull sold into recently, so no plan can
+	// re-source a good out of the price impact of its own dump. Applied to the FINAL graph so
+	// an admitted far sink is covered too; a hull with no such history keeps the snapshot
+	// exactly as built.
+	snapshot = h.filterSameMarketRebuys(ctx, cmd, snapshot)
 	// sp-mtvg: make the horizon's dropped exotic lanes LOUD. Read against the FINAL graph,
 	// so what it counts is the value still out of reach after capture. Best-effort and
 	// read-only — it never touches snapshot/plan and any error is swallowed (RULINGS #4).

@@ -394,6 +394,9 @@ func (h *RunTourCoordinatorHandler) distressSellGood(
 	response.TotalRevenue += int64(sellResp.TotalRevenue)
 	response.TradesExecuted++
 	dischargePurchaseObligation(netBought, good, sellResp.UnitsSold) // left the hull — no longer a stranded-veto candidate
+	// A below-floor dump moves the price hardest, so this is the sale a re-source here would
+	// most likely be reading back.
+	h.noteRecentSell(cmd.ShipSymbol, sink.waypoint, good)
 	// Record the liquidation in tour telemetry exactly as executeSell records a plan
 	// leg, so this path stays 1:1 with the SELL_CARGO transactions it just wrote. It was the one
 	// sell path that did not, and it cost a quarter of all tour sell legs (55 of 222 over 24h),

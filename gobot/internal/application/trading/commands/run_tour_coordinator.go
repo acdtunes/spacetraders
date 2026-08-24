@@ -336,6 +336,13 @@ type RunTourCoordinatorHandler struct {
 	pendingMu                  sync.Mutex
 	pendingRelocationsBySystem map[string]int
 
+	// recentSells is the per-hull sell history the same-market rebuy guard plans against:
+	// ship symbol -> (market, good) -> when that hull last sold there. Guarded by
+	// recentSellsMu because the handler is a SHARED singleton dispatched concurrently for
+	// every touring hull. See run_tour_coordinator_rebuy.go for why it is in-memory.
+	recentSellsMu sync.Mutex
+	recentSells   map[string]map[marketGood]time.Time
+
 	// --- Cross-engine absorption coordination ---
 	// absorptionLedger, when wired via SetAbsorptionLedger, makes the tour a ledger
 	// WRITER (reserve planned tranches at plan-accept, convert to recovery shadows at
@@ -722,6 +729,18 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 			starvationDetail = fmt.Sprintf("%d consecutive tours flew zero trades after %d productive tour(s)", noProgressStreak, response.ToursCompleted)
 		}
 		if noProgressStreak < tourStarvationLimit {
+			// Breathing out the streak assumes the ground may simply be between cycles. On a
+			// system a stack of trade hulls is already working that assumption is wrong, so
+			// skip straight to the rescue rather than re-price what the stack has drained. A
+			// rescue that declines leaves the streak running, so an uncrowded ground — and a
+			// crowded one with nowhere better to be — behaves exactly as before.
+			dispersed, derr := h.maybeDisperseFromCrowdedGround(ctx, cmd, response, &episode, netBought, tourBudget, continuous, feasible)
+			if derr != nil {
+				return derr
+			}
+			if dispersed {
+				noProgressStreak = 0
+			}
 			continue
 		}
 

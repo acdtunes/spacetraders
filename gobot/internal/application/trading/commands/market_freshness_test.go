@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -210,15 +211,24 @@ func TestMarketFreshness_FloorIsCachedThenRefreshed(t *testing.T) {
 	require.Equal(t, 2, floors.reads)
 }
 
-// The registry's documented default is the const the resolver actually falls back to —
-// and there is exactly ONE of them (sp-ry4r8). The length assertion is the guard against
-// the split coming back: a second market-freshness knob on this operation is the defect
-// this bead removed, not a feature.
+// Every documented default is the const the resolver actually falls back to, and exactly
+// ONE of them is a market-freshness knob (sp-ry4r8). The operation carries other levers, so
+// the guard against the split coming back names the freshness family rather than counting
+// keys: a second knob over how old a market row may be is the defect that collapse removed.
 func TestTradeFleetTunableDefaults_MirrorTheResolvedFloor(t *testing.T) {
 	defaults := TradeFleetTunableDefaults()
 	require.Equal(t, int(marketDataAgeFloor.Minutes()), defaults[TuneKeyMarketDataMaxAgeMinutes])
-	require.Len(t, defaults, 1,
-		"the tour operation carries ONE market-freshness knob; a new trade-fleet knob needs a registry entry and a bounds review")
+	require.Equal(t, defaultSameMarketRebuyWindowMinutes, defaults[TuneKeySameMarketRebuyWindowMinutes])
+	require.Equal(t, defaultSpawnDispersalMinOtherHulls, defaults[TuneKeySpawnDispersalMinOtherHulls])
+
+	var freshness []string
+	for key := range defaults {
+		if strings.Contains(key, "max_age") || strings.Contains(key, "freshness") {
+			freshness = append(freshness, key)
+		}
+	}
+	require.Equal(t, []string{TuneKeyMarketDataMaxAgeMinutes}, freshness,
+		"the tour operation carries ONE market-freshness knob; a second one is the split this collapse removed")
 }
 
 // The ONE knob really does feed BOTH consumers (sp-ry4r8). Tuning it moves the
