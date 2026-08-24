@@ -120,9 +120,9 @@ This file exists so that class of miss cannot recur.)
     overlap is declared in code, dated, naming the bead that ends it; an undeclared duplicate
     fails the build.
 
-22. **Features ship ON — no dormant flags, ever.** (Admiral 2026-08-23.) A delivered
-    feature is enabled by default: active with no config present, its fitted values as
-    in-code defaults, verified live at the effect point before its bead closes.
+22. **Features ship ON — no dormant flags, ever.** A delivered feature is enabled by
+    default: active with no config present, its fitted values as in-code defaults,
+    verified live at the effect point before its bead closes.
     Default-off/byte-identical is a MERGE-safety device that must not survive the lane that
     used it — no `enabled:` knob shipped off, no separate arming bead, no "armed later"
     state. #5 is untouched: parameters stay config-tunable, and a kill switch may exist —
@@ -177,7 +177,8 @@ This file exists so that class of miss cannot recur.)
 
 ## Maintenance
 
-New Admiral rulings are appended here (with date + origin) by the shipwright as
-they are issued. The captain's standing operational doctrine lives in beads (decision beads,
+New Admiral rulings are appended here by the shipwright as they are issued; date and
+origin live in git history and the beads, not in the ruling text.
+The captain's standing operational doctrine lives in beads (decision beads,
 `bd remember` memories, and the captain template); this file carries only rulings that bind
 ENGINEERING decisions.
