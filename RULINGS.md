@@ -120,15 +120,13 @@ This file exists so that class of miss cannot recur.)
     overlap is declared in code, dated, naming the bead that ends it; an undeclared duplicate
     fails the build.
 
-22. **Features ship ON — no dormant flags, ever.** (Admiral 2026-08-23, origin: the sp-w1z3d
-    default-off arming failure.) A delivered feature is enabled by default: active with no
-    config present, its fitted values as in-code defaults, verified live at the effect point
-    before its bead closes. Default-off/byte-identical is a MERGE-safety device that must not
-    survive the lane that used it — no `enabled:` knob shipped off, no separate arming bead,
-    no "armed later" state. #19 already made closing-while-dormant illegal; this ruling
-    removes the dormant state itself. #5 is untouched: parameters stay config-tunable, and a
-    kill switch may exist — defaulting ON. Dispatch briefs quote rulings from this file read
-    THIS session, never from a summary's memory of them.
+22. **Features ship ON — no dormant flags, ever.** (Admiral 2026-08-23, origin: sp-w1z3d.)
+    A delivered feature is enabled by default: active with no config present, its fitted
+    values as in-code defaults, verified live at the effect point before its bead closes.
+    Default-off/byte-identical is a MERGE-safety device that must not survive the lane that
+    used it — no `enabled:` knob shipped off, no separate arming bead, no "armed later"
+    state. #5 is untouched: parameters stay config-tunable, and a kill switch may exist —
+    defaulting ON.
 
 ## Amendments (Admiral consolidation, 2026-07-18)
 
