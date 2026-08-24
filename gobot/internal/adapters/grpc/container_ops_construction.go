@@ -290,6 +290,8 @@ func (s *DaemonServer) getAPIClient() domainPorts.APIClient {
 type goodOverridePatch struct {
 	minSupply        *string
 	priceCeilingMult *float64
+	// feed is the gate feed engine's per-material brake ("auto" | "off").
+	feed *string
 }
 
 // applyGoodOverride merges patch into a COPY of current for good (or clears good's entry when
@@ -329,6 +331,12 @@ func applyGoodOverride(current manufacturing.GoodGatingOverrides, good string, p
 		}
 		updated.PriceCeilingMult = mult
 	}
+	// CANONICALISED here so the row only holds a mode the feed engine can read: an unrecognisable
+	// one coerces to the empty auto, since a mode nothing honours is a brake that looks set and is not.
+	if patch.feed != nil {
+		normalized, _ := manufacturing.NormalizeFeedMode(*patch.feed)
+		updated.Feed = normalized
+	}
 
 	changed := !existed || updated != prev
 	next[good] = updated
@@ -353,6 +361,14 @@ type ConstructionGoodOverrideResult struct {
 func (s *DaemonServer) MutateConstructionGoodOverride(ctx context.Context, constructionSite string, playerID int, good string, patch goodOverridePatch, clearGood bool) (*ConstructionGoodOverrideResult, error) {
 	if good == "" {
 		return nil, fmt.Errorf("a good symbol is required to set a per-good construction override")
+	}
+	// A REFUSAL rather than a coercion, because the brake's read path is deliberately permissive: a
+	// typo stored as auto would be a brake the operator believes they pulled and never engaged.
+	if patch.feed != nil {
+		if _, ok := manufacturing.NormalizeFeedMode(*patch.feed); !ok {
+			return nil, fmt.Errorf("invalid feed mode %q for %s: want %s (plan feed steps as usual) or %s (plan none for the whole chain)",
+				*patch.feed, good, manufacturing.FeedModeAuto, manufacturing.FeedModeOff)
+		}
 	}
 
 	pipelineRepo := persistence.NewGormManufacturingPipelineRepository(s.db)

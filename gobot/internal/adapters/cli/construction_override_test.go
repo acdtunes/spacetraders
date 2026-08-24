@@ -611,3 +611,131 @@ func TestNewConstructionOverrideCommand_FloorHelpAdvertisesOnlyItsOwnVocabulary(
 			"--%s must say WHY %s is unavailable, not merely omit it", tc.flagName, tc.excluded)
 	}
 }
+
+// --- the per-material FEED brake: the operator's only way to stop one chain's spend ---------------
+
+// --feed rides the SAME per-good request as the tuning knobs, and only when provided, so braking a
+// chain leaves that good's other dimensions exactly as they were.
+func TestBuildConstructionOverrideRequest_SendsTheFeedModeOnlyWhenProvided(t *testing.T) {
+	req, _, err := buildConstructionOverrideRequest(constructionOverrideFlags{
+		site: "X1-VB74-I55", good: "ADVANCED_CIRCUITRY", feed: "off",
+	}, &PlayerIdentifier{PlayerID: 1})
+	require.NoError(t, err)
+	require.NotNil(t, req.Feed)
+	require.Equal(t, manufacturing.FeedModeOff, *req.Feed)
+	require.Nil(t, req.MinSupply)
+	require.Nil(t, req.PriceCeilingMult, "braking a chain must not disturb its other override dimensions")
+
+	unset, _, err := buildConstructionOverrideRequest(constructionOverrideFlags{
+		site: "X1-VB74-I55", good: "ADVANCED_CIRCUITRY", minSupply: "LIMITED",
+	}, &PlayerIdentifier{PlayerID: 1})
+	require.NoError(t, err)
+	require.Nil(t, unset.Feed, "an unset --feed leaves the brake dimension unchanged")
+}
+
+// The CLI canonicalises so the daemon stores one spelling whatever the operator typed.
+func TestBuildConstructionOverrideRequest_CanonicalisesTheFeedMode(t *testing.T) {
+	for _, typed := range []string{"OFF", " off ", "Off"} {
+		req, _, err := buildConstructionOverrideRequest(constructionOverrideFlags{
+			site: "X1-VB74-I55", good: "ADVANCED_CIRCUITRY", feed: typed,
+		}, &PlayerIdentifier{PlayerID: 1})
+		require.NoError(t, err)
+		require.Equal(t, manufacturing.FeedModeOff, *req.Feed, "typed %q", typed)
+	}
+	req, _, err := buildConstructionOverrideRequest(constructionOverrideFlags{
+		site: "X1-VB74-I55", good: "ADVANCED_CIRCUITRY", feed: "AUTO",
+	}, &PlayerIdentifier{PlayerID: 1})
+	require.NoError(t, err)
+	require.Equal(t, manufacturing.FeedModeAuto, *req.Feed)
+}
+
+// A typo is REFUSED at the boundary. The read path resolves an unknown mode to auto, so a value that
+// got through would be a brake the operator believes they pulled and the engine never engaged.
+func TestBuildConstructionOverrideRequest_RejectsAnUnknownFeedMode(t *testing.T) {
+	_, _, err := buildConstructionOverrideRequest(constructionOverrideFlags{
+		site: "X1-VB74-I55", good: "ADVANCED_CIRCUITRY", feed: "stop",
+	}, &PlayerIdentifier{PlayerID: 1})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "stop")
+	require.Contains(t, err.Error(), manufacturing.FeedModeOff, "the refusal must name the vocabulary it accepts")
+}
+
+// --feed is a knob like the others: it satisfies the at-least-one-knob rule and collides with
+// --clear, which removes the whole override rather than tuning one dimension of it.
+func TestBuildConstructionOverrideRequest_FeedIsAKnobForClearAndEmptyChecks(t *testing.T) {
+	_, _, err := buildConstructionOverrideRequest(constructionOverrideFlags{
+		site: "X1-VB74-I55", good: "ADVANCED_CIRCUITRY", clear: true, feed: "off",
+	}, &PlayerIdentifier{PlayerID: 1})
+	require.Error(t, err, "--clear cannot be combined with --feed")
+
+	ok, _, err := buildConstructionOverrideRequest(constructionOverrideFlags{
+		site: "X1-VB74-I55", good: "ADVANCED_CIRCUITRY", feed: "off",
+	}, &PlayerIdentifier{PlayerID: 1})
+	require.NoError(t, err, "--feed alone is enough to have something to do")
+	require.NotNil(t, ok.Feed)
+}
+
+// The brake is a SPEND control, so its confirmation says what it stopped rather than only echoing
+// the value: an operator pulling it under live cost pressure needs to read the effect, not the knob.
+func TestRunConstructionOverride_BrakeConfirmationSaysWhatItStopped(t *testing.T) {
+	client := &fakeConstructionOverrideClient{resp: &pb.ConstructionGoodOverrideResponse{
+		ConstructionSite: "X1-VB74-I55", Good: "ADVANCED_CIRCUITRY", Changed: true,
+		Feed: manufacturing.FeedModeOff,
+	}}
+	req := &pb.ConstructionGoodOverrideRequest{ConstructionSite: "X1-VB74-I55", Good: "ADVANCED_CIRCUITRY"}
+
+	msg, err := runConstructionOverride(context.Background(), client, req, false)
+	require.NoError(t, err)
+	require.Contains(t, msg, "feed=off")
+	require.Contains(t, strings.ToLower(msg), "chain")
+	require.Contains(t, strings.ToLower(msg), "no restart")
+}
+
+// Putting a chain back reports the resumption, not a bare value — the two directions of a brake read
+// alike otherwise, and this is the message an operator checks before walking away.
+func TestRunConstructionOverride_AutoConfirmationSaysFeedingResumes(t *testing.T) {
+	client := &fakeConstructionOverrideClient{resp: &pb.ConstructionGoodOverrideResponse{
+		ConstructionSite: "X1-VB74-I55", Good: "ADVANCED_CIRCUITRY", Changed: true,
+		Feed: manufacturing.FeedModeAuto,
+	}}
+	req := &pb.ConstructionGoodOverrideRequest{ConstructionSite: "X1-VB74-I55", Good: "ADVANCED_CIRCUITRY"}
+
+	msg, err := runConstructionOverride(context.Background(), client, req, false)
+	require.NoError(t, err)
+	require.Contains(t, msg, "feed=auto")
+	require.NotContains(t, strings.ToLower(msg), "buys nothing")
+}
+
+// The launch surface takes the same dimension under the same name, or an override expressible at
+// runtime would be rejected at start and the two paths would disagree about the same map.
+func TestParseGoodOverrideSpec_ParsesAndValidatesTheFeedKey(t *testing.T) {
+	good, ov, err := parseGoodOverrideSpec("ADVANCED_CIRCUITRY:feed=off,minSupply=LIMITED")
+	require.NoError(t, err)
+	require.Equal(t, "ADVANCED_CIRCUITRY", good)
+	require.Equal(t, manufacturing.FeedModeOff, ov.Feed)
+	require.Equal(t, "LIMITED", ov.MinSupply)
+
+	_, _, err = parseGoodOverrideSpec("ADVANCED_CIRCUITRY:feed=stop")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "stop")
+}
+
+// The bulk JSON form is validated at the same boundary as the flag form.
+func TestBuildLaunchGoodOverrides_RejectsAnUnknownFeedModeInTheJSONBlob(t *testing.T) {
+	_, err := buildLaunchGoodOverrides(nil, `{"ADVANCED_CIRCUITRY":{"feed":"halt"}}`)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "halt")
+
+	ok, err := buildLaunchGoodOverrides(nil, `{"ADVANCED_CIRCUITRY":{"feed":"OFF"}}`)
+	require.NoError(t, err)
+	require.Equal(t, manufacturing.FeedModeOff, ok["ADVANCED_CIRCUITRY"].Feed, "the blob is canonicalised like the flag form")
+}
+
+func TestNewConstructionOverrideCommand_RegistersTheFeedFlag(t *testing.T) {
+	cmd := newConstructionOverrideCommand()
+	flag := cmd.Flags().Lookup("feed")
+	require.NotNil(t, flag, "--feed is the operator surface for the per-material brake")
+	require.Contains(t, flag.Usage, manufacturing.FeedModeOff)
+	require.Contains(t, flag.Usage, manufacturing.FeedModeAuto)
+	require.Contains(t, cmd.Long, "--feed", "the long help must document the brake next to the other knobs")
+}

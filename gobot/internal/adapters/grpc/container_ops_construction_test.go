@@ -502,3 +502,102 @@ func TestMutateConstructionDeliveryFloors_NoActivePipelineErrors(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "no active construction pipeline")
 }
+
+// --- the per-material FEED brake on the same live verb -------------------------------------------
+
+// The brake persists on the SAME pipeline row as the other override dimensions and survives the
+// reload that stands in for a daemon bounce (RULINGS #2). The feed engine re-reads that row every
+// pass, so a set here holds without a restart, and only the targeted material is braked.
+func TestMutateConstructionGoodOverride_FeedBrakePersistsAndClears(t *testing.T) {
+	db, err := database.NewTestConnection()
+	require.NoError(t, err)
+	seedOverridePlayer(t, db, 1, "GTGHC-AGENT")
+
+	repo := persistence.NewGormManufacturingPipelineRepository(db)
+	ctx := context.Background()
+
+	pipeline := manufacturing.NewConstructionPipeline("X1-VB74-I55", 1, 3, 5)
+	pipeline.SetMinSupply("MODERATE")
+	require.NoError(t, repo.Create(ctx, pipeline))
+
+	s := &DaemonServer{db: db}
+
+	res, err := s.MutateConstructionGoodOverride(ctx, "X1-VB74-I55", 1, "ADVANCED_CIRCUITRY",
+		goodOverridePatch{feed: strPtr("off")}, false)
+	require.NoError(t, err)
+	require.True(t, res.Changed)
+	require.Equal(t, manufacturing.FeedModeOff, res.Override.Feed)
+
+	reloaded, err := repo.FindByConstructionSite(ctx, "X1-VB74-I55", 1)
+	require.NoError(t, err)
+	require.False(t, reloaded.GoodOverrides().FeedEnabledFor("ADVANCED_CIRCUITRY"),
+		"the brake must still hold after the reload that stands in for a daemon bounce")
+	require.True(t, reloaded.GoodOverrides().FeedEnabledFor("FAB_MATS"),
+		"braking one material must leave every other chain feeding")
+
+	// auto puts the chain back without touching the good's other dimensions.
+	back, err := s.MutateConstructionGoodOverride(ctx, "X1-VB74-I55", 1, "ADVANCED_CIRCUITRY",
+		goodOverridePatch{feed: strPtr("AUTO")}, false)
+	require.NoError(t, err)
+	require.True(t, back.Changed)
+	require.Equal(t, manufacturing.FeedModeAuto, back.Override.Feed)
+
+	afterAuto, err := repo.FindByConstructionSite(ctx, "X1-VB74-I55", 1)
+	require.NoError(t, err)
+	require.True(t, afterAuto.GoodOverrides().FeedEnabledFor("ADVANCED_CIRCUITRY"))
+}
+
+// The daemon is the single writer (RULINGS #3) and holds the vocabulary: a value it cannot read is
+// refused, never stored. Storing it would resolve to auto at read time, leaving an operator
+// convinced they had pulled a brake that was never engaged.
+func TestMutateConstructionGoodOverride_RejectsAnUnknownFeedMode(t *testing.T) {
+	db, err := database.NewTestConnection()
+	require.NoError(t, err)
+	seedOverridePlayer(t, db, 1, "GTGHC-AGENT")
+
+	repo := persistence.NewGormManufacturingPipelineRepository(db)
+	ctx := context.Background()
+	pipeline := manufacturing.NewConstructionPipeline("X1-VB74-I55", 1, 3, 5)
+	require.NoError(t, repo.Create(ctx, pipeline))
+
+	s := &DaemonServer{db: db}
+	_, err = s.MutateConstructionGoodOverride(ctx, "X1-VB74-I55", 1, "ADVANCED_CIRCUITRY",
+		goodOverridePatch{feed: strPtr("paused")}, false)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "feed")
+
+	reloaded, err := repo.FindByConstructionSite(ctx, "X1-VB74-I55", 1)
+	require.NoError(t, err)
+	require.Empty(t, reloaded.GoodOverrides(), "a refused write must persist nothing")
+}
+
+func TestApplyGoodOverride_FeedMergePreservesUnpatchedKnobs(t *testing.T) {
+	current := manufacturing.GoodGatingOverrides{
+		"ADVANCED_CIRCUITRY": {MinSupply: "LIMITED", PriceCeilingMult: 2.0},
+	}
+	next, result, changed := applyGoodOverride(current, "ADVANCED_CIRCUITRY",
+		goodOverridePatch{feed: strPtr(manufacturing.FeedModeOff)}, false)
+
+	require.True(t, changed)
+	require.Equal(t, manufacturing.FeedModeOff, result.Feed)
+	require.Equal(t, "LIMITED", result.MinSupply)
+	require.Equal(t, 2.0, result.PriceCeilingMult)
+	require.Equal(t, result, next["ADVANCED_CIRCUITRY"])
+}
+
+func TestApplyGoodOverride_FeedNoOpWhenAlreadyBraked(t *testing.T) {
+	current := manufacturing.GoodGatingOverrides{"ADVANCED_CIRCUITRY": {Feed: manufacturing.FeedModeOff}}
+	_, _, changed := applyGoodOverride(current, "ADVANCED_CIRCUITRY",
+		goodOverridePatch{feed: strPtr(manufacturing.FeedModeOff)}, false)
+	require.False(t, changed, "re-braking a braked chain is a reported no-op that skips the write")
+}
+
+// --clear drops the whole override, and that must release the brake with it — a chain left braked by
+// an entry the operator believes they removed is the silent no-op this verb exists to avoid.
+func TestApplyGoodOverride_ClearReleasesTheBrake(t *testing.T) {
+	current := manufacturing.GoodGatingOverrides{"ADVANCED_CIRCUITRY": {Feed: manufacturing.FeedModeOff}}
+	next, _, changed := applyGoodOverride(current, "ADVANCED_CIRCUITRY", goodOverridePatch{}, true)
+
+	require.True(t, changed)
+	require.True(t, next.FeedEnabledFor("ADVANCED_CIRCUITRY"))
+}

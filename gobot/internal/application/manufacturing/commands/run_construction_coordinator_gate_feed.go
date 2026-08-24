@@ -343,6 +343,9 @@ func (h *RunConstructionCoordinatorHandler) feedGateLegFromHold(
 //
 // The ABUNDANT fail-safe ORDERS this choice but does not VETO it: it exists to stop a BUY into a
 // full warehouse, and no purchase happens here, so a veto would strand the hull for no saving.
+//
+// THE PER-MATERIAL FEED BRAKE DOES NOT APPLY HERE, for the same reason: it brakes BUYING and this
+// path buys nothing. Nothing else empties a factory hull, so honouring it would wedge a loaded one.
 func (h *RunConstructionCoordinatorHandler) planGateFeedFromHold(
 	ctx context.Context,
 	cmd *RunConstructionCoordinatorCommand,
@@ -504,7 +507,7 @@ func logGateFeedRanking(ctx context.Context, root string, candidates []gateFeedC
 // planGateFeed picks THIS leg's single feed step: walk each outstanding gate material neediest
 // first and, within a material, take the step whose destination factory is SHORTEST of that input,
 // among those whose input source AND destination factory both resolve AND whose first tranche this
-// treasury can actually pay for.
+// treasury can actually pay for. A braked material is dropped before any of this — see feedableRoots.
 //
 // Ordering runs in two passes, which is what keeps the ranking from costing more than it must: the
 // two CHEAP declines (no destination factory, target ABUNDANT) are applied to every step first, only
@@ -536,7 +539,10 @@ func (h *RunConstructionCoordinatorHandler) planGateFeed(
 	var yielded []yieldedStep
 	var capitalBlocked bool
 
-	for _, material := range gateMaterialsNeediestFirst(pipeline) {
+	roots, braked := feedableRoots(pipeline)
+	logBrakedFeedRoots(ctx, braked)
+
+	for _, material := range roots {
 		plan := gate.PlanFeed(material.TradeSymbol(), h.factory.topology, gate.DefaultFeedDepthCap)
 		logger.Log("INFO", plan.LogLine(), map[string]interface{}{
 			"root": plan.Root, "steps": len(plan.Steps), "stops": len(plan.Stops),
@@ -716,6 +722,40 @@ func (h *RunConstructionCoordinatorHandler) planGateFeed(
 		return best.step, best.source, best.target, capitalBlocked, true
 	}
 	return gate.FeedStep{}, nil, nil, capitalBlocked, false
+}
+
+// feedableRoots splits the outstanding bill into the gate materials this pass may plan feed steps
+// for and the ones an operator has braked, read live off the pipeline row.
+//
+// THE BRAKE IS APPLIED BEFORE A SINGLE PLAN IS WALKED, which is the whole control: every other
+// throttle here declines or yields, and the fallback below REDEEMS a yield, so a brake expressed as
+// one more per-step decline would be handed straight back. A braked root contributes no step at any
+// depth and nothing to the yielded list. It removes a REQUESTING ROOT, never a step — each surviving
+// root is planned in full, so a step two chains want dies only when every root wanting it is off.
+func feedableRoots(pipeline *manufacturing.ManufacturingPipeline) ([]*manufacturing.ConstructionMaterialTarget, []string) {
+	overrides := pipeline.GoodOverrides()
+	feedable := make([]*manufacturing.ConstructionMaterialTarget, 0, len(pipeline.Materials()))
+	var braked []string
+	for _, material := range gateMaterialsNeediestFirst(pipeline) {
+		if !overrides.FeedEnabledFor(material.TradeSymbol()) {
+			braked = append(braked, material.TradeSymbol())
+			continue
+		}
+		feedable = append(feedable, material)
+	}
+	return feedable, braked
+}
+
+// logBrakedFeedRoots announces the brake ONCE PER PASS, naming every root it holds: burying a held
+// brake in per-step noise makes it and a busy feed the same observation. The roots go in the
+// MESSAGE — the container log renderer drops metadata maps.
+func logBrakedFeedRoots(ctx context.Context, braked []string) {
+	if len(braked) == 0 {
+		return
+	}
+	common.LoggerFromContext(ctx).Log("INFO", fmt.Sprintf("Gate factory: feeding is operator-off for %s — planning no feed steps for that chain, so nothing buys its inputs at any depth; the rest of the bill is planned as usual", strings.Join(braked, ", ")), map[string]interface{}{
+		"roots": strings.Join(braked, ","), "action": "feed_braked_operator_off",
+	})
 }
 
 // yieldedStep is one step the pacing consult passed over, kept for the fallback below.

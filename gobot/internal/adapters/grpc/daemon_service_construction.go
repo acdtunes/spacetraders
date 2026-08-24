@@ -139,6 +139,7 @@ func (s *daemonServiceImpl) ConstructionGoodOverride(ctx context.Context, req *p
 	patch := goodOverridePatch{
 		minSupply:        req.MinSupply,
 		priceCeilingMult: req.PriceCeilingMult,
+		feed:             req.Feed,
 	}
 
 	result, err := s.daemon.MutateConstructionGoodOverride(ctx, req.ConstructionSite, playerID, req.Good, patch, req.Clear)
@@ -153,6 +154,7 @@ func (s *daemonServiceImpl) ConstructionGoodOverride(ctx context.Context, req *p
 		Changed:          result.Changed,
 		PriceCeilingMult: result.Override.PriceCeilingMult,
 		MinSupply:        result.Override.MinSupply,
+		Feed:             result.Override.Feed,
 	}, nil
 }
 

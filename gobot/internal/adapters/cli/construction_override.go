@@ -88,9 +88,25 @@ func validateAndClampOverride(ov manufacturing.GoodGatingOverride) (manufacturin
 	if _, err := parseMinSupplyFlag(ov.MinSupply); err != nil {
 		return manufacturing.GoodGatingOverride{}, err
 	}
+	feed, err := parseFeedFlag(ov.Feed)
+	if err != nil {
+		return manufacturing.GoodGatingOverride{}, err
+	}
+	ov.Feed = feed
 	clamped, _ := clampPriceCeilingMult(ov.PriceCeilingMult)
 	ov.PriceCeilingMult = clamped
 	return ov, nil
+}
+
+// parseFeedFlag canonicalises a feed mode against the DOMAIN vocabulary, so the CLI and the daemon
+// single-writer cannot disagree. Refused, never coerced: the engine reads an unknown mode as auto.
+func parseFeedFlag(mode string) (string, error) {
+	normalized, ok := manufacturing.NormalizeFeedMode(mode)
+	if !ok {
+		return "", fmt.Errorf("invalid feed mode %q: must be %s (plan feed steps as usual) or %s (plan none for this material's whole chain)",
+			mode, manufacturing.FeedModeAuto, manufacturing.FeedModeOff)
+	}
+	return normalized, nil
 }
 
 // parseGoodOverrideSpec parses one repeatable `--good-override GOOD:key=val[,key=val]` spec into a
@@ -123,6 +139,8 @@ func parseGoodOverrideSpec(spec string) (string, manufacturing.GoodGatingOverrid
 			ov.MinSupply = val
 		case "strategy":
 			ov.Strategy = val
+		case "feed":
+			ov.Feed = val
 		case "priceceilingmult":
 			f, err := strconv.ParseFloat(val, 64)
 			if err != nil {
@@ -130,7 +148,7 @@ func parseGoodOverrideSpec(spec string) (string, manufacturing.GoodGatingOverrid
 			}
 			ov.PriceCeilingMult = f
 		default:
-			return "", manufacturing.GoodGatingOverride{}, fmt.Errorf("invalid --good-override %q: unknown key %q (valid: minSupply, strategy, priceCeilingMult)", spec, key)
+			return "", manufacturing.GoodGatingOverride{}, fmt.Errorf("invalid --good-override %q: unknown key %q (valid: minSupply, strategy, priceCeilingMult, feed)", spec, key)
 		}
 	}
 
@@ -198,6 +216,8 @@ type constructionOverrideFlags struct {
 	minSupply        string
 	priceCeilingMult float64
 	multProvided     bool // whether --price-ceiling-mult was set on the command line
+	// feed brakes the gate feed engine for the material's WHOLE chain ("auto" | "off").
+	feed string
 
 	// buyFloor/resumeFloor are the PIPELINE-WIDE gate DELIVERY fleet thresholds. They take no
 	// --good and route to their own RPC; see anyFloorSet.
@@ -205,10 +225,10 @@ type constructionOverrideFlags struct {
 	resumeFloor string
 }
 
-// anyKnobSet reports whether at least one tunable knob (--min-supply or
-// --price-ceiling-mult) was provided on the command line.
+// anyKnobSet reports whether at least one per-good knob (--min-supply, --price-ceiling-mult or
+// --feed) was provided on the command line.
 func (f constructionOverrideFlags) anyKnobSet() bool {
-	return f.minSupply != "" || f.multProvided
+	return f.minSupply != "" || f.multProvided || f.feed != ""
 }
 
 // anyFloorSet reports whether a PIPELINE-WIDE delivery floor was provided. It is
@@ -249,14 +269,14 @@ func buildConstructionOverrideRequest(f constructionOverrideFlags, playerIdent *
 
 	if f.clear {
 		if f.anyKnobSet() {
-			return nil, false, fmt.Errorf("--clear removes the whole override for %s; it cannot be combined with --min-supply/--price-ceiling-mult", f.good)
+			return nil, false, fmt.Errorf("--clear removes the whole override for %s; it cannot be combined with --min-supply/--price-ceiling-mult/--feed", f.good)
 		}
 		req.Clear = true
 		return req, false, nil
 	}
 
 	if !f.anyKnobSet() {
-		return nil, false, fmt.Errorf("nothing to set for %s: pass at least one of --min-supply, --price-ceiling-mult (or --clear to remove the override)", f.good)
+		return nil, false, fmt.Errorf("nothing to set for %s: pass at least one of --min-supply, --price-ceiling-mult, --feed (or --clear to remove the override)", f.good)
 	}
 
 	if f.minSupply != "" {
@@ -264,6 +284,13 @@ func buildConstructionOverrideRequest(f constructionOverrideFlags, playerIdent *
 			return nil, false, err
 		}
 		req.MinSupply = &f.minSupply
+	}
+	if f.feed != "" {
+		feed, err := parseFeedFlag(f.feed)
+		if err != nil {
+			return nil, false, err
+		}
+		req.Feed = &feed
 	}
 	multClamped := false
 	if f.multProvided {
@@ -295,21 +322,40 @@ func runConstructionOverride(ctx context.Context, client constructionOverrideMut
 		fmt.Fprintf(&b, "✓ set the %s override on %s to {%s}. The coordinator re-reads it live on its next discovery pass; no restart.\n",
 			resp.Good, resp.ConstructionSite, formatOverrideKnobs(resp))
 	}
+	if note := feedModeNote(resp); note != "" {
+		fmt.Fprintf(&b, "  %s\n", note)
+	}
 	if multClamped {
 		fmt.Fprintf(&b, "  note: --price-ceiling-mult was clamped to the %.1fx domain cap (RULINGS #4 — the ceiling can be loosened but never disabled).\n", manufacturing.MaxPriceCeilingMultiplier)
 	}
 	return b.String(), nil
 }
 
+// feedModeNote spells out what the brake did: "feed=off" alone does not say whether the chain's
+// DEEPER steps stop with it. Both directions get a line, or a set and a released brake read alike.
+func feedModeNote(resp *pb.ConstructionGoodOverrideResponse) string {
+	switch resp.Feed {
+	case manufacturing.FeedModeOff:
+		return fmt.Sprintf("feeding is now OFF for the whole %s chain: no feed steps are planned at any depth, so nothing buys its inputs. Other materials keep feeding.", resp.Good)
+	case manufacturing.FeedModeAuto:
+		return fmt.Sprintf("feeding is back on AUTO for the %s chain — the engine plans its feed steps exactly as it always has.", resp.Good)
+	default:
+		return ""
+	}
+}
+
 // formatOverrideKnobs renders the non-empty override dimensions of a response for the confirmation
 // line, e.g. "minSupply=LIMITED, priceCeilingMult=2.00".
 func formatOverrideKnobs(resp *pb.ConstructionGoodOverrideResponse) string {
-	parts := make([]string, 0, 2)
+	parts := make([]string, 0, 3)
 	if resp.MinSupply != "" {
 		parts = append(parts, "minSupply="+resp.MinSupply)
 	}
 	if resp.PriceCeilingMult > 0 {
 		parts = append(parts, fmt.Sprintf("priceCeilingMult=%.2f", resp.PriceCeilingMult))
+	}
+	if resp.Feed != "" {
+		parts = append(parts, "feed="+resp.Feed)
 	}
 	if len(parts) == 0 {
 		return "global default"
@@ -499,9 +545,17 @@ daemon restart and applies to deferred-material recovery.
 Knobs (set only the ones you want to change; the rest stay as they are):
   --min-supply         EXPORT sourcing floor for this good (ABUNDANT|HIGH|MODERATE|LIMITED|SCARCE)
   --price-ceiling-mult ladder-chase input-price ceiling multiplier (clamped to the domain cap)
+  --feed               gate feed engine for this MATERIAL'S WHOLE CHAIN (auto|off), default auto
 
---clear removes the good's override entirely, reverting it to the pipeline's global default.
-A non-overridden good is always byte-identical to the global default.
+--feed off is the per-material spend BRAKE, and it is a refusal rather than a threshold. The
+chain plans no feed steps at ANY depth, so nothing buys its inputs — including the never-starve
+fallback, which otherwise guarantees one feed buy per leg while any task for the chain is open.
+Every other material keeps feeding on the same pass; a feed step two chains both want survives
+while either of them is still on. --feed auto (the shipped state) restores the engine exactly.
+
+--clear removes the good's override entirely, reverting it to the pipeline's global default —
+including releasing a --feed off brake. A non-overridden good is always byte-identical to the
+global default.
 
 Pipeline-wide gate DELIVERY fleet knobs (no --good; these apply to the whole pipeline):
   --buy-floor          buy while the terminal factory's supply is AT OR ABOVE this level, default
@@ -522,6 +576,8 @@ Examples:
   spacetraders construction override --site X1-VB74-I55 --good FAB_MATS --min-supply LIMITED
   spacetraders construction override --site X1-VB74-I55 --good FAB_MATS --price-ceiling-mult 2.0
   spacetraders construction override --site X1-VB74-I55 --good FAB_MATS --clear
+  spacetraders construction override --site X1-VB74-I55 --good ADVANCED_CIRCUITRY --feed off
+  spacetraders construction override --site X1-VB74-I55 --good ADVANCED_CIRCUITRY --feed auto
   spacetraders construction override --site X1-VB74-I55 --buy-floor LIMITED --resume-floor MODERATE`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			f.multProvided = cmd.Flags().Changed("price-ceiling-mult")
@@ -567,6 +623,9 @@ Examples:
 	cmd.Flags().BoolVar(&f.clear, "clear", false, "Remove the good's override, reverting it to the pipeline's global default")
 	cmd.Flags().StringVar(&f.minSupply, "min-supply", "", "Per-good EXPORT sourcing floor (ABUNDANT, HIGH, MODERATE, LIMITED, SCARCE)")
 	cmd.Flags().Float64Var(&f.priceCeilingMult, "price-ceiling-mult", 0, "Per-good ladder-chase input-price ceiling multiplier (clamped to the domain cap)")
+	cmd.Flags().StringVar(&f.feed, "feed", "", fmt.Sprintf(
+		"Gate feed engine for this material's WHOLE chain: %s (plan feed steps as usual, the default) or %s (plan none at any depth, so nothing buys its inputs; other materials keep feeding)",
+		manufacturing.FeedModeAuto, manufacturing.FeedModeOff))
 	// Each floor advertises ONLY its own vocabulary, and that vocabulary is DERIVED from the
 	// same list the validator rejects against — not retyped beside it. A hardcoded help string
 	// next to a list-driven validator is the very drift this fixed: it would be correct today

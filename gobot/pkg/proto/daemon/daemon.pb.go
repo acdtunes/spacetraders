@@ -11531,8 +11531,14 @@ type ConstructionGoodOverrideRequest struct {
 	Clear            bool     `protobuf:"varint,5,opt,name=clear,proto3" json:"clear,omitempty"`
 	MinSupply        *string  `protobuf:"bytes,6,opt,name=min_supply,json=minSupply,proto3,oneof" json:"min_supply,omitempty"`
 	PriceCeilingMult *float64 `protobuf:"fixed64,8,opt,name=price_ceiling_mult,json=priceCeilingMult,proto3,oneof" json:"price_ceiling_mult,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// feed brakes the gate feed engine for this material's WHOLE CHAIN: "auto" (the shipped
+	// state — plan feed steps exactly as the engine always has) or "off" (plan none, at any
+	// depth, so nothing buys the chain's inputs). Unlike the tuning knobs above it is a
+	// refusal, not a threshold. Unset leaves the dimension unchanged; the daemon rejects any
+	// other value rather than storing an operator's typo as auto.
+	Feed          *string `protobuf:"bytes,9,opt,name=feed,proto3,oneof" json:"feed,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ConstructionGoodOverrideRequest) Reset() {
@@ -11614,6 +11620,13 @@ func (x *ConstructionGoodOverrideRequest) GetPriceCeilingMult() float64 {
 	return 0
 }
 
+func (x *ConstructionGoodOverrideRequest) GetFeed() string {
+	if x != nil && x.Feed != nil {
+		return *x.Feed
+	}
+	return ""
+}
+
 // ConstructionGoodOverrideResponse confirms the resulting override state for the good.
 type ConstructionGoodOverrideResponse struct {
 	state            protoimpl.MessageState `protogen:"open.v1"`
@@ -11626,8 +11639,10 @@ type ConstructionGoodOverrideResponse struct {
 	// The resulting override values for the good (empty/zero when cleared or that knob is unset).
 	PriceCeilingMult float64 `protobuf:"fixed64,6,opt,name=price_ceiling_mult,json=priceCeilingMult,proto3" json:"price_ceiling_mult,omitempty"`
 	MinSupply        string  `protobuf:"bytes,7,opt,name=min_supply,json=minSupply,proto3" json:"min_supply,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// feed is the resulting feed mode; empty means the good is on the engine's default auto.
+	Feed          string `protobuf:"bytes,8,opt,name=feed,proto3" json:"feed,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ConstructionGoodOverrideResponse) Reset() {
@@ -11698,6 +11713,13 @@ func (x *ConstructionGoodOverrideResponse) GetPriceCeilingMult() float64 {
 func (x *ConstructionGoodOverrideResponse) GetMinSupply() string {
 	if x != nil {
 		return x.MinSupply
+	}
+	return ""
+}
+
+func (x *ConstructionGoodOverrideResponse) GetFeed() string {
+	if x != nil {
+		return x.Feed
 	}
 	return ""
 }
@@ -14219,7 +14241,7 @@ const file_pkg_proto_daemon_daemon_proto_rawDesc = "" +
 	"\fagent_symbol\x18\x02 \x01(\tH\x00R\vagentSymbol\x88\x01\x01B\x0f\n" +
 	"\r_agent_symbol\"D\n" +
 	"\x17SensingRescreenResponse\x12)\n" +
-	"\x10systems_reopened\x18\x01 \x01(\x03R\x0fsystemsReopened\"\xdb\x02\n" +
+	"\x10systems_reopened\x18\x01 \x01(\x03R\x0fsystemsReopened\"\xfd\x02\n" +
 	"\x1fConstructionGoodOverrideRequest\x12+\n" +
 	"\x11construction_site\x18\x01 \x01(\tR\x10constructionSite\x12\x12\n" +
 	"\x04good\x18\x02 \x01(\tR\x04good\x12\x1b\n" +
@@ -14228,10 +14250,12 @@ const file_pkg_proto_daemon_daemon_proto_rawDesc = "" +
 	"\x05clear\x18\x05 \x01(\bR\x05clear\x12\"\n" +
 	"\n" +
 	"min_supply\x18\x06 \x01(\tH\x01R\tminSupply\x88\x01\x01\x121\n" +
-	"\x12price_ceiling_mult\x18\b \x01(\x01H\x02R\x10priceCeilingMult\x88\x01\x01B\x0f\n" +
+	"\x12price_ceiling_mult\x18\b \x01(\x01H\x02R\x10priceCeilingMult\x88\x01\x01\x12\x17\n" +
+	"\x04feed\x18\t \x01(\tH\x03R\x04feed\x88\x01\x01B\x0f\n" +
 	"\r_agent_symbolB\r\n" +
 	"\v_min_supplyB\x15\n" +
-	"\x13_price_ceiling_multJ\x04\b\a\x10\bR\bstrategy\"\xf4\x01\n" +
+	"\x13_price_ceiling_multB\a\n" +
+	"\x05_feedJ\x04\b\a\x10\bR\bstrategy\"\x88\x02\n" +
 	" ConstructionGoodOverrideResponse\x12+\n" +
 	"\x11construction_site\x18\x01 \x01(\tR\x10constructionSite\x12\x12\n" +
 	"\x04good\x18\x02 \x01(\tR\x04good\x12\x18\n" +
@@ -14239,7 +14263,8 @@ const file_pkg_proto_daemon_daemon_proto_rawDesc = "" +
 	"\achanged\x18\x04 \x01(\bR\achanged\x12,\n" +
 	"\x12price_ceiling_mult\x18\x06 \x01(\x01R\x10priceCeilingMult\x12\x1d\n" +
 	"\n" +
-	"min_supply\x18\a \x01(\tR\tminSupplyJ\x04\b\x05\x10\x06R\bstrategy\"\xca\x01\n" +
+	"min_supply\x18\a \x01(\tR\tminSupply\x12\x12\n" +
+	"\x04feed\x18\b \x01(\tR\x04feedJ\x04\b\x05\x10\x06R\bstrategy\"\xca\x01\n" +
 	"\x1cConstructionWorkerCapRequest\x12+\n" +
 	"\x11construction_site\x18\x01 \x01(\tR\x10constructionSite\x12\x14\n" +
 	"\x05count\x18\x02 \x01(\x05R\x05count\x12 \n" +

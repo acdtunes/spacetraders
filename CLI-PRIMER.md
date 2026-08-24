@@ -146,8 +146,11 @@ as the map being right and the doc you read being old.
 - **construction** — `status <site>`, `start <site>` (supply pipeline; `--system`,
   `--min-supply ABUNDANT..SCARCE` sourcing floor, `--good-override GOOD:key=val` /
   `--overrides <json>` per-good buy-gating; idempotent/resumable — re-running RESUMES),
-  `override --site --good [--min-supply|--strategy|--price-ceiling-mult|--clear]` (tune a RUNNING
-  pipeline's per-good gate live), `workers <site> --count N` (live worker cap, no restart), `stop`.
+  `override --site --good [--min-supply|--strategy|--price-ceiling-mult|--feed|--clear]` (tune a
+  RUNNING pipeline's per-good gate live; `--feed off|auto` is the per-material FEED BRAKE — off
+  plans no feed step for that material's whole chain at any depth, so nothing buys its inputs,
+  including the never-starve fallback; other materials keep feeding, default auto),
+  `workers <site> --count N` (live worker cap, no restart), `stop`.
   There is no `--depth` flag: fabricate-vs-buy is the engine's per-good call each pass
   (`PLAYBOOK.md` §4a), and the depth cap is an internal backstop, not an operator knob.
 

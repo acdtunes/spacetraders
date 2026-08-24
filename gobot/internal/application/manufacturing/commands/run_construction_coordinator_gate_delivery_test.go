@@ -122,6 +122,11 @@ type freshAggregatePipelineRepo struct {
 	delivered   map[string]int
 	buyFloor    string
 	resumeFloor string
+	// goodOverrides is the per-good override map the row carries, stamped onto every rebuilt
+	// aggregate. It is set on the ROW rather than on a returned pointer because each FindByID
+	// hands back a NEW aggregate: a test that mutated one read's pipeline would be describing a
+	// value the next read discards, which is exactly the staleness this repo models away.
+	goodOverrides manufacturing.GoodGatingOverrides
 }
 
 func newFreshAggregatePipelineRepo() *freshAggregatePipelineRepo {
@@ -142,6 +147,7 @@ func (r *freshAggregatePipelineRepo) FindByID(_ context.Context, _ string) (*man
 	}
 	pipeline.SetMaterials(materials)
 	pipeline.SetDeliveryFloors(r.buyFloor, r.resumeFloor)
+	pipeline.SetGoodOverrides(r.goodOverrides)
 	return pipeline, nil
 }
 

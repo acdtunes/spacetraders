@@ -8,7 +8,7 @@ import (
 // Per-good buy-gating overrides. The supply-chain buy-gating knobs (supply strategy,
 // input price ceiling, construction min-supply floor) are all GLOBAL: to unstick ONE bottleneck
 // good you had to loosen gating chain-wide, over-buying every good. This type is the surgical
-// per-good knob: a map good -> { strategy?, priceCeilingMult?, minSupply? } layered on the three
+// per-good knob: a map good -> { strategy?, priceCeilingMult?, minSupply?, feed? } layered on the
 // global gates. At each gate's decision point the caller looks up the good; if an override is
 // present it is used, otherwise the existing GLOBAL default is returned UNCHANGED — so a
 // non-overridden good behaves byte-identically to today.
@@ -26,6 +26,7 @@ import (
 //     ctx-stamped on the factory-coordinator engine. HARD-CAPPED (see below).
 //   - MinSupply        — the construction pipeline's EXPORT sourcing floor, persisted on the
 //     pipeline entity and read by the planner + task activator.
+//   - Feed             — the gate feed engine's per-material brake, read off the pipeline entity.
 type GoodGatingOverride struct {
 	// Strategy overrides the acquisition strategy for this good: "prefer-buy" | "prefer-fabricate"
 	// | "smart". Empty = no override (use the resolver's global strategy).
@@ -37,6 +38,31 @@ type GoodGatingOverride struct {
 	// MinSupply overrides the construction EXPORT sourcing floor for this good: SCARCE | LIMITED |
 	// MODERATE | HIGH | ABUNDANT. Empty = no override (use the pipeline's global floor).
 	MinSupply string `json:"minSupply,omitempty"`
+	// Feed brakes the gate feed engine for this MATERIAL'S WHOLE CHAIN: FeedModeAuto | FeedModeOff.
+	// A REFUSAL, not a threshold — off plans no feed step at any depth, so nothing buys its inputs.
+	Feed string `json:"feed,omitempty"`
+}
+
+// FeedModeAuto and FeedModeOff are the whole feed-brake vocabulary. AUTO IS THE SHIPPED STATE, and
+// spellable rather than only absence so a chain goes back on without clearing its other overrides.
+const (
+	FeedModeAuto = "auto"
+	FeedModeOff  = "off"
+)
+
+// NormalizeFeedMode canonicalises a mode, reporting whether this build knows it; empty is unset. THE
+// WRITE SIDE IS STRICTER THAN FeedEnabledFor'S READ: a typo stored as auto is a brake nobody pulled.
+func NormalizeFeedMode(mode string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "":
+		return "", true
+	case FeedModeAuto:
+		return FeedModeAuto, true
+	case FeedModeOff:
+		return FeedModeOff, true
+	default:
+		return "", false
+	}
 }
 
 // GoodGatingOverrides maps a good symbol to its per-good gate override.
@@ -59,6 +85,16 @@ func (o GoodGatingOverrides) StrategyFor(good, globalDefault string) string {
 		return ov.Strategy
 	}
 	return globalDefault
+}
+
+// FeedEnabledFor reports whether the gate feed engine may plan feed steps for good's chain. IT FAILS
+// TOWARDS FEEDING: a chain braked by an unreadable value stalls the gate while the drain says RUNNING.
+func (o GoodGatingOverrides) FeedEnabledFor(good string) bool {
+	ov, ok := o[good]
+	if !ok {
+		return true
+	}
+	return !strings.EqualFold(strings.TrimSpace(ov.Feed), FeedModeOff)
 }
 
 // MinSupplyFor returns the EXPORT sourcing floor for a good: the per-good override when present and

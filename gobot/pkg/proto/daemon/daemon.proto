@@ -1877,6 +1877,12 @@ message ConstructionGoodOverrideRequest {
   reserved 7;
   reserved "strategy";
   optional double price_ceiling_mult = 8;
+  // feed brakes the gate feed engine for this material's WHOLE CHAIN: "auto" (the shipped
+  // state — plan feed steps exactly as the engine always has) or "off" (plan none, at any
+  // depth, so nothing buys the chain's inputs). Unlike the tuning knobs above it is a
+  // refusal, not a threshold. Unset leaves the dimension unchanged; the daemon rejects any
+  // other value rather than storing an operator's typo as auto.
+  optional string feed = 9;
 }
 
 // ConstructionGoodOverrideResponse confirms the resulting override state for the good.
@@ -1893,6 +1899,8 @@ message ConstructionGoodOverrideResponse {
   // The resulting override values for the good (empty/zero when cleared or that knob is unset).
   double price_ceiling_mult = 6;
   string min_supply = 7;
+  // feed is the resulting feed mode; empty means the good is on the engine's default auto.
+  string feed = 8;
 }
 
 // ConstructionWorkerCapRequest sets the live concurrent-worker cap (max_workers) on a running

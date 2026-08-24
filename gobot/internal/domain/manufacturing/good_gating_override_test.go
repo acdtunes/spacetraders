@@ -117,3 +117,84 @@ func TestDecodeGoodGatingOverrides_MalformedErrors(t *testing.T) {
 		t.Fatalf("a malformed override blob must return an error")
 	}
 }
+
+// The FEED brake is the one override dimension that is a REFUSAL rather than a tuning, so its
+// resolution has to fail in the permissive direction: only an explicit off brakes a chain, and
+// everything else — absent, empty, auto, a value this build does not recognise — feeds.
+
+func TestFeedEnabledFor_OnlyAnExplicitOffBrakes(t *testing.T) {
+	o := GoodGatingOverrides{
+		"ADVANCED_CIRCUITRY": {Feed: FeedModeOff},
+		"FAB_MATS":           {Feed: FeedModeAuto},
+		"COPPER":             {MinSupply: "SCARCE"},
+	}
+
+	if o.FeedEnabledFor("ADVANCED_CIRCUITRY") {
+		t.Fatalf("an explicit off must brake the good's chain")
+	}
+	for _, good := range []string{"FAB_MATS", "COPPER", "IRON"} {
+		if !o.FeedEnabledFor(good) {
+			t.Fatalf("%s must feed: only an explicit off brakes, and auto/absent/another-dimension are not that", good)
+		}
+	}
+	var none GoodGatingOverrides
+	if !none.FeedEnabledFor("ADVANCED_CIRCUITRY") {
+		t.Fatalf("an empty map must leave every chain feeding — the control ships in auto")
+	}
+}
+
+// FAIL-SAFE: a value this build cannot read is AUTO. A row hand-edited or written by another build
+// must never silently stall a chain — an unasked-for brake stalls the gate and reads as a drain bug.
+func TestFeedEnabledFor_AnUnreadableValueIsAuto(t *testing.T) {
+	for _, mode := range []string{"", " ", "paused", "OFF-ISH", "0", "false"} {
+		o := GoodGatingOverrides{"ADVANCED_CIRCUITRY": {Feed: mode}}
+		if !o.FeedEnabledFor("ADVANCED_CIRCUITRY") {
+			t.Fatalf("feed=%q braked the chain; anything but a recognisable off must resolve to auto", mode)
+		}
+	}
+	// Case and surrounding space are the operator's, not a different intent.
+	for _, mode := range []string{"OFF", " off ", "Off"} {
+		o := GoodGatingOverrides{"ADVANCED_CIRCUITRY": {Feed: mode}}
+		if o.FeedEnabledFor("ADVANCED_CIRCUITRY") {
+			t.Fatalf("feed=%q must brake: case and padding are not a second intent", mode)
+		}
+	}
+}
+
+// NormalizeFeedMode is the single write-side vocabulary check every boundary shares, so the CLI and
+// the daemon single-writer can never disagree about what an operator is allowed to persist.
+func TestNormalizeFeedMode_CanonicalisesTheVocabularyAndRejectsTheRest(t *testing.T) {
+	for input, want := range map[string]string{
+		"":       "",
+		"auto":   FeedModeAuto,
+		" AUTO ": FeedModeAuto,
+		"off":    FeedModeOff,
+		"Off":    FeedModeOff,
+	} {
+		got, ok := NormalizeFeedMode(input)
+		if !ok || got != want {
+			t.Fatalf("NormalizeFeedMode(%q) = %q, %v; want %q, true", input, got, ok, want)
+		}
+	}
+	for _, bad := range []string{"paused", "no", "false", "0", "on"} {
+		if _, ok := NormalizeFeedMode(bad); ok {
+			t.Fatalf("NormalizeFeedMode(%q) accepted an unknown mode; a write-side typo must be refused, not silently stored as auto", bad)
+		}
+	}
+}
+
+// The brake persists on the same blob as the other dimensions, so a daemon bounce keeps it.
+func TestGoodGatingOverrides_FeedSurvivesTheRoundTrip(t *testing.T) {
+	o := GoodGatingOverrides{"ADVANCED_CIRCUITRY": {Feed: FeedModeOff, MinSupply: "SCARCE"}}
+
+	decoded, err := DecodeGoodGatingOverrides(o.Encode())
+	if err != nil {
+		t.Fatalf("decode returned error: %v", err)
+	}
+	if got := decoded["ADVANCED_CIRCUITRY"]; got.Feed != FeedModeOff || got.MinSupply != "SCARCE" {
+		t.Fatalf("round-trip lost a dimension, got %+v", got)
+	}
+	if decoded.FeedEnabledFor("ADVANCED_CIRCUITRY") {
+		t.Fatalf("a persisted brake must still brake after a reload")
+	}
+}
