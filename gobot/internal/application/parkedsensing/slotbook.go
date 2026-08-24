@@ -56,7 +56,7 @@ type slotBook struct {
 }
 
 // newSlotBook builds the tick's view of the placement ledger. onErrand names the
-// hulls a system row already has out on a charting mission, and it is what keeps
+// hulls the seed roster already has out on a charting mission, and it is what keeps
 // ONE HULL TO ONE ERRAND across ticks — see the parkedSpares filter below.
 func newSlotBook(rows []QueuedSlot, onErrand map[string]bool) *slotBook {
 	b := &slotBook{
@@ -103,22 +103,6 @@ func newSlotBook(rows []QueuedSlot, onErrand map[string]bool) *slotBook {
 		b.errandSpares = append(b.errandSpares, row)
 	}
 	return b
-}
-
-// hullsOnErrand indexes the hulls that system rows already have out charting.
-//
-// Keyed on the hull rather than the system because that is the invariant being
-// protected: a system may be re-targeted, but a probe cannot be in two places. DONE
-// is deliberately absent — hasActiveSeed treats a finished errand as over, and a
-// hull whose mission ended is a spare again.
-func hullsOnErrand(systems []ExpandSystem) map[string]bool {
-	hulls := make(map[string]bool, len(systems))
-	for _, s := range systems {
-		if hasActiveSeed(s) {
-			hulls[s.SeedShip] = true
-		}
-	}
-	return hulls
 }
 
 // occupied reports whether a waypoint already carries a placement row OF THIS KIND.

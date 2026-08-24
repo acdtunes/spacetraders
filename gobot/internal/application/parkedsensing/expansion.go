@@ -83,9 +83,18 @@ type GateGraph struct {
 	Mapped map[string]bool
 }
 
+// ChartStop is one outstanding waypoint of a charting tour: the symbol a seed
+// charts, and where the waypoint sits in its system. The coordinates are
+// system-relative, so the system's centre is the origin — which is what lets a
+// crew's shares be cut from the plane rather than from the list (chartcrew.go).
+type ChartStop struct {
+	Waypoint string
+	X, Y     float64
+}
+
 // UnchartedCatalog reads which waypoints in a system are still uncharted.
 type UnchartedCatalog interface {
-	// UnchartedWaypoints returns the system's uncharted waypoints IN THE ORDER THEY
+	// UnchartedStops returns the system's uncharted waypoints IN THE ORDER THEY
 	// SHOULD BE VISITED. A seed charts the first one it is given, so any
 	// deterministic order is correct — the tour is EXHAUSTIVE, and ordering decides
 	// only how long the fleet waits for the markets and yards a system holds.
@@ -95,7 +104,7 @@ type UnchartedCatalog interface {
 	// completion signal. A list narrower than the count leaves the tour finished
 	// while the count never reaches zero — the system never written off, and never
 	// stopping being sent seeds.
-	UnchartedWaypoints(ctx context.Context, system string) ([]string, error)
+	UnchartedStops(ctx context.Context, system string) ([]ChartStop, error)
 }
 
 // SystemScreener re-runs the whitelist screen on ONE system and records its
@@ -146,9 +155,16 @@ type SeedCommander interface {
 	SyncWaypoints(ctx context.Context, playerID int, system string) error
 }
 
+// SeedErrand is one hull on a system's charting crew BEYOND the first. The system
+// it is charting is the row that carries it, exactly as for the primary errand.
+type SeedErrand struct {
+	Ship  string
+	State string
+}
+
 // ExpandSystem is one row of the sensing ledger's system table, as the expansion
 // engine reads it: the verdict, how much of the system is still dark, and the
-// charting errand (if any) running against it. SeedShip/SeedState ARE the mission
+// charting errands (if any) running against it. SeedShip/SeedState ARE the mission
 // and the row's own system is its target — there is no target column, which is why
 // retargeting a seed is two writes.
 type ExpandSystem struct {
@@ -157,6 +173,11 @@ type ExpandSystem struct {
 	UnchartedCount int
 	SeedShip       string
 	SeedState      string
+	// ExtraSeeds are the system's charting hulls past the first, each working its
+	// own share of the outstanding waypoints (chartcrew.go). The FIRST hull stays in
+	// the row's own seed columns, so a system worked by one hull is stored exactly as
+	// it always was and every reader of those columns keeps its meaning.
+	ExtraSeeds []SeedErrand
 	// CatalogKnown reports whether the system's waypoint LIST has ever been swept —
 	// a separate question from UnchartedCount, because an unswept system has no
 	// waypoint rows and so reports ZERO uncharted, indistinguishable from one
@@ -191,6 +212,15 @@ type ExpandLedger interface {
 	// screen that could clear the errand would orphan the hull it names. Empty
 	// strings clear the errand.
 	SetSeed(ctx context.Context, playerID int, system, shipSymbol, seedState string) error
+	// SetExtraSeed writes the errand of a hull on a system's charting crew BEYOND the
+	// first, keyed on the HULL: a probe cannot be in two places, so a hull that moves
+	// between systems carries its errand with it rather than leaving one behind.
+	// SetSeed still owns the row's own seed columns, and the two never address the
+	// same hull — stampErrand is what keeps that true.
+	SetExtraSeed(ctx context.Context, playerID int, system, shipSymbol, seedState string) error
+	// ClearExtraSeed ends the errand of a hull that is not a system's first. Clearing
+	// by HULL rather than by system for the same reason SetExtraSeed writes by it.
+	ClearExtraSeed(ctx context.Context, playerID int, shipSymbol string) error
 	// StampCatalogSynced records that a system's waypoint list has been swept and
 	// persisted. Another narrow write with a disjoint column set, for the same reason
 	// as SetSeed: it lands mid-tour, while the sweep may be re-screening the row.
@@ -254,6 +284,14 @@ type ExpandKnobs struct {
 	// one the screen uses, so a market the seed slots and a market the screen slots
 	// mean the same thing.
 	Whitelist map[string]bool
+	// ChartHullCap, SecondChartHullAt and ThirdChartHullAt size a dark system's
+	// charting crew: the ceiling on hulls one system may draw, and the outstanding
+	// counts that earn the second and third. Zero means the documented default in
+	// each case; a CAP OF ONE is the single-hull tour, and the feature's off switch.
+	// See chartcrew.go.
+	ChartHullCap      int
+	SecondChartHullAt int
+	ThirdChartHullAt  int
 }
 
 // ExpandReport is one expansion tick's outcome, for the heartbeat.
@@ -365,7 +403,12 @@ func AdvanceExpansion(
 	if err != nil {
 		return rep, fmt.Errorf("failed to list sensing placements: %w", err)
 	}
-	book := newSlotBook(slotRows, hullsOnErrand(systems))
+	// Who is charting what, read once and then MUTATED by every errand write, so a
+	// later pass of the same tick cannot crew a system the earlier one already filled.
+	roster := newSeedRoster(systems)
+	hulls := resolveChartHulls(k)
+
+	book := newSlotBook(slotRows, roster.hulls())
 	known := knownSystems(systems)
 
 	// The neighbour map is read before anything is written, so a gate store that
@@ -399,7 +442,7 @@ func AdvanceExpansion(
 	// The systems needing a hull are resolved ONCE, before anything moves, and every
 	// branch that covers one strikes it off — which is what keeps a single system
 	// from being sent both a spare and a fresh probe.
-	targets := seedlessTargets(systems)
+	targets := seedlessTargets(systems, hulls)
 	covered := make(map[string]bool, len(targets))
 
 	// A system's probe-selling yards, resolved at most once per TICK and shared by the
@@ -419,6 +462,7 @@ func AdvanceExpansion(
 	t := &expandTick{
 		p: p, playerID: playerID, k: k,
 		book: book, reach: reach,
+		roster: roster, hulls: hulls,
 		probeYards: probeYards,
 		staffed:    map[string]bool{},
 		listings:   map[string]probeStock{},
@@ -505,6 +549,11 @@ type expandTick struct {
 	k        ExpandKnobs
 	book     *slotBook
 	reach    *gateReach
+	// roster is the live crew list, and hulls the budget it is filled to. Unlike the
+	// memos below, the roster CHANGES as the tick writes errands — that is what keeps
+	// a system from being crewed past its budget within one tick.
+	roster *seedRoster
+	hulls  chartHulls
 	// None of the four can change while the tick runs. serving memoises whether
 	// staging would ever choose a yard in a system at all — see originServesATarget —
 	// and origins is that test's own index, built lazily because most ticks never

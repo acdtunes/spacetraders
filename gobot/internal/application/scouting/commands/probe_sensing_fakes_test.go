@@ -468,6 +468,41 @@ func (f *psLedger) SetSeed(_ context.Context, _ int, system, shipSymbol, seedSta
 	return nil
 }
 
+// The crew roster is keyed on the HULL, so a stamp MOVES a probe's errand rather
+// than adding a second one naming it.
+func (f *psLedger) SetExtraSeed(_ context.Context, _ int, system, shipSymbol, seedState string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.dropExtraSeed(shipSymbol)
+	entry := f.systems[system]
+	entry.System = system
+	entry.ExtraSeeds = append(entry.ExtraSeeds, parkedsensing.SeedErrand{Ship: shipSymbol, State: seedState})
+	f.systems[system] = entry
+	return nil
+}
+
+func (f *psLedger) ClearExtraSeed(_ context.Context, _ int, shipSymbol string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.dropExtraSeed(shipSymbol)
+	return nil
+}
+
+func (f *psLedger) dropExtraSeed(shipSymbol string) {
+	for system, entry := range f.systems {
+		kept := entry.ExtraSeeds[:0]
+		for _, extra := range entry.ExtraSeeds {
+			if extra.Ship != shipSymbol {
+				kept = append(kept, extra)
+			}
+		}
+		entry.ExtraSeeds = kept
+		f.systems[system] = entry
+	}
+}
+
 func (f *psLedger) StampCatalogSynced(_ context.Context, _ int, system string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -548,8 +583,15 @@ func (f *fakeCatalog) ListUnchartedCount(_ context.Context, system string) (int,
 	return len(f.uncharted[system]), nil
 }
 
-func (f *fakeCatalog) UnchartedWaypoints(_ context.Context, system string) ([]string, error) {
-	return f.uncharted[system], nil
+// Every stop reads at the system centre, which is ONE sector however many hulls
+// a system is crewed by — these fixtures are about the coordinator's wiring, not
+// about how a crew divides a tour.
+func (f *fakeCatalog) UnchartedStops(_ context.Context, system string) ([]parkedsensing.ChartStop, error) {
+	out := make([]parkedsensing.ChartStop, 0, len(f.uncharted[system]))
+	for _, waypoint := range f.uncharted[system] {
+		out = append(out, parkedsensing.ChartStop{Waypoint: waypoint})
+	}
+	return out, nil
 }
 
 func (f *fakeCatalog) ListProbeYards(_ context.Context, system string) ([]string, error) {

@@ -328,19 +328,11 @@ func surplusProbes(
 }
 
 // hullsOnChartingErrand names every hull the sensing ledger has out on an ACTIVE
-// charting seed. The state test mirrors expansion's hasActiveSeed exactly.
+// charting seed. DELEGATED rather than re-derived: a system may be charted by a
+// CREW, and a second copy of the rule here would name only the first of them —
+// handing the rest to the surge as idle, i.e. two coordinators on one hull.
 func hullsOnChartingErrand(systems []parkedsensing.ExpandSystem) map[string]bool {
-	onErrand := map[string]bool{}
-	for _, system := range systems {
-		if system.SeedShip == "" {
-			continue
-		}
-		if system.SeedState != parkedsensing.SeedStateDispatched && system.SeedState != parkedsensing.SeedStateCharting {
-			continue
-		}
-		onErrand[system.SeedShip] = true
-	}
-	return onErrand
+	return parkedsensing.HullsOnChartingErrand(systems)
 }
 
 // surgeTargets reduces the pool to at most ONE candidate placement per system, in

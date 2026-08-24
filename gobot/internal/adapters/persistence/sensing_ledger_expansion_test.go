@@ -331,3 +331,87 @@ func TestSensingLedger_DeleteSlot_IsIdempotentAndPlayerScoped(t *testing.T) {
 	require.NoError(t, db.Where("player_id = ?", 2).Find(&survivors).Error)
 	require.Len(t, survivors, 1, "one player must never delete another's placement")
 }
+
+// --- the charting crew ---------------------------------------------------------
+
+// Systems joins the crew rows onto the system rows, so a tick reads a system's
+// whole charting complement from one call.
+func TestSensingLedger_Systems_CarriesTheCrewBesideTheFirstHull(t *testing.T) {
+	db := newSensingLedgerDB(t)
+	repo := persistence.NewSensingLedgerRepository(db)
+	ctx := context.Background()
+
+	require.NoError(t, repo.UpsertSystem(ctx, systemRow("X1-BB", "PENDING", 30)))
+	require.NoError(t, repo.SetSeed(ctx, 1, "X1-BB", "PROBE-1", "CHARTING"))
+	require.NoError(t, repo.SetExtraSeed(ctx, 1, "X1-BB", "PROBE-2", "DISPATCHED"))
+	require.NoError(t, repo.SetExtraSeed(ctx, 1, "X1-BB", "PROBE-3", "CHARTING"))
+
+	crew, err := repo.ExtraSeeds(ctx, 1)
+	require.NoError(t, err)
+	require.Len(t, crew, 2)
+	require.Equal(t, "PROBE-2", crew[0].ShipSymbol, "hull order makes a tick's crew reproducible")
+	require.Equal(t, "X1-BB", crew[0].SystemSymbol)
+	require.Equal(t, "DISPATCHED", crew[0].SeedState)
+
+	rows, err := repo.Systems(ctx, 1)
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	require.Equal(t, "PROBE-1", *rows[0].SeedShip, "the first hull stays in the system row's own columns")
+}
+
+// THE HULL KEY. Re-stamping a probe onto another system MOVES its errand; a row
+// left behind would drive one hull as two seeds toward two systems.
+func TestSensingLedger_SetExtraSeed_MovesAHullRatherThanNamingItTwice(t *testing.T) {
+	db := newSensingLedgerDB(t)
+	repo := persistence.NewSensingLedgerRepository(db)
+	ctx := context.Background()
+
+	require.NoError(t, repo.UpsertSystem(ctx, systemRow("X1-BB", "PENDING", 30)))
+	require.NoError(t, repo.UpsertSystem(ctx, systemRow("X1-CC", "PENDING", 30)))
+	require.NoError(t, repo.SetExtraSeed(ctx, 1, "X1-BB", "PROBE-2", "CHARTING"))
+	require.NoError(t, repo.SetExtraSeed(ctx, 1, "X1-CC", "PROBE-2", "DISPATCHED"))
+
+	crew, err := repo.ExtraSeeds(ctx, 1)
+	require.NoError(t, err)
+	require.Len(t, crew, 1, "one probe, one errand")
+	require.Equal(t, "X1-CC", crew[0].SystemSymbol)
+
+	// The clear is idempotent, so a half-finished stand-down can be re-run.
+	require.NoError(t, repo.ClearExtraSeed(ctx, 1, "PROBE-2"))
+	require.NoError(t, repo.ClearExtraSeed(ctx, 1, "PROBE-2"))
+	crew, err = repo.ExtraSeeds(ctx, 1)
+	require.NoError(t, err)
+	require.Empty(t, crew)
+}
+
+// THE MONEY GUARD. A crew hull holds NO placement row for the length of its
+// errand, so the probe cap must count it from this table — missing it authorises
+// buying a replacement for a probe we already own (RULINGS #4).
+func TestSensingLedger_CountOwnedProbes_CountsCrewHullsAndDedupesThem(t *testing.T) {
+	db := newSensingLedgerDB(t)
+	repo := persistence.NewSensingLedgerRepository(db)
+	ctx := context.Background()
+
+	require.NoError(t, repo.UpsertSystem(ctx, systemRow("X1-BB", "PENDING", 30)))
+	require.NoError(t, repo.SetSeed(ctx, 1, "X1-BB", "PROBE-1", "CHARTING"))
+	require.NoError(t, repo.SetExtraSeed(ctx, 1, "X1-BB", "PROBE-2", "DISPATCHED"))
+	require.NoError(t, repo.SetExtraSeed(ctx, 1, "X1-BB", "PROBE-3", "CHARTING"))
+	// A finished errand is not a hull on a mission; its placement row accounts for it.
+	require.NoError(t, repo.SetExtraSeed(ctx, 1, "X1-BB", "PROBE-4", "DONE"))
+	// Another player's crew never counts toward this player's cap.
+	require.NoError(t, repo.SetExtraSeed(ctx, 2, "X1-BB", "RIGEL-9", "CHARTING"))
+
+	owned, err := repo.CountOwnedProbes(ctx, 1)
+	require.NoError(t, err)
+	require.Equal(t, int64(3), owned, "the first hull and both crew hulls, the DONE one excluded")
+
+	// The same hull named by a placement row too is still one hull.
+	ghost := slot("X1-AA-Y1", "PARKED")
+	ghost.SlotKind = "SPARE"
+	ghost.AssignedShip = strptr("PROBE-2")
+	require.NoError(t, repo.UpsertSpareSlot(ctx, ghost))
+
+	owned, err = repo.CountOwnedProbes(ctx, 1)
+	require.NoError(t, err)
+	require.Equal(t, int64(3), owned, "one hull, named twice, is one hull")
+}

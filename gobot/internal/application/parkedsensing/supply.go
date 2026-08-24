@@ -190,7 +190,7 @@ func (t *expandTick) claimSpares(ctx context.Context) error {
 		if !found {
 			continue
 		}
-		if err := t.p.Ledger.SetSeed(ctx, t.playerID, target.System, spare.AssignedShip, SeedStateDispatched); err != nil {
+		if err := t.stampErrand(ctx, target.System, spare.AssignedShip, SeedStateDispatched); err != nil {
 			return fmt.Errorf("failed to send spare %s to chart %q: %w", spare.AssignedShip, target.System, err)
 		}
 		// The hull now belongs to the errand rather than to the ledger, so its

@@ -386,8 +386,9 @@ func (r *SensingLedgerRepository) TransitionSlot(
 // so neither counts. SPARE-kind slots DO count: a parked reserve probe is still
 // a probe we paid for. Deliberately era-AGNOSTIC (see the type comment): a hull
 // bought last era still exists, and losing it from this count would authorise
-// re-buying it. A hull on an ERRAND holds no slot row (states.go), so the seed
-// columns are unioned in and DEDUPED on the hull, never counted twice.
+// re-buying it. A hull on an ERRAND holds no slot row (states.go), so BOTH errand
+// tables — a system's first charting hull in sensing_systems, the rest of its crew
+// in sensing_seed_hulls — are unioned in and DEDUPED on the hull.
 func (r *SensingLedgerRepository) CountOwnedProbes(ctx context.Context, playerID int) (int64, error) {
 	var count int64
 	if err := r.db.WithContext(ctx).Raw(`
@@ -397,8 +398,12 @@ func (r *SensingLedgerRepository) CountOwnedProbes(ctx context.Context, playerID
 			UNION
 			SELECT seed_ship AS hull FROM sensing_systems
 			WHERE player_id = ? AND seed_state IN ? AND seed_ship IS NOT NULL
+			UNION
+			SELECT ship_symbol AS hull FROM sensing_seed_hulls
+			WHERE player_id = ? AND seed_state IN ?
 		) owned`,
 		playerID, []string{"BOUGHT", "IN_TRANSIT", "PARKED"},
+		playerID, []string{"DISPATCHED", "CHARTING"},
 		playerID, []string{"DISPATCHED", "CHARTING"},
 	).Scan(&count).Error; err != nil {
 		return 0, fmt.Errorf("failed to count owned sensing probes: %w", err)

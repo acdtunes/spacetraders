@@ -138,8 +138,14 @@ func (f *fakeGates) Mapped(_ context.Context, _ string) (bool, error) { return t
 
 type fakeUncharted struct {
 	bySystem map[string][]string
-	err      error
-	calls    int
+	// stops is the coordinate-carrying fixture, used by the tests about how a CREW
+	// divides a system between its hulls. A fixture that sets only bySystem places
+	// every stop at the system centre, which is ONE sector however many hulls are
+	// aboard — the single-hull tour, and what leaves every fixture written before
+	// crews existed reading exactly as it did.
+	stops map[string][]ChartStop
+	err   error
+	calls int
 }
 
 // PassableGraph mirrors this fake's own adjacency as a single snapshot. Mapped enumerates exactly
@@ -167,15 +173,27 @@ func (f *fakeGates) graph() GateGraph {
 	return graph
 }
 
-func (f *fakeUncharted) UnchartedWaypoints(_ context.Context, system string) ([]string, error) {
+func (f *fakeUncharted) UnchartedStops(_ context.Context, system string) ([]ChartStop, error) {
 	f.calls++
 	if f.err != nil {
-		return []string{system + "-GHOST"}, f.err // adversarial: work to do
+		return []ChartStop{{Waypoint: system + "-GHOST"}}, f.err // adversarial: work to do
 	}
-	return f.bySystem[system], nil
+	if stops, ok := f.stops[system]; ok {
+		return stops, nil
+	}
+	out := make([]ChartStop, 0, len(f.bySystem[system]))
+	for _, waypoint := range f.bySystem[system] {
+		out = append(out, ChartStop{Waypoint: waypoint})
+	}
+	return out, nil
 }
 
 type setSeedCall struct{ system, ship, state string }
+
+// extraSeedCall records one write to the crew roster beyond a system's first
+// hull. Kept apart from setSeedCall so a test can tell which of the ledger's two
+// errand slots a tick chose — the whole question when a system is crewed.
+type extraSeedCall struct{ system, ship, state string }
 
 type fakeExpandLedger struct {
 	systems []ExpandSystem
@@ -189,6 +207,8 @@ type fakeExpandLedger struct {
 	transitionErr                  error
 
 	setSeeds       []setSeedCall
+	extraSeeds     []extraSeedCall
+	clearedExtras  []string
 	stamped        []string
 	deleted        []string
 	upsertedSlots  []SlotRecord
@@ -320,6 +340,54 @@ func (f *fakeExpandLedger) SetSeed(_ context.Context, _ int, system, ship, state
 	}
 	f.systems = append(f.systems, ExpandSystem{System: system, SeedShip: ship, SeedState: state})
 	return nil
+}
+
+// SetExtraSeed and ClearExtraSeed model the crew roster's OWN key — the HULL —
+// rather than the system's. A fake keyed on the system could not represent a hull
+// moving between systems, which is exactly the write the single-driver invariant
+// depends on.
+func (f *fakeExpandLedger) SetExtraSeed(_ context.Context, _ int, system, ship, state string) error {
+	f.extraSeeds = append(f.extraSeeds, extraSeedCall{system, ship, state})
+	if err := f.setSeedErrOn[system+"/"+ship]; err != nil {
+		return err
+	}
+	if f.setSeedErr != nil {
+		return f.setSeedErr
+	}
+	f.dropExtra(ship)
+	for i := range f.systems {
+		if f.systems[i].System == system {
+			f.systems[i].ExtraSeeds = append(f.systems[i].ExtraSeeds, SeedErrand{Ship: ship, State: state})
+			return nil
+		}
+	}
+	f.systems = append(f.systems, ExpandSystem{
+		System: system, ExtraSeeds: []SeedErrand{{Ship: ship, State: state}},
+	})
+	return nil
+}
+
+func (f *fakeExpandLedger) ClearExtraSeed(_ context.Context, _ int, ship string) error {
+	f.clearedExtras = append(f.clearedExtras, ship)
+	if f.setSeedErr != nil {
+		return f.setSeedErr
+	}
+	f.dropExtra(ship)
+	return nil
+}
+
+// dropExtra removes a hull from every crew, mirroring the real table's hull key:
+// one row per probe, wherever it is charting.
+func (f *fakeExpandLedger) dropExtra(ship string) {
+	for i := range f.systems {
+		kept := f.systems[i].ExtraSeeds[:0]
+		for _, extra := range f.systems[i].ExtraSeeds {
+			if extra.Ship != ship {
+				kept = append(kept, extra)
+			}
+		}
+		f.systems[i].ExtraSeeds = kept
+	}
 }
 
 func (f *fakeExpandLedger) StampCatalogSynced(_ context.Context, _ int, system string) error {
@@ -547,6 +615,14 @@ func (h *expandHarness) ports() ExpandPorts {
 // pass for the wrong reason. Tests about the unswept case opt in by name.
 func (h *expandHarness) run(t *testing.T, uncharted *fakeUncharted) (ExpandReport, error) {
 	t.Helper()
+	return h.runWithKnobs(t, uncharted, ExpandKnobs{
+		SeedsEnabled: true, MinBudgetRate: 0.05, Whitelist: h.whitelist,
+	})
+}
+
+// runWithKnobs is run with the tick's knobs named, for the tests that turn one.
+func (h *expandHarness) runWithKnobs(t *testing.T, uncharted *fakeUncharted, k ExpandKnobs) (ExpandReport, error) {
+	t.Helper()
 	for i := range h.ledger.systems {
 		h.ledger.systems[i].CatalogKnown = !h.unswept[h.ledger.systems[i].System]
 	}
@@ -554,9 +630,7 @@ func (h *expandHarness) run(t *testing.T, uncharted *fakeUncharted) (ExpandRepor
 	if uncharted != nil {
 		p.Uncharted = uncharted
 	}
-	return AdvanceExpansion(context.Background(), p, 1, ExpandKnobs{
-		SeedsEnabled: true, MinBudgetRate: 0.05, Whitelist: h.whitelist,
-	}, 1.0)
+	return AdvanceExpansion(context.Background(), p, 1, k, 1.0)
 }
 
 // assertIdle proves the tick touched nothing at all — the only way to show a
@@ -570,7 +644,8 @@ func (h *expandHarness) assertIdle(t *testing.T) {
 			h.gates.calls, h.ledger.systemsCalls, h.ledger.slotsCalls, h.ships.calls,
 			h.yards.calls, h.markets.calls, h.seed.verbs(), h.screen.asked)
 	}
-	if len(h.ledger.setSeeds) != 0 || len(h.ledger.deleted) != 0 ||
+	if len(h.ledger.setSeeds) != 0 || len(h.ledger.extraSeeds) != 0 ||
+		len(h.ledger.clearedExtras) != 0 || len(h.ledger.deleted) != 0 ||
 		len(h.ledger.upsertedSlots) != 0 || len(h.ledger.upsertedSystem) != 0 ||
 		len(h.ledger.transitions) != 0 {
 		t.Fatalf("expected a zero-write tick, got seeds=%v deleted=%v slots=%v systems=%v transitions=%v",
@@ -773,7 +848,7 @@ func TestSeedlessTargets_FreshlyDiscoveredSystemsSortBehindMeasuredWork(t *testi
 		{System: "X1-AAA2", Verdict: VerdictPending, UnchartedCount: 0, CatalogKnown: false},
 		{System: "X1-MID", Verdict: VerdictInScope, UnchartedCount: 5, CatalogKnown: true},
 		{System: "X1-ZZZ", Verdict: VerdictInScope, UnchartedCount: 30, CatalogKnown: true},
-	})
+	}, resolveChartHulls(ExpandKnobs{}))
 
 	var order []string
 	for _, target := range targets {

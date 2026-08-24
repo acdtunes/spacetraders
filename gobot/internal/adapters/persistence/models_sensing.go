@@ -123,6 +123,28 @@ func (SensingSystemModel) TableName() string {
 	return "sensing_systems"
 }
 
+// SensingSeedHullModel is ONE charting hull on a system's crew past the first — a
+// dark system is worked by several probes over disjoint shares of it. The FIRST
+// hull stays in SensingSystemModel's own seed_ship/seed_state columns, so a
+// single-hull system is stored as it always was and every reader of those columns
+// keeps its meaning; SeedState shares their DISPATCHED|CHARTING|DONE vocabulary.
+// KEYED ON THE HULL, which makes "a probe is on ONE errand" structural: a hull
+// moving between systems carries its row rather than leaving a second one behind.
+// EraID mirrors SensingSystemModel; the era-agnostic probe-cap count unions this
+// table, since a crew hull missing there is a probe the cap would re-buy.
+type SensingSeedHullModel struct {
+	PlayerID     int    `gorm:"primaryKey;column:player_id"`
+	ShipSymbol   string `gorm:"primaryKey;column:ship_symbol;size:50"`
+	SystemSymbol string `gorm:"column:system_symbol;size:50;index;not null"`
+	SeedState    string `gorm:"column:seed_state;size:20;not null"`
+	EraID        *int   `gorm:"column:era_id;index"`
+	UpdatedAt    time.Time
+}
+
+func (SensingSeedHullModel) TableName() string {
+	return "sensing_seed_hulls"
+}
+
 // SensingSlotModel is one probe PLACEMENT in the parked-probe sensing ledger
 // (sp-k6v8z) — the durable spine that makes the whole model re-derivable from
 // the database after a daemon restart (RULINGS #2). One row per (player,

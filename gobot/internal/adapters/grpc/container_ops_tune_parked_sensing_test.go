@@ -67,6 +67,10 @@ func TestSensingTune_LiveKnobSet(t *testing.T) {
 		// The fill queue's coverage-reserve share. Unlike every other knob in this
 		// list, its documented default IS 0 — so this one ships off, not armed.
 		"coverage_reserve",
+		// A dark system's charting crew: the per-system hull ceiling, and the
+		// outstanding counts earning a second and a third. A cap of 1 is the
+		// single-hull tour, which is this feature's off switch.
+		"chart_hull_cap", "chart_hull_2_at", "chart_hull_3_at",
 	}
 	for _, key := range live {
 		require.Contains(t, bounds, key, "%s must be tunable", key)

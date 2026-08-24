@@ -122,6 +122,12 @@ type RunProbeSensingCoordinatorCommand struct {
 	// CoverageReserve holds back this many fill attempts per tick for the best
 	// never-entered system. Zero (default) ships off. See BuyKnobs.CoverageReserve.
 	CoverageReserve int
+	// ChartHullCap, SecondChartHullAt and ThirdChartHullAt size a dark system's
+	// charting crew: the ceiling on probes one system may draw, and the outstanding
+	// counts that earn the second and third. See ExpandKnobs.
+	ChartHullCap      int
+	SecondChartHullAt int
+	ThirdChartHullAt  int
 
 	// --- retired: read by the old touring core, ignored by this one -----------
 

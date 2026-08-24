@@ -140,6 +140,56 @@ func (r *SensingLedgerRepository) SetSeed(ctx context.Context, playerID int, sys
 	return nil
 }
 
+// ExtraSeeds returns the era-scoped charting errands of the hulls past each
+// system's first, hull-ordered so a tick's crew reads reproducibly.
+func (r *SensingLedgerRepository) ExtraSeeds(ctx context.Context, playerID int) ([]SensingSeedHullModel, error) {
+	predicate, args := eraScopePredicate(r.openEraID(ctx))
+	var models []SensingSeedHullModel
+	if err := r.db.WithContext(ctx).
+		Where("player_id = ?", playerID).
+		Where(predicate, args...).
+		Order("ship_symbol").
+		Find(&models).Error; err != nil {
+		return nil, fmt.Errorf("failed to list sensing charting crews: %w", err)
+	}
+	return models, nil
+}
+
+// SetExtraSeed records the charting errand of a hull past its system's first, and
+// NOTHING else. Keyed on the HULL, so re-stamping a hull onto another system MOVES
+// its errand rather than leaving a second one naming the same probe.
+func (r *SensingLedgerRepository) SetExtraSeed(ctx context.Context, playerID int, system, shipSymbol, seedState string) error {
+	model := SensingSeedHullModel{
+		PlayerID:     playerID,
+		ShipSymbol:   shipSymbol,
+		SystemSymbol: system,
+		SeedState:    seedState,
+		EraID:        r.openEraID(ctx),
+		UpdatedAt:    time.Now().UTC(),
+	}
+	if err := r.db.WithContext(ctx).
+		Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "player_id"}, {Name: "ship_symbol"}},
+			DoUpdates: clause.AssignmentColumns([]string{"system_symbol", "seed_state", "era_id", "updated_at"}),
+		}).
+		Create(&model).Error; err != nil {
+		return fmt.Errorf("failed to set the charting errand of %q on %q: %w", shipSymbol, system, err)
+	}
+	return nil
+}
+
+// ClearExtraSeed ends one crew hull's errand by deleting its row. A missing row is
+// NOT an error: the clear is idempotent, so a half-finished stand-down can be
+// re-run. Era-AGNOSTIC, unlike the read, so a pre-reset errand stays clearable.
+func (r *SensingLedgerRepository) ClearExtraSeed(ctx context.Context, playerID int, shipSymbol string) error {
+	if err := r.db.WithContext(ctx).
+		Where("player_id = ? AND ship_symbol = ?", playerID, shipSymbol).
+		Delete(&SensingSeedHullModel{}).Error; err != nil {
+		return fmt.Errorf("failed to end the charting errand of %q: %w", shipSymbol, err)
+	}
+	return nil
+}
+
 // nullableSeedValue maps the caller's "" onto a NULL column, so a cleared errand
 // leaves no empty-string residue for a "is a hull on this?" check to trip over.
 func nullableSeedValue(v string) *string {

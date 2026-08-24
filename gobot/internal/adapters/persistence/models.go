@@ -38,6 +38,7 @@ func AllModels() []any {
 		&SystemCoordModel{},
 		&SensingSystemModel{},
 		&SensingSlotModel{},
+		&SensingSeedHullModel{},
 		&ScanDedupAllowlistModel{},
 	}
 }

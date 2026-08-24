@@ -33,7 +33,7 @@ type WaypointCatalog interface {
 	// ListUnchartedCount reports how many waypoints in the system remain
 	// uncharted. Non-zero means the screen has not seen the whole system yet.
 	//
-	// It counts exactly the set UnchartedCatalog.UnchartedWaypoints hands a seed
+	// It counts exactly the set UnchartedCatalog.UnchartedStops hands a seed
 	// to visit, and verdictFor requires it to read zero before writing a system
 	// off durably. The two must never disagree about WHICH waypoints are
 	// outstanding; they are free to disagree about the order.

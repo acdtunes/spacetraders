@@ -68,6 +68,14 @@ const (
 	// to some positive one, so the saturate-first order runs unarmed until set.
 	defaultCoverageReserve = 0
 
+	// The charting crew: how many probes one dark system may be worked by, and the
+	// outstanding counts earning the second and third. Mirrors of the engine's own
+	// defaults (parkedsensing.chartcrew), held here so the tune registry publishes a
+	// number rather than a zero. A cap of ONE is the single-hull tour.
+	defaultChartHullCap      = 3
+	defaultSecondChartHullAt = 12
+	defaultThirdChartHullAt  = 24
+
 	// screenSweepBatch bounds how many PENDING systems one tick screens. A plain
 	// constant, deliberately not a knob: it paces API bursts (an unresolved
 	// market costs a remote fetch, and a catalog-unknown system costs a
@@ -128,6 +136,11 @@ type sensingConfig struct {
 	SurgeInFlightCap int
 	// CoverageReserve is the buy queue's coverage-reserve share. See BuyKnobs.CoverageReserve.
 	CoverageReserve int
+	// ChartHullCap, SecondChartHullAt and ThirdChartHullAt size a dark system's
+	// charting crew. See ExpandKnobs for what each one binds.
+	ChartHullCap      int
+	SecondChartHullAt int
+	ThirdChartHullAt  int
 }
 
 // resolveSensingConfig resolves one tick's effective config from the launch
@@ -180,6 +193,9 @@ func resolveSensingConfig(ctx context.Context, cmd *RunProbeSensingCoordinatorCo
 		QuartermasterCadence:    time.Duration(pick("quartermaster_cadence_secs", cmd.QuartermasterCadence)) * time.Second,
 		SurgeInFlightCap:        pick("surge_inflight_cap", cmd.SurgeInFlightCap),
 		CoverageReserve:         pick("coverage_reserve", cmd.CoverageReserve),
+		ChartHullCap:            pick("chart_hull_cap", cmd.ChartHullCap),
+		SecondChartHullAt:       pick("chart_hull_2_at", cmd.SecondChartHullAt),
+		ThirdChartHullAt:        pick("chart_hull_3_at", cmd.ThirdChartHullAt),
 	}
 
 	// 1=both, 2=neither, 3=probes only. Anything else — including the absent-key 0 —
@@ -256,6 +272,15 @@ func applySensingDefaults(ctx context.Context, cmd *RunProbeSensingCoordinatorCo
 		warnNegativeSensingKnob(ctx, "coverage_reserve", c.CoverageReserve, defaultCoverageReserve)
 		c.CoverageReserve = defaultCoverageReserve
 	}
+	if c.ChartHullCap <= 0 {
+		c.ChartHullCap = defaultChartHullCap
+	}
+	if c.SecondChartHullAt <= 0 {
+		c.SecondChartHullAt = defaultSecondChartHullAt
+	}
+	if c.ThirdChartHullAt <= 0 {
+		c.ThirdChartHullAt = defaultThirdChartHullAt
+	}
 }
 
 func warnNegativeSensingKnob(ctx context.Context, key string, v, fallback int) {
@@ -312,8 +337,11 @@ func buyKnobs(cfg sensingConfig) parkedsensing.BuyKnobs {
 // it, so gating on the pacer would leave expansion charting through a rate-limit storm.
 func expandKnobs(cfg sensingConfig) parkedsensing.ExpandKnobs {
 	return parkedsensing.ExpandKnobs{
-		SeedsEnabled:  cfg.SeedDispatch,
-		MinBudgetRate: float64(cfg.MinScanRateMilli) / 1000.0,
-		Whitelist:     cfg.Whitelist,
+		SeedsEnabled:      cfg.SeedDispatch,
+		MinBudgetRate:     float64(cfg.MinScanRateMilli) / 1000.0,
+		Whitelist:         cfg.Whitelist,
+		ChartHullCap:      cfg.ChartHullCap,
+		SecondChartHullAt: cfg.SecondChartHullAt,
+		ThirdChartHullAt:  cfg.ThirdChartHullAt,
 	}
 }

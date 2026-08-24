@@ -248,11 +248,26 @@ func (p *LedgerPort) MarkScanAttempted(ctx context.Context, playerID int, waypoi
 }
 
 // Systems returns every system row the player holds, carrying the uncharted
-// count and the charting errand the expansion engine drives off.
+// count and the charting errands the expansion engine drives off.
+//
+// The crew hulls past the first are a SECOND read, joined here on the system
+// symbol: they are keyed on the hull rather than on the system, which is what
+// makes "a probe is on one errand" a property of the key instead of a rule the
+// writers have to keep.
 func (p *LedgerPort) Systems(ctx context.Context, playerID int) ([]appSensing.ExpandSystem, error) {
 	models, err := p.repo.Systems(ctx, playerID)
 	if err != nil {
 		return nil, err
+	}
+	extras, err := p.repo.ExtraSeeds(ctx, playerID)
+	if err != nil {
+		return nil, err
+	}
+	crews := make(map[string][]appSensing.SeedErrand, len(extras))
+	for _, extra := range extras {
+		crews[extra.SystemSymbol] = append(crews[extra.SystemSymbol], appSensing.SeedErrand{
+			Ship: extra.ShipSymbol, State: extra.SeedState,
+		})
 	}
 	out := make([]appSensing.ExpandSystem, 0, len(models))
 	for _, m := range models {
@@ -262,6 +277,7 @@ func (p *LedgerPort) Systems(ctx context.Context, playerID int) ([]appSensing.Ex
 			UnchartedCount: m.UnchartedCount,
 			SeedShip:       derefString(m.SeedShip),
 			SeedState:      derefString(m.SeedState),
+			ExtraSeeds:     crews[m.SystemSymbol],
 			CatalogKnown:   m.CatalogSyncedAt != nil,
 		})
 	}
@@ -353,6 +369,16 @@ func slotModel(playerID int, slot appSensing.SlotRecord) (persistence.SensingSlo
 // SetSeed writes a system's charting errand and only that.
 func (p *LedgerPort) SetSeed(ctx context.Context, playerID int, system, shipSymbol, seedState string) error {
 	return p.repo.SetSeed(ctx, playerID, system, shipSymbol, seedState)
+}
+
+// SetExtraSeed writes the errand of a charting hull past a system's first.
+func (p *LedgerPort) SetExtraSeed(ctx context.Context, playerID int, system, shipSymbol, seedState string) error {
+	return p.repo.SetExtraSeed(ctx, playerID, system, shipSymbol, seedState)
+}
+
+// ClearExtraSeed ends the errand of a charting hull past a system's first.
+func (p *LedgerPort) ClearExtraSeed(ctx context.Context, playerID int, shipSymbol string) error {
+	return p.repo.ClearExtraSeed(ctx, playerID, shipSymbol)
 }
 
 // DeleteSlot removes ONE placement row outright — the one write that hands a

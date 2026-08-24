@@ -125,7 +125,7 @@ func (p *WaypointCatalogPort) ListMarketWaypoints(ctx context.Context, system st
 //
 // THE SINGLE SOURCE FOR BOTH UNCHARTED READS, and it exists for what it PREVENTS.
 // ListUnchartedCount is the charting tour's COMPLETION SIGNAL and
-// UnchartedWaypoints is its WORK LIST, and the engine treats them as two views
+// UnchartedStops is its WORK LIST, and the engine treats them as two views
 // of one set: the screen writes the count to uncharted_count, verdictFor will
 // not durably write a system off until it reads zero, and the tour ends only
 // when the list comes back empty. Narrow ONE of them — by type, by distance, by
@@ -142,7 +142,7 @@ func (p *WaypointCatalogPort) ListMarketWaypoints(ctx context.Context, system st
 // LIST narrow together and stay two views of one set — which is what makes
 // completion still mean something. A system whose only remaining waypoints are
 // asteroids counts ZERO outstanding and reaches a terminal charted state instead
-// of being toured indefinitely to discover nothing. In UnchartedWaypoints alone
+// of being toured indefinitely to discover nothing. In UnchartedStops alone
 // the same filter would leave that system out of stops while the count sat
 // non-zero forever: pinned PENDING, re-dispatched probes, frontier stalled.
 //
@@ -204,7 +204,7 @@ func (p *WaypointCatalogPort) ListUnchartedCount(ctx context.Context, system str
 	return len(waypoints), nil
 }
 
-// UnchartedWaypoints returns the system's uncharted waypoints in the order a
+// UnchartedStops returns the system's uncharted waypoints in the order a
 // charting seed should visit them: SHIPYARD-BEARING TYPES FIRST, then
 // market-bearing ones, then the rest, alphabetically inside each tier.
 //
@@ -232,7 +232,10 @@ func (p *WaypointCatalogPort) ListUnchartedCount(ctx context.Context, system str
 // order would let it oscillate between two waypoints and never finish. Sorting
 // on the pair (priority, symbol) — rather than by priority alone — is what keeps
 // that true regardless of the order the rows arrive in.
-func (p *WaypointCatalogPort) UnchartedWaypoints(ctx context.Context, system string) ([]string, error) {
+// Each stop carries its COORDINATES, which is what a crewed system's shares are
+// cut from: a share is an angular sector of the system, so it depends on where a
+// waypoint sits in the plane and not on where it sits in this list.
+func (p *WaypointCatalogPort) UnchartedStops(ctx context.Context, system string) ([]appSensing.ChartStop, error) {
 	waypoints, err := p.unchartedIn(ctx, system)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list uncharted waypoints in %q: %w", system, err)
@@ -244,9 +247,9 @@ func (p *WaypointCatalogPort) UnchartedWaypoints(ctx context.Context, system str
 		}
 		return waypoints[i].Symbol < waypoints[j].Symbol
 	})
-	out := make([]string, 0, len(waypoints))
+	out := make([]appSensing.ChartStop, 0, len(waypoints))
 	for _, waypoint := range waypoints {
-		out = append(out, waypoint.Symbol)
+		out = append(out, appSensing.ChartStop{Waypoint: waypoint.Symbol, X: waypoint.X, Y: waypoint.Y})
 	}
 	return out, nil
 }

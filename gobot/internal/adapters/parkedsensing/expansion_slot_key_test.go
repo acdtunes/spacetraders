@@ -110,7 +110,7 @@ func (keyTestMarkets) DepthRowsAt(_ context.Context, _ int, _ string) ([]scoutin
 
 type keyTestUncharted struct{}
 
-func (keyTestUncharted) UnchartedWaypoints(_ context.Context, _ string) ([]string, error) {
+func (keyTestUncharted) UnchartedStops(_ context.Context, _ string) ([]appSensing.ChartStop, error) {
 	return nil, nil
 }
 

@@ -185,6 +185,21 @@ func newCatalogPort(db *gorm.DB) *adapterSensing.WaypointCatalogPort {
 	return adapterSensing.NewWaypointCatalogPort(persistence.NewGormWaypointRepository(db), db, testPlayerID)
 }
 
+// tourSymbols projects a tour's stops onto their symbols, which is the shape
+// the ordering assertions below are written against — the coordinates each stop
+// also carries belong to how a CREW divides a system, not to its visiting order.
+func tourSymbols(port *adapterSensing.WaypointCatalogPort, system string) ([]string, error) {
+	stops, err := port.UnchartedStops(context.Background(), system)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(stops))
+	for _, stop := range stops {
+		out = append(out, stop.Waypoint)
+	}
+	return out, nil
+}
+
 // CatalogKnown answers TRUE on either proof, and neither proof can be un-learned.
 //
 // The waypoint-rows branch is the one that matters most in practice: it is what
@@ -278,7 +293,7 @@ func TestListUnchartedCount_AndOrder(t *testing.T) {
 	// Deterministic order is what the tour needs: a seed charts the first waypoint
 	// it is handed and re-derives the list next tick, so an unstable order would
 	// let it oscillate between two waypoints and never finish.
-	order, err := port.UnchartedWaypoints(context.Background(), "X1-AA1")
+	order, err := tourSymbols(port, "X1-AA1")
 	require.NoError(t, err)
 	require.Equal(t, []string{"X1-AA1-C1", "X1-AA1-C2"}, order)
 }
@@ -333,7 +348,7 @@ func TestUnchartedWaypoints_OrdersByValueAndDropsOnlyTheBarrenTier(t *testing.T)
 	db := newShipPortsDB(t)
 	require.NoError(t, db.Create(liveShapedSystem()).Error)
 
-	order, err := newCatalogPort(db).UnchartedWaypoints(context.Background(), "X1-AA2")
+	order, err := tourSymbols(newCatalogPort(db), "X1-AA2")
 	require.NoError(t, err)
 
 	require.Equal(t, []string{
@@ -365,7 +380,7 @@ func TestUnchartedWaypoints_AnAllAsteroidSystemIsAlreadyComplete(t *testing.T) {
 	}).Error)
 	port := newCatalogPort(db)
 
-	order, err := port.UnchartedWaypoints(context.Background(), "X1-AA3")
+	order, err := tourSymbols(port, "X1-AA3")
 	require.NoError(t, err)
 	require.Empty(t, order, "there is no charting work here worth a flight — the seed must stand down, not tour two barren rocks")
 
@@ -396,7 +411,7 @@ func TestUnchartedReads_CountAndWorkListCoverTheSameSetAfterTheSkip(t *testing.T
 	require.NoError(t, db.Create(liveShapedSystem()).Error)
 	port := newCatalogPort(db)
 
-	order, err := port.UnchartedWaypoints(context.Background(), "X1-AA2")
+	order, err := tourSymbols(port, "X1-AA2")
 	require.NoError(t, err)
 	count, err := port.ListUnchartedCount(context.Background(), "X1-AA2")
 	require.NoError(t, err)
@@ -428,7 +443,7 @@ func TestUnchartedWaypoints_AsteroidPrefixedTypesRankWithTheMarkets(t *testing.T
 		typedWaypointRow("X1-AA4-E1", "X1-AA4", "ENGINEERED_ASTEROID", []string{"UNCHARTED"}),
 	}).Error)
 
-	order, err := newCatalogPort(db).UnchartedWaypoints(context.Background(), "X1-AA4")
+	order, err := tourSymbols(newCatalogPort(db), "X1-AA4")
 	require.NoError(t, err)
 	require.Equal(t, []string{"X1-AA4-B1", "X1-AA4-E1"}, order,
 		"only the bare ASTEROID is barren; its two prefix-sharing cousins always carry a market and must SURVIVE the skip")
@@ -752,7 +767,7 @@ func TestUnchartedWaypoints_ChartsTheJumpGateBeforeAnyMarket(t *testing.T) {
 	db := newShipPortsDB(t)
 	require.NoError(t, db.Create(gatedSystem()).Error)
 
-	order, err := newCatalogPort(db).UnchartedWaypoints(context.Background(), "X1-AA4")
+	order, err := tourSymbols(newCatalogPort(db), "X1-AA4")
 	require.NoError(t, err)
 
 	require.Equal(t, []string{
@@ -779,7 +794,7 @@ func TestUnchartedWaypoints_TheGateTierChangesOrderAndOnlyBarrenChangesMembershi
 	require.NoError(t, db.Create(rows).Error)
 	port := newCatalogPort(db)
 
-	order, err := port.UnchartedWaypoints(context.Background(), "X1-AA4")
+	order, err := tourSymbols(port, "X1-AA4")
 	require.NoError(t, err)
 
 	want := make([]string, 0, len(rows))
@@ -813,9 +828,9 @@ func TestUnchartedWaypoints_TheGatedOrderIsStableAcrossCalls(t *testing.T) {
 	require.NoError(t, db.Create(gatedSystem()).Error)
 	port := newCatalogPort(db)
 
-	first, err := port.UnchartedWaypoints(context.Background(), "X1-AA4")
+	first, err := tourSymbols(port, "X1-AA4")
 	require.NoError(t, err)
-	second, err := port.UnchartedWaypoints(context.Background(), "X1-AA4")
+	second, err := tourSymbols(port, "X1-AA4")
 	require.NoError(t, err)
 
 	require.Equal(t, first, second, "two derivations of the same system must agree exactly")
