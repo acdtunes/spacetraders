@@ -153,6 +153,16 @@ contract:
   # (a live tune wins over this file, which wins over the default).
   min_home_contract_workers: 6
 
+  # Route-ETA ranking budget, in milliseconds. Sourcing selection prices every
+  # candidate hull's actual route before picking one; overrunning this budget is not a
+  # failure — the pick degrades to straight-line distance and logs a route_eta_fallback
+  # WARNING with cause budget_exceeded. The routing service prices candidates one at a
+  # time, so a selection costs the candidate count times one route: raise this when that
+  # WARNING starts appearing as the contract fleet grows (its candidates / elapsed_ms /
+  # budget_ms fields say by how much), lower it to cap how long a wedged routing service
+  # may hold a dispatch decision. Absent => the in-code default.
+  # route_eta_budget_ms: 6000
+
   # Idle-gap arbitrage harvest (sp-1z2h / sp-uohe): the contract fleet's
   # dedicated hulls sit idle ~89% of wall-time; this harvests that idle time
   # with hub-local one-shot guarded arb legs. Every value below is OPTIONAL —

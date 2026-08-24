@@ -922,7 +922,7 @@ func run(cfg *config.Config) error {
 	// (the natural off-switch). Mirrors SetIdleArbLauncher(daemonServer) above.
 	contractFleetCoordinatorHandler.SetDepotRegistryProvider(daemonServer)
 	// A nil clock is fail-open here too (EstimateAll guards e.clock == nil); production always wires the real one.
-	contractFleetCoordinatorHandler.SetRouteETAEstimator(appContract.NewRouteETAEstimator(routingClient, shared.NewRealClock()))
+	contractFleetCoordinatorHandler.SetRouteETAEstimator(appContract.NewRouteETAEstimator(routingClient, shared.NewRealClock(), cfg.Contract.RouteETABudget()))
 	if err := mediator.RegisterHandler[*contractCmd.RunFleetCoordinatorCommand](med, contractFleetCoordinatorHandler); err != nil {
 		return fmt.Errorf("failed to register ContractFleetCoordinator handler: %w", err)
 	}

@@ -136,9 +136,14 @@ func SelectClosestShip(
 			}
 		}
 	} else if estimator != nil {
+		// Candidate count, wall time spent and the bound it was measured against separate a
+		// budget merely too tight for this many candidates from a service that is failing.
 		logger.Log("WARNING", "Route-ETA ranking unavailable - falling back to straight-line selection", map[string]interface{}{
-			"action": "route_eta_fallback",
-			"cause":  etaResult.Cause,
+			"action":     "route_eta_fallback",
+			"cause":      etaResult.Cause,
+			"candidates": len(ships),
+			"elapsed_ms": etaResult.Elapsed.Milliseconds(),
+			"budget_ms":  estimator.Budget().Milliseconds(),
 		})
 	}
 

@@ -1,5 +1,7 @@
 package config
 
+import "time"
+
 // ContractConfig holds contract-coordinator configuration. Today it carries the
 // idle-gap arbitrage harvest knobs: the daemon injects these
 // into the contract fleet coordinator container's launch config at creation
@@ -17,6 +19,22 @@ type ContractConfig struct {
 	// (MinHomeContractWorkersDefault = 6). Live-tunable without restart via `tune --operation
 	// contract --key min_home_contract_workers`.
 	MinHomeContractWorkers int `mapstructure:"min_home_contract_workers"`
+	// RouteETABudgetMs is the wall-clock ceiling the sourcing selector's route-ETA ranking
+	// runs under, in milliseconds. Overrunning it degrades that selection to straight-line
+	// ranking rather than failing it, so the knob trades how long a wedged routing service
+	// may hold a dispatch decision against how often a merely slow one costs the fleet its
+	// ETA ranking. 0/absent → the estimator's DefaultRouteETABudget.
+	RouteETABudgetMs int `mapstructure:"route_eta_budget_ms"`
+}
+
+// RouteETABudget returns the configured budget as a Duration, or 0 when unset — the
+// estimator's constructor then supplies DefaultRouteETABudget, keeping that default in
+// one place, next to the code that enforces it.
+func (c ContractConfig) RouteETABudget() time.Duration {
+	if c.RouteETABudgetMs <= 0 {
+		return 0
+	}
+	return time.Duration(c.RouteETABudgetMs) * time.Millisecond
 }
 
 // AutoLiquidationSettings are the yaml-tunable knobs for the contract coordinator's

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/routing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
@@ -25,12 +26,19 @@ type ETAResult struct {
 	// under a genuine race between two failure kinds this names whichever was observed first.
 	// Empty when OK is true.
 	Cause string
+	// Elapsed is the batch's measured wall time, so a caller logging a fallback reports
+	// how much of the budget the routing service consumed, not merely that it was hit.
+	Elapsed time.Duration
 }
 
-// routeETABudget bounds EstimateAll's wall-clock cost so a slow or wedged
-// routing service can never stall a dispatch decision - a timeout there
-// degrades the whole batch to OK=false rather than hang the caller.
-const routeETABudget = 2 * time.Second
+// DefaultRouteETABudget bounds EstimateAll's wall-clock cost when the operator has
+// configured none, so a slow or wedged routing service degrades the batch to OK=false
+// rather than stalling a dispatch decision. The routing service prices one candidate at a
+// time, so a batch costs the candidate count times one route and a budget sized for a
+// small contract fleet expires on a larger one; this one covers the fleet at the delivery
+// saturation the contract scaler grows toward. Selection runs once per contract cycle, so
+// that headroom costs nothing operationally.
+const DefaultRouteETABudget = 6 * time.Second
 
 // RouteETAEstimator prices sourcing candidates on the fuel-aware planner the
 // daemon already flies routes with, so selection ranks on the same arrival
@@ -44,9 +52,23 @@ type RouteETAEstimator struct {
 }
 
 // NewRouteETAEstimator wires the estimator to the routing port already used
-// for real dispatch, so ranking and execution price routes identically.
-func NewRouteETAEstimator(client routing.RoutingClient, clock shared.Clock) *RouteETAEstimator {
-	return &RouteETAEstimator{client: client, clock: clock, budget: routeETABudget}
+// for real dispatch, so ranking and execution price routes identically. A non-positive
+// budget takes DefaultRouteETABudget - a zero budget would expire before the first route
+// answers and demote every selection to straight-line ranking.
+func NewRouteETAEstimator(client routing.RoutingClient, clock shared.Clock, budget time.Duration) *RouteETAEstimator {
+	if budget <= 0 {
+		budget = DefaultRouteETABudget
+	}
+	return &RouteETAEstimator{client: client, clock: clock, budget: budget}
+}
+
+// Budget reports the wall-clock ceiling EstimateAll runs under so a caller logging a
+// fallback can name the bound that was hit. Nil-safe: the selector's estimator is optional.
+func (e *RouteETAEstimator) Budget() time.Duration {
+	if e == nil {
+		return 0
+	}
+	return e.budget
 }
 
 // EstimateAll prices one route per ship in parallel and returns as soon as
@@ -73,6 +95,9 @@ func (e *RouteETAEstimator) EstimateAll(ctx context.Context, ships []*navigation
 		drop   bool
 		global bool
 		cause  string // set alongside global - see ETAResult.Cause
+		// routeCall is this candidate's PlanRoute duration, carried back rather than logged
+		// in the goroutine so batch timing is reported off the concurrent path.
+		routeCall time.Duration
 	}
 
 	result := ETAResult{ETAs: make(map[string]float64, len(ships)), OK: true}
@@ -113,6 +138,7 @@ func (e *RouteETAEstimator) EstimateAll(ctx context.Context, ships []*navigation
 			}
 			// Fuel is deducted at departure in this game, so an in-transit
 			// hull's current fuel already IS its arrival fuel - no adjustment.
+			callStart := e.clock.Now()
 			resp, err := e.client.PlanRoute(ctx, &routing.RouteRequest{
 				SystemSymbol:  systemSymbol,
 				StartWaypoint: loc.Symbol, // invariant: destination while in transit
@@ -123,6 +149,7 @@ func (e *RouteETAEstimator) EstimateAll(ctx context.Context, ships []*navigation
 				Waypoints:     waypointData,
 				PreferCruise:  false,
 			})
+			routeCall := e.clock.Now().Sub(callStart)
 			if err != nil {
 				switch {
 				case ctx.Err() != nil:
@@ -130,22 +157,29 @@ func (e *RouteETAEstimator) EstimateAll(ctx context.Context, ships []*navigation
 					// because a client that itself honors ctx will often return a
 					// context.DeadlineExceeded-shaped error once that happens, and that shape
 					// must not be mistaken for an independent transport-class failure below.
-					answers <- answer{symbol: ship.ShipSymbol(), global: true, cause: "budget_exceeded"}
+					answers <- answer{symbol: ship.ShipSymbol(), global: true, cause: "budget_exceeded", routeCall: routeCall}
 				case errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled):
 					// The client failed with a deadline/cancellation shape on its own, while OUR
 					// ctx is still healthy - a downstream timeout or cancellation, not our budget.
-					answers <- answer{symbol: ship.ShipSymbol(), global: true, cause: "transport_error"}
+					answers <- answer{symbol: ship.ShipSymbol(), global: true, cause: "transport_error", routeCall: routeCall}
 				default:
-					answers <- answer{symbol: ship.ShipSymbol(), drop: true} // unroutable: this hull only
+					answers <- answer{symbol: ship.ShipSymbol(), drop: true, routeCall: routeCall} // unroutable: this hull only
 				}
 				return
 			}
-			answers <- answer{symbol: ship.ShipSymbol(), eta: transitRemainder + float64(resp.TotalTimeSeconds)}
+			answers <- answer{symbol: ship.ShipSymbol(), eta: transitRemainder + float64(resp.TotalTimeSeconds), routeCall: routeCall}
 		}(ship)
 	}
 
+	// The slowest single call is what a batch's wall time tracks, because the routing
+	// service prices candidates one at a time however many the estimator asks for at once.
+	var slowestCall time.Duration
+	slowestShip := ""
 	for range routable {
 		a := <-answers
+		if a.routeCall > slowestCall {
+			slowestCall, slowestShip = a.routeCall, a.symbol
+		}
 		switch {
 		case a.global:
 			result.OK = false
@@ -164,5 +198,15 @@ func (e *RouteETAEstimator) EstimateAll(ctx context.Context, ships []*navigation
 			result.Cause = "all_candidates_unroutable"
 		}
 	}
+	result.Elapsed = e.clock.Now().Sub(now)
+	common.LoggerFromContext(ctx).Log("DEBUG", "Route-ETA batch priced", map[string]interface{}{
+		"action":       "route_eta_batch",
+		"candidates":   len(routable),
+		"elapsed_ms":   result.Elapsed.Milliseconds(),
+		"budget_ms":    e.budget.Milliseconds(),
+		"slowest_ms":   slowestCall.Milliseconds(),
+		"slowest_ship": slowestShip,
+		"ranked":       result.OK,
+	})
 	return result
 }

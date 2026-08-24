@@ -133,7 +133,7 @@ func TestRouteETA_HappyPath_AllPriced_OKTrue(t *testing.T) {
 		"X1-TW-A1": {seconds: 42},
 		"X1-TW-A2": {seconds: 77},
 	}}
-	estimator := NewRouteETAEstimator(fake, testClock())
+	estimator := NewRouteETAEstimator(fake, testClock(), 0)
 
 	result := estimator.EstimateAll(context.Background(), []*navigation.Ship{shipA, shipB}, etaTestSystem, etaTestGoal, map[string]*shared.Waypoint{})
 
@@ -159,7 +159,7 @@ func TestRouteETA_InTransitHull_AddsRemainingTransit(t *testing.T) {
 	fake := &fakeRoutingClient{perShip: map[string]fakeAnswer{
 		"X1-TW-C": {seconds: 60},
 	}}
-	estimator := NewRouteETAEstimator(fake, clock)
+	estimator := NewRouteETAEstimator(fake, clock, 0)
 
 	result := estimator.EstimateAll(context.Background(), []*navigation.Ship{transiting, unpriceable}, etaTestSystem, etaTestGoal, map[string]*shared.Waypoint{})
 
@@ -184,7 +184,7 @@ func TestRouteETA_OneUnroutable_DroppedOthersKept(t *testing.T) {
 		"X1-TW-E": {seconds: 55},
 		"X1-TW-F": {err: errors.New("no route found")},
 	}}
-	estimator := NewRouteETAEstimator(fake, testClock())
+	estimator := NewRouteETAEstimator(fake, testClock(), 0)
 
 	result := estimator.EstimateAll(context.Background(), []*navigation.Ship{good, bad}, etaTestSystem, etaTestGoal, map[string]*shared.Waypoint{})
 
@@ -224,7 +224,7 @@ func TestRouteETA_NilCurrentLocation_DroppedOthersKept(t *testing.T) {
 	fake := &fakeRoutingClient{perShip: map[string]fakeAnswer{
 		"X1-TW-M": {seconds: 21},
 	}}
-	estimator := NewRouteETAEstimator(fake, testClock())
+	estimator := NewRouteETAEstimator(fake, testClock(), 0)
 
 	result := estimator.EstimateAll(context.Background(), []*navigation.Ship{good, noLocation}, etaTestSystem, etaTestGoal, map[string]*shared.Waypoint{})
 
@@ -249,7 +249,7 @@ func TestRouteETA_AllUnroutable_OKFalse(t *testing.T) {
 		"X1-TW-G": {err: errors.New("no route found")},
 		"X1-TW-H": {err: errors.New("no route found")},
 	}}
-	estimator := NewRouteETAEstimator(fake, testClock())
+	estimator := NewRouteETAEstimator(fake, testClock(), 0)
 
 	result := estimator.EstimateAll(context.Background(), []*navigation.Ship{shipG, shipH}, etaTestSystem, etaTestGoal, map[string]*shared.Waypoint{})
 
@@ -269,8 +269,7 @@ func TestRouteETA_AllUnroutable_OKFalse(t *testing.T) {
 func TestRouteETA_BudgetOverrun_OKFalse(t *testing.T) {
 	ship := newETAShip(t, "TORWIND-I", "X1-TW-I")
 	fake := &fakeRoutingClient{delay: 2 * time.Second}
-	estimator := NewRouteETAEstimator(fake, testClock())
-	estimator.budget = 50 * time.Millisecond // test-scoped override; production budget stays fixed at 2s
+	estimator := NewRouteETAEstimator(fake, testClock(), 50*time.Millisecond)
 
 	start := time.Now()
 	result := estimator.EstimateAll(context.Background(), []*navigation.Ship{ship}, etaTestSystem, etaTestGoal, map[string]*shared.Waypoint{})
@@ -289,6 +288,51 @@ func TestRouteETA_BudgetOverrun_OKFalse(t *testing.T) {
 	}
 }
 
+// A configured budget is the one EstimateAll enforces - the knob is not merely stored.
+func TestRouteETA_ConfiguredBudget_IsTheOneEnforced(t *testing.T) {
+	ship := newETAShip(t, "TORWIND-P", "X1-TW-P")
+	fake := &fakeRoutingClient{delay: 5 * time.Second}
+	estimator := NewRouteETAEstimator(fake, testClock(), 120*time.Millisecond)
+
+	if estimator.Budget() != 120*time.Millisecond {
+		t.Fatalf("expected budget 120ms, got %v", estimator.Budget())
+	}
+
+	start := time.Now()
+	result := estimator.EstimateAll(context.Background(), []*navigation.Ship{ship}, etaTestSystem, etaTestGoal, map[string]*shared.Waypoint{})
+	elapsed := time.Since(start)
+
+	if result.OK || result.Cause != "budget_exceeded" {
+		t.Fatalf("expected a budget overrun, got OK=%v cause=%q", result.OK, result.Cause)
+	}
+	if elapsed < 100*time.Millisecond {
+		t.Fatalf("expected EstimateAll to hold for the configured budget, returned after %v", elapsed)
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("expected EstimateAll to stop at the configured budget, not the client's own delay, took %v", elapsed)
+	}
+}
+
+// A non-positive budget is the "operator set nothing" case. It must resolve to the
+// in-code default: a zero budget would expire before the first route answers and demote
+// every selection to straight-line ranking.
+func TestRouteETA_NonPositiveBudget_TakesTheDefault(t *testing.T) {
+	for _, budget := range []time.Duration{0, -1 * time.Second} {
+		estimator := NewRouteETAEstimator(&fakeRoutingClient{}, testClock(), budget)
+		if estimator.Budget() != DefaultRouteETABudget {
+			t.Fatalf("budget %v: expected the default %v, got %v", budget, DefaultRouteETABudget, estimator.Budget())
+		}
+	}
+}
+
+// Budget is read on the fallback-logging path, where the estimator may be nil.
+func TestRouteETA_NilEstimator_BudgetIsZeroNotAPanic(t *testing.T) {
+	var estimator *RouteETAEstimator
+	if estimator.Budget() != 0 {
+		t.Fatalf("expected a nil estimator to report a zero budget, got %v", estimator.Budget())
+	}
+}
+
 func TestRouteETA_TransportClassError_OKFalse(t *testing.T) {
 	timedOut := newETAShip(t, "TORWIND-J", "X1-TW-J")
 	fine := newETAShip(t, "TORWIND-K", "X1-TW-K")
@@ -296,7 +340,7 @@ func TestRouteETA_TransportClassError_OKFalse(t *testing.T) {
 		"X1-TW-J": {err: fmt.Errorf("upstream: %w", context.DeadlineExceeded)},
 		"X1-TW-K": {seconds: 33},
 	}}
-	estimator := NewRouteETAEstimator(fake, testClock())
+	estimator := NewRouteETAEstimator(fake, testClock(), 0)
 
 	result := estimator.EstimateAll(context.Background(), []*navigation.Ship{timedOut, fine}, etaTestSystem, etaTestGoal, map[string]*shared.Waypoint{})
 
@@ -347,7 +391,7 @@ func TestRouteETA_CallsRunInParallel(t *testing.T) {
 			"X1-TW-L4": {seconds: 10},
 		},
 	}
-	estimator := NewRouteETAEstimator(fake, testClock())
+	estimator := NewRouteETAEstimator(fake, testClock(), 0)
 
 	start := time.Now()
 	result := estimator.EstimateAll(context.Background(), ships, etaTestSystem, etaTestGoal, map[string]*shared.Waypoint{})

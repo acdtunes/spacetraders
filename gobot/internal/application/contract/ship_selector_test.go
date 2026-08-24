@@ -258,7 +258,7 @@ func TestSelectClosestShip_EstimatorOKFalse_ExcludesUnclaimedInTransitFromFallba
 	fake := &fakeRoutingClient{perShip: map[string]fakeAnswer{
 		"X1-TW-IDLE": {err: context.DeadlineExceeded}, // transport-class error: fails the whole batch open
 	}}
-	estimator := NewRouteETAEstimator(fake, testClock())
+	estimator := NewRouteETAEstimator(fake, testClock(), 0)
 
 	selected, _, err := SelectClosestShip(ctx, []string{"TORWIND-IDLE", "TORWIND-TRANSIT"}, repo, graph, nil,
 		etaTestGoal, "", 10, 1, estimator, nil, nil)
@@ -299,7 +299,7 @@ func TestSelectClosestShip_EstimatorInvertsOrder_ETAWinnerSelected(t *testing.T)
 		"X1-TW-NEAR": {seconds: 500}, // slow route despite being straight-line-nearest
 		"X1-TW-FAR":  {seconds: 10},  // fast route despite being straight-line-farthest
 	}}
-	estimator := NewRouteETAEstimator(fake, testClock())
+	estimator := NewRouteETAEstimator(fake, testClock(), 0)
 
 	selected, _, err := SelectClosestShip(ctx, []string{"TORWIND-NEAR", "TORWIND-FAR"}, repo, graph, nil,
 		etaTestGoal, "", 10, 1, estimator, nil, nil)
@@ -340,7 +340,7 @@ func TestSelectClosestShip_EstimatorFailsGlobally_FallsBackWithWarning(t *testin
 		"X1-TW-NEAR": {err: context.DeadlineExceeded}, // transport-class error: fails the whole batch open
 		"X1-TW-FAR":  {seconds: 10},
 	}}
-	estimator := NewRouteETAEstimator(fake, testClock())
+	estimator := NewRouteETAEstimator(fake, testClock(), 0)
 
 	selected, _, err := SelectClosestShip(ctx, []string{"TORWIND-NEAR", "TORWIND-FAR"}, repo, graph, nil,
 		etaTestGoal, "", 10, 1, estimator, nil, nil)
@@ -389,7 +389,7 @@ func TestSelectClosestShip_DroppedCandidateNeverWins(t *testing.T) {
 		"X1-TW-NEAR": {err: errors.New("no route found")}, // unroutable: this hull only, does not fail the batch
 		"X1-TW-FAR":  {seconds: 20},
 	}}
-	estimator := NewRouteETAEstimator(fake, testClock())
+	estimator := NewRouteETAEstimator(fake, testClock(), 0)
 
 	selected, _, err := SelectClosestShip(ctx, []string{"TORWIND-NEAR", "TORWIND-FAR"}, repo, graph, nil,
 		etaTestGoal, "", 10, 1, estimator, nil, nil)
