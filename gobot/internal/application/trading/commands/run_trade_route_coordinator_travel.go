@@ -828,12 +828,13 @@ const secondsPerHour = 3600
 // constant table, not magic numbers scattered at the call site). Retune here if
 // the fleet's real hop time or baseline home-lane earn rate shifts.
 const (
-	// crossSystemHopSeconds is the observed wall-clock cost of ONE gate hop:
-	// the jump execution plus the cooldown wait that must elapse before the
-	// hull can act again (waitForJumpCooldown, this file). ~352s is the
-	// production-observed per-hop figure (sp-wlev). It is the atomic time unit
-	// the round-trip surcharge is built from - derived from the engine's
-	// real cooldown behavior, not invented.
+	// crossSystemHopSeconds is the FITTED wall-clock cost of ONE gate hop — the jump
+	// execution plus the cooldown wait that must elapse before the hull can act again
+	// (waitForJumpCooldown, this file) — and it is the FALLBACK, not the live price: the
+	// ranker charges the MEASURED per-hop toll (measuredPerHopTollSeconds, the sp-3x143
+	// estimator the tour solver plans against) whenever the fleet has flown enough hops
+	// for one, and this constant only while the estimator is silent. Kept at the sp-wlev
+	// production reading so the cold case ranks exactly as it always has.
 	crossSystemHopSeconds = 352.0
 
 	// crossSystemRoundTripHops is how many gate hops a cross-system CIRCUIT pays
@@ -875,16 +876,34 @@ const (
 	circuitInSystemBaselineSeconds = homeLaneClassCircuitValue / hullOpportunityCreditsPerSecond
 )
 
-// estimatedCircuitSeconds prices one full circuit of a lane in wall-clock seconds
-// for RATE ranking (sp-1wp8): the in-system baseline plus, for a gate-crossing
-// circuit, the observed round-trip jump+cooldown surcharge
-// (crossSystemRoundTripHops × crossSystemHopSeconds ≈ 704s). Always > 0 (named
-// positive constants), so a lane rate can never divide by zero — the structural
-// form of the sp-1wp8 zero-time-estimate regression pin at this surface.
-func estimatedCircuitSeconds(crossSystem bool) float64 {
+// measuredPerHopTollSeconds resolves what one gate hop currently costs this fleet, for the
+// lane ranker's crossing surcharge. 0 IS THE FAIL-OPEN VALUE — an unwired estimator, too few
+// measured hops, a non-positive reading — which callers map to the fitted
+// crossSystemHopSeconds. Mirrors the tour's tourPerHopToll, reading the same estimator.
+func (h *RunTradeRouteCoordinatorHandler) measuredPerHopTollSeconds(ctx context.Context, playerID int) int {
+	if h.jumpTollEstimator == nil {
+		return 0
+	}
+	seconds := h.jumpTollEstimator.PerHopTollSeconds(ctx, playerID)
+	if seconds <= 0 {
+		return 0
+	}
+	return seconds
+}
+
+// estimatedCircuitSeconds prices one full circuit of a lane in wall-clock seconds for RATE
+// ranking (sp-1wp8): the in-system baseline plus, for a gate-crossing circuit, the round-trip
+// surcharge at the MEASURED per-hop toll — perHopTollSeconds, 0 meaning "no measurement" and
+// falling back to the fitted crossSystemHopSeconds. Always > 0 (named positive constants, and
+// a non-positive toll resolves to the fitted term), so a lane rate can never divide by zero.
+func estimatedCircuitSeconds(crossSystem bool, perHopTollSeconds int) float64 {
 	seconds := float64(circuitInSystemBaselineSeconds)
 	if crossSystem {
-		seconds += crossSystemRoundTripHops * crossSystemHopSeconds
+		perHop := crossSystemHopSeconds
+		if perHopTollSeconds > 0 {
+			perHop = float64(perHopTollSeconds)
+		}
+		seconds += crossSystemRoundTripHops * perHop
 	}
 	return seconds
 }
@@ -954,16 +973,17 @@ func laneCircuitValue(l trading.ArbitrageLane, shipCapacity int, model laneImpac
 
 // laneCircuitRatePerHour is the sp-1wp8 ranking score: the lane's hold-fit-weighted
 // per-circuit value over its estimated circuit hours. A gate-crossing lane pays the
-// round-trip jump+cooldown surcharge in its denominator UNLESS it is the operator's
-// directed --dest lane (laneMatchesTarget): a directed lane already carries the gate
-// time as the operator's explicit choice, so it is ranked at the in-system baseline
-// — the same waiver contract the retired subtractive penalty kept, narrowed
-// to the one lane asked for. Exposed to the selection log so the captain reads the
-// exact score a lane won or lost on.
-func laneCircuitRatePerHour(l trading.ArbitrageLane, shipCapacity int, targetDest string, model laneImpactModel) float64 {
+// round-trip surcharge in its denominator (at perHopTollSeconds, 0 falling back to
+// the fitted term) UNLESS it is the operator's directed --dest lane
+// (laneMatchesTarget): a directed lane already carries the gate time as the
+// operator's explicit choice, so it is ranked at the in-system baseline — the same
+// waiver contract the retired subtractive penalty kept, narrowed to the one lane
+// asked for. Exposed to the selection log so the captain reads the exact score a
+// lane won or lost on.
+func laneCircuitRatePerHour(l trading.ArbitrageLane, shipCapacity int, targetDest string, model laneImpactModel, perHopTollSeconds int) float64 {
 	crossSystem := shared.ExtractSystemSymbol(l.SourceWaypoint) != shared.ExtractSystemSymbol(l.DestWaypoint)
 	charged := crossSystem && !laneMatchesTarget(l, targetDest)
-	return laneCircuitValue(l, shipCapacity, model) / (estimatedCircuitSeconds(charged) / secondsPerHour)
+	return laneCircuitValue(l, shipCapacity, model) / (estimatedCircuitSeconds(charged, perHopTollSeconds) / secondsPerHour)
 }
 
 // rankLanesByCircuitRate re-orders lanes already ranked by trading.RankSpreads by
@@ -972,12 +992,13 @@ func laneCircuitRatePerHour(l trading.ArbitrageLane, shipCapacity int, targetDes
 // per-unit-spread view can't see:
 //
 //   - circuit TIME: a gate-crossing circuit spends the round-trip jump+cooldown
-//     surcharge (~704s against the ~4000s in-system circuit class, a ~18% time
-//     premium) not trading, so its value must clear a proportionally higher bar —
+//     surcharge not trading, so its value must clear a proportionally higher bar —
 //     expressed honestly as division by hours, replacing the retired sp-xwa1
-//     subtractive per-unit haircut. The captain-ruled DP51 economics survive: the
-//     surcharge is a bounded premium, so a deep frontier lane a heavy hull fills
-//     still out-ranks a saturated home lane (see the xsyspenalty test's ratio pin).
+//     subtractive per-unit haircut. Charged at the MEASURED per-hop toll
+//     (perHopTollSeconds; 0 falls back to the fitted ~704s round trip, a ~18%
+//     premium the xsyspenalty ratio pin holds the DP51 economics at). A measured
+//     dearer toll re-prices crossing deliberately — that repricing is this seam's
+//     whole point, not a regression of the ruling.
 //   - hold-fit weighting: a lane's VolumeCap is a market-absorption
 //     bound, not a hold-sized one — a hull far bigger than VolumeCap will not
 //     clear a single tranche at that depth before moving the price.
@@ -1011,7 +1032,7 @@ func laneCircuitRatePerHour(l trading.ArbitrageLane, shipCapacity int, targetDes
 // in-system baseline (laneCircuitRatePerHour's waiver); every other cross-system
 // lane still pays the surcharge. targetDest=="" (the undirected auto-scan path)
 // matches nothing.
-func rankLanesByCircuitRate(lanes []trading.ArbitrageLane, shipCapacity int, targetDest string, model laneImpactModel) []trading.ArbitrageLane {
+func rankLanesByCircuitRate(lanes []trading.ArbitrageLane, shipCapacity int, targetDest string, model laneImpactModel, perHopTollSeconds int) []trading.ArbitrageLane {
 	type scoredLane struct {
 		lane  trading.ArbitrageLane
 		rate  float64
@@ -1022,7 +1043,7 @@ func rankLanesByCircuitRate(lanes []trading.ArbitrageLane, shipCapacity int, tar
 	for i, lane := range lanes {
 		scored[i] = scoredLane{
 			lane:  lane,
-			rate:  laneCircuitRatePerHour(lane, shipCapacity, targetDest, model),
+			rate:  laneCircuitRatePerHour(lane, shipCapacity, targetDest, model, perHopTollSeconds),
 			value: laneCircuitValue(lane, shipCapacity, model),
 		}
 	}

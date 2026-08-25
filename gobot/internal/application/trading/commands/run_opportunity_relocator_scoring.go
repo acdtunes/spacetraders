@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"fmt"
+	"math"
 	"sort"
 	"time"
 
@@ -29,6 +30,10 @@ func (h *RunOpportunityRelocatorHandler) scoreCandidates(
 	telemetry := h.readTelemetry(ctx, cmd)
 	remainingEra, eraKnown := h.readEraHorizon(ctx, cmd)
 	cooldown := cmd.hullCooldown()
+	// One travel level per tick (tickTravelModel), so every pair below is priced against the
+	// same reading; its marginal one-extra-hop cost is reported for the heartbeat.
+	travel := h.tickTravelModel(ctx, cmd.PlayerID)
+	result.TravelPerHopSeconds = int(math.Round((travel.CrossingHours(2) - travel.CrossingHours(1)) * 3600))
 
 	// SCORE OFFERED HULLS FIRST — not merely commit them first.
 	//
@@ -61,7 +66,7 @@ func (h *RunOpportunityRelocatorHandler) scoreCandidates(
 			continue
 		}
 		result.Evaluated++
-		candidates = append(candidates, h.scoreHull(ctx, cmd, hull, currentRate, remainingEra, eraKnown, state, result)...)
+		candidates = append(candidates, h.scoreHull(ctx, cmd, hull, currentRate, remainingEra, eraKnown, travel, result)...)
 	}
 	// OFFERED FIRST, then by NPV. An offered hull's tour is STALLED and its window is closing; an
 	// un-offered idle hull is under no clock and will still be here next tick. Ranking purely by NPV
@@ -127,7 +132,7 @@ func (h *RunOpportunityRelocatorHandler) scoreHull(
 	hull RelocatorHull,
 	currentRate, remainingEra float64,
 	eraKnown bool,
-	state *relocatorState,
+	travel trading.TravelHopModel,
 	result *RelocatorTickResult,
 ) []relocationCandidate {
 	logger := common.LoggerFromContext(ctx)
@@ -146,7 +151,7 @@ func (h *RunOpportunityRelocatorHandler) scoreHull(
 			result.skip(reason)
 			continue
 		}
-		valuation := trading.ValueRelocation(h.inputsFor(cmd, currentRate, region, remainingEra, eraKnown))
+		valuation := trading.ValueRelocation(h.inputsFor(cmd, currentRate, region, remainingEra, eraKnown, travel))
 		if !valuation.Licensed() {
 			result.skip(string(valuation.Verdict))
 			continue
@@ -232,20 +237,22 @@ func (h *RunOpportunityRelocatorHandler) regionSnapshotStale(region RelocatorReg
 	return region.SnapshotAge > h.ageCaps.For(region.Activity)
 }
 
-// inputsFor assembles the pure valuation's inputs. travel_h comes from the swappable TravelHopModel;
-// the risk margin is one configured tour of THIS hull's own earnings.
+// inputsFor assembles the pure valuation's inputs. travel_h comes from the tick's resolved
+// TravelHopModel (tickTravelModel); the risk margin is one configured tour of THIS hull's own
+// earnings.
 func (h *RunOpportunityRelocatorHandler) inputsFor(
 	cmd *RunOpportunityRelocatorCommand,
 	currentRate float64,
 	region RelocatorRegion,
 	remainingEra float64,
 	eraKnown bool,
+	travel trading.TravelHopModel,
 ) trading.RelocationInputs {
 	riskMarginHours := cmd.riskMarginTourHours()
 	return trading.RelocationInputs{
 		CurrentRate:       currentRate,
 		ProjectedRate:     region.ProjectedRate,
-		TravelHours:       h.travel.CrossingHours(region.GateHops),
+		TravelHours:       travel.CrossingHours(region.GateHops),
 		RemainingEraHours: remainingEra,
 		EraHorizonKnown:   eraKnown,
 		HorizonHours:      float64(cmd.horizonHours()),

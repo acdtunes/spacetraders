@@ -91,6 +91,17 @@ func (w circuitWiring) configureTradeRouteCoordinator(h *tradeRouteCmd.RunTradeR
 	// `fleet scan-dedup add`, no daemon restart.
 	h.SetScanDedupAllowlist(persistence.NewScanDedupAllowlistGORM(w.db))
 	h.SetJumpTollRecorder(w.jumpTolls())
+	h.SetJumpTollReader(tradeRouteCmd.NewLedgerJumpTollReader(
+		w.jumpTolls(), nil, domainTrading.DefaultJumpTollParams(), // nil clock = RealClock
+	))
+}
+
+// configureOpportunityRelocator hands the relocator the same measured per-hop toll estimator
+// the tour solver and the lane ranker price from, so all three charge one reading.
+func (w circuitWiring) configureOpportunityRelocator(h *tradeRouteCmd.RunOpportunityRelocatorHandler) {
+	h.SetJumpTollReader(tradeRouteCmd.NewLedgerJumpTollReader(
+		w.jumpTolls(), nil, domainTrading.DefaultJumpTollParams(), // nil clock = RealClock
+	))
 }
 
 func (w circuitWiring) configureArbCoordinator(h *tradeRouteCmd.RunArbCoordinatorHandler) {

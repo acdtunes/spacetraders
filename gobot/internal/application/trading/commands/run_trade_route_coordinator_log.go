@@ -132,7 +132,7 @@ func laneLogPayload(l trading.ArbitrageLane) map[string]interface{} {
 // same/cross tag is unchanged — the rate is appended, not substituted. A directed
 // --dest lane ranked at the in-system baseline (laneMatchesTarget waiver) reads
 // rate=R/hr(x-waived), matching what ranking actually applied.
-func laneSelectionOneLiner(l trading.ArbitrageLane, shipCapacity int, targetDest string, model laneImpactModel) string {
+func laneSelectionOneLiner(l trading.ArbitrageLane, shipCapacity int, targetDest string, model laneImpactModel, perHopTollSeconds int) string {
 	srcSys := shared.ExtractSystemSymbol(l.SourceWaypoint)
 	dstSys := shared.ExtractSystemSymbol(l.DestWaypoint)
 	scope := "same"
@@ -140,11 +140,11 @@ func laneSelectionOneLiner(l trading.ArbitrageLane, shipCapacity int, targetDest
 		scope = "cross"
 	}
 	// rate is the EXACT score the ranker used, so it reflects the effective-spread
-	// compression + cooldown debt in production; m stays the raw snapshot spread. An inert
-	// model (unit tests) leaves rate at the snapshot value.
+	// compression + cooldown debt and the measured toll regime in production; m stays the
+	// raw snapshot spread. An inert model / toll 0 leaves rate at the snapshot value.
 	base := fmt.Sprintf("%s %s(%s)->%s(%s) m=%d %s rate=%.0f/hr",
 		l.Good, l.SourceWaypoint, srcSys, l.DestWaypoint, dstSys, l.SpreadPerUnit, scope,
-		laneCircuitRatePerHour(l, shipCapacity, targetDest, model))
+		laneCircuitRatePerHour(l, shipCapacity, targetDest, model, perHopTollSeconds))
 	if srcSys != dstSys && laneMatchesTarget(l, targetDest) {
 		return base + "(x-waived)"
 	}
@@ -166,15 +166,15 @@ const laneSelectionCandidateLimit = 3
 // route around by putting the cause in the message). The stable prefix "Selected top
 // disciplined arbitrage lane" is preserved — existing greps/tests that match it keep
 // working — with the payload appended after a colon.
-func laneSelectionMessage(chosen trading.ArbitrageLane, ranked []trading.ArbitrageLane, shipCapacity int, targetDest string, model laneImpactModel) string {
+func laneSelectionMessage(chosen trading.ArbitrageLane, ranked []trading.ArbitrageLane, shipCapacity int, targetDest string, model laneImpactModel, perHopTollSeconds int) string {
 	limit := laneSelectionCandidateLimit
 	if len(ranked) < limit {
 		limit = len(ranked)
 	}
 	tops := make([]string, 0, limit)
 	for _, l := range ranked[:limit] {
-		tops = append(tops, laneSelectionOneLiner(l, shipCapacity, targetDest, model))
+		tops = append(tops, laneSelectionOneLiner(l, shipCapacity, targetDest, model, perHopTollSeconds))
 	}
 	return fmt.Sprintf("Selected top disciplined arbitrage lane: %s | top%d: %s",
-		laneSelectionOneLiner(chosen, shipCapacity, targetDest, model), limit, strings.Join(tops, "; "))
+		laneSelectionOneLiner(chosen, shipCapacity, targetDest, model, perHopTollSeconds), limit, strings.Join(tops, "; "))
 }

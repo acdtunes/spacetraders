@@ -285,3 +285,102 @@ func TestArrivalBoundHopModelShould_FollowARefitOfTheMedianCoefficients(t *testi
 			bound, ArrivalP90HeadroomFactor, wantBase, wantPerHop)
 	}
 }
+
+// ── THE MEASURED-LEVEL ADOPTION PATH (sp-80mha) ──────────────────────────────────────────────────
+//
+// The sp-3x143 estimator hands back ONE number — the measured MARGINAL per-hop toll — and the
+// contract above says a partial measurement moves the LEVEL via ScaledBy and leaves the SHAPE
+// alone, adopted only when MedianDriftExceeds says a refit is due. These tests pin both
+// directions of that adoption with the exact levels the two live readings imply.
+
+// The DOWN direction: the fleet's own recorded cap-2 evidence points BELOW the armed 650 (a
+// per-hop toll of 423 is the −35% level). The incumbent drifts (650−423)/423 ≈ 54% off the
+// measured level — far past the spec bar — so the model must re-level down, holding the fitted
+// base:per-hop ratio, and price every crossing at exactly the implied cheaper level.
+func TestAffineHopModelShould_ReLevelDownToAMeasuredPerHopTollPastTheDriftBar(t *testing.T) {
+	adopted, ok := DefaultAffineHopModel().AdoptMeasuredPerHopLevel(423)
+
+	if !ok {
+		t.Fatalf("a 54%% drift must adopt the measured level, got the incumbent %+v", adopted)
+	}
+	wantHours := 1400.0 * 423.0 / 650.0 / 3600.0 // the incumbent 1-hop charge at the implied level
+	if got := adopted.CrossingHours(1); math.Abs(got-wantHours) > 1e-9 {
+		t.Fatalf("re-levelled 1-hop crossing priced at %.9f h, want exactly %.9f h (1400s x 423/650)", got, wantHours)
+	}
+	if got := adopted.CrossingHours(1); got >= DefaultAffineHopModel().CrossingHours(1) {
+		t.Fatalf("a measured toll BELOW the armed term must price crossings CHEAPER, got %.6f h >= %.6f h",
+			got, DefaultAffineHopModel().CrossingHours(1))
+	}
+	wantRatio := DefaultCrossingBaseSeconds / DefaultCrossingPerHopSeconds
+	if gotRatio := adopted.BaseSeconds / adopted.PerHopSeconds; math.Abs(gotRatio-wantRatio) > 1e-9 {
+		t.Fatalf("adoption must move the LEVEL and hold the SHAPE: base:per-hop ratio %.9f, want %.9f", gotRatio, wantRatio)
+	}
+}
+
+// The UP direction: the live wall-clock median the estimator serves (1028s) sits ABOVE the armed
+// 650, so the same adoption must price crossings dearer by exactly the implied factor.
+func TestAffineHopModelShould_ReLevelUpToTheMeasuredMedianPerHopToll(t *testing.T) {
+	adopted, ok := DefaultAffineHopModel().AdoptMeasuredPerHopLevel(1028)
+
+	if !ok {
+		t.Fatalf("a ~58%% level shift must adopt the measured toll, got the incumbent %+v", adopted)
+	}
+	wantHours := 1400.0 * 1028.0 / 650.0 / 3600.0
+	if got := adopted.CrossingHours(1); math.Abs(got-wantHours) > 1e-9 {
+		t.Fatalf("re-levelled 1-hop crossing priced at %.9f h, want exactly %.9f h (1400s x 1028/650)", got, wantHours)
+	}
+	if got := adopted.CrossingHours(1); got <= DefaultAffineHopModel().CrossingHours(1) {
+		t.Fatalf("a measured toll ABOVE the armed term must price crossings DEARER, got %.6f h <= %.6f h",
+			got, DefaultAffineHopModel().CrossingHours(1))
+	}
+}
+
+// Inside the spec bar the incumbent STANDS: drift within tolerance is noise, and re-levelling on
+// it would churn the NPV on every estimator wobble the bar exists to absorb. Just past the bar,
+// the level moves. Both edges, both sides of 650.
+func TestAffineHopModelShould_AdoptOnlyWhenTheDriftClearsTheSpecBar(t *testing.T) {
+	incumbent := DefaultAffineHopModel()
+	for measured, wantAdopt := range map[float64]bool{
+		570: false, // (650-570)/570 ≈ 14.0% — inside the bar
+		560: true,  // (650-560)/560 ≈ 16.1% — past it
+		764: false, // (764-650)/764 ≈ 14.9% — inside the bar
+		765: true,  // (765-650)/765 ≈ 15.0%+ — past it
+	} {
+		adopted, ok := incumbent.AdoptMeasuredPerHopLevel(measured)
+		if ok != wantAdopt {
+			t.Fatalf("measured %v: adopted=%v, want %v (the spec's 15%% drift bar)", measured, ok, wantAdopt)
+		}
+		if !wantAdopt && adopted != incumbent {
+			t.Fatalf("a within-bar measurement must return the incumbent unchanged, got %+v", adopted)
+		}
+	}
+}
+
+// A non-positive toll is the estimator's fail-open silence (too few samples, an unwired reader),
+// not a measurement: the incumbent must survive untouched so the cold case prices exactly as the
+// fitted constants always have.
+func TestAffineHopModelShould_KeepTheIncumbent_GivenNoMeasuredToll(t *testing.T) {
+	incumbent := DefaultAffineHopModel()
+	for _, silent := range []float64{0, -100} {
+		adopted, ok := incumbent.AdoptMeasuredPerHopLevel(silent)
+		if ok || adopted != incumbent {
+			t.Fatalf("toll %v is silence, not evidence: want the incumbent unchanged, got adopted=%v %+v", silent, ok, adopted)
+		}
+	}
+}
+
+// A zero-value model's EFFECTIVE terms are the fitted defaults (the clamp's unset fallback), so
+// adoption from it must land on the same level as adoption from the default model — never on a
+// division by an unset zero term.
+func TestAffineHopModelShould_ReLevelAnUnsetModelFromItsEffectiveFittedTerms(t *testing.T) {
+	fromUnset, okUnset := AffineHopModel{}.AdoptMeasuredPerHopLevel(1028)
+	fromDefault, okDefault := DefaultAffineHopModel().AdoptMeasuredPerHopLevel(1028)
+
+	if !okUnset || !okDefault {
+		t.Fatalf("both models must adopt the 1028 level, got unset=%v default=%v", okUnset, okDefault)
+	}
+	if math.Abs(fromUnset.CrossingHours(3)-fromDefault.CrossingHours(3)) > 1e-9 {
+		t.Fatalf("an unset model must re-level from its effective fitted terms: %.9f h vs %.9f h",
+			fromUnset.CrossingHours(3), fromDefault.CrossingHours(3))
+	}
+}

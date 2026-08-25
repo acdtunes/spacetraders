@@ -235,11 +235,13 @@ func (h *RunOpportunityRelocatorHandler) logTickHeartbeat(ctx context.Context, c
 		return
 	}
 	common.LoggerFromContext(ctx).Log("INFO", fmt.Sprintf(
-		"Opportunity relocator tick: %d relocated, %d resumed, %d evaluated, %s",
-		len(result.Relocated), len(result.Resumed), result.Evaluated, renderSkipCounts(result.Skipped),
+		"Opportunity relocator tick: %d relocated, %d resumed, %d evaluated, travel/hop=%ds, %s",
+		len(result.Relocated), len(result.Resumed), result.Evaluated, result.TravelPerHopSeconds,
+		renderSkipCounts(result.Skipped),
 	), map[string]interface{}{
 		"container_id": cmd.ContainerID, "relocated": len(result.Relocated), "resumed": len(result.Resumed),
-		"evaluated": result.Evaluated, "skipped": result.Skipped, "trigger": relocatorStallCoordinator,
+		"evaluated": result.Evaluated, "travel_per_hop_seconds": result.TravelPerHopSeconds,
+		"skipped": result.Skipped, "trigger": relocatorStallCoordinator,
 	})
 }
 

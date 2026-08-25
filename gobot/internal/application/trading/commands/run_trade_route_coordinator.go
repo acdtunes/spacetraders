@@ -355,6 +355,9 @@ type RunTradeRouteCoordinatorHandler struct {
 	// recomputed from the fleet's own traffic. Optional; nil skips the write and leaves the
 	// travel path byte-for-byte unchanged (the gateGraph/eventSubscriber port contract).
 	jumpTolls trading.JumpTollRepository
+	// jumpTollEstimator reads that same measured toll back for the lane RATE ranker's crossing
+	// surcharge. Optional; nil or too few measured hops keeps the fitted fallback, byte-identical.
+	jumpTollEstimator JumpTollReader
 	// absorptionLedger is the cross-engine market-absorption ledger (sp-78ai L4).
 	// scanLanes consults it READ-ONLY (trade-analyst Q1: "circuits write nothing") to
 	// exclude a lane whose sell side is shadowed or whose reserved depth can't absorb
@@ -564,6 +567,13 @@ func (h *RunTradeRouteCoordinatorHandler) SetJumpTollRecorder(r trading.JumpToll
 	h.jumpTolls = r
 }
 
+// SetJumpTollReader injects the sample-backed per-gate-hop toll estimator the lane RATE
+// ranker prices its crossing surcharge from — the same estimator the tour solver plans
+// against, so both engines price one measured quantity off one reading.
+func (h *RunTradeRouteCoordinatorHandler) SetJumpTollReader(r JumpTollReader) {
+	h.jumpTollEstimator = r
+}
+
 // SetAbsorptionLedger wires the cross-engine absorption ledger (sp-78ai L4), the same
 // optional-port idiom the other coordinator dependencies use. A nil ledger leaves the
 // consult inert (pre-L4 behavior, byte-for-byte).
@@ -768,7 +778,7 @@ func (h *RunTradeRouteCoordinatorHandler) execute(
 		response.DestWaypoint = lane.DestWaypoint
 		response.Circuits++
 
-		h.announceLaneCommitment(cmd, lane, lanes, ship, response, logger)
+		h.announceLaneCommitment(ctx, cmd, lane, lanes, ship, response, logger)
 
 		visitsBefore := response.Visits
 		ship = h.runCircuit(ctx, cmd, lane, ship, response, runMaxVisits)
@@ -876,6 +886,7 @@ func cargoGateBlocks(ship *navigation.Ship, lane trading.ArbitrageLane, response
 }
 
 func (h *RunTradeRouteCoordinatorHandler) announceLaneCommitment(
+	ctx context.Context,
 	cmd *RunTradeRouteCoordinatorCommand,
 	lane trading.ArbitrageLane,
 	lanes []trading.ArbitrageLane,
@@ -883,9 +894,11 @@ func (h *RunTradeRouteCoordinatorHandler) announceLaneCommitment(
 	response *RunTradeRouteCoordinatorResponse,
 	logger common.ContainerLogger,
 ) {
+	// The same cached toll the ranking read, so the announced score matches its regime.
+	perHopToll := h.measuredPerHopTollSeconds(ctx, cmd.PlayerID)
 	// Publish the committed circuit lane to the read-only flow feed (fire-and-forget;
 	// a missed publish never touches the trade path — RULINGS #4).
-	flowfeed.Publish(buildTradeRouteFlow(cmd, lane, laneCircuitRatePerHour(lane, ship.CargoCapacity(), cmd.TargetDest, h.buildLaneImpactModel()), shipCargoItems(ship), time.Time{}, time.Now().UTC()))
+	flowfeed.Publish(buildTradeRouteFlow(cmd, lane, laneCircuitRatePerHour(lane, ship.CargoCapacity(), cmd.TargetDest, h.buildLaneImpactModel(), perHopToll), shipCargoItems(ship), time.Time{}, time.Now().UTC()))
 
 	// laneLogPayload carries the SELECTED lane's full identity (both endpoints'
 	// waypoint+system, margin, cross-system flag); laneLogCandidates attaches the
@@ -901,7 +914,7 @@ func (h *RunTradeRouteCoordinatorHandler) announceLaneCommitment(
 	// sp-149h: put the payload in the MESSAGE TEXT, not just the metadata map the
 	// `container logs` renderer drops — the captain greps the CLI output to verify
 	// which lane (and whether a cross-system one) was picked and at what margin.
-	logger.Log("INFO", laneSelectionMessage(lane, lanes, ship.CargoCapacity(), cmd.TargetDest, h.buildLaneImpactModel()), selectionPayload)
+	logger.Log("INFO", laneSelectionMessage(lane, lanes, ship.CargoCapacity(), cmd.TargetDest, h.buildLaneImpactModel(), perHopToll), selectionPayload)
 }
 
 // terminalCircuitExit maps the flags a finished circuit left on the response to the run's

@@ -204,6 +204,10 @@ type RunOpportunityRelocatorHandler struct {
 	// per-reason skip counts, so the relocator's behaviour is a RATE and not an anecdote reconstructed
 	// from a log/table join. Optional and nil-safe.
 	metrics RelocatorMetricsSink
+	// jumpTolls supplies the fleet's measured per-gate-hop toll — the SAME estimator the tour
+	// solver plans against — which each tick re-levels the affine travel model from
+	// (tickTravelModel). Optional; nil keeps every tick on the incumbent model.
+	jumpTolls JumpTollReader
 }
 
 // NewRunOpportunityRelocatorHandler builds the reconciler. travel may be nil, in which case the
@@ -252,6 +256,30 @@ func (h *RunOpportunityRelocatorHandler) SetTravelHopModel(model trading.TravelH
 		return
 	}
 	h.travel = model
+}
+
+// SetJumpTollReader wires the sample-backed per-gate-hop toll estimator each tick's travel
+// model is re-levelled from, so the NPV prices a crossing at what jumping currently costs.
+func (h *RunOpportunityRelocatorHandler) SetJumpTollReader(r JumpTollReader) {
+	h.jumpTolls = r
+}
+
+// tickTravelModel resolves the travel model ONE tick prices every (hull, region) crossing
+// with: the incumbent, re-levelled to the measured per-hop toll when the estimator speaks and
+// the drift clears the spec bar (trading.AffineHopModel.AdoptMeasuredPerHopLevel). Fail-open
+// at every layer — no reader, a silent estimator, a within-bar drift — always landing on the
+// incumbent. A DIFFERENT-shape model injected through SetTravelHopModel is sovereign.
+func (h *RunOpportunityRelocatorHandler) tickTravelModel(ctx context.Context, playerID int) trading.TravelHopModel {
+	if h.jumpTolls == nil {
+		return h.travel
+	}
+	incumbent, affine := h.travel.(trading.AffineHopModel)
+	if !affine {
+		return h.travel
+	}
+	// A non-adoption returns the incumbent unchanged, so one return covers both verdicts.
+	adjusted, _ := incumbent.AdoptMeasuredPerHopLevel(float64(h.jumpTolls.PerHopTollSeconds(ctx, playerID)))
+	return adjusted
 }
 
 // RunOpportunityRelocatorResponse is the standing loop's running tally.
@@ -314,6 +342,9 @@ type RelocatorTickResult struct {
 	Evaluated int
 	// Skipped counts hulls dropped before scoring, keyed by reason, for the heartbeat.
 	Skipped map[string]int
+	// TravelPerHopSeconds is the marginal per-gate-hop level the tick priced crossings at
+	// (fitted, or the adopted measured toll), for the heartbeat; 0 before scoring resolves it.
+	TravelPerHopSeconds int
 }
 
 func newRelocatorTickResult() *RelocatorTickResult {

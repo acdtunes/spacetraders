@@ -1623,6 +1623,8 @@ func run(cfg *config.Config) error {
 	// the tour's success|failed|no_candidate anyway. Write-only by type, so no relocation decision can
 	// read a counter.
 	opportunityRelocatorHandler.SetMetricsSink(metricsAdapter.NewRelocatorMetricsPort())
+	// Re-levels the NPV's travel model each tick to the measured per-hop jump toll (sp-80mha).
+	circuits.configureOpportunityRelocator(opportunityRelocatorHandler)
 	if err := mediator.RegisterHandler[*tradeRouteCmd.RunOpportunityRelocatorCommand](med, opportunityRelocatorHandler); err != nil {
 		return fmt.Errorf("failed to register OpportunityRelocator handler: %w", err)
 	}

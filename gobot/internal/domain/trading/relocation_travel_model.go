@@ -181,12 +181,15 @@ func clampCrossingTerm(term, fitted float64) float64 {
 // leg_index resets instead), and leg_index < 0 rows are look-back/opportunistic buys rather than
 // planned tour legs (1,059 of 3,745 rows) which inflate both system counts and elapsed time.
 //
-// THE UN-REFITTED MODEL IS THE FAIL-SAFE DIRECTION, which is why shipping on it is acceptable.
-// Over-pricing travel overstates `current_rate x travel_h` and shrinks the productive window, so the
-// NPV is biased AGAINST relocating: the armed coefficients yield FEWER relocations than the truth
-// warrants, never more. Refitting only lets legitimately-good moves through — and it moves no guard,
-// because the uplift bar, the risk margin, the anti-herd and concurrency caps, the cooldown and the
-// freshness caps are all independent of travel time (RULINGS #4 intact).
+// THE UN-REFITTED MODEL IS THE FAIL-SAFE DIRECTION, which is why the estimator-silent case rests
+// on it. Over-pricing travel overstates `current_rate x travel_h` and shrinks the productive
+// window, so the NPV is biased AGAINST relocating: the armed coefficients yield FEWER relocations
+// than the truth warrants, never more. Re-levelling only lets legitimately-good moves through —
+// and it moves no guard, because the uplift bar, the risk margin, the anti-herd and concurrency
+// caps, the cooldown and the freshness caps are all independent of travel time (RULINGS #4
+// intact). The LEVEL tracks the fleet live via AdoptMeasuredPerHopLevel — the ScaledBy path this
+// block prescribes for a relative reading; only a per-depth medians re-measurement through
+// FitAffineHopModel can move the SHAPE, under the traps recorded here.
 //
 // NOT AN INVARIANT: avg_systems is ~2.0 under BOTH caps, so the cap changed WHICH neighbour a tour
 // chose rather than how many it visited, and cap-2 tours were observed touching 3 systems. Nothing
@@ -263,8 +266,45 @@ func FitAffineHopModel(medianSecondsByHops map[int]float64) (AffineHopModel, boo
 	return AffineHopModel{BaseSeconds: base, PerHopSeconds: perHop}, true
 }
 
+// CrossingLevelDriftTolerance is sp-zvywu spec v2's re-verification bar as a fraction: a
+// measured shift inside 15% is noise the fitted model already tolerates; past it a refit is due.
+const CrossingLevelDriftTolerance = 0.15
+
+// crossingLevelCheckMaxHops is the depth range the level-drift check is evaluated over: 1
+// through the deepest crossing a strict flight bound can produce (gategraph.MaxJumpPath).
+const crossingLevelCheckMaxHops = 5
+
+// AdoptMeasuredPerHopLevel re-levels the model to a MEASURED marginal per-hop toll (the
+// EstimatePerHopTollSeconds reading) and reports whether it was adopted — the standing live
+// form of this file's refit sequence for a PARTIAL measurement: the reading isolates only the
+// MARGINAL term, so it moves the LEVEL via ScaledBy and leaves the SHAPE alone, gated by
+// MedianDriftExceeds at CrossingLevelDriftTolerance over the crossing medians the measured
+// level implies. Inside the bar the incumbent stands — re-levelling there would churn every
+// consumer on estimator wobble the bar exists to absorb. The scaled candidate needs no second
+// check: by construction it IS the implied level. A non-positive toll is the estimator's
+// fail-open silence, not a measurement — the incumbent returns unchanged — and the shift is
+// derived from the model's EFFECTIVE terms (the clamp's unset fallbacks), so an unset model
+// re-levels from the fitted defaults rather than dividing by an unset zero term.
+func (m AffineHopModel) AdoptMeasuredPerHopLevel(measuredPerHopSeconds float64) (AffineHopModel, bool) {
+	if measuredPerHopSeconds <= 0 {
+		return m, false
+	}
+	base := clampCrossingTerm(m.BaseSeconds, DefaultCrossingBaseSeconds)
+	perHop := clampCrossingTerm(m.PerHopSeconds, DefaultCrossingPerHopSeconds)
+	factor := measuredPerHopSeconds / perHop
+	impliedMedians := make(map[int]float64, crossingLevelCheckMaxHops)
+	for hops := 1; hops <= crossingLevelCheckMaxHops; hops++ {
+		impliedMedians[hops] = (base + perHop*float64(hops)) * factor
+	}
+	if !m.MedianDriftExceeds(impliedMedians, CrossingLevelDriftTolerance) {
+		return m, false
+	}
+	return m.ScaledBy(factor), true
+}
+
 // MedianDriftExceeds reports whether the model has drifted off the measured medians by more than
-// tolerance (a fraction: 0.15 is sp-zvywu spec v2's 15% re-verification bar) at ANY measured depth.
+// tolerance (a fraction: CrossingLevelDriftTolerance is sp-zvywu spec v2's 15% re-verification
+// bar) at ANY measured depth.
 // It is the standing "is a refit due?" check the cap caveat calls for: run it over accumulated
 // cap-2 crossings, and if it says yes, FitAffineHopModel the new medians and inject the result.
 //

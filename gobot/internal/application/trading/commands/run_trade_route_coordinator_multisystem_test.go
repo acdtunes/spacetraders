@@ -239,14 +239,14 @@ func TestLaneCircuitRate_CrossSystemSurchargeIsHopBlind(t *testing.T) {
 		}
 	}
 	// One gate hop out versus notionally several — indistinguishable to the ranker.
-	near := laneCircuitRatePerHour(lane("X1-HOME-A", "X1-NEAR-B"), capacity, "", laneImpactModel{})
-	far := laneCircuitRatePerHour(lane("X1-HOME-A", "X1-FAR-C"), capacity, "", laneImpactModel{})
+	near := laneCircuitRatePerHour(lane("X1-HOME-A", "X1-NEAR-B"), capacity, "", laneImpactModel{}, 0)
+	far := laneCircuitRatePerHour(lane("X1-HOME-A", "X1-FAR-C"), capacity, "", laneImpactModel{}, 0)
 	if near != far {
 		t.Fatalf("the cross-system surcharge is charged off a boolean, so distance cannot change it: near %.6f != far %.6f — if the premium is now distance-aware, revisit the one-hop discovery horizon in TestScanLanes_HorizonStopsAtOneGateHop", near, far)
 	}
 	// Control: the premium exists at all, so the equality above is hop-blindness and
 	// not simply a surcharge that never fires.
-	sameSystem := laneCircuitRatePerHour(lane("X1-HOME-A", "X1-HOME-B"), capacity, "", laneImpactModel{})
+	sameSystem := laneCircuitRatePerHour(lane("X1-HOME-A", "X1-HOME-B"), capacity, "", laneImpactModel{}, 0)
 	if !(sameSystem > near) {
 		t.Fatalf("a same-system lane must out-rate an otherwise identical gate-crossing one (%.6f > %.6f) — without a live surcharge the hop-blindness assertion proves nothing", sameSystem, near)
 	}

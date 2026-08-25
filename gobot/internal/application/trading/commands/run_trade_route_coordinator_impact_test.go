@@ -88,7 +88,7 @@ func TestRanking_CooldownDebtDemotesHammeredLane(t *testing.T) {
 	lanes := []trading.ArbitrageLane{hammered, fresh}
 
 	// Snapshot (inert) ranker: a tie broken by Good asc => AAA (hammered) FIRST.
-	snapshot := rankLanesByCircuitRate(lanes, 200, "", laneImpactModel{})
+	snapshot := rankLanesByCircuitRate(lanes, 200, "", laneImpactModel{}, 0)
 	if snapshot[0].Good != "AAA" {
 		t.Fatalf("precondition: snapshot ranker must tie-break AAA first, got %v", laneOrder(snapshot))
 	}
@@ -100,7 +100,7 @@ func TestRanking_CooldownDebtDemotesHammeredLane(t *testing.T) {
 		}
 		return 0
 	}}
-	got := rankLanesByCircuitRate(lanes, 200, "", model)
+	got := rankLanesByCircuitRate(lanes, 200, "", model, 0)
 	pos := laneRankPositions(got)
 	if pos["ZZZ"] >= pos["AAA"] {
 		t.Fatalf("hammered lane AAA must rank BELOW fresh lane ZZZ under cooldown debt, got %v", laneOrder(got))
@@ -123,13 +123,13 @@ func TestRanking_SelfCompressionDemotesFragileHighPriceLane(t *testing.T) {
 	lanes := []trading.ArbitrageLane{rich, cheap}
 
 	// Snapshot mis-orders: identical value/hold-fit => Good asc => AAA (rich, fragile) FIRST.
-	snapshot := rankLanesByCircuitRate(lanes, 100, "", laneImpactModel{})
+	snapshot := rankLanesByCircuitRate(lanes, 100, "", laneImpactModel{}, 0)
 	if snapshot[0].Good != "AAA" {
 		t.Fatalf("precondition: snapshot ranker must tie-break the fragile lane AAA first, got %v", laneOrder(snapshot))
 	}
 
 	model := laneImpactModel{buyImpact: era3Buy, sellImpact: era3Sell}
-	got := rankLanesByCircuitRate(lanes, 100, "", model) // plannedUnits=100 => x=1 on both
+	got := rankLanesByCircuitRate(lanes, 100, "", model, 0) // plannedUnits=100 => x=1 on both
 	pos := laneRankPositions(got)
 	if pos["ZZZ"] >= pos["AAA"] {
 		t.Fatalf("fragile high-price lane AAA must rank BELOW the cheap lane ZZZ under self-compression, got %v", laneOrder(got))
@@ -146,8 +146,8 @@ func TestRanking_ImpactModelPreservesTargetDestWaiver(t *testing.T) {
 	// Directed at the cross lane's destination: the surcharge is waived, so its rate is the
 	// in-system baseline rate — strictly higher than the same lane's surcharged rate. This
 	// mirrors the waiver contract and proves the impact model did not disturb it.
-	waived := laneCircuitRatePerHour(cross, 480, "X1-BBB-2", model)
-	charged := laneCircuitRatePerHour(cross, 480, "", model)
+	waived := laneCircuitRatePerHour(cross, 480, "X1-BBB-2", model, 0)
+	charged := laneCircuitRatePerHour(cross, 480, "", model, 0)
 	if !(waived > charged) {
 		t.Fatalf("directed --dest lane must keep its in-system-baseline waiver (waived %.1f > charged %.1f)", waived, charged)
 	}

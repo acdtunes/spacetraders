@@ -128,7 +128,7 @@ func (h *RunTradeRouteCoordinatorHandler) scanLanes(
 	// Rank on the effective spread (snapshot less self-compression + live shared
 	// cooldown debt), so a lane this hull would compress or the fleet has hammered ranks
 	// lower and hulls rotate to fresh lanes. buildLaneImpactModel is inert when unwired.
-	return rankLanesByCircuitRate(ranked, shipCapacity, targetDest, h.buildLaneImpactModel()), nil
+	return rankLanesByCircuitRate(ranked, shipCapacity, targetDest, h.buildLaneImpactModel(), h.measuredPerHopTollSeconds(ctx, playerID)), nil
 }
 
 // collectSystemListings reads every cached market in one system into flat
