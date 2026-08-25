@@ -29,6 +29,7 @@ func AllModels() []any {
 		&PendingScalingReservationModel{},
 		&GateEdgeModel{},
 		&TourLegTelemetryModel{},
+		&JumpTollSampleModel{},
 		&ScoutPostModel{},
 		&MarketAbsorptionLedgerModel{},
 		&ContractDepotModel{},

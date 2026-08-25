@@ -119,6 +119,14 @@ class TourHandlerMixin:
                 # to today. Keyed on ONE system and never mirrored: the fee is asymmetric.
                 gate_fees=[dict(system=g.system, fee_credits=g.fee_credits)
                            for g in request.constraints.gate_fees],
+                # sp-3x143: the MEASURED marginal cost of one gate hop, in seconds, learned
+                # Go-side from the wall clock the fleet's own hops actually took. It
+                # OUTRANKS the env override where both are present — a live reading beats a
+                # number exported by hand — and 0/unset (too few measured hops, or an older
+                # caller) falls through to env and then to the fitted default, byte-identical
+                # to today.
+                inter_system_travel_per_hop_seconds=(
+                    request.constraints.inter_system_travel_per_hop_seconds),
                 expected_model_version=request.constraints.expected_model_version)
             waypoints = [dict(symbol=w.symbol, system_symbol=w.system_symbol,
                               x=w.x, y=w.y)

@@ -193,3 +193,30 @@ type TourLegTelemetryModel struct {
 func (TourLegTelemetryModel) TableName() string {
 	return "tour_leg_telemetry"
 }
+
+// JumpTollSampleModel is one MEASURED gate hop: what the jump actually cost the hull that
+// flew it. The cross-system travel path writes one row per hop, bracketing from the jump
+// dispatch to the moment the hull is action-ready again.
+//
+// IT EXISTS BECAUSE NOTHING ELSE RECORDS THE DURATION. The ledger's JUMP row carries the
+// gate FEE, and the ships row carries only the CURRENT cooldown expiry — overwritten by the
+// next hop. Neither preserves how long a hop took, so the tour solver's per-hop travel term
+// could only ever be a constant fitted offline (trading.EstimatePerHopTollSeconds recomputes
+// it from these rows). wait_seconds is the ECONOMIC cost — the interval over which the hull
+// earned nothing; cooldown_seconds is what the API charged, kept as the hop's distance
+// signal. Follows the TourLegTelemetryModel idiom: no players foreign key, durable history,
+// born from AutoMigrate.
+type JumpTollSampleModel struct {
+	ID              uint      `gorm:"column:id;primaryKey;autoIncrement"`
+	ShipSymbol      string    `gorm:"column:ship_symbol;not null"`
+	FromSystem      string    `gorm:"column:from_system;not null"`
+	ToSystem        string    `gorm:"column:to_system;not null"`
+	WaitSeconds     int       `gorm:"column:wait_seconds;not null"`
+	CooldownSeconds int       `gorm:"column:cooldown_seconds;not null"`
+	PlayerID        int       `gorm:"column:player_id;not null;index:idx_jump_toll_samples_player"`
+	RecordedAt      time.Time `gorm:"column:recorded_at;not null;index:idx_jump_toll_samples_recorded"`
+}
+
+func (JumpTollSampleModel) TableName() string {
+	return "jump_toll_samples"
+}

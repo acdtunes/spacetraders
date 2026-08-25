@@ -37,6 +37,12 @@ type circuitWiring struct {
 	chartGateOnArrival bool
 }
 
+// jumpTolls is the measured-hop store every cross-system engine writes to and the tour's
+// per-hop estimator reads back — only as honest as the share of jumps that reach it.
+func (w circuitWiring) jumpTolls() *persistence.GormJumpTollRepository {
+	return persistence.NewGormJumpTollRepository(w.db)
+}
+
 // configureSinkDepthScaling gives the SHARED absorption ledger the operator-resolved crush prior.
 // Called at every handoff of that one instance — idempotent, but the rule is then structural
 // rather than a fact about boot order. An absent config section resolves to the shipped fit, so
@@ -84,6 +90,7 @@ func (w circuitWiring) configureTradeRouteCoordinator(h *tradeRouteCmd.RunTradeR
 	// (every ship disarmed, unchanged behavior); an operator arms a hull via
 	// `fleet scan-dedup add`, no daemon restart.
 	h.SetScanDedupAllowlist(persistence.NewScanDedupAllowlistGORM(w.db))
+	h.SetJumpTollRecorder(w.jumpTolls())
 }
 
 func (w circuitWiring) configureArbCoordinator(h *tradeRouteCmd.RunArbCoordinatorHandler) {
@@ -98,6 +105,7 @@ func (w circuitWiring) configureArbCoordinator(h *tradeRouteCmd.RunArbCoordinato
 	// completion (shared ledger instance).
 	w.configureSinkDepthScaling()
 	h.SetAbsorptionLedger(w.absorption)
+	h.SetJumpTollRecorder(w.jumpTolls())
 }
 
 func (w circuitWiring) configureTourCoordinator(h *tradeRouteCmd.RunTourCoordinatorHandler) *tradeRouteCmd.MarketFreshness {
@@ -109,6 +117,13 @@ func (w circuitWiring) configureTourCoordinator(h *tradeRouteCmd.RunTourCoordina
 	h.SetGateFeeReader(
 		tradeRouteCmd.NewLedgerGateFeeReader(w.transactionRepo, nil), // nil clock = RealClock
 	)
+	// Prices the MARGINAL term of a crossing from what the fleet's own hops actually cost.
+	// Recorder and reader share one table: the legs write every hop, the planner reads the
+	// decayed window back; too few samples leaves the solver on its fitted default.
+	h.SetJumpTollRecorder(w.jumpTolls())
+	h.SetJumpTollReader(tradeRouteCmd.NewLedgerJumpTollReader(
+		w.jumpTolls(), nil, domainTrading.DefaultJumpTollParams(), // nil clock = RealClock
+	))
 	h.SetChartGateOnArrival(w.chartGateOnArrival)
 	// Lets the tour see profitable exotic lanes whose sink sits beyond the tour graph's
 	// own hop horizon.
@@ -171,4 +186,5 @@ func (w circuitWiring) configureStockerCoordinator(
 	// Shares the tour's rotation-derived freshness cap for refill sourcing rather than
 	// carrying a second copy that could drift.
 	h.SetMarketFreshness(marketFreshness)
+	h.SetJumpTollRecorder(w.jumpTolls())
 }

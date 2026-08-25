@@ -155,6 +155,10 @@ type RunTourCoordinatorHandler struct {
 	// not wire it) => no table on the wire => every crossing prices at the solver's flat
 	// charge, byte-identical to today. Injected via SetGateFeeReader at boot.
 	gateFees GateFeeReader
+	// jumpTolls estimates what one gate hop currently costs in wall-clock seconds, which the
+	// solver prices the MARGINAL term of a crossing at. nil, or a fleet with too few measured
+	// hops => 0 on the wire => the solver keeps its fitted default, byte-identical to today.
+	jumpTolls JumpTollReader
 	// modelArtifactPath is the daemon-configured (absolute) path to the market-model
 	// artifact this coordinator reads at launch, injected from cfg.Routing.ModelArtifactPath.
 	// Empty → the repo-relative defaultModelArtifactPath fallback. A per-run

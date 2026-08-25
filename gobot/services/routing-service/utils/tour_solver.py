@@ -871,7 +871,7 @@ def _make_travel_fn(constraints, markets, ship, waypoints=None):
     # sp-smbgd: resolve BOTH affine terms ONCE per build so every crossing in this solve is
     # priced by the same model — the discipline the single flat charge already followed.
     inter_system_base = _resolve_inter_system_travel_base_seconds()
-    inter_system_per_hop = _resolve_inter_system_travel_per_hop_seconds()
+    inter_system_per_hop = _resolve_inter_system_travel_per_hop_seconds(constraints)
     # sp-tp5c3: the per-pair gate-hop distance map. Empty (un-widened default / no feed) -> {} ->
     # every crossing prices at 1 hop = the flat charge, byte-identical to today.
     inter_system_hops = _build_inter_system_hop_index(constraints)
@@ -1729,13 +1729,34 @@ def _resolve_inter_system_travel_base_seconds():
                                  INTER_SYSTEM_TRAVEL_TERM_MAX, int)
 
 
-def _resolve_inter_system_travel_per_hop_seconds():
-    """Per-solve env override for the MARGINAL per-gate-hop term of the affine crossing
-    charge (TOUR_SOLVER_INTER_SYSTEM_TRAVEL_PER_HOP_SECONDS, sp-smbgd). Same clamp and
-    fallback discipline as _resolve_inter_system_travel_base_seconds; fitted default
-    INTER_SYSTEM_TRAVEL_PER_HOP_SECONDS (650). NOT the old
-    TOUR_SOLVER_INTER_SYSTEM_TRAVEL_SECONDS under a new meaning — that name is retired
-    precisely so a stale export of it cannot be read as this term."""
+def _resolve_inter_system_travel_per_hop_seconds(constraints=None):
+    """Resolve the MARGINAL per-gate-hop term of the affine crossing charge.
+
+    PRECEDENCE: request-carried MEASUREMENT > env override > fitted default (sp-3x143).
+
+    The request value is what the Go daemon MEASURED — the wall clock its own hops took,
+    decayed over a rolling window — and it wins because a live reading of the fleet is
+    strictly better evidence than a number a human exported by hand. The env var
+    (TOUR_SOLVER_INTER_SYSTEM_TRAVEL_PER_HOP_SECONDS, sp-smbgd) keeps its meaning
+    underneath: it is the manual override for a fleet whose estimator has nothing to say.
+    Under both sits the fitted default INTER_SYSTEM_TRAVEL_PER_HOP_SECONDS (650).
+
+    A request value is USED only when it is a real positive integer count of seconds.
+    Absent, zero, negative, a bool, or a non-int all fall through to the env path, so a
+    caller that predates the field — or a fleet with too few measured hops — prices a
+    crossing byte-identically to today. Bools are excluded explicitly because `True` is an
+    int in Python and would otherwise resolve to a 1-second hop, i.e. the clamp floor.
+
+    The accepted value passes through the SAME [INTER_SYSTEM_TRAVEL_TERM_MIN,
+    INTER_SYSTEM_TRAVEL_TERM_MAX] clamp the env path uses — one bound for the term, not one
+    per source — so no estimate can price a crossing at zero (which would make every distant
+    region look free) or absurdly high. NOT the old TOUR_SOLVER_INTER_SYSTEM_TRAVEL_SECONDS
+    under a new meaning: that name is retired precisely so a stale export of it cannot be
+    read as this term."""
+    measured = (constraints or {}).get("inter_system_travel_per_hop_seconds")
+    if isinstance(measured, int) and not isinstance(measured, bool) and measured > 0:
+        return max(INTER_SYSTEM_TRAVEL_TERM_MIN,
+                   min(measured, INTER_SYSTEM_TRAVEL_TERM_MAX))
     return _sequencer_env_scalar(INTER_SYSTEM_TRAVEL_PER_HOP_ENV_VAR,
                                  INTER_SYSTEM_TRAVEL_PER_HOP_SECONDS,
                                  INTER_SYSTEM_TRAVEL_TERM_MIN,

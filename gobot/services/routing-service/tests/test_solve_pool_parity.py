@@ -83,6 +83,7 @@ def _fully_loaded_payload():
                                 to_system=away["system_symbol"], gate_hops=3)],
         gate_fees=[dict(system=home["system_symbol"], fee_credits=4200)],
         externality_weight=0.4,
+        inter_system_travel_per_hop_seconds=1030,
     )
     payload["deposit_candidates"] = [dict(good_symbol="ALLOY", units_wanted=40,
                                           synthetic_bid=310,

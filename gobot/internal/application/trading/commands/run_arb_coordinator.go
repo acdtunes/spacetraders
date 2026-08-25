@@ -16,6 +16,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
 )
 
 // defaultArbSellFloorFraction is the per-tranche sell floor's default
@@ -270,6 +271,13 @@ func (h *RunArbCoordinatorHandler) SetTreasuryReader(r TreasuryReader) {
 // caller or test changes. Mirrors the SetGateGraph delegation.
 func (h *RunArbCoordinatorHandler) SetEventSubscriber(subscriber navigation.ShipEventSubscriber) {
 	h.legs.SetEventSubscriber(subscriber)
+}
+
+// SetJumpTollRecorder forwards the measured-hop recorder into the delegated movement
+// handler, whose legs are this handler's OWN instance — a setter that stopped here would
+// leave every arb crossing unmeasured. Nil is a no-op. Mirrors the SetGateGraph delegation.
+func (h *RunArbCoordinatorHandler) SetJumpTollRecorder(r trading.JumpTollRepository) {
+	h.legs.SetJumpTollRecorder(r)
 }
 
 // SetCostPersister wires the durable buy-cost store so a fresh run records its

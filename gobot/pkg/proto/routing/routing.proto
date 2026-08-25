@@ -348,6 +348,18 @@ message TourConstraints {
   // => that crossing prices at the flat charge => byte-identical to today.
   // ASYMMETRIC: see GateFee.
   repeated GateFee gate_fees = 13;
+  // sp-3x143: the MEASURED marginal cost of one gate hop, in seconds — the per_hop term
+  // of the affine crossing charge, estimated Go-side from the wall clock the fleet's own
+  // hops actually took (jump dispatch to hull action-ready). It exists because that term
+  // was a constant fitted once and then frozen, while the quantity it names moves with
+  // both the hop and the contention the fleet is running under.
+  //
+  // The solver PREFERS this value whenever it is positive, falling back to its env
+  // override and then to its fitted default — so 0/unset (a fleet with too few measured
+  // hops, or any older caller) is byte-identical to today. The solver clamps it to the
+  // same bounds as the env path, so a wild estimate can price a crossing neither at zero
+  // nor absurdly.
+  int32 inter_system_travel_per_hop_seconds = 14;
 }
 
 // GateFee is one departure system's jump-gate fee in credits (sp-9idvn).

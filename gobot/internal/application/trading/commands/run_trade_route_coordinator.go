@@ -350,6 +350,11 @@ type RunTradeRouteCoordinatorHandler struct {
 	// byte-for-byte unchanged (fail-open, matching gateGraph's optional-port
 	// contract). The daemon injects the shared ShipEventBus via SetEventSubscriber.
 	eventSubscriber navigation.ShipEventSubscriber
+	// jumpTolls is where flyJumpPath writes one measured hop — wall clock from jump dispatch
+	// to the hull being action-ready — so the tour solver's per-gate-hop travel charge can be
+	// recomputed from the fleet's own traffic. Optional; nil skips the write and leaves the
+	// travel path byte-for-byte unchanged (the gateGraph/eventSubscriber port contract).
+	jumpTolls trading.JumpTollRepository
 	// absorptionLedger is the cross-engine market-absorption ledger (sp-78ai L4).
 	// scanLanes consults it READ-ONLY (trade-analyst Q1: "circuits write nothing") to
 	// exclude a lane whose sell side is shadowed or whose reserved depth can't absorb
@@ -549,6 +554,14 @@ func (h *RunTradeRouteCoordinatorHandler) gateGraphResolver() GateGraph {
 // SetGateGraph optional-injection idiom.
 func (h *RunTradeRouteCoordinatorHandler) SetEventSubscriber(subscriber navigation.ShipEventSubscriber) {
 	h.eventSubscriber = subscriber
+}
+
+// SetJumpTollRecorder wires the durable store flyJumpPath writes one measured hop to. This
+// handler is the ONE place every coordinator's jumps go through — tour, trade, arb,
+// reposition and cross-system navigate all reach flyJumpPath — so a single injection covers
+// the fleet's whole jump traffic. Nil leaves the travel path byte-for-byte what it was.
+func (h *RunTradeRouteCoordinatorHandler) SetJumpTollRecorder(r trading.JumpTollRepository) {
+	h.jumpTolls = r
 }
 
 // SetAbsorptionLedger wires the cross-engine absorption ledger (sp-78ai L4), the same

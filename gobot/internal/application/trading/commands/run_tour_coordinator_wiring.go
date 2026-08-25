@@ -116,6 +116,20 @@ func (h *RunTourCoordinatorHandler) SetGateFeeReader(r GateFeeReader) {
 	h.gateFees = r
 }
 
+// SetJumpTollReader injects the sample-backed per-gate-hop travel estimator (sp-3x143).
+// Unset (every existing test) leaves jumpTolls nil, which plans byte-identically to today.
+func (h *RunTourCoordinatorHandler) SetJumpTollReader(r JumpTollReader) {
+	h.jumpTolls = r
+}
+
+// SetJumpTollRecorder forwards the measured-hop recorder into the MOVEMENT LEGS, which are
+// what fly the crossings. The legs are this handler's OWN instance, not the daemon's
+// separately wired circuit handler, so a setter that stopped here would leave the fleet's
+// largest source of jumps unmeasured. Nil is a no-op. Mirrors SetTreasuryReader.
+func (h *RunTourCoordinatorHandler) SetJumpTollRecorder(r trading.JumpTollRepository) {
+	h.legs.SetJumpTollRecorder(r)
+}
+
 // SetChartGateOnArrival propagates the chart-on-gate-arrival knob to the movement
 // legs, so this coordinator's cross-gate tour arrivals chart the gate they land on too.
 // Mirrors the SetGateGraph delegation.

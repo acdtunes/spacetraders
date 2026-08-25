@@ -300,3 +300,39 @@ def test_handler_forwards_per_origin_gate_fees(tmp_path):
     assert base.projected_profit - armed.projected_profit == 3_000, (
         f"expected exactly one crossing to reprice: "
         f"base={base.projected_profit} armed={armed.projected_profit}")
+
+
+def test_handler_forwards_the_measured_per_hop_travel_toll(tmp_path):
+    # sp-3x143: the pb TourConstraints.inter_system_travel_per_hop_seconds must be BRIDGED
+    # into the solver constraints dict, or the whole estimator is inert on the wire — the
+    # exact failure mode that made max_tour_systems dormant before sp-syaz. A dropped scalar
+    # is silent here: the solver keeps its fitted default and the plan looks entirely normal.
+    #
+    # Proven by EXACT DELTA, not by inspecting the dict. The golden board's tour makes TWO
+    # crossings (out to S2 and back), each one gate hop, so raising the MARGINAL term from
+    # the fitted 650 to 1,500 must lengthen the priced tour by exactly 2 x 850 seconds. A
+    # handler that dropped the field moves it by 0; one that fed the BASE term instead, or
+    # charged the toll once, moves it by something else.
+    handler = RoutingServiceHandler(tour_artifact_path=_artifact(tmp_path))
+
+    def priced_seconds(resp):
+        return round(3600 * resp.projected_profit / resp.projected_credits_per_hour)
+
+    base = handler.OptimizeTradeTour(request(), None)
+    assert base.feasible
+
+    req = request()
+    req.constraints.inter_system_travel_per_hop_seconds = 1_500
+    armed = handler.OptimizeTradeTour(req, None)
+    assert armed.feasible
+
+    # Same tour, only priced differently — so the delta isolates the toll.
+    assert [(l.waypoint_symbol, l.system_symbol) for l in armed.legs] == \
+        [(l.waypoint_symbol, l.system_symbol) for l in base.legs]
+    assert priced_seconds(armed) - priced_seconds(base) == 2 * (1_500 - 650), (
+        f"expected exactly two 1-hop crossings to reprice: "
+        f"base={priced_seconds(base)}s armed={priced_seconds(armed)}s")
+
+    # THE FAIL-OPEN PIN: the field left at its proto3 default prices exactly as a request
+    # from a binary that predates it.
+    assert priced_seconds(handler.OptimizeTradeTour(request(), None)) == priced_seconds(base)

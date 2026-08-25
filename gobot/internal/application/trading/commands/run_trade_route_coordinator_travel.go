@@ -465,6 +465,11 @@ func (h *RunTradeRouteCoordinatorHandler) flyJumpPath(ctx context.Context, ship 
 	totalHops := len(path) - 1
 	for i := 1; i < len(path); i++ {
 		nextSystem := path[i]
+		// The measurement bracket opens HERE and closes once the cooldown wait returns — the
+		// interval over which the hull earned nothing. It spans the jump call itself, so the
+		// rate limiter's queue is INSIDE the measured cost: a hop that waited behind fleet
+		// contention cost the hull exactly that.
+		hopStarted := h.clock.Now()
 		jumpResp, jerr := h.jumpHop(ctx, &navCmd.JumpShipCommand{
 			ShipSymbol:        ship.ShipSymbol(),
 			DestinationSystem: nextSystem,
@@ -477,6 +482,7 @@ func (h *RunTradeRouteCoordinatorHandler) flyJumpPath(ctx context.Context, ship 
 		if werr := h.waitForJumpCooldown(ctx, jumpResp.CooldownSeconds); werr != nil {
 			return werr
 		}
+		h.recordJumpToll(ctx, ship.ShipSymbol(), path[i-1], nextSystem, playerID, hopStarted, jumpResp.CooldownSeconds)
 		// The hop landed the hull ON nextSystem's jump gate — the one moment its
 		// outbound edges are readable. Chart it now (best-effort). The TERMINAL hop's system
 		// is charted from the authoritative reloaded pointer by the caller (chartArrivedGate),
@@ -486,6 +492,36 @@ func (h *RunTradeRouteCoordinatorHandler) flyJumpPath(ctx context.Context, ship 
 		}
 	}
 	return nil
+}
+
+// recordJumpToll writes the completed hop to the durable sample table the tour solver's
+// per-gate-hop travel charge is estimated from. WaitSeconds is wall clock across the whole
+// bracket — the ECONOMIC cost the $/hr objective needs; CooldownSeconds is what the API
+// charged, kept as the hop's distance signal.
+//
+// BEST-EFFORT AND NON-FATAL, the chartSystemGate discipline: the hull has already moved, so
+// a telemetry write must never be the reason a leg fails. An unwired recorder skips out.
+func (h *RunTradeRouteCoordinatorHandler) recordJumpToll(
+	ctx context.Context, shipSymbol, fromSystem, toSystem string, playerID int,
+	hopStarted time.Time, cooldownSeconds int,
+) {
+	if h.jumpTolls == nil {
+		return
+	}
+	completed := h.clock.Now()
+	sample := trading.JumpTollSample{
+		WaitSeconds:     int(completed.Sub(hopStarted).Seconds()),
+		CooldownSeconds: cooldownSeconds,
+		RecordedAt:      completed,
+	}
+	if err := h.jumpTolls.RecordJumpToll(ctx, playerID, shipSymbol, fromSystem, toSystem, sample); err != nil {
+		common.LoggerFromContext(ctx).Log("INFO", fmt.Sprintf(
+			"jump-toll sample for %s (%s -> %s) could not be recorded (non-fatal): %v",
+			shipSymbol, fromSystem, toSystem, err), map[string]interface{}{
+			"action": "jump_toll_sample_failed", "ship_symbol": shipSymbol,
+			"from_system": fromSystem, "to_system": toSystem, "error": err.Error(),
+		})
+	}
 }
 
 // chartArrivedGate best-effort charts the outbound gate connections of the system the

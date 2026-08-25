@@ -30,6 +30,27 @@ func (h *RunTourCoordinatorHandler) tourGateFees(
 	return gateFeeConstraints(h.gateFees.GateFees(ctx, cmd.PlayerID))
 }
 
+// tourPerHopToll resolves what one gate hop currently costs this fleet, in seconds, for the
+// marginal term of the solver's crossing charge.
+//
+// 0 IS THE FAIL-OPEN VALUE and every path that is not a real measurement lands on it: an
+// unwired estimator, too few measured hops, and — belt-and-braces on the one reading that
+// must never reach the objective — a non-positive one, since a crossing that gave time back
+// would make every distant candidate look free. 0 serializes to nothing, so the solver falls
+// back to its env override and then to its fitted default.
+func (h *RunTourCoordinatorHandler) tourPerHopToll(
+	ctx context.Context, cmd *RunTourCoordinatorCommand,
+) int {
+	if h.jumpTolls == nil {
+		return 0
+	}
+	seconds := h.jumpTolls.PerHopTollSeconds(ctx, cmd.PlayerID)
+	if seconds <= 0 {
+		return 0
+	}
+	return seconds
+}
+
 // planForState assembles the market snapshot + era-scoped coordinates over allowedSystems
 // and calls the depth-aware planner for the given ship state. It is the plan core shared
 // by the live tour (planAndReserve — ship state + tour graph derived from the hull's real
@@ -166,6 +187,9 @@ func (h *RunTourCoordinatorHandler) buildTourPlanRequest(
 		// or an empty ledger => nil => every crossing prices at the flat charge =>
 		// byte-identical to today.
 		GateFees: h.tourGateFees(ctx, cmd),
+		// The MARGINAL term of a crossing, measured from the hops the fleet has actually
+		// flown. 0 (nil reader / too few hops) leaves the solver on its fitted default.
+		InterSystemTravelPerHopSeconds: h.tourPerHopToll(ctx, cmd),
 	}
 	return &tourPlanRequest{
 		shipState: shipState, snapshot: snapshot, waypoints: waypoints,

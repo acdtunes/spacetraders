@@ -1471,9 +1471,21 @@ type TourConstraints struct {
 	// system's scalar instead of the flat fleet charge. Empty (or any system omitted)
 	// => that crossing prices at the flat charge => byte-identical to today.
 	// ASYMMETRIC: see GateFee.
-	GateFees      []*GateFee `protobuf:"bytes,13,rep,name=gate_fees,json=gateFees,proto3" json:"gate_fees,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	GateFees []*GateFee `protobuf:"bytes,13,rep,name=gate_fees,json=gateFees,proto3" json:"gate_fees,omitempty"`
+	// sp-3x143: the MEASURED marginal cost of one gate hop, in seconds — the per_hop term
+	// of the affine crossing charge, estimated Go-side from the wall clock the fleet's own
+	// hops actually took (jump dispatch to hull action-ready). It exists because that term
+	// was a constant fitted once and then frozen, while the quantity it names moves with
+	// both the hop and the contention the fleet is running under.
+	//
+	// The solver PREFERS this value whenever it is positive, falling back to its env
+	// override and then to its fitted default — so 0/unset (a fleet with too few measured
+	// hops, or any older caller) is byte-identical to today. The solver clamps it to the
+	// same bounds as the env path, so a wild estimate can price a crossing neither at zero
+	// nor absurdly.
+	InterSystemTravelPerHopSeconds int32 `protobuf:"varint,14,opt,name=inter_system_travel_per_hop_seconds,json=interSystemTravelPerHopSeconds,proto3" json:"inter_system_travel_per_hop_seconds,omitempty"`
+	unknownFields                  protoimpl.UnknownFields
+	sizeCache                      protoimpl.SizeCache
 }
 
 func (x *TourConstraints) Reset() {
@@ -1595,6 +1607,13 @@ func (x *TourConstraints) GetGateFees() []*GateFee {
 		return x.GateFees
 	}
 	return nil
+}
+
+func (x *TourConstraints) GetInterSystemTravelPerHopSeconds() int32 {
+	if x != nil {
+		return x.InterSystemTravelPerHopSeconds
+	}
+	return 0
 }
 
 // GateFee is one departure system's jump-gate fee in credits (sp-9idvn).
@@ -2673,7 +2692,7 @@ const file_pkg_proto_routing_routing_proto_rawDesc = "" +
 	"\rTourCargoItem\x12\x1f\n" +
 	"\vgood_symbol\x18\x01 \x01(\tR\n" +
 	"goodSymbol\x12\x14\n" +
-	"\x05units\x18\x02 \x01(\x05R\x05units\"\xda\x04\n" +
+	"\x05units\x18\x02 \x01(\x05R\x05units\"\xa7\x05\n" +
 	"\x0fTourConstraints\x12\x19\n" +
 	"\bmax_hops\x18\x01 \x01(\x05R\amaxHops\x12\x1b\n" +
 	"\tmax_spend\x18\x02 \x01(\x03R\bmaxSpend\x12-\n" +
@@ -2688,7 +2707,8 @@ const file_pkg_proto_routing_routing_proto_rawDesc = "" +
 	" \x01(\tR\fanchorSystem\x12K\n" +
 	"\x11inter_system_hops\x18\v \x03(\v2\x1f.routing.InterSystemHopDistanceR\x0finterSystemHops\x12-\n" +
 	"\x12externality_weight\x18\f \x01(\x01R\x11externalityWeight\x12-\n" +
-	"\tgate_fees\x18\r \x03(\v2\x10.routing.GateFeeR\bgateFees\"B\n" +
+	"\tgate_fees\x18\r \x03(\v2\x10.routing.GateFeeR\bgateFees\x12K\n" +
+	"#inter_system_travel_per_hop_seconds\x18\x0e \x01(\x05R\x1einterSystemTravelPerHopSeconds\"B\n" +
 	"\aGateFee\x12\x16\n" +
 	"\x06system\x18\x01 \x01(\tR\x06system\x12\x1f\n" +
 	"\vfee_credits\x18\x02 \x01(\x03R\n" +

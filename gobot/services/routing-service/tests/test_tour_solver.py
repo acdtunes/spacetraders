@@ -169,6 +169,67 @@ def _clear_affine_env(monkeypatch):
     monkeypatch.delenv(INTER_SYSTEM_TRAVEL_PER_HOP_ENV_VAR, raising=False)
 
 
+def _crossing_hop_with_toll(per_hop_seconds, gate_hops=1, inter_system_hops=None):
+    """_crossing_hop, plus the request-carried MEASURED per-hop toll (sp-3x143).
+    `per_hop_seconds=None` omits the field entirely (an older caller, or a fleet with
+    too few measured hops)."""
+    from utils.tour_solver import _make_travel_fn, _build_markets
+    markets = _build_markets([snap("A", "S1", "G", ask=100, bid=90),
+                              snap("B", "S2", "G", ask=999, bid=300)])
+    ship = dict(ship_symbol="H", current_waypoint="A", current_system="S1",
+                hold_capacity=80, fuel_current=400, fuel_capacity=400,
+                engine_speed=30, cargo=[])
+    cons = dict(allowed_systems=["S1", "S2"],
+                inter_system_hops=inter_system_hops if inter_system_hops is not None
+                else [dict(from_system="S1", to_system="S2", gate_hops=gate_hops)])
+    if per_hop_seconds is not None:
+        cons["inter_system_travel_per_hop_seconds"] = per_hop_seconds
+    return _make_travel_fn(cons, markets, ship)("A", "B")
+
+
+def test_request_carried_per_hop_toll_prices_the_marginal_term(monkeypatch):
+    # sp-3x143: the daemon measures what a gate hop actually costs the fleet and sends it
+    # per solve, so the MARGINAL term tracks live conditions instead of a level fitted once.
+    # It moves the slope and nothing else — the base is a separate, still-fitted quantity.
+    _clear_affine_env(monkeypatch)
+    assert _crossing_hop_with_toll(1030, gate_hops=1) == 750 + 1030
+    assert _crossing_hop_with_toll(1030, gate_hops=3) == 750 + 3 * 1030
+    # A LOWER measured toll must be honoured too — re-cheapening as traffic smooths is the
+    # whole point, and a model that could only ever ratchet up would not deliver it.
+    assert _crossing_hop_with_toll(480, gate_hops=3) == 750 + 3 * 480
+
+
+def test_request_carried_per_hop_toll_outranks_the_env_override(monkeypatch):
+    # PRECEDENCE: request > env > fitted default. The env var stays an operator's manual
+    # override for a fleet whose estimator is silent; a live measurement is strictly better
+    # evidence than a number someone exported by hand, so it wins where both are present.
+    from utils.tour_solver import INTER_SYSTEM_TRAVEL_PER_HOP_ENV_VAR
+    monkeypatch.setenv(INTER_SYSTEM_TRAVEL_PER_HOP_ENV_VAR, "1500")
+    assert _crossing_hop_with_toll(900, gate_hops=2) == 750 + 2 * 900
+    # ...and with no request value the env override still governs, unchanged.
+    assert _crossing_hop_with_toll(None, gate_hops=2) == 750 + 2 * 1500
+
+
+def test_absent_or_unusable_per_hop_toll_is_byte_identical_to_today(monkeypatch):
+    # THE FAIL-OPEN PIN. Absent (an older caller / too few measured hops), zero, negative,
+    # a bool, or a non-number ALL fall back to the fitted default — so nothing about the
+    # armed model changes until a real measurement arrives.
+    _clear_affine_env(monkeypatch)
+    fitted = 750 + 650
+    for value in (None, 0, -400, True, False, "1030", 1030.5, None):
+        assert _crossing_hop_with_toll(value, gate_hops=1) == fitted, value
+
+
+def test_request_carried_per_hop_toll_is_clamped_like_the_env_path(monkeypatch):
+    # A wild estimate must not be able to price a crossing at zero (making every distant
+    # region look free) or absurdly. Same bounds as the env path — one clamp, not two.
+    from utils.tour_solver import (INTER_SYSTEM_TRAVEL_TERM_MIN,
+                                   INTER_SYSTEM_TRAVEL_TERM_MAX)
+    _clear_affine_env(monkeypatch)
+    assert _crossing_hop_with_toll(1, gate_hops=1) == 750 + INTER_SYSTEM_TRAVEL_TERM_MIN
+    assert _crossing_hop_with_toll(999_999, gate_hops=1) == 750 + INTER_SYSTEM_TRAVEL_TERM_MAX
+
+
 def test_crossing_charge_is_affine_in_gate_hops_by_default(monkeypatch):
     # THE pinned law, with NO env set: total(hops) = 750 + 650*hops. Two properties that a
     # flat model of ANY per-hop constant cannot satisfy simultaneously:

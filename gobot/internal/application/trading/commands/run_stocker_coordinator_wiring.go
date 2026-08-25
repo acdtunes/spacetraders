@@ -12,6 +12,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/storage"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
 )
 
 // warehouseCapState is one warehouse's carried optimizer state between passes: the EWMA
@@ -159,6 +160,13 @@ func (h *RunStockerCoordinatorHandler) SetTreasuryReader(r TreasuryReader) {
 // (sp-8l3o) instead of 4214'ing and burning the restart budget. Mirrors arb/tour.
 func (h *RunStockerCoordinatorHandler) SetEventSubscriber(subscriber navigation.ShipEventSubscriber) {
 	h.legs.SetEventSubscriber(subscriber)
+}
+
+// SetJumpTollRecorder forwards the measured-hop recorder into the delegated movement handler,
+// so a stocker's cross-gate legs count toward the fleet's per-hop travel estimate. Nil is a
+// no-op. Mirrors arb/tour.
+func (h *RunStockerCoordinatorHandler) SetJumpTollRecorder(r trading.JumpTollRepository) {
+	h.legs.SetJumpTollRecorder(r)
 }
 
 // SetStockingRecorder wires the stock-IN deposit-event recorder: on each CONFIRMED

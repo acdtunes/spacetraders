@@ -99,7 +99,8 @@ type TourConstraints struct {
 	// departure system's scalar instead of the flat fleet charge. Empty (no history yet)
 	// => every crossing prices at the flat charge => byte-identical to today; a system
 	// the table omits likewise falls back.
-	GateFees []GateFee
+	GateFees                       []GateFee
+	InterSystemTravelPerHopSeconds int
 }
 
 // GateFee is one departure system's jump-gate fee in credits.

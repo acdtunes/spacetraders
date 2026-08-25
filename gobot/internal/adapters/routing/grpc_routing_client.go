@@ -432,7 +432,8 @@ func buildTourRequest(
 			ExternalityWeight: cons.ExternalityWeight,
 			// Per-departure-gate fees. Empty (no history) serializes to nothing, so the
 			// request is byte-identical to a binary that predates the table.
-			GateFees: pbGateFees,
+			GateFees:                       pbGateFees,
+			InterSystemTravelPerHopSeconds: int32(cons.InterSystemTravelPerHopSeconds),
 		},
 		Waypoints:         pbWaypoints,
 		DepositCandidates: pbDeposits,
