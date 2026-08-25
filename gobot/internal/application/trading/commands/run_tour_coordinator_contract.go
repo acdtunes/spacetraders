@@ -258,6 +258,12 @@ type RunTourCoordinatorResponse struct {
 	Repositions int
 	ExitDetail  string
 
+	// RetirementStandDown records that the operator's retirement mark ended this run at a
+	// drained boundary. It is the falsifier for the stand-down — a run that stopped for any
+	// other reason leaves it false — and it is how a plan that stopped itself between legs
+	// tells the loop not to choose another ground for a hull leaving service.
+	RetirementStandDown bool
+
 	// DistressLiquidations counts how many stuck-laden episodes this run resolved by the
 	// sp-2v69u TERTIARY last resort: a laden hull with no profitable fresh tour AND no
 	// reachable sink (the fresh-arb reposition and the held-cargo offload both declined)

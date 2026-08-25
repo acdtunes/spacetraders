@@ -107,6 +107,9 @@ const (
 	// internal_error (an exception it caught, not a transport failure). A real planner
 	// OUTAGE — vetoes the container FAILED, never a clean fail-open.
 	tourExitPlannerInternalError = "planner_internal_error"
+	// tourExitRetired: the operator marked the hull retiring and a boundary found its hold
+	// EMPTY, so the run stands it down instead of planning it more work. An HONEST completion.
+	tourExitRetired = "retired"
 )
 
 // plannerInternalErrorMarker is the prefix the routing-service stamps on any
@@ -595,6 +598,17 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 			return err
 		}
 
+		// RETIREMENT. A hull the operator marked leaves service at the first boundary its hold
+		// is EMPTY — here, before another plan is chosen for it. A continuous run re-plans
+		// itself indefinitely on rich ground, so a mark honoured only where the container
+		// exits never binds at all; this is where it binds. Read fresh each pass so a hull
+		// marked mid-run notices without a restart, and ahead of the relocation hold below so
+		// a hull leaving service is never parked waiting for an offer.
+		if h.retiringDrained(ctx, cmd) {
+			h.standDownRetiring(cmd, response, logger)
+			break
+		}
+
 		// FIRST REFUSAL (sp-e8d92): if this hull was offered to the relocator at the last boundary, wait
 		// the offer out before planning here again. This is the whole mechanism — the fleet occupies 23
 		// of 373 tradeable systems because the instant a hull is free its tour re-plans it locally, and
@@ -625,6 +639,17 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 		feasible, reason, terr := h.runOneTour(ctx, cmd, response, netBought, tourBudget, replanLimit)
 		if terr != nil {
 			return terr
+		}
+
+		// The plan stopped itself at a drained LEG boundary on the same mark. End the run here
+		// rather than falling into the streak/rescue ladder, which would rank fresh ground for
+		// a hull that is leaving service. A plan cut short having traded still flew its tour.
+		if response.RetirementStandDown {
+			if feasible && response.TradesExecuted > tradesBefore {
+				response.ToursCompleted++
+			}
+			h.standDownRetiring(cmd, response, logger)
+			break
 		}
 
 		// A planner-returned internal_error is a routing-service OUTAGE (an exception it
@@ -1107,6 +1132,13 @@ func (h *RunTourCoordinatorHandler) executePlan(
 		ship, err := h.legs.loadShip(ctx, cmd.ShipSymbol, cmd.PlayerID)
 		if err != nil {
 			return false, err
+		}
+		// Retirement binds BETWEEN legs, never mid-leg: a marked hull whose hold is empty
+		// right here flies no further leg and the caller ends the run. A laden one flies on
+		// and sells, because that flight is how a retirement drains instead of stranding.
+		if ship.RetirementDrained() {
+			run.response.RetirementStandDown = true
+			return false, nil
 		}
 		// True leg-start stamp: travel() blocks through arrival, so this is the only
 		// place the real departure time exists. It anchors the visualizer's

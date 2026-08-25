@@ -10,11 +10,11 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
-// RetireShipCommand withdraws a hull from service: the tour it is flying finishes and
-// sells normally, and once its hold is empty no coordinator plans it another. It is
-// deliberately NOT `fleet unassign`, which breaks the live claim, stops the container and
-// leaves a mid-tour hull parked wherever it stood, still holding its load — and then makes
-// it claimable by every other coordinator.
+// RetireShipCommand withdraws a hull from service: it flies and sells on while it holds
+// cargo, then stands down at the first boundary — between legs or tours — its hold is empty,
+// after which no coordinator plans it another. It is deliberately NOT `fleet unassign`,
+// which breaks the live claim, stops the container and leaves a mid-tour hull parked
+// wherever it stood, still holding its load — claimable by every other coordinator.
 type RetireShipCommand struct {
 	ShipSymbol  string // Required: ship symbol to retire
 	Cancel      bool   // Clear the mark, returning the hull to normal service
@@ -105,7 +105,7 @@ func (h *RetireShipHandler) logDecision(ctx context.Context, ship *navigation.Sh
 		return
 	}
 	logger.Log("INFO", fmt.Sprintf(
-		"%s marked retiring holding %d unit(s) — its current tour finishes and sells, then it is planned no more",
+		"%s marked retiring holding %d unit(s) — it keeps selling that load, then stands down at the first boundary its hold is empty",
 		ship.ShipSymbol(), ship.CargoUnits()),
 		map[string]interface{}{
 			"action":      "ship_retirement_marked",

@@ -27,7 +27,7 @@ func retireOutcomeLines(response *pb.RetireShipResponse) []string {
 	}
 	return []string{
 		fmt.Sprintf("✓ %s marked retiring — still carrying %d unit(s)", response.ShipSymbol, response.CargoUnits),
-		"  It keeps flying tours until it has sold that load, then stops being planned any.",
+		"  It keeps flying and selling until that load is gone, then stands down.",
 	}
 }
 
@@ -41,15 +41,16 @@ func newShipRetireCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "retire",
 		Short: "Withdraw a hull from service once it has sold its load",
-		Long: `Mark a hull for retirement. The tour it is flying finishes and sells normally;
-once its hold is empty the trade coordinator plans it no further tours, and it
-is then ready to scrap. A retiring hull that still carries cargo keeps flying —
-that is how it sells — so retirement drains rather than strands.
+		Long: `Mark a hull for retirement. It keeps flying and selling while it holds cargo,
+and stands down at the first boundary its hold is empty — between two legs of
+the tour it is on, or between tours — after which nothing plans it again and it
+is ready to scrap. A retiring hull that still carries cargo always flies on:
+that is how it sells, so retirement drains rather than strands.
 
 This is not 'fleet unassign'. Unassign breaks the live claim and stops the
 container mid-tour, parking the hull wherever it stood still holding its load,
 and hands it to the general pool where another coordinator picks it up. Retire
-touches neither the claim nor the dedication; it governs only the next tour.
+touches neither the claim nor the dedication, and never interrupts a laden leg.
 
 Read progress with 'ship list': a retiring hull shows its mark in the FLEET
 column and reads "drained" once the CARGO column reaches zero.
