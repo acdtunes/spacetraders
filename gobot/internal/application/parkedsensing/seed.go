@@ -42,6 +42,21 @@ func seedlessTargets(systems []ExpandSystem, hulls chartHulls) []ExpandSystem {
 	return out
 }
 
+// ChartQueueDepth counts the systems still carrying charting work — uncharted
+// waypoints, or a waypoint list never swept: the same two conditions
+// seedlessTargets reads as work, so the coordinator's crew-first ordering fires
+// exactly when the claim pass has something to target. Crew budgets are ignored
+// on purpose: outstanding work holds the queue open even while crews are full.
+func ChartQueueDepth(systems []ExpandSystem) int {
+	depth := 0
+	for _, s := range systems {
+		if s.UnchartedCount > 0 || !s.CatalogKnown {
+			depth++
+		}
+	}
+	return depth
+}
+
 // activeSeedCount is how many hulls a system row has out charting. DONE is not
 // active: the errand is over and the row is only still naming its hull so the
 // probe stays attributable.

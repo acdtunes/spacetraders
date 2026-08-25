@@ -171,6 +171,35 @@ func (f *psLedger) indexOf(event string) int {
 	return -1
 }
 
+// lastIndexOf reports where an event LAST appears, or -1 — for a stage whose tag
+// is shared with earlier stages but which is deterministically the final emitter.
+func (f *psLedger) lastIndexOf(event string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := len(f.order) - 1; i >= 0; i-- {
+		if f.order[i] == event {
+			return i
+		}
+	}
+	return -1
+}
+
+// occurrences counts how often an event appears. An assertion binding to a
+// non-unique tag through lastIndexOf pins this count beside it, so a new caller
+// of the same method breaks the test loudly instead of silently rebinding the
+// assertion to another stage.
+func (f *psLedger) occurrences(event string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, got := range f.order {
+		if got == event {
+			n++
+		}
+	}
+	return n
+}
+
 func newPSLedger() *psLedger {
 	return &psLedger{
 		systems:    map[string]parkedsensing.ExpandSystem{},
@@ -454,6 +483,10 @@ func (f *psLedger) Systems(_ context.Context, _ int) ([]parkedsensing.ExpandSyst
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
+	// Three stages share this tag — the tick's own top read, the reaper's and the
+	// expansion pass's — so ordering assertions bind to it through lastIndexOf
+	// beside an occurrence count, never through indexOf.
+	f.record("Systems")
 	if f.systemsErr != nil {
 		return nil, f.systemsErr
 	}

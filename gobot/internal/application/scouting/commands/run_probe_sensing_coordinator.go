@@ -548,6 +548,28 @@ func (h *RunProbeSensingCoordinatorHandler) ReconcileOnce(ctx context.Context, c
 
 	adopted, dispatchedOrphans, surged := h.reclaimIdleProbes(ctx, cyc, systems, cutoverPending, &failures)
 
+	// THE CREW CLAIM OUTRANKS THE STATION FILLS WHILE CHARTING WORK IS OUTSTANDING
+	// (Admiral order). Expansion's spare claim and the drain's spare reuse draw on
+	// the same parked SPARE hulls, and whichever runs first takes them — so while
+	// uncharted systems remain, expansion runs ahead of the drain; a spare no crew
+	// can reach is left in the pool for this same tick's drain. Queue empty, the
+	// legacy order stands: fills first, expansion last. NEVER lift expansion above
+	// reclaimIdleProbes: those passes skip mid-errand hulls off the `systems` read
+	// above, which predates any errand expansion stamps this tick.
+	crewFirst := parkedsensing.ChartQueueDepth(systems) > 0
+
+	var expandRep parkedsensing.ExpandReport
+	var eerr error
+	advanceExpansion := func() {
+		expandRep, eerr = parkedsensing.AdvanceExpansion(ctx, ports.expandPorts(playerID, cfg.Whitelist), playerID, expandKnobs(cfg), sensingRate)
+		if eerr != nil {
+			failures = append(failures, eerr)
+		}
+	}
+	if crewFirst {
+		advanceExpansion()
+	}
+
 	buyRep, berr := parkedsensing.DrainBuyQueue(ctx, ports.buyPorts(cmd.ContainerID, h.postRepo), playerID, buyKnobs(cfg), h.clock)
 	if berr != nil {
 		failures = append(failures, berr)
@@ -558,9 +580,8 @@ func (h *RunProbeSensingCoordinatorHandler) ReconcileOnce(ctx context.Context, c
 		failures = append(failures, perr)
 	}
 
-	expandRep, eerr := parkedsensing.AdvanceExpansion(ctx, ports.expandPorts(playerID, cfg.Whitelist), playerID, expandKnobs(cfg), sensingRate)
-	if eerr != nil {
-		failures = append(failures, eerr)
+	if !crewFirst {
+		advanceExpansion()
 	}
 
 	rotation = h.syncScanRotation(ctx, cyc, pacerRate, &failures)
