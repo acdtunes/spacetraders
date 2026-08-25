@@ -173,11 +173,14 @@ type repositionCandidate struct {
 	// to charge deadhead per-hop in score(x)=E_x−β·D_x; the legacy repositionCandidateRate keeps
 	// its hardcoded single-hop constant, so this field is inert when placement is off.
 	hops int
-	// freshLanes counts the candidate system's non-stale cached market rows. Read ONLY when the
-	// pre-rank score ties, as the second tie-break behind hop distance: a ground showing many
-	// tradeable rows is likelier to yield a tour than one showing a single row, and at score 0 the
-	// pre-rank has expressed no preference between them at all.
+	// freshLanes counts the candidate system's non-stale cached market rows. Read as the second
+	// tie-break behind hop distance — a ground showing many tradeable rows is likelier to yield a
+	// tour than one showing a single row, and at score 0 the pre-rank has expressed no preference
+	// between them at all — and as the breadth half of the exploration slot's evidence bar.
 	freshLanes int
+	// tradeVolume is the deepest per-visit volume quoted anywhere on the candidate's fresh board:
+	// the absorption half of that same bar. Zero means unstamped, which no bar clears.
+	tradeVolume int
 }
 
 // repositionScore is one candidate's evaluated result for the ranking-table log and the
@@ -309,6 +312,11 @@ func (h *RunTourCoordinatorHandler) maybeReposition(
 	// the solver on every attempt from this ground — so that regime, and only that regime, gets a
 	// signal-bearing order, a wider (still bounded) fan-out and a rotating window.
 	candidates, k = h.settleRepositionTies(ctx, cmd, currentSystem, candidates, k)
+
+	// The window above is complete as an exploitation choice and cannot discover: its key is a
+	// pure function of cached prices, so from this origin it names the same grounds every time.
+	// One extra pre-flight buys the coldest ground outside it a look.
+	candidates, k = h.admitExplorationCandidate(ctx, cmd, candidates, k)
 
 	evaluated := h.evaluateRepositionCandidates(ctx, cmd, ship, candidates, k, budget)
 
@@ -874,7 +882,7 @@ func (h *RunTourCoordinatorHandler) scoreRepositionNeighbors(ctx context.Context
 			rejections = append(rejections, neighborRejection{system: sys, reason: "no-waypoint"})
 			continue
 		}
-		candidates = append(candidates, repositionCandidate{system: sys, waypoint: waypoint, score: score, hops: nb.hops, freshLanes: len(fresh)})
+		candidates = append(candidates, repositionCandidate{system: sys, waypoint: waypoint, score: score, hops: nb.hops, freshLanes: len(fresh), tradeVolume: deepestFreshVolume(fresh)})
 	}
 	return candidates, rejections
 }
@@ -919,6 +927,20 @@ func bestInSystemLane(listings []trading.GoodListing) (string, int) {
 		return lanes[0].SourceWaypoint, lanes[0].CappedSpread
 	}
 	return listings[0].Waypoint, 0
+}
+
+// deepestFreshVolume is the largest per-visit volume the candidate's fresh board quotes
+// anywhere — the absorption observable the exploration slot reads. Deliberately the MAX and
+// not a sum: what makes an unproven ground worth a look is that at least ONE of its markets
+// can take a real tranche, not that many of them can take a token one.
+func deepestFreshVolume(listings []trading.GoodListing) int {
+	deepest := 0
+	for _, l := range listings {
+		if l.Volume > deepest {
+			deepest = l.Volume
+		}
+	}
+	return deepest
 }
 
 // freshListings drops cached rows older than maxAge relative to now, so the reposition
@@ -1080,6 +1102,10 @@ func (h *RunTourCoordinatorHandler) planAtCandidate(
 	cmd *RunTourCoordinatorCommand,
 	budget tourPlanBudget,
 ) (*routing.TourPlan, error) {
+	// Every trigger's pre-flight funnels through here, so this is the one place that can record
+	// what the fleet has actually looked at.
+	h.notePricedGround(cand.system)
+
 	shipState := h.tourShipState(ship)
 	shipState.CurrentSystem = cand.system
 	shipState.CurrentWaypoint = cand.waypoint

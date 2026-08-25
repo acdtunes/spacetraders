@@ -106,16 +106,20 @@ func (h *RunTourCoordinatorHandler) ObserveRegions(ctx context.Context, playerID
 		return nil, nil
 	}
 	candidates = rankRelocationRegionCandidates(cmd, candidates)
+	// The same exploration slot the margins-death rescue spends, and for the same reason: this IS
+	// the reposition ranking, so without it the relocator observes the same few grounds around a
+	// given system on every tick and the rest of the region set is never priced at all.
+	candidates, priceable := h.admitExplorationCandidate(ctx, cmd, candidates, relocationRegionCandidateBudget)
 
-	regions := make([]RelocatorRegion, 0, relocationRegionCandidateBudget)
+	regions := make([]RelocatorRegion, 0, priceable)
 	for i, candidate := range candidates {
-		if i >= relocationRegionCandidateBudget {
+		if i >= priceable {
 			// Candidates past the bound are OMITTED, not emitted as RateReadable:false. A region we
 			// never priced is not a region whose price is unreadable, and conflating them would
 			// inflate the relocator's region_rate_unreadable counter with candidates that were
 			// merely out-ranked — turning a healthy bounded pre-flight into a false alarm.
-			common.LoggerFromContext(ctx).Log("INFO", fmt.Sprintf("Relocator regions from %s: priced the top %d of %d pre-ranked candidate(s); the rest are out-ranked, not unreadable", originSystem, relocationRegionCandidateBudget, len(candidates)), map[string]interface{}{
-				"origin_system": originSystem, "priced": relocationRegionCandidateBudget, "pre_ranked": len(candidates), "hop_radius": hopRadius,
+			common.LoggerFromContext(ctx).Log("INFO", fmt.Sprintf("Relocator regions from %s: priced the top %d of %d pre-ranked candidate(s); the rest are out-ranked, not unreadable", originSystem, priceable, len(candidates)), map[string]interface{}{
+				"origin_system": originSystem, "priced": priceable, "pre_ranked": len(candidates), "hop_radius": hopRadius,
 			})
 			break
 		}

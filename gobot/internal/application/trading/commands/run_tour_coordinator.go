@@ -284,6 +284,15 @@ type RunTourCoordinatorHandler struct {
 	repositionTieMu    sync.Mutex
 	repositionTieSweep map[string]*repositionTieState
 
+	// explorePriced orders the grounds the solver has pre-flighted, so the exploration slot can
+	// spend its one call on the one the fleet has gone longest without pricing. Keyed by SYSTEM,
+	// not by hull: what a ground is worth is a property of the ground, so a sweep one hull
+	// advances is one every hull inherits — which is what stops a fleet each re-asking the same
+	// ranking's top few. Guarded by exploreMu (the repositionTieSweep discipline); in-memory only.
+	exploreMu     sync.Mutex
+	explorePriced map[string]uint64
+	exploreSeq    uint64
+
 	// purchaseObligation records how many units of each good a hull bought under tour
 	// operation and has NOT yet discharged (sold, deposited or liquidated). The
 	// honest-completion veto reads it at every terminal exit, so a tour can never release a

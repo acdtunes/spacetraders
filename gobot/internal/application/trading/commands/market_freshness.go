@@ -111,6 +111,8 @@ func TradeFleetTunableDefaults() map[string]int {
 		TuneKeyMarketDataMaxAgeMinutes:      defaultMarketDataMaxAgeMinutes,
 		TuneKeySameMarketRebuyWindowMinutes: defaultSameMarketRebuyWindowMinutes,
 		TuneKeySpawnDispersalMinOtherHulls:  defaultSpawnDispersalMinOtherHulls,
+		TuneKeyExploreMinFreshListings:      defaultExploreMinFreshListings,
+		TuneKeyExploreMinTradeVolume:        defaultExploreMinTradeVolume,
 	}
 }
 
