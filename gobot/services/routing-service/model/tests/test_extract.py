@@ -164,3 +164,37 @@ def test_ladder_trade_volume_prefers_history_row(tier_engine):
     assert df.loc[490, "trade_volume"] == 100   # from t0 (history), not market_data's 50
     assert df.loc[480, "trade_volume"] == 90    # from t1
     assert df.loc[500, "trade_volume"] == 50    # fallback: market_data's, no preceding history
+
+
+@pytest.fixture
+def substring_engine():
+    """A waypoint where a LONGER-named good traded, beside an untouched pair whose
+    good symbol is a strict prefix of the traded one (the IRON / IRON_ORE shape)."""
+    eng = create_engine("sqlite://")
+    with eng.begin() as c:
+        c.execute(text("""CREATE TABLE transactions (
+            id TEXT, transaction_type TEXT, amount INTEGER,
+            timestamp TIMESTAMP, metadata TEXT)"""))
+        c.execute(text("""CREATE TABLE market_price_history (
+            waypoint_symbol TEXT, good_symbol TEXT, purchase_price INTEGER,
+            sell_price INTEGER, trade_volume INTEGER, recorded_at TIMESTAMP,
+            supply TEXT, activity TEXT)"""))
+        c.execute(text("INSERT INTO transactions VALUES ('1','SELL_CARGO',9000,"
+                       "'2026-07-09 20:00:00',:m)"),
+                  dict(m=json.dumps({"good_symbol": "IRON_ORE", "units": 10,
+                                     "waypoint": "X1-AA1-B2"})))
+        for i in range(4):
+            c.execute(text("""INSERT INTO market_price_history VALUES
+                ('X1-AA1-B2','IRON',:pp,:sp,60,:ts,'HIGH','WEAK')"""),
+                dict(pp=500, sp=300 + i, ts=f"2026-07-09 2{i}:00:00"))
+    return eng
+
+
+def test_control_series_keeps_pairs_we_never_traded_despite_shared_waypoint(substring_engine):
+    # Trading IRON_ORE at a waypoint contaminates ONLY the IRON_ORE series there:
+    # the untouched IRON series at the same waypoint is exactly the kind of
+    # never-traded pair the recovery fit exists to observe. A substring match on
+    # the metadata blob would mark it traded and silently starve the control set.
+    ctrl = extract_control_series(substring_engine)
+    assert set(zip(ctrl.waypoint, ctrl.good)) == {("X1-AA1-B2", "IRON")}
+    assert len(ctrl) == 4

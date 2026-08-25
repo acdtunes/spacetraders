@@ -127,23 +127,19 @@ def _tag_tiers(df: pd.DataFrame, market_now: pd.DataFrame,
     return tagged.sort_values(["waypoint", "good", "tx_type", "ts"]).reset_index(drop=True)
 
 def extract_control_series(engine) -> pd.DataFrame:
-    # The "did we ever trade this pair" test depends only on (waypoint, good), so it is
-    # evaluated once per DISTINCT pair and anti-joined, not once per history row. Same
-    # predicate, same result set — but the metadata LIKE scan runs over thousands of
-    # pairs instead of hundreds of thousands of rows. Per-row it is quadratic and stops
-    # finishing at all once the tables grow, which is how the fitted artifact came to sit
-    # an era out of date.
+    # A pair is "traded" — our own activity contaminates its recovery series — only
+    # when a transaction names exactly that (waypoint, good). The traded set is read
+    # in ONE pass over the transaction metadata's own fields and hash-anti-joined:
+    # probing per distinct pair re-scans the ledger once per pair, which stops
+    # finishing as pairs multiply across eras, and a substring match over the blob
+    # also marks every pair whose symbol is contained in a traded one (the IRON /
+    # IRON_ORE shape), silently starving the control set the fit exists to observe.
     return pd.read_sql(text("""
-        WITH pairs AS (
-            SELECT DISTINCT waypoint_symbol, good_symbol FROM market_price_history),
-        traded AS (
-            SELECT p.waypoint_symbol, p.good_symbol
-            FROM pairs p
-            WHERE EXISTS (
-                SELECT 1 FROM transactions t
-                WHERE t.transaction_type IN ('SELL_CARGO','PURCHASE_CARGO')
-                  AND CAST(t.metadata AS TEXT) LIKE '%%' || p.waypoint_symbol || '%%'
-                  AND CAST(t.metadata AS TEXT) LIKE '%%' || p.good_symbol || '%%'))
+        WITH traded AS (
+            SELECT DISTINCT t.metadata ->> 'waypoint' AS waypoint_symbol,
+                            t.metadata ->> 'good_symbol' AS good_symbol
+            FROM transactions t
+            WHERE t.transaction_type IN ('SELL_CARGO','PURCHASE_CARGO'))
         -- PRICE ORIENTATION (sp-en5h7, sp-2ehd7, sp-w963v): market_price_history quotes the
         -- market's side, so `bid` — what the market PAYS US, the series recovery is fitted on
         -- — is sell_price. This read had it transposed (bid <- purchase_price), which fitted

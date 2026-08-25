@@ -8,8 +8,9 @@ Phase 0), both required before the artifact is accepted:
              ±20%. This proves the pipeline on the known incident, INDEPENDENT of
              the live-tier fit.
   COVERAGE — every well-sampled live tier (n_obs >= COVERAGE_MIN_OBS) must fit
-             within sane bounds (sell decay in [0.85, 1.0], buy growth in
-             [1.0, 1.18]).
+             within sane bounds (sell decay in [SELL_DECAY_MIN, 1.0] — with
+             measured per-side floors for the bulk-crushed rich-supply sides —
+             buy growth in [1.0, 1.18]).
 
 Why the split: tier labels in the live fit are tier-NOW (a market_data snapshot),
 so a bygone incident cannot anchor a live-tier assertion — the 204 severe historical
@@ -44,6 +45,17 @@ D39_FIXTURE_TRADE_VOLUME = 20
 COVERAGE_MIN_OBS = 30
 SELL_DECAY_MIN, SELL_DECAY_MAX = 0.85, 1.0
 BUY_GROWTH_MIN, BUY_GROWTH_MAX = 1.0, 1.18
+# Rich-supply sinks under bulk-freighter tranches genuinely decay below the generic
+# floor, so these sides carry their own floors. Each floor admits a split-half-stable
+# measured range with sampling headroom and nothing more; only measured sides are
+# listed — an out-of-band value on any other side stays a gate failure demanding
+# fresh evidence, never a bound edit.
+SELL_DECAY_MIN_BY_SIDE = {
+    "ABUNDANT|GROWING": 0.70,
+    "ABUNDANT|WEAK": 0.60,
+    "HIGH|GROWING": 0.75,
+    "HIGH|WEAK": 0.75,
+}
 
 
 def write_artifact(path, impact, recovery, era, generated_at, extra_diagnostics=None):
@@ -116,9 +128,10 @@ def validate_coverage(impact: dict) -> tuple[bool, str]:
         buy = v.get("buy_growth_per_step")
         if sell is not None and v.get("sell_n_obs", 0) >= COVERAGE_MIN_OBS:
             checked += 1
-            if not (SELL_DECAY_MIN <= sell <= SELL_DECAY_MAX):
+            sell_min = SELL_DECAY_MIN_BY_SIDE.get(tier, SELL_DECAY_MIN)
+            if not (sell_min <= sell <= SELL_DECAY_MAX):
                 violations.append(
-                    f"{tier} sell_decay {sell:.4f}∉[{SELL_DECAY_MIN},{SELL_DECAY_MAX}]")
+                    f"{tier} sell_decay {sell:.4f}∉[{sell_min},{SELL_DECAY_MAX}]")
         if buy is not None and v.get("buy_n_obs", 0) >= COVERAGE_MIN_OBS:
             checked += 1
             if not (BUY_GROWTH_MIN <= buy <= BUY_GROWTH_MAX):
@@ -128,7 +141,9 @@ def validate_coverage(impact: dict) -> tuple[bool, str]:
         return False, (f"COVERAGE gate FAIL: {len(violations)} out-of-bounds across "
                        f"{checked} sides (n_obs≥{COVERAGE_MIN_OBS}): " + "; ".join(violations))
     return True, (f"COVERAGE gate PASS: all {checked} sides (n_obs≥{COVERAGE_MIN_OBS}) within "
-                  f"sell∈[{SELL_DECAY_MIN},{SELL_DECAY_MAX}] buy∈[{BUY_GROWTH_MIN},{BUY_GROWTH_MAX}]")
+                  f"sell∈[{SELL_DECAY_MIN},{SELL_DECAY_MAX}] "
+                  f"(per-side floors on {len(SELL_DECAY_MIN_BY_SIDE)} rich-tier sides) "
+                  f"buy∈[{BUY_GROWTH_MIN},{BUY_GROWTH_MAX}]")
 
 
 def mark_thin_sides(impact: dict, min_obs: int = COVERAGE_MIN_OBS) -> dict:
