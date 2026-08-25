@@ -83,47 +83,35 @@ func (h *RunTourCoordinatorHandler) planAndReserve(
 	ship *navigation.Ship,
 	budget tourPlanBudget,
 ) (*routing.TourPlan, map[shadowSinkKey]bool, string, bool, error) {
-	// One planner per player through release → net → solve → reserve. Without it every
-	// planner in a batch nets the SAME pre-reservation snapshot, ranks the same sink best
-	// and converges there, and the release below briefly shows an incumbent's own held sink
-	// free to whoever is reading right then. Refusing when the gate cannot be taken is the
-	// fail-closed direction: unserialized depth is not depth we can honestly plan against.
-	if h.absorptionLedger != nil && cmd.ContainerID != "" {
-		releaseGate, gated := h.acquirePlanGate(ctx, cmd.PlayerID)
-		if !gated {
-			return nil, nil, "tour unavailable: could not serialize plan-time sink reservation (planning blind would co-dump a sink another hull is taking)", false, nil
-		}
-		defer releaseGate()
-	}
-
-	// Clear this container's stale in-flight intent before (re)planning: a prior tour's
-	// leftover holds, or pre-restart rows that liveness re-adopted. EXECUTED recovery
-	// shadows are left untouched (real damage still recovering — the plan must avoid them).
-	h.releaseTourReservations(ctx, cmd)
+	shipState := h.tourShipState(ship)
+	allowedSystems := h.tourSystems(ctx, ship, cmd)
 
 	var lastPlan *routing.TourPlan
 	var lastSnapshot []routing.TourGoodSnapshot
 	for attempt := 0; attempt <= tourReserveMaxRetries; attempt++ {
-		plan, snapshot, absorptionView, err := h.plan(ctx, ship, cmd, budget)
+		// The tour graph and its market snapshot consult no absorption state, so they are
+		// assembled OUTSIDE the planning gates — and the graph they resolve is exactly what
+		// the gates key on, since a plan can only reserve sinks at waypoints inside it.
+		req, err := h.buildTourPlanRequest(ctx, shipState, allowedSystems, cmd, budget)
 		if err != nil {
 			return nil, nil, fmt.Sprintf("tour unavailable: planner error: %v", err), false, nil
 		}
-		if !plan.Feasible {
-			return nil, nil, fmt.Sprintf("tour unavailable: %s", plan.InfeasibleReason), false, nil
+		res := h.gatedPlanAttempt(ctx, cmd, req, attempt == 0)
+		if res.reason != "" {
+			return nil, nil, res.reason, false, nil
 		}
-		lastPlan, lastSnapshot = plan, snapshot
-		reserved, rerr := h.reserveTourPlan(ctx, cmd, plan, snapshot)
-		if rerr == nil && reserved {
+		lastPlan, lastSnapshot = res.plan, req.snapshot
+		if res.reserved {
 			// Q3 (REPORT-ONLY): log the recovery burden this accepted plan projects onto
 			// the fleet — it must never steer selection (the analyst's experiment bar
 			// accumulates from this log; a live shadow-priced objective is gated on
 			// offline replay, not switched on here).
-			h.logRecoveryBurden(ctx, cmd, plan, snapshot)
+			h.logRecoveryBurden(ctx, cmd, res.plan, req.snapshot)
 			// Burn-in: score cap-binding on this accepted plan and hand the
 			// execution path the ladder-probe set — both derived from the SAME netted
 			// depth already read, both pure observation (never gate a trade, RULINGS #4).
-			h.recordCapBinding(ctx, cmd, plan, snapshot, absorptionView)
-			return plan, shadowSinksFromAbsorption(absorptionView), "", true, nil
+			h.recordCapBinding(ctx, cmd, res.plan, req.snapshot, res.absorptionView)
+			return res.plan, shadowSinksFromAbsorption(res.absorptionView), "", true, nil
 		}
 		// Breach (ok=false) or a ledger-gate error (fail-closed for THIS attempt): re-plan
 		// against fresh ledger state — the contested sink now shows occupied to the netting.
@@ -136,6 +124,61 @@ func (h *RunTourCoordinatorHandler) planAndReserve(
 	// window rather than once per retry.
 	h.logContendedHolders(ctx, cmd, lastPlan, lastSnapshot)
 	return nil, nil, "tour unavailable: could not reserve tour depth (sinks contended by other containers)", false, nil
+}
+
+// tourPlanAttempt is one pass at release → net → solve → reserve. A non-empty reason is a
+// TERMINAL refusal already phrased for the caller; otherwise reserved reports whether the
+// plan secured its depth, and a false there is the ordinary "sink now occupied" re-plan.
+type tourPlanAttempt struct {
+	plan           *routing.TourPlan
+	absorptionView []routing.TourMarketAbsorption
+	reserved       bool
+	reason         string
+}
+
+// gatedPlanAttempt runs one attempt inside the planning gates of every contention domain
+// the request's tour graph touches. Holding them makes release → net → solve → reserve one
+// critical section against every planner that could pick the same sink: without it those
+// planners all net the SAME pre-reservation snapshot, rank the same sink best and converge
+// there, and the release below briefly shows an incumbent's own held sink free to whoever
+// is reading right then. Refusing when the gates cannot be taken is the fail-closed
+// direction: unserialized depth is not depth we can honestly plan against.
+//
+// releaseStale drops this container's leftover in-flight intent — a prior tour's holds, or
+// pre-restart rows liveness re-adopted — and so runs on the FIRST attempt only, inside the
+// gates. EXECUTED recovery shadows are left untouched (real damage still recovering, which
+// the plan must avoid). An unwired ledger or a container-less run reserves nothing and
+// therefore never queues.
+func (h *RunTourCoordinatorHandler) gatedPlanAttempt(
+	ctx context.Context,
+	cmd *RunTourCoordinatorCommand,
+	req *tourPlanRequest,
+	releaseStale bool,
+) tourPlanAttempt {
+	if h.absorptionLedger != nil && cmd.ContainerID != "" {
+		releaseGate, gated := h.acquirePlanGate(ctx, cmd.PlayerID, req.systems)
+		if !gated {
+			return tourPlanAttempt{reason: "tour unavailable: could not serialize plan-time sink reservation (planning blind would co-dump a sink another hull is taking)"}
+		}
+		defer releaseGate()
+	}
+	if releaseStale {
+		h.releaseTourReservations(ctx, cmd)
+	}
+	// Assemble the outstanding cross-container absorption the solver nets out of available
+	// depth so it plans AROUND sinks other containers occupy. Empty when the ledger is
+	// unwired / the consult is killed / the read fails (fail-OPEN — the conditional Reserve
+	// is the hard backstop), leaving the plan against full depth.
+	absorptionView := h.assembleAbsorption(ctx, cmd.PlayerID, cmd.ContainerID)
+	plan, err := h.solveTourPlan(ctx, req, absorptionView)
+	if err != nil {
+		return tourPlanAttempt{reason: fmt.Sprintf("tour unavailable: planner error: %v", err)}
+	}
+	if !plan.Feasible {
+		return tourPlanAttempt{reason: fmt.Sprintf("tour unavailable: %s", plan.InfeasibleReason)}
+	}
+	reserved, rerr := h.reserveTourPlan(ctx, cmd, plan, req.snapshot)
+	return tourPlanAttempt{plan: plan, absorptionView: absorptionView, reserved: rerr == nil && reserved}
 }
 
 // reserveTourPlan reserves the plan's per-(waypoint, good, side) tranches. It is the

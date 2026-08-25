@@ -127,6 +127,7 @@ func (w circuitWiring) configureTourCoordinator(h *tradeRouteCmd.RunTourCoordina
 	// depth into each plan, and converts sold sinks into recovery shadows.
 	w.configureSinkDepthScaling()
 	h.SetAbsorptionLedger(w.absorption, w.cfg.Absorption.PlannedTTLSlack)
+	h.SetPlanConcurrency(w.cfg.TradeFleet.TourPlanConcurrency)
 	h.SetEventRecorder(w.captainEventRepo) // coordinator error-loop event when the dynamic-budget resolve stays unreadable
 	// Blocks low-value noise goods from tour cargo selection; absent/empty is byte-identical.
 	h.SetCargoBlocklist(w.cfg.TradeFleet.CargoBlocklist)

@@ -113,6 +113,9 @@ type TradeFleetConfig struct {
 	// restarting the daemon (RULINGS #5, no code redeploy).
 	MaxTourSystems int `mapstructure:"max_tour_systems"`
 
+	// TourPlanConcurrency caps concurrent tour planners per player; 0 → SetPlanConcurrency's default.
+	TourPlanConcurrency int `mapstructure:"tour_plan_concurrency"`
+
 	// ClosedTours arms closed-circuit (return-to-anchor) tour mode (sp-im74 built the
 	// solver + the cmd.ClosedTours -> TourConstraints.Closed thread; this is the config
 	// knob im74 deferred). Like MaxTourSystems it is a daemon-global tour tuning:

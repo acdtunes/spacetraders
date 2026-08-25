@@ -30,23 +30,9 @@ func (h *RunTourCoordinatorHandler) tourGateFees(
 	return gateFeeConstraints(h.gateFees.GateFees(ctx, cmd.PlayerID))
 }
 
-// plan assembles the market snapshot + era-scoped coordinates over the tour graph
-// (home system + fresh gate neighbors) and calls the depth-aware planner. The
-// constraint carries the resolved model version so the solver fails closed on a
-// mismatch rather than silently using a stale model.
-func (h *RunTourCoordinatorHandler) plan(
-	ctx context.Context,
-	ship *navigation.Ship,
-	cmd *RunTourCoordinatorCommand,
-	budget tourPlanBudget,
-) (*routing.TourPlan, []routing.TourGoodSnapshot, []routing.TourMarketAbsorption, error) {
-	allowedSystems := h.tourSystems(ctx, ship, cmd)
-	return h.planForState(ctx, h.tourShipState(ship), allowedSystems, cmd, budget)
-}
-
 // planForState assembles the market snapshot + era-scoped coordinates over allowedSystems
 // and calls the depth-aware planner for the given ship state. It is the plan core shared
-// by the live tour (plan, above — ship state + tour graph derived from the hull's real
+// by the live tour (planAndReserve — ship state + tour graph derived from the hull's real
 // position) and the reposition pre-flight (planAtCandidate — a SYNTHETIC ship state
 // positioned at a candidate system, over that candidate's tour graph, to price the tour
 // the hull WOULD fly there without moving it first).
@@ -57,9 +43,47 @@ func (h *RunTourCoordinatorHandler) planForState(
 	cmd *RunTourCoordinatorCommand,
 	budget tourPlanBudget,
 ) (*routing.TourPlan, []routing.TourGoodSnapshot, []routing.TourMarketAbsorption, error) {
-	snapshot, waypoints, err := tradingsvc.BuildTourSnapshot(ctx, h.marketRepo, h.waypointRepo, allowedSystems, cmd.PlayerID, h.clock.Now(), h.rankerAgeCaps)
+	req, err := h.buildTourPlanRequest(ctx, shipState, allowedSystems, cmd, budget)
 	if err != nil {
 		return nil, nil, nil, err
+	}
+	absorptionView := h.assembleAbsorption(ctx, cmd.PlayerID, cmd.ContainerID)
+	plan, err := h.solveTourPlan(ctx, req, absorptionView)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return plan, req.snapshot, absorptionView, nil
+}
+
+// tourPlanRequest is everything the solver is asked for EXCEPT the netted absorption view:
+// the tour graph, its market snapshot and coordinates, the deposit candidates, and the
+// resolved constraints. None of it reads the absorption ledger, so it is assembled outside
+// the planning gates — which is also what makes the gates knowable, since `systems` is the
+// FINAL graph (gate neighbours plus any admitted far sinks) and therefore a superset of
+// every system this plan could reserve a sink in.
+type tourPlanRequest struct {
+	shipState routing.TourShipState
+	snapshot  []routing.TourGoodSnapshot
+	waypoints []routing.TourWaypoint
+	deposits  []routing.TourDepositCandidate
+	cons      routing.TourConstraints
+	systems   []string
+}
+
+// buildTourPlanRequest assembles the market snapshot + era-scoped coordinates over
+// allowedSystems and resolves the solver constraints. The constraint carries the resolved
+// model version so the solver fails closed on a mismatch rather than silently using a
+// stale model.
+func (h *RunTourCoordinatorHandler) buildTourPlanRequest(
+	ctx context.Context,
+	shipState routing.TourShipState,
+	allowedSystems []string,
+	cmd *RunTourCoordinatorCommand,
+	budget tourPlanBudget,
+) (*tourPlanRequest, error) {
+	snapshot, waypoints, err := tradingsvc.BuildTourSnapshot(ctx, h.marketRepo, h.waypointRepo, allowedSystems, cmd.PlayerID, h.clock.Now(), h.rankerAgeCaps)
+	if err != nil {
+		return nil, err
 	}
 	// Drop the effective blocklist from the good universe BEFORE any downstream consumer sees
 	// it, so a blocklisted good is never chosen as tour cargo (buy source OR sell sink). No-op
@@ -88,11 +112,6 @@ func (h *RunTourCoordinatorHandler) planForState(
 	// the capital ceiling is unreadable (fail closed) — the tour then plans pure arb,
 	// unchanged.
 	deposits := h.depositCandidates(ctx, cmd, allowedSystems, budget.reserve)
-	// Assemble the outstanding cross-container absorption the solver nets out of
-	// available depth so it plans AROUND sinks other containers occupy. Empty when
-	// the ledger is unwired / the consult is killed / the read fails (fail-OPEN — the
-	// conditional Reserve is the hard backstop), leaving the plan against full depth.
-	absorptionView := h.assembleAbsorption(ctx, cmd.PlayerID, cmd.ContainerID)
 	// The solver's money guard is spend_cap = max(0, max_spend − working_capital_reserve)
 	// (tour_solver.py, score_sequence) — a CASH contract: max_spend is the cash the
 	// caller lets the tour touch, the reserve a keep-back. That pairing only holds on
@@ -148,15 +167,22 @@ func (h *RunTourCoordinatorHandler) planForState(
 		// byte-identical to today.
 		GateFees: h.tourGateFees(ctx, cmd),
 	}
-	plan, err := h.planner.OptimizeTradeTour(ctx, snapshot, waypoints, shipState, cons, deposits, absorptionView)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	// absorptionView is returned so the accept path can score cap-binding + ladder
-	// incidents off the SAME netted depth the solver planned against — no re-read of
-	// the ledger. Nil when the ledger is unwired / consult killed, which simply
-	// yields no burn-in samples.
-	return plan, snapshot, absorptionView, nil
+	return &tourPlanRequest{
+		shipState: shipState, snapshot: snapshot, waypoints: waypoints,
+		deposits: deposits, cons: cons, systems: allowedSystems,
+	}, nil
+}
+
+// solveTourPlan calls the depth-aware planner with the assembled request and the netted
+// absorption the solver plans AROUND. absorptionView is empty when the ledger is unwired /
+// the consult is killed / the read failed (fail-OPEN — the conditional Reserve is the hard
+// backstop), which plans against full depth.
+func (h *RunTourCoordinatorHandler) solveTourPlan(
+	ctx context.Context,
+	req *tourPlanRequest,
+	absorptionView []routing.TourMarketAbsorption,
+) (*routing.TourPlan, error) {
+	return h.planner.OptimizeTradeTour(ctx, req.snapshot, req.waypoints, req.shipState, req.cons, req.deposits, absorptionView)
 }
 
 // filterBlocklistedCargo drops every snapshot row whose good is in the blocklist,
