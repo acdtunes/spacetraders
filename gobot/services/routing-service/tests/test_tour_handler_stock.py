@@ -15,13 +15,16 @@ import json
 
 from generated import routing_pb2
 from handlers.tour_handler import TourHandlerMixin, load_model_artifact
+from utils.solve_pool import SolvePool
 
 
 class _StockHandler(TourHandlerMixin):
-    # OptimizeTradeTour needs only self.tour_model — drive the mixin in isolation from
-    # RoutingServiceHandler (whose routing_engine import pulls in ortools).
+    # OptimizeTradeTour needs self.tour_model and a solve pool — drive the mixin in
+    # isolation from RoutingServiceHandler (whose routing_engine import pulls in ortools),
+    # with no workers so the proto round-trip under test stays on this thread.
     def __init__(self, model):
         self.tour_model = model
+        self.solve_pool = SolvePool(workers=0)
 
 
 def _artifact(tmp_path):

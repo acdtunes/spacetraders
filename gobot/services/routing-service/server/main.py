@@ -19,17 +19,21 @@ sys.path.insert(0, os.path.abspath(routing_service_dir))
 from generated import routing_pb2_grpc
 
 from handlers.routing_handler import RoutingServiceHandler
+from utils import solve_pool
 
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    format=solve_pool.LOG_FORMAT,
     handlers=[
         logging.StreamHandler(sys.stdout)
     ]
 )
 
 logger = logging.getLogger(__name__)
+
+MIN_REQUEST_THREADS = 10
+SPARE_REQUEST_THREADS = 4   # kept free for the cheap RPCs while every solve slot is taken
 
 
 class RoutingServer:
@@ -53,14 +57,18 @@ class RoutingServer:
 
     def start(self):
         """Start the gRPC server"""
-        # Create server with thread pool
-        self.server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
+        handler = RoutingServiceHandler(tsp_timeout=self.tsp_timeout,
+                                        vrp_timeout=self.vrp_timeout)
 
-        # Add routing service handler
-        routing_pb2_grpc.add_RoutingServiceServicer_to_server(
-            RoutingServiceHandler(tsp_timeout=self.tsp_timeout, vrp_timeout=self.vrp_timeout),
-            self.server
-        )
+        # A thread serving a solve spends the solve blocked on a worker process, so the
+        # request pool needs a thread for every admitted solve and spares on top —
+        # otherwise the cheap RPCs queue behind work this process is not even doing.
+        request_threads = max(MIN_REQUEST_THREADS,
+                              handler.solve_pool.admission_limit + SPARE_REQUEST_THREADS)
+        self.server = grpc.server(futures.ThreadPoolExecutor(max_workers=request_threads))
+
+        routing_pb2_grpc.add_RoutingServiceServicer_to_server(handler, self.server)
+        handler.solve_pool.warm()
 
         # Bind to address
         address = f'{self.host}:{self.port}'
@@ -82,6 +90,7 @@ class RoutingServer:
             logger.info("Stopping routing service...")
             self.server.stop(grace_period)
             logger.info("Routing service stopped")
+        solve_pool.close_shared_pool()
 
     def wait_for_termination(self):
         """Block until server is terminated"""

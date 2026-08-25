@@ -23,7 +23,7 @@ import logging
 import os
 
 from generated import routing_pb2
-from utils.tour_solver import solve_tour
+from utils import solve_pool as pool_module
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +57,8 @@ class TourHandlerMixin:
     """Adds OptimizeTradeTour to RoutingServiceHandler.
 
     Expects `self.tour_model` (dict or None) set at construction via
-    load_model_artifact().
+    load_model_artifact(), and `self.solve_pool` — the solve itself runs on a
+    worker process, so everything handed to it below has to stay plain data.
     """
 
     tour_model = None
@@ -148,11 +149,13 @@ class TourHandlerMixin:
                                   storage_system=s.storage_system)
                              for s in request.stock_sources]
 
-            result = solve_tour(snapshot, ship, constraints, self.tour_model,
-                                waypoints=waypoints,
-                                deposit_candidates=deposit_candidates,
-                                absorption=absorption,
-                                stock_sources=stock_sources)
+            result = self.solve_pool.run(pool_module.solve_tour_payload, dict(
+                snapshot=snapshot, ship=ship, constraints=constraints,
+                model=self.tour_model,
+                waypoints=waypoints,
+                deposit_candidates=deposit_candidates,
+                absorption=absorption,
+                stock_sources=stock_sources))
 
             response = routing_pb2.OptimizeTradeTourResponse(
                 feasible=result["feasible"],

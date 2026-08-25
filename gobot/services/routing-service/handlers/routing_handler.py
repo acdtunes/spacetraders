@@ -19,6 +19,7 @@ from generated import routing_pb2
 from generated import routing_pb2_grpc
 
 from handlers.tour_handler import TourHandlerMixin, load_model_artifact
+from utils import solve_pool as pool_module
 from utils.routing_engine import ORToolsRoutingEngine, Waypoint
 
 logger = logging.getLogger(__name__)
@@ -31,10 +32,14 @@ class RoutingServiceHandler(TourHandlerMixin, routing_pb2_grpc.RoutingServiceSer
     Delegates to ORToolsRoutingEngine for tour and fleet optimisation.
     OptimizeTradeTour comes from TourHandlerMixin so this stays the single
     registered servicer.
+
+    The GIL-bound solves (trade tour, fleet partition) run on `solve_pool` so
+    concurrent requests are actually solved concurrently; everything else is cheap
+    enough to answer on the calling thread.
     """
 
     def __init__(self, tsp_timeout: int = 5, vrp_timeout: int = 30,
-                 tour_artifact_path: str = None):
+                 tour_artifact_path: str = None, solve_pool=None):
         """
         Initialize the routing service handler.
 
@@ -43,9 +48,13 @@ class RoutingServiceHandler(TourHandlerMixin, routing_pb2_grpc.RoutingServiceSer
             vrp_timeout: Timeout for VRP solver (seconds)
             tour_artifact_path: Override for the market-model artifact path
                 (tests); None -> the checked-in model_artifacts/ default
+            solve_pool: Override for the worker pool the solves run on (tests);
+                None -> the process-wide pool
         """
         self.engine = ORToolsRoutingEngine(tsp_timeout=tsp_timeout, vrp_timeout=vrp_timeout)
+        self.vrp_timeout = vrp_timeout
         self.tour_model = load_model_artifact(tour_artifact_path)
+        self.solve_pool = solve_pool or pool_module.shared_pool()
         logger.info(f"RoutingServiceHandler initialized (TSP timeout={tsp_timeout}s, VRP timeout={vrp_timeout}s)")
 
     def OptimizeTour(self, request: routing_pb2.OptimizeTourRequest, context) -> routing_pb2.OptimizeTourResponse:
@@ -245,13 +254,14 @@ class RoutingServiceHandler(TourHandlerMixin, routing_pb2_grpc.RoutingServiceSer
             engine_speed = first_config.engine_speed
 
             # Partition fleet
-            assignments = self.engine.optimize_fleet_tour(
+            assignments = self.solve_pool.run(pool_module.partition_fleet_payload, dict(
                 graph=graph,
                 markets=list(request.market_waypoints),
                 ship_locations=ship_locations,
                 fuel_capacity=fuel_capacity,
-                engine_speed=engine_speed
-            )
+                engine_speed=engine_speed,
+                vrp_timeout=self.vrp_timeout,
+            ))
 
             if assignments is None:
                 return routing_pb2.PartitionFleetResponse(
