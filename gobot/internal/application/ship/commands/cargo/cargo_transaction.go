@@ -338,41 +338,58 @@ func (h *CargoTransactionHandler) executeTransactions(ctx context.Context, cmd *
 
 		result, err := h.strategy.Execute(ctx, cmd.ShipSymbol, cmd.GoodSymbol, unitsToProcess, token)
 		if err != nil {
-			// SERVER-CARGO RECONCILE: a sell the API rejects with 4219
-			// ("cargo does not contain N unit(s) ... Ship has M unit(s)") states the
-			// hull's true on-hand count in the payload. The tranche is clamped DOWN to
-			// what the server says is aboard and retried once, so a 71→11 rejection
-			// still books 11 units of revenue instead of none. Discarding the correction
-			// aborts the whole sale at zero transactions, killing the tour and releasing
-			// a fully laden hull whose hold is then dumped below the profit floor.
-			shortfall := h.retrySellClampedToServerCargo(ctx, cmd, token, unitsToProcess, err)
-			if shortfall.known {
-				// Heal the cache to the count the server just gave us even when no
-				// retry was possible or the retry failed — the stale belief that
-				// produced this rejection is exactly what must not survive it.
-				serverGoodUnits = shortfall.onHand
-			}
-			if shortfall.units == 0 || shortfall.err != nil {
-				// Nothing sellable aboard, an unreadable rejection, or (b) a clamped
-				// retry that failed on its own merits: the transaction fails, but the
-				// units earlier tranches DID sell are written back first.
-				failure := err
-				if shortfall.err != nil {
-					failure = shortfall.err
-				}
+			// MARKET-VOLUME RECONCILE: a tranche the API rejects with 4604 ("Trade good
+			// <G> has a limit of N units per transaction") is refused WHOLE — no units move —
+			// and states the market's true per-transaction depth in the payload. The tranche
+			// is clamped DOWN to it and retried once, and that limit then governs every
+			// REMAINING tranche so the tail of the hold follows instead of stranding.
+			volume := h.retryClampedToMarketTradeVolume(ctx, cmd, token, unitsToProcess, err)
+			switch {
+			case volume.known && volume.err == nil:
+				transactionLimit = volume.limit
+				result = volume.result
+				unitsToProcess = volume.units
+			case volume.known:
+				// The clamped retry failed on its own merits, so the transaction fails —
+				// but the units earlier tranches DID move are written back first.
 				h.persistCargoDelta(ctx, cmd, transactionType, unitsProcessed, serverGoodUnits)
-				return nil, fmt.Errorf("partial failure: failed to %s cargo after %d successful transactions (%d units processed, %d credits): %w",
-					transactionType, transactionCount, unitsProcessed, totalAmount, failure)
+				return nil, partialFailure(transactionType, transactionCount, unitsProcessed, totalAmount, volume.err)
+			default:
+				// SERVER-CARGO RECONCILE: a sell the API rejects with 4219
+				// ("cargo does not contain N unit(s) ... Ship has M unit(s)") states the
+				// hull's true on-hand count in the payload. The tranche is clamped DOWN to
+				// what the server says is aboard and retried once, so a 71→11 rejection
+				// still books 11 units of revenue instead of none. Discarding the correction
+				// aborts the whole sale at zero transactions, killing the tour and releasing
+				// a fully laden hull whose hold is then dumped below the profit floor.
+				shortfall := h.retrySellClampedToServerCargo(ctx, cmd, token, unitsToProcess, err)
+				if shortfall.known {
+					// Heal the cache to the count the server just gave us even when no
+					// retry was possible or the retry failed — the stale belief that
+					// produced this rejection is exactly what must not survive it.
+					serverGoodUnits = shortfall.onHand
+				}
+				if shortfall.units == 0 || shortfall.err != nil {
+					// Nothing sellable aboard, an unreadable rejection, or (b) a clamped
+					// retry that failed on its own merits: the transaction fails, but the
+					// units earlier tranches DID sell are written back first.
+					failure := err
+					if shortfall.err != nil {
+						failure = shortfall.err
+					}
+					h.persistCargoDelta(ctx, cmd, transactionType, unitsProcessed, serverGoodUnits)
+					return nil, partialFailure(transactionType, transactionCount, unitsProcessed, totalAmount, failure)
+				}
+				// The clamped retry sold what the server said was aboard, so this good is
+				// now exhausted: account this tranche and stop — never ask for another.
+				result = shortfall.result
+				unitsToProcess = shortfall.units
+				serverGoodUnits = shortfall.onHand - result.UnitsProcessed
+				if serverGoodUnits < 0 {
+					serverGoodUnits = 0
+				}
+				shortfallExhausted = true
 			}
-			// The clamped retry sold what the server said was aboard, so this good is
-			// now exhausted: account this tranche and stop — never ask for another.
-			result = shortfall.result
-			unitsToProcess = shortfall.units
-			serverGoodUnits = shortfall.onHand - result.UnitsProcessed
-			if serverGoodUnits < 0 {
-				serverGoodUnits = 0
-			}
-			shortfallExhausted = true
 		}
 
 		// A purchase tranche just executed for real, so its own fill can move
@@ -421,4 +438,12 @@ func (h *CargoTransactionHandler) executeTransactions(ctx context.Context, cmd *
 		CeilingAborted:     ceilingAborted,
 		CeilingObservedAsk: ceilingObservedAsk,
 	}, nil
+}
+
+// partialFailure is the single wording every abandoned tranche loop reports: what the
+// earlier tranches already moved, then the cause. One function so the two reconcile paths
+// cannot drift into two different accounts of the same event.
+func partialFailure(transactionType string, transactionCount, unitsProcessed, totalAmount int, cause error) error {
+	return fmt.Errorf("partial failure: failed to %s cargo after %d successful transactions (%d units processed, %d credits): %w",
+		transactionType, transactionCount, unitsProcessed, totalAmount, cause)
 }

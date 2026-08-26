@@ -124,6 +124,13 @@ type tourFixture struct {
 	// Empty means DOCKED, the state every pre-existing test's hull starts and stays in.
 	navStatus navigation.NavStatus
 
+	// sellFloorPartial is the units a floor-aborted dispatch reports as ALREADY SOLD, per
+	// good — the shape a CHUNKED sale returns when the bid collapses part-way through the
+	// market's per-transaction tranches: ONE response carrying ONE abort verdict and a
+	// partial fill. Absent (nil) → an abort takes nothing, the shape every other floor
+	// test relies on.
+	sellFloorPartial map[string]int
+
 	sellCap  map[string]int // per-good cap on units a sell absorbs (stranded test); 0 = uncapped
 	timeline []string       // ordered "BUY:good"/"SELL:good" for sell-before-buy assertions
 	buys     int
@@ -310,10 +317,27 @@ func (m *tourFakeMediator) Send(ctx context.Context, request common.Request) (co
 			price = live
 		}
 		// The real handler re-reads the live bid BEFORE each tranche, the first included, and
-		// takes nothing when it sits under the armed floor.
+		// takes nothing when it sits under the armed floor. sellFloorPartial models the
+		// chunked case: the market's per-transaction limit split the dispatch, some tranches
+		// cleared at the old bid, and the collapse aborts the rest — still ONE verdict.
 		if cmd.MinBidPerUnit > 0 && price < cmd.MinBidPerUnit {
+			sold := m.fx.sellFloorPartial[cmd.GoodSymbol]
+			if sold > cmd.Units {
+				sold = cmd.Units
+			}
+			if sold > 0 {
+				m.fx.cargo[cmd.GoodSymbol] -= sold
+				m.fx.timeline = append(m.fx.timeline, "SELL:"+cmd.GoodSymbol)
+				m.fx.sells++
+				m.fx.unloads++
+				m.fx.sellOpTypes = append(m.fx.sellOpTypes, shared.OperationContextFromContext(ctx).NormalizedOperationType())
+				m.fx.recordLegLocked(ctx, cmd.ShipSymbol, cmd.GoodSymbol, sold, false)
+			}
 			m.fx.mu.Unlock()
-			return &shipCargo.SellCargoResponse{FloorAborted: true, FloorObservedBid: price}, nil
+			return &shipCargo.SellCargoResponse{
+				FloorAborted: true, FloorObservedBid: price,
+				UnitsSold: sold, TotalRevenue: sold * price, TransactionCount: 1,
+			}, nil
 		}
 		units := cmd.Units
 		if capUnits, ok := m.fx.sellCap[cmd.GoodSymbol]; ok && capUnits < units {

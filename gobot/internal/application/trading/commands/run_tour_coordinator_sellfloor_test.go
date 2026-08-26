@@ -200,3 +200,44 @@ func TestTourSellFloor_ShallowTranchesDispatchUnarmedSoTheyCostNoLiveScan(t *tes
 		t.Fatalf("the shallow tranches sell exactly as before the floor existed, got %d sales", fx.sells)
 	}
 }
+
+// THE CHUNKING COMPOSITION: the market's per-transaction trade volume splits a
+// dispatch into several API transactions BELOW this coordinator, inside the single command
+// it sends — the cached trade volume the tranche was sized from is exactly what a 4604
+// disproves. So one planned tranche stays one dispatch carrying one floor decision and one
+// abort verdict: the good's one-refusal-per-tour budget is spent once by a chunked abort,
+// not once per chunk, and the next sink's deep tranche dispatches unarmed exactly as it
+// would after an unchunked refusal.
+//
+// Mutation targets: dropping the budget spend on a PARTIAL abort (the chunked shape — the
+// unchunked one returns zero units) re-arms the second sink; dropping noteLegSale's
+// aggregate disarms the first.
+func TestTourSellFloor_ChunkedAbortSpendsTheGoodsBudgetOnceNotPerChunk(t *testing.T) {
+	crushed := map[string]map[string]int{sfSink: {sfGood: sfCrushed}, sfSink2: {sfGood: sfCrushed}}
+	fx := sfFixture(crushed, sfSink, sfSink2)
+	// The market's live limit is half the cached trade volume the tranche was sized from,
+	// so the deep dispatch is two API transactions: the first clears at the old bid and the
+	// collapse aborts the second. One response, one verdict, a partial fill.
+	fx.sellFloorPartial = map[string]int{sfGood: sfTV / 2}
+
+	_, logger := sfRun(t, fx, sfPlanner(3, sfSink, sfSink2))
+
+	if len(fx.sellCmds) != 6 {
+		t.Fatalf("chunking happens below this coordinator: one dispatch per planned tranche, got %d", len(fx.sellCmds))
+	}
+	if want := []int{0, 0, sfFloor, 0, 0, 0}; !sfEqual(sfFloors(fx), want) {
+		t.Fatalf("a chunked abort spends the good's budget exactly once: want %v, got %v", want, sfFloors(fx))
+	}
+	aborts := 0
+	for i := range logger.entries {
+		if logger.entries[i].metadata["action"] == "tour_sell_floor_abort" {
+			aborts++
+		}
+	}
+	if aborts != 1 {
+		t.Fatalf("a chunked dispatch carries exactly one abort verdict, got %d", aborts)
+	}
+	if fx.cargo[sfGood] != 0 {
+		t.Fatalf("no-strand violated: %d units of %s never left the hull", fx.cargo[sfGood], sfGood)
+	}
+}
