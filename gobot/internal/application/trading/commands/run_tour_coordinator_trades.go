@@ -29,6 +29,30 @@ type tourPlanRun struct {
 	dispositions    tourGoodDispositions
 	maxSpend        int64
 	reserve         int64
+	// sellFloorSpent names the goods whose per-tranche sell floor has already refused a
+	// tranche, spanning this tour's plans and re-plans — see sellFloorPerUnit.
+	sellFloorSpent map[string]bool
+}
+
+// sellFloorPerUnit is the tolerated bid for one sell tranche: the plan's basis less the
+// same tourPriceTolerancePct band the buy ceiling adds to the ask. 0 disarms it, which is
+// exactly a plain sell.
+//
+// The floor spends a ONE-PER-GOOD budget per tour, so a hold can be withheld at most once
+// and its exit is always reachable: after a refusal every later sell of that good
+// dispatches unarmed — the plain sell, never a cheaper one. An unwired budget arms
+// nothing, since a floor that cannot account for its refusals cannot promise that exit.
+func (r tourPlanRun) sellFloorPerUnit(good string, planned int) int {
+	if planned <= 0 || r.sellFloorSpent == nil || r.sellFloorSpent[good] {
+		return 0
+	}
+	return planned - planned*tourPriceTolerancePct/100
+}
+
+func (r tourPlanRun) spendSellFloor(good string) {
+	if r.sellFloorSpent != nil {
+		r.sellFloorSpent[good] = true
+	}
 }
 
 func (r tourPlanRun) forPlan(plan *routing.TourPlan, shadowSinks map[shadowSinkKey]bool) tourPlanRun {
@@ -339,9 +363,24 @@ func (h *RunTourCoordinatorHandler) executeSell(
 	}
 
 	plannedAt := h.clock.Now()
-	sellResp, err := h.legs.sell(ctx, cmd.ShipSymbol, trade.Good, units, cmd.PlayerID)
+	// Arm the per-tranche sell floor at the plan's tolerated bid — the mirror of the buy
+	// ceiling. The leg gate above checked one CACHED read; this re-verifies the bid LIVE
+	// before every tranche and holds the remainder aboard once one prices below tolerance.
+	minBidPerUnit := run.sellFloorPerUnit(trade.Good, trade.ExpectedUnitPrice)
+	sellResp, err := h.legs.sellWithFloor(ctx, cmd.ShipSymbol, trade.Good, units, cmd.PlayerID, minBidPerUnit)
 	if err != nil {
 		return false, fmt.Errorf("sell of %d %s at %s failed: %w", units, trade.Good, leg.Waypoint, err)
+	}
+	if sellResp.FloorAborted {
+		run.spendSellFloor(trade.Good)
+		logger.Log("WARNING", fmt.Sprintf("Tour leg %d: sell floor held %d %s aboard at %s (live bid %d < floor %d) - carrying to the next sink, and this tour's next sell of it is unarmed",
+			legIdx, units-sellResp.UnitsSold, trade.Good, leg.Waypoint, sellResp.FloorObservedBid, minBidPerUnit), map[string]interface{}{
+			"action": "tour_sell_floor_abort", "leg": legIdx, "good": trade.Good, "waypoint": leg.Waypoint,
+			"live_bid": sellResp.FloorObservedBid, "floor": minBidPerUnit, "units_held": units - sellResp.UnitsSold,
+		})
+		if sellResp.UnitsSold == 0 {
+			return false, nil // degrade the leg exactly as the buy ceiling does, and re-plan
+		}
 	}
 	response.TotalRevenue += int64(sellResp.TotalRevenue)
 	response.TradesExecuted++

@@ -1046,6 +1046,7 @@ func (h *RunTourCoordinatorHandler) runOneTour(
 	run := tourPlanRun{
 		cmd: cmd, response: response, netBought: netBought,
 		cumulativeSpend: &cumulativeSpend, maxSpend: budget.maxSpend, reserve: budget.reserve,
+		sellFloorSpent: map[string]bool{}, // one refusal per good, spanning this tour's re-plans
 	}
 	for {
 		degraded, execErr := h.executePlan(ctx, run, plan, shadowSinks)

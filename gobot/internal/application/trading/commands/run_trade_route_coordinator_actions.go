@@ -128,7 +128,7 @@ func (h *RunTradeRouteCoordinatorHandler) sell(ctx context.Context, shipSymbol, 
 // minBidPerUnit>0 makes the underlying handler re-verify the live bid before each
 // tranche and abort the remainder (held aboard, SellCargoResponse.FloorAborted)
 // if it falls below the floor. minBidPerUnit==0 is exactly the plain sell, so
-// sell() and the trade-route/tour callers are unchanged.
+// sell() and every caller that passes 0 are unchanged.
 func (h *RunTradeRouteCoordinatorHandler) sellWithFloor(ctx context.Context, shipSymbol, good string, units, playerID, minBidPerUnit int) (*shipCargo.SellCargoResponse, error) {
 	resp, err := h.mediator.Send(ctx, &shipCargo.SellCargoCommand{
 		ShipSymbol:    shipSymbol,

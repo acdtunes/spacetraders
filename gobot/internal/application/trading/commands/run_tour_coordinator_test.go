@@ -51,6 +51,10 @@ type tourFixture struct {
 	bid map[string]map[string]int // waypoint -> good -> bid (sell_price, sell revenue)
 	ask map[string]map[string]int // waypoint -> good -> ask (purchase_price, buy cost)
 	tv  map[string]map[string]int // waypoint -> good -> tradeVolume
+	// liveBid is the bid the per-tranche sell floor's LIVE re-read returns at the moment of
+	// sale, where it differs from the cached row the leg-level gate observed. Absent (nil) →
+	// the cached bid, so every test that does not model a divergence is unaffected.
+	liveBid map[string]map[string]int // waypoint -> good -> live bid at the sale
 	// staleMarkets marks waypoints whose cached market reads are >marketDataAgeFloor old (sp-z7ng): a
 	// listed waypoint here gets an ObservedAt 2h in the past, so freshListings drops it and the
 	// reposition/placement staleness gate excludes it. Absent (nil) → every market reads fresh
@@ -124,6 +128,9 @@ type tourFixture struct {
 	timeline []string       // ordered "BUY:good"/"SELL:good" for sell-before-buy assertions
 	buys     int
 	sells    int
+	// sellCmds captures every dispatched SellCargoCommand in order, so a test can read the
+	// per-tranche floor the caller armed. Purely additive.
+	sellCmds []*shipCargo.SellCargoCommand
 
 	// Normalized operation_type carried on ctx at each buy/sell dispatch — the exact
 	// value the real cargo-tx path stamps onto the ledger row. Captured at
@@ -297,7 +304,17 @@ func (m *tourFakeMediator) Send(ctx context.Context, request common.Request) (co
 			m.fx.mu.Unlock()
 			return nil, err
 		}
+		m.fx.sellCmds = append(m.fx.sellCmds, cmd)
 		price := m.fx.bid[m.fx.location][cmd.GoodSymbol]
+		if live, ok := m.fx.liveBid[m.fx.location][cmd.GoodSymbol]; ok {
+			price = live
+		}
+		// The real handler re-reads the live bid BEFORE each tranche, the first included, and
+		// takes nothing when it sits under the armed floor.
+		if cmd.MinBidPerUnit > 0 && price < cmd.MinBidPerUnit {
+			m.fx.mu.Unlock()
+			return &shipCargo.SellCargoResponse{FloorAborted: true, FloorObservedBid: price}, nil
+		}
 		units := cmd.Units
 		if capUnits, ok := m.fx.sellCap[cmd.GoodSymbol]; ok && capUnits < units {
 			units = capUnits
