@@ -1187,6 +1187,9 @@ func (h *RunTourCoordinatorHandler) executePlan(
 		// shadow is converted ONCE with the full crush (across its price-tiered
 		// tranches), not once per tranche. Nil when no ledger is wired.
 		legSells := h.newLegSells()
+		// This leg's own sink depth, which arms the sell floor past the declared cap. Kept
+		// apart from legSells so an unwired absorption ledger cannot disarm a money guard.
+		run.legSold = map[string]int{}
 		// Sells before buys (errata): a leg that fills the hold both ways must free
 		// space before spending it, and sell tranches are ordered price-ascending.
 		for _, trade := range legTradesToFly(leg.Trades, discharging) {

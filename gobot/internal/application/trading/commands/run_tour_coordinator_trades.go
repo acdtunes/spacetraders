@@ -32,18 +32,22 @@ type tourPlanRun struct {
 	// sellFloorSpent names the goods whose per-tranche sell floor has already refused a
 	// tranche, spanning this tour's plans and re-plans — see sellFloorPerUnit.
 	sellFloorSpent map[string]bool
+	legSold        map[string]int // units realized into THIS leg's sink per good; executePlan hands each leg a fresh map
 }
 
 // sellFloorPerUnit is the tolerated bid for one sell tranche: the plan's basis less the
-// same tourPriceTolerancePct band the buy ceiling adds to the ask. 0 disarms it, which is
-// exactly a plain sell.
-//
-// The floor spends a ONE-PER-GOOD budget per tour, so a hold can be withheld at most once
-// and its exit is always reachable: after a refusal every later sell of that good
-// dispatches unarmed — the plain sell, never a cheaper one. An unwired budget arms
-// nothing, since a floor that cannot account for its refusals cannot promise that exit.
-func (r tourPlanRun) sellFloorPerUnit(good string, planned int) int {
+// same tourPriceTolerancePct band the buy ceiling adds to the ask; 0 is a plain sell.
+// Arming costs a live bid re-read and the fleet flies at its API ceiling, so two bounds
+// decide it. DEPTH: only once this visit has put tourACapTranches × trade_volume into the
+// sink, past which the leg gate's cached quote necessarily predates our own impact (an
+// unevaluable predicate — no trade_volume — does not arm). BUDGET: one refusal per good
+// per tour, so a hold is withheld at most once and its exit stays reachable, every later
+// sell of that good dispatching unarmed. Both fall back to the plain sell, never cheaper.
+func (r tourPlanRun) sellFloorPerUnit(good string, planned, tradeVolume int) int {
 	if planned <= 0 || r.sellFloorSpent == nil || r.sellFloorSpent[good] {
+		return 0
+	}
+	if tradeVolume <= 0 || r.legSold[good] < tourACapTranches*tradeVolume {
 		return 0
 	}
 	return planned - planned*tourPriceTolerancePct/100
@@ -52,6 +56,12 @@ func (r tourPlanRun) sellFloorPerUnit(good string, planned int) int {
 func (r tourPlanRun) spendSellFloor(good string) {
 	if r.sellFloorSpent != nil {
 		r.sellFloorSpent[good] = true
+	}
+}
+
+func (r tourPlanRun) noteLegSale(good string, units int) {
+	if r.legSold != nil && units > 0 {
+		r.legSold[good] += units
 	}
 }
 
@@ -364,9 +374,11 @@ func (h *RunTourCoordinatorHandler) executeSell(
 
 	plannedAt := h.clock.Now()
 	// Arm the per-tranche sell floor at the plan's tolerated bid — the mirror of the buy
-	// ceiling. The leg gate above checked one CACHED read; this re-verifies the bid LIVE
-	// before every tranche and holds the remainder aboard once one prices below tolerance.
-	minBidPerUnit := run.sellFloorPerUnit(trade.Good, trade.ExpectedUnitPrice)
+	// ceiling. The leg gate above checked one CACHED read; an armed sell re-verifies the bid
+	// LIVE before every tranche and holds the remainder aboard once one prices below
+	// tolerance. sellFloorPerUnit decides whether this tranche is deep enough to be worth
+	// that read.
+	minBidPerUnit := run.sellFloorPerUnit(trade.Good, trade.ExpectedUnitPrice, live.TradeVolume())
 	sellResp, err := h.legs.sellWithFloor(ctx, cmd.ShipSymbol, trade.Good, units, cmd.PlayerID, minBidPerUnit)
 	if err != nil {
 		return false, fmt.Errorf("sell of %d %s at %s failed: %w", units, trade.Good, leg.Waypoint, err)
@@ -384,6 +396,7 @@ func (h *RunTourCoordinatorHandler) executeSell(
 	}
 	response.TotalRevenue += int64(sellResp.TotalRevenue)
 	response.TradesExecuted++
+	run.noteLegSale(trade.Good, sellResp.UnitsSold)
 	dischargePurchaseObligation(netBought, trade.Good, sellResp.UnitsSold)
 	if sellResp.UnitsSold > 0 {
 		h.noteRecentSell(cmd.ShipSymbol, leg.Waypoint, trade.Good)
