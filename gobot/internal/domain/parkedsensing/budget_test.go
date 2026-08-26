@@ -244,24 +244,24 @@ func TestApplyBrake(t *testing.T) {
 			want:     1.0,
 		},
 		{
-			name:     "wait between the marks leaves the brake untouched",
+			name:     "wait between the marks drifts the brake back toward released",
 			prev:     0.5,
 			waitEWMA: 500 * time.Millisecond,
-			want:     0.5,
+			want:     0.525,
 		},
 		{
 			// Both comparisons are strict, so sitting exactly on a mark is
-			// inside the dead band.
-			name:     "exactly at the high mark is inside the dead band",
+			// inside the band and takes the band's own step.
+			name:     "exactly at the high mark is inside the band",
 			prev:     0.5,
 			waitEWMA: waitHigh,
-			want:     0.5,
+			want:     0.525,
 		},
 		{
-			name:     "exactly at the low mark is inside the dead band",
+			name:     "exactly at the low mark is inside the band",
 			prev:     0.5,
 			waitEWMA: waitLow,
-			want:     0.5,
+			want:     0.525,
 		},
 		{
 			name:     "braking cannot go below the 0.1 floor",

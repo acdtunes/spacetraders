@@ -60,6 +60,11 @@ func TestSensingTune_LiveKnobSet(t *testing.T) {
 		"probe_cap", "expansion_enabled", "target_util_pct", "min_scan_rate_milli",
 		"value_clamp_r", "inflight_cap", "capital_multiplier_k_milli",
 		"capex_reserve_credits", "quartermaster_cadence_secs",
+		// The expansion pass's own residual floor. It must never be folded back into
+		// min_scan_rate_milli: the pacer's floor and the charting pause answer
+		// different questions, and one key serving both turns a scan-rate change into
+		// a charting stop that delivers no extra scans in exchange.
+		"expansion_min_budget_milli",
 		// The sensing surge's standing in-flight bound (sp-zvywu). It is a CAP, not a
 		// switch: `tune surge_inflight_cap 0` reverts to the documented default, so the
 		// surge cannot be turned off through the tune surface at all.

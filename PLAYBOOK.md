@@ -189,7 +189,14 @@ Where the engine automates a behavior, the book only says how to interpret or tu
   unimportant — a self-reinforcing blind spot). Post-gate, freshness is the PARKED-probe model:
   one hull stands on a market forever and the fleet-wide scanner paces the scans, so coverage is
   raised through `tune --operation sensing` (`probe_cap`, `target_util_pct`,
-  `min_scan_rate_milli`), never by "scanning faster." Pre-gate the sensing engine is inert and
+  `min_scan_rate_milli`), never by "scanning faster." Two traps sit here. Raising
+  `min_scan_rate_milli` raises the pacer's FLOOR and not the markets that stay fresh: every
+  parked scan is separately admitted by the fleet-wide market-scan budget
+  (`[market_scan] budget_req_per_sec` in config.yaml, 0.35 req/s shared by every market reader),
+  and THAT is the ceiling on the usable market pool — read `scans_declined` on the sensing cycle
+  line before reaching for a sensing knob. And the residual below which CHARTING pauses is its
+  own key, `expansion_min_budget_milli`; do not tune the scan floor expecting the charting gate
+  to move with it. Pre-gate the sensing engine is inert and
   the probe count is bootstrap's fixed cold-start seed — not a knob. Extraction and gas hulls
   stay refuted without a proven delivery path.
 

@@ -104,6 +104,8 @@ type RunProbeSensingCoordinatorCommand struct {
 	TargetUtilPct int
 	// MinScanRateMilli is the pacer's floor, in thousandths of a request/sec.
 	MinScanRateMilli int
+	// ExpansionMinBudgetMilli is the residual below which expansion yields, same units.
+	ExpansionMinBudgetMilli int
 	// ValueClampR bounds how much more attention the hottest market may earn
 	// than the baseline. 1 flattens the weighting entirely.
 	ValueClampR int
@@ -584,12 +586,13 @@ func (h *RunProbeSensingCoordinatorHandler) ReconcileOnce(ctx context.Context, c
 		advanceExpansion()
 	}
 
-	rotation = h.syncScanRotation(ctx, cyc, pacerRate, &failures)
+	rotation, scans := h.syncScanRotation(ctx, cyc, pacerRate, &failures)
 
 	h.heartbeat(ctx, cmd, cfg, heartbeat{
 		sensingRate: sensingRate,
 		pacerRate:   pacerRate,
 		brake:       budget.BrakeFactor,
+		scans:       scans,
 		cutover:     cutover,
 		screened:    screened,
 		adopted:     adopted,
@@ -712,20 +715,25 @@ func (h *RunProbeSensingCoordinatorHandler) reclaimIdleProbes(ctx context.Contex
 }
 
 // syncScanRotation refreshes the pacer's membership from this tick's slot views and reports
-// the resulting rotation size. The pacer runs at the FLOORED rate, so market data never goes
-// fully dark however hard the brake bites.
-func (h *RunProbeSensingCoordinatorHandler) syncScanRotation(ctx context.Context, cyc sensingCycle, pacerRate float64, failures *[]error) int {
+// the resulting rotation size alongside what the rotation PRODUCED since the last tick. The
+// pacer runs at the FLOORED rate, so market data never goes fully dark however hard the brake
+// bites.
+func (h *RunProbeSensingCoordinatorHandler) syncScanRotation(ctx context.Context, cyc sensingCycle, pacerRate float64, failures *[]error) (int, parkedsensing.ScanOutcomes) {
 	playerID := cyc.cmd.PlayerID.Value()
+	scanner := h.scannerFor(cyc)
+	// BEFORE the ledger read: the take RESETS, so a tick returning early must still
+	// carry its turns away or they land a line late.
+	scans := scanner.TakeScanOutcomes()
+
 	views, err := cyc.ports.Ledger.ParkedSlotViews(ctx, playerID)
 	if err != nil {
 		*failures = append(*failures, fmt.Errorf("failed to read the parked scan rotation: %w", err))
-		return 0
+		return 0, scans
 	}
-	scanner := h.scannerFor(cyc)
 	scanner.SyncMembership(h.stampCadence(views, cyc.cfg), pacerRate)
 	rotation, _ := scanner.RotationSize()
 	h.publish(ctx, playerID, pacerRate, views, cyc.ports)
-	return rotation
+	return rotation, scans
 }
 
 // budgetInputs takes this tick's reading of the shared API budget and advances

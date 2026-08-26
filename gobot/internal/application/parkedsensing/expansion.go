@@ -347,10 +347,19 @@ type ExpandKnobs struct {
 	ThirdChartHullAt  int
 }
 
+// SkippedBudget is what ExpandReport.Skipped carries when the budget gate held the
+// tick. Named because the stall reason and the cycle line both key off the value.
+const SkippedBudget = "budget"
+
 // ExpandReport is one expansion tick's outcome, for the heartbeat.
 type ExpandReport struct {
 	// Skipped names the gate that held the whole tick, and is empty when it ran.
 	Skipped string
+	// BudgetRate and MinBudgetRate are the pair the budget gate compared in req/s: the
+	// sensing residual handed in, and the floor it had to clear. REPORTED ON EVERY
+	// TICK, not only a skipped one — a gate named without its numbers reads identically
+	// whether it is holding or the loop is running on a threshold since retuned.
+	BudgetRate, MinBudgetRate float64
 	// SeedingPaused reports that the tick ran its FREE passes, flew the errands already in
 	// flight, and stopped before the ones that raise a new one (SeedsEnabled off). A SEPARATE
 	// FIELD RATHER THAN A Skipped VALUE: Skipped means "this tick did nothing" and the stall
@@ -436,16 +445,18 @@ func AdvanceExpansion(
 	k ExpandKnobs,
 	budgetRate float64,
 ) (ExpandReport, error) {
-	var rep ExpandReport
+	// Stamped before the gate, so the pair travels whether the tick runs or yields.
+	rep := ExpandReport{BudgetRate: budgetRate, MinBudgetRate: k.MinBudgetRate}
 	if budgetRate < k.MinBudgetRate {
-		return ExpandReport{Skipped: "budget"}, nil
+		rep.Skipped = SkippedBudget
+		return rep, nil
 	}
 	// Refuse rather than expand against nothing: a seed screened against an empty
 	// whitelist charts a system, finds markets, records none of them, and leaves the
 	// reconcile to write the system off on evidence the seed discarded. Same
 	// sentinel as the screen's own refusal.
 	if len(k.Whitelist) == 0 {
-		return ExpandReport{}, fmt.Errorf("expanding the sensing map: %w", ErrEmptyWhitelist)
+		return rep, fmt.Errorf("expanding the sensing map: %w", ErrEmptyWhitelist)
 	}
 
 	systems, err := p.Ledger.Systems(ctx, playerID)

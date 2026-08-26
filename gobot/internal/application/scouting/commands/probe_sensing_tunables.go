@@ -24,6 +24,7 @@ func SensingTunableDefaults() map[string]int {
 		"expansion_enabled":          defaultExpansionEnabled,
 		"target_util_pct":            defaultTargetUtilPct,
 		"min_scan_rate_milli":        defaultMinScanRateMilli,
+		"expansion_min_budget_milli": defaultExpansionMinBudgetMilli,
 		"value_clamp_r":              defaultValueClampR,
 		"inflight_cap":               defaultInflightCap,
 		"capital_multiplier_k_milli": defaultCapitalMultiplierKMilli,

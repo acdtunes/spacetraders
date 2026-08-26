@@ -147,6 +147,23 @@ type ScanPorts struct {
 	Yard YardCatalogReader
 }
 
+// ScanOutcomes is what a stretch of the rotation produced: turns that persisted
+// market data, turns the fleet market-scan budget served from the store, and turns
+// that errored writing nothing. IT IS THE ONLY PLACE THAT BUDGET IS VISIBLE FROM
+// INSIDE SENSING — the rate handed to SyncMembership is an allowance, how fast turns
+// are ISSUED, while each issued turn is separately admitted by the one market-scan
+// allowance every reader in the daemon shares. A declined turn spends no request, so
+// a rotation at exactly its paced rate can land almost nothing, which from outside is
+// indistinguishable from a rotation that has stopped.
+type ScanOutcomes struct {
+	Scanned  int
+	Declined int
+	Failed   int
+}
+
+// Total is every turn taken — the denominator Scanned is only meaningful against.
+func (o ScanOutcomes) Total() int { return o.Scanned + o.Declined + o.Failed }
+
 // ScanKnobs are the operator-set shape of the scanner.
 type ScanKnobs struct {
 	// InflightCap bounds concurrent scans, and with it how hard a slow API can
@@ -187,6 +204,9 @@ type Scanner struct {
 	// heap and are not re-added by a reconcile — only the worker's completion path
 	// returns them, which makes two concurrent scans of one market impossible.
 	scanning map[string]struct{}
+	// outcomes tallies completed turns since the last reconcile read them, under the
+	// rotation's own lock so a finishing worker cannot interleave a half-counted turn.
+	outcomes ScanOutcomes
 
 	totalWeight float64
 	rate        float64
@@ -407,6 +427,7 @@ func (s *Scanner) runScan(ctx context.Context, slot SensingSlotView) {
 	scanned, err := s.ports.Scan.Run(ctx, s.playerID, slot.Waypoint)
 	if err != nil {
 		at = s.clock.Now()
+		s.note(func(o *ScanOutcomes) { o.Failed++ })
 		s.warn(ctx, "parked_sensing_scan_failed", slot.Waypoint,
 			fmt.Sprintf("parked sensing scan of %s failed: %v", slot.Waypoint, err))
 		return
@@ -425,6 +446,7 @@ func (s *Scanner) runScan(ctx context.Context, slot SensingSlotView) {
 	if !scanned {
 		// DECLINED. No market data was written, so the freshness stamp must not
 		// move; only the turn is recorded, which is what keeps the rotation paced.
+		s.note(func(o *ScanOutcomes) { o.Declined++ })
 		if err := s.ports.Ledger.MarkScanAttempted(ctx, s.playerID, slot.Waypoint, slot.Kind, at); err != nil {
 			s.warn(ctx, "parked_sensing_mark_attempt_failed", slot.Waypoint,
 				fmt.Sprintf("failed to record a declined sensing scan of %s: %v", slot.Waypoint, err))
@@ -432,6 +454,7 @@ func (s *Scanner) runScan(ctx context.Context, slot SensingSlotView) {
 		return
 	}
 	wrote = true
+	s.note(func(o *ScanOutcomes) { o.Scanned++ })
 
 	if err := s.ports.Ledger.MarkScanned(ctx, s.playerID, slot.Waypoint, slot.Kind, at, spread); err != nil {
 		// Logged, never fatal to the slot: losing this write costs one stale
@@ -524,6 +547,25 @@ func (s *Scanner) requeue(waypoint string, at time.Time, spreadEWMA float64, wro
 	case s.wake <- struct{}{}:
 	default:
 	}
+}
+
+// note records one completed turn. A closure rather than three methods so the
+// counter is named at the call site, beside the branch that decided it.
+func (s *Scanner) note(record func(*ScanOutcomes)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	record(&s.outcomes)
+}
+
+// TakeScanOutcomes reports what the rotation produced since it was last asked, and
+// RESETS the tally — so a cycle line describes the interval it covers and a budget
+// that has just begun declining is not averaged away against the whole process.
+func (s *Scanner) TakeScanOutcomes() ScanOutcomes {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	taken := s.outcomes
+	s.outcomes = ScanOutcomes{}
+	return taken
 }
 
 // release drops an in-flight mark without returning the slot to the heap. Used

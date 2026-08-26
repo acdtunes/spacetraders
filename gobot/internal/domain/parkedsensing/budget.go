@@ -53,14 +53,14 @@ const brakeFloor = 0.1
 // brakeReleased is the fully-open throttle.
 const brakeReleased = 1.0
 
-// brakeClampMultiplier is applied when the observed limiter wait is above the
-// high-water mark, and brakeRecoveryMultiplier when it is below the low-water
-// mark. Braking is deliberately faster than recovery (halve down, creep up):
-// overshooting the ceiling costs 429s and retry storms, while under-using it
-// only costs a little market freshness.
+// The three steps the throttle can take, one per wait band: clamp above the
+// high-water mark, recover below the low-water mark, drift between them. Braking is
+// faster than either release — overshooting the ceiling costs 429s and retry storms,
+// under-using it only a little market freshness — and the drift is slowest of all.
 const (
 	brakeClampMultiplier    = 0.5
 	brakeRecoveryMultiplier = 1.2
+	brakeDriftMultiplier    = 1.05
 )
 
 // minScanRate converts the milli-unit knob to req/s.
@@ -118,13 +118,15 @@ func PacerRate(in BudgetInputs) float64 {
 // ApplyBrake advances the emergency throttle by one tick from the observed
 // rate-limiter wait.
 //
-// Above waitHigh the brake halves; below waitLow it recovers by 1.2x, capped
-// at fully released; between the marks it is a dead band and the brake is
-// unchanged, which keeps a wait hovering near a threshold from oscillating the
-// scan rate. Both comparisons are strict, so sitting exactly on a mark is
-// inside the dead band. The result is clamped into [0.1, 1.0]; a prev of zero
-// or below is read as fully released, so an uninitialised caller starts
-// unbraked rather than stalled.
+// Above waitHigh it halves, below waitLow it recovers by 1.2x, and between the marks
+// it drifts toward released by 1.05x. IT MOVES IN ALL THREE BANDS BECAUSE IT IS AN
+// INTEGRATOR: its value is the product of every step taken, so a band that left it
+// unchanged would pin it where a past burst put it, with no path out but an operator
+// moving a threshold. Only waitHigh reverses the direction, so crossing waitLow
+// changes how FAST it opens and never whether it opens — the marks cannot oscillate
+// the rate against each other, and saturation still dominates the drift. Both
+// comparisons are strict, so a wait exactly on a mark is inside the band; the result
+// is clamped into [0.1, 1.0], and a prev of zero or below reads as fully released.
 func ApplyBrake(prev float64, waitEWMA, waitLow, waitHigh time.Duration) float64 {
 	brake := normalizeBrake(prev)
 
@@ -133,6 +135,8 @@ func ApplyBrake(prev float64, waitEWMA, waitLow, waitHigh time.Duration) float64
 		brake *= brakeClampMultiplier
 	case waitEWMA < waitLow:
 		brake *= brakeRecoveryMultiplier
+	default:
+		brake *= brakeDriftMultiplier
 	}
 
 	return clampFloat(brake, brakeFloor, brakeReleased)

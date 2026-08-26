@@ -42,6 +42,12 @@ const (
 	// thousandths of a request per second (100 = 0.1 req/s). It is what
 	// guarantees planner data never goes fully dark under pressure.
 	defaultMinScanRateMilli = 100
+	// defaultExpansionMinBudgetMilli is the residual below which expansion yields, in
+	// the same units. A KNOB OF ITS OWN: one number serving this AND the scan floor
+	// couples them backwards, since the brake drives the residual DOWN while the pacer
+	// re-imposes the floor. 20 is the brake's reach — floored at 0.1 against a 0.1
+	// req/s clamp the deepest residual is 0.010, so only a storm yields.
+	defaultExpansionMinBudgetMilli = 20
 	// defaultValueClampR is the ceiling on how much more attention the hottest
 	// market may earn than the baseline.
 	defaultValueClampR = 4
@@ -136,10 +142,12 @@ type sensingConfig struct {
 	// FEEDING ONLY ONE OF THEM WAS THE DEFECT that put this pair here: a gate on the
 	// expansion pass alone left the drain buying probes with the switch off (sp-com1h).
 	// See parkedsensing.ExpandKnobs.SeedsEnabled and parkedsensing.BuyKnobs.SpendEnabled.
-	ProbeSpend              bool
-	SeedDispatch            bool
-	TargetUtilPct           int
-	MinScanRateMilli        int
+	ProbeSpend       bool
+	SeedDispatch     bool
+	TargetUtilPct    int
+	MinScanRateMilli int
+	// ExpansionMinBudgetMilli is expansion's own residual floor, never MinScanRateMilli.
+	ExpansionMinBudgetMilli int
 	ClampR                  int
 	InflightCap             int
 	CapitalMultiplierKMilli int
@@ -202,6 +210,7 @@ func resolveSensingConfig(ctx context.Context, cmd *RunProbeSensingCoordinatorCo
 		ProbeCap:                pick("probe_cap", cmd.ProbeCap),
 		TargetUtilPct:           pick("target_util_pct", cmd.TargetUtilPct),
 		MinScanRateMilli:        pick("min_scan_rate_milli", cmd.MinScanRateMilli),
+		ExpansionMinBudgetMilli: pick("expansion_min_budget_milli", cmd.ExpansionMinBudgetMilli),
 		ClampR:                  pick("value_clamp_r", cmd.ValueClampR),
 		InflightCap:             pick("inflight_cap", cmd.InflightCap),
 		CapitalMultiplierKMilli: pick("capital_multiplier_k_milli", cmd.CapitalMultiplierKMilli),
@@ -247,6 +256,10 @@ func applySensingDefaults(ctx context.Context, cmd *RunProbeSensingCoordinatorCo
 	if c.MinScanRateMilli <= 0 {
 		warnNegativeSensingKnob(ctx, "min_scan_rate_milli", c.MinScanRateMilli, defaultMinScanRateMilli)
 		c.MinScanRateMilli = defaultMinScanRateMilli
+	}
+	if c.ExpansionMinBudgetMilli <= 0 { // reverting on zero ships it armed (RULINGS #22)
+		warnNegativeSensingKnob(ctx, "expansion_min_budget_milli", c.ExpansionMinBudgetMilli, defaultExpansionMinBudgetMilli)
+		c.ExpansionMinBudgetMilli = defaultExpansionMinBudgetMilli
 	}
 	if c.ClampR < 1 {
 		warnNegativeSensingKnob(ctx, "value_clamp_r", c.ClampR, defaultValueClampR)
@@ -366,10 +379,11 @@ func buyKnobs(cfg sensingConfig) parkedsensing.BuyKnobs {
 // MinBudgetRate is the SENSING residual floor, never the pacer rate: the emergency
 // brake can drive the residual below the minimum scan rate while the pacer re-imposes
 // it, so gating on the pacer would leave expansion charting through a rate-limit storm.
+// It reads expansion_min_budget_milli, deliberately not min_scan_rate_milli.
 func expandKnobs(cfg sensingConfig) parkedsensing.ExpandKnobs {
 	return parkedsensing.ExpandKnobs{
 		SeedsEnabled:      cfg.SeedDispatch,
-		MinBudgetRate:     float64(cfg.MinScanRateMilli) / 1000.0,
+		MinBudgetRate:     float64(cfg.ExpansionMinBudgetMilli) / 1000.0,
 		Whitelist:         cfg.Whitelist,
 		ChartHullCap:      cfg.ChartHullCap,
 		SecondChartHullAt: cfg.SecondChartHullAt,

@@ -188,6 +188,7 @@ func buildProbeSensingCoordinatorCommand(cfg *configReader, playerID int, contai
 		ExpansionEnabled:        cfg.OptionalInt("expansion_enabled", 0),
 		TargetUtilPct:           cfg.OptionalInt("target_util_pct", 0),
 		MinScanRateMilli:        cfg.OptionalInt("min_scan_rate_milli", 0),
+		ExpansionMinBudgetMilli: cfg.OptionalInt("expansion_min_budget_milli", 0),
 		ValueClampR:             cfg.OptionalInt("value_clamp_r", 0),
 		InflightCap:             cfg.OptionalInt("inflight_cap", 0),
 		CapitalMultiplierKMilli: cfg.OptionalInt("capital_multiplier_k_milli", 0),

@@ -96,6 +96,7 @@ type heartbeat struct {
 	// rotation is how many slots the scan pacer is ACTUALLY watching, which is
 	// not the ledger's parked count: the rotation drops anything unscannable.
 	rotation int
+	scans    parkedsensing.ScanOutcomes
 }
 
 // heartbeat emits the tick's single structured summary line.
@@ -151,8 +152,8 @@ func (h *RunProbeSensingCoordinatorHandler) heartbeat(ctx context.Context, cmd *
 	}
 
 	common.LoggerFromContext(ctx).Log("INFO", fmt.Sprintf(
-		"Parked sensing cycle: %.3f req/s pacer (%.3f residual, brake %.2f), %d parked, screened %d, yards read %d of %d outstanding, bought %d reused %d queued %d (%d attempts%s%s), reaped %d adopted %d idle-reused %d surged %d, dispatched %d docking %d parked %d, expansion %s",
-		hb.pacerRate, hb.sensingRate, hb.brake, hb.rotation, hb.screened,
+		"Parked sensing cycle: %.3f req/s pacer (%.3f residual, brake %.2f), %d parked, %s, screened %d, yards read %d of %d outstanding, bought %d reused %d queued %d (%d attempts%s%s), reaped %d adopted %d idle-reused %d surged %d, dispatched %d docking %d parked %d, expansion %s",
+		hb.pacerRate, hb.sensingRate, hb.brake, hb.rotation, scanSummary(hb.scans), hb.screened,
 		hb.yard.Read, hb.yard.Outstanding,
 		hb.buy.Bought, hb.buy.Reused, hb.buy.Queued, hb.buy.Attempts, heldSuffix(held), refusalSuffix(hb.buy.Refusals),
 		hb.reap.Reaped, hb.adopted, hb.dispatched, hb.surged,
@@ -167,6 +168,16 @@ func (h *RunProbeSensingCoordinatorHandler) heartbeat(ctx context.Context, cmd *
 			"rotation_slots":        hb.rotation,
 			"screened":              hb.screened,
 			"cutover_posts_removed": hb.cutover,
+
+			// pacer_rate is what was ISSUED; scans_landed what the fleet budget admitted.
+			"scans_landed":   hb.scans.Scanned,
+			"scans_declined": hb.scans.Declined,
+			"scans_failed":   hb.scans.Failed,
+
+			// The THRESHOLDS THIS TICK RESOLVED, or "the gate holds" and "the tune has not
+			// reached this loop yet" stay the same log line.
+			"min_scan_rate_milli":        cfg.MinScanRateMilli,
+			"expansion_min_budget_milli": cfg.ExpansionMinBudgetMilli,
 
 			// The shipyard blind spot, as a number. yards_outstanding is every KNOWN
 			// shipyard whose catalogue we have never read; while it is non-zero the
@@ -266,10 +277,14 @@ func (h *RunProbeSensingCoordinatorHandler) heartbeat(ctx context.Context, cmd *
 			"docking":    hb.place.Docking,
 			"parked":     hb.place.Parked,
 
-			"expansion_skipped":        hb.expand.Skipped,
-			"expansion_seeding_paused": hb.expand.SeedingPaused,
-			"expansion_discovered":     hb.expand.Discovered,
-			"seeds_requested":          hb.expand.SeedsRequested,
+			"expansion_skipped": hb.expand.Skipped,
+			// The pair the budget gate compared, on EVERY tick rather than only a
+			// skipped one, so the live threshold is queryable before it holds anything.
+			"expansion_budget_rate":     hb.expand.BudgetRate,
+			"expansion_min_budget_rate": hb.expand.MinBudgetRate,
+			"expansion_seeding_paused":  hb.expand.SeedingPaused,
+			"expansion_discovered":      hb.expand.Discovered,
+			"seeds_requested":           hb.expand.SeedsRequested,
 			// The cold-start deadlock, made readable. A fleet with no staffed probe
 			// counter reported "0 seeds requested" and nothing else for an entire era —
 			// indistinguishable from a fleet with nothing left to seed. seeds_unstaged
@@ -376,6 +391,19 @@ func (h *RunProbeSensingCoordinatorHandler) publishWave(playerID int, hb heartbe
 	}
 }
 
+// scanSummary states what the rotation produced, naming the gate when turns did not
+// land. TWO NUMBERS, TWO QUESTIONS: turns is what the pacer ISSUED at the rate this
+// line reports, landed is what the fleet market-scan budget ADMITTED, and the gap is
+// the only sign the residual is not the freshness ceiling.
+func scanSummary(o parkedsensing.ScanOutcomes) string {
+	summary := fmt.Sprintf("%d of %d scan turns landed", o.Scanned, o.Total())
+	if o.Declined == 0 && o.Failed == 0 {
+		return summary
+	}
+	return summary + fmt.Sprintf(" (%d declined by the fleet market-scan budget, %d failed)",
+		o.Declined, o.Failed)
+}
+
 // heldSuffix names the ceiling that stopped the drain, or nothing at all.
 func heldSuffix(held string) string {
 	if held == "" {
@@ -459,8 +487,13 @@ func refusalSuffix(refusals []parkedsensing.BuyRefusal) string {
 // the operator turned the switch to watch — whether coverage keeps growing on
 // hulls already bought.
 func expansionSummary(rep parkedsensing.ExpandReport) string {
+	// THE NUMBERS, NOT JUST THE GATE — see ExpandReport.BudgetRate.
+	if rep.Skipped == parkedsensing.SkippedBudget {
+		return fmt.Sprintf("skipped (budget gate: %.3f req/s sensing residual below the %.3f req/s expansion floor)",
+			rep.BudgetRate, rep.MinBudgetRate)
+	}
 	if rep.Skipped != "" {
-		return "skipped (" + rep.Skipped + ")"
+		return "skipped (" + rep.Skipped + " gate)"
 	}
 	summary := fmt.Sprintf("+%d discovered, %d seed(s) requested, %d claimed, %d charted",
 		rep.Discovered, rep.SeedsRequested, rep.SeedsClaimed, rep.Charted)

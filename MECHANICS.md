@@ -308,10 +308,27 @@ to nothing.
   Defaults (`probe_sensing_config.go`): tick **30s**, `probe_cap 3000`, `expansion_enabled 1`
   (1=probes + charting seeds, 2=neither, 3=probes only; not 0-based, because `tune <key> 0` means
   revert-to-default), `target_util_pct 92`,
-  `min_scan_rate_milli 100` (0.1 req/s), `value_clamp_r 4`, `inflight_cap 3`,
+  `min_scan_rate_milli 100` (0.1 req/s), `expansion_min_budget_milli 20` (0.02 req/s),
+  `value_clamp_r 4`, `inflight_cap 3`,
   `capital_multiplier_k_milli 2000` (2h), `capex_reserve_credits 100000`,
   `quartermaster_cadence_secs 3600`, `surge_inflight_cap 8`, `wait_low_ms 50` /
   `wait_high_ms 1000`. The buy floor is §4's sensing formula, tested on LANDED cost.
+- **Two rate knobs, two objectives.** `min_scan_rate_milli` is the floor the SCAN PACER is
+  clamped up to; `expansion_min_budget_milli` is the post-brake residual below which the
+  EXPANSION pass yields for the tick. They were one key, and that coupling made raising the
+  scan floor silently stop charting — the brake drives the residual down while the pacer
+  re-imposes the floor, so a higher scan floor could only ever make the charting gate harder
+  to clear. The cycle line prints both the residual and the floor it was compared against, on
+  every tick, so "the gate is holding" and "this loop has not picked up the tuned value yet"
+  are one query rather than an inference.
+- **The scan pacer's rate is an ALLOWANCE, not a throughput.** Every parked scan it issues is
+  separately admitted by the fleet-wide market-scan budget (`[market_scan] budget_req_per_sec`,
+  default **0.35 req/s**, shared by every market reader in the daemon and sized against the
+  unraisable 2.00 req/s server ceiling). A declined turn spends no request and writes no data,
+  so the rotation can run at its full paced rate and land a fraction of it. That budget, not the
+  sensing residual, is the ceiling on how many markets stay fresh: each market's interval is
+  `markets under demand ÷ budget`, so the usable pool grows only when the budget does. The cycle
+  line's `scans_landed` / `scans_declined` split is the only place this is visible from sensing.
 - **It is INERT before EXPANSION.** The phase gate is checked FIRST and fails closed on an
   unreadable phase: a pre-EXPANSION tick spends nothing and moves nothing — no ledger read, no
   cutover, no buy — except a free shipyard-catalogue sweep. Past the EXPANSION edge it actively
