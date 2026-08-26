@@ -5,6 +5,15 @@
 **Primary window:** 2026-08-25 16:36:09Z → 2026-08-26 16:36:09Z (24h), 60 bulk freighters, API pinned ~1.98/2.0 req/s
 **Nothing in production was changed.** No knob was tuned, no service restarted, no Go/Python behaviour modified.
 
+> **REVISION 2026-08-26 (rev 2) — read before acting on §6.**
+> **R2 (raise `candidate_shortlist_top_n`) is RETRACTED.** The knob is arming-gated inert at the
+> live `max_tour_systems`, so setting it does nothing — and an operator who tried to "unblock" it by
+> raising `max_tour_systems` would eat the prior replay's −26.06% (cap-4) / −37.87% (cap-6).
+> **Do not set `candidate_shortlist_top_n`. Do not raise `max_tour_systems`.** Full arming chain and
+> the finding that replaces it are in §6.1 R2. **R1's test value is revised 1.8 → 2.0.** The
+> measured dispersion *valuation* (−0.296 pts/pp, CI [−0.433, −0.147]) is unaffected and stands —
+> only the knob it was attached to was wrong. Everything in §§1–5 is unchanged.
+
 ---
 
 ## 0. TL;DR — three findings
@@ -501,49 +510,176 @@ session.**
 
 **R1 — Cap fleet-wide sink depth to what the ledger already claims to enforce.**
 
-- **Knob:** `TOUR_SOLVER_REALIZED_SINK_TRANCHES` (env var, read at
-  `gobot/services/routing-service/tour_solver.py:200-203`, clamp `[1.0, 6.0]`, currently at its
-  **2.5** default because `run.sh` does not set it). Requires a routing-service restart, **not** a
-  daemon restart.
-- **Test value: 1.8.** Rationale: sell visits above 2.5 tranches carry 19.6% of units, and pairs at
-  ordinal ≥ 3 fall from 18.4% to 12.9% margin and keep falling.
-- **Prediction:** +0.9 to +1.3 margin points; credits/hour roughly flat to **−0.3 M/h** in the
-  static bound, and plausibly positive once faster departures are counted. **This trades credits
-  for margin at the low end and must be judged on credits/hour, not margin.**
-- **Watch:** 6h-window `sells/buys`, and `sum(realized_units)/hour`. **Revert if 6h credits/hour
-  drops more than 2% across two consecutive 6h windows.**
+- **Knob:** `TOUR_SOLVER_REALIZED_SINK_TRANCHES` — env var, resolved by
+  `_resolve_realized_sink_tranches()` at `gobot/services/routing-service/utils/tour_solver.py:1669-1683`,
+  constants at lines 200-203 (default **2.5**, clamp **[1.0, 6.0]**). It is **not currently exported**
+  in `run.sh`, so it sits at the in-code default. `_sequencer_env_scalar` (line 1632) reads
+  `os.environ` **per call** with no caching and is invoked per-solve (lines 1035, 2207), but the
+  variable lives in the routing-service **process** environment — so a **routing-service restart
+  (`deploy-routing`) is required, and no daemon bounce is.**
+- **Test value: 2.0** *(revised 2026-08-26 from an initial 1.8 — see below).*
+- **Exact line** for `gobot/services/routing-service/run.sh`, beside the other `TOUR_SOLVER_*`
+  exports (~line 44):
+
+  ```sh
+  # sp-as4k4: per-visit realized sink depth 2.5 -> 2.0. Measured pair margin by visit-tranche
+  # ordinal: 20.7/20.3/18.4% at 0-2, then 12.9/11.4/8.6/6.3/2.6% at 3-7, NEGATIVE from 8. Today
+  # 5.7% of sell visits carrying 19.6% of sold units exceed 2.5. 2.0 also aligns the solver with
+  # the fleet-wide tourACapTranches=2 the ledger already claims (sp-68h6w). RUNTIME OVERRIDE --
+  # leave uncommitted; disarm with `export TOUR_SOLVER_REALIZED_SINK_TRANCHES=2.5` (or
+  # `git checkout -- run.sh`) + deploy-routing. Clamp [1.0, 6.0].
+  export TOUR_SOLVER_REALIZED_SINK_TRANCHES="${TOUR_SOLVER_REALIZED_SINK_TRANCHES:-2.0}"
+  ```
+
+- **Why 2.0 and not 1.8.** The ordinal table (§4f) turns negative only at ordinal ≥ 8 and is still
+  positive (+2.6%) at ordinal 7, so the unambiguous win is trimming the deep tail, not the
+  profitable 0–2 band. The static counterfactual — freed capital **not** redeployed, a strict lower
+  bound — is the constraint:
+
+  | cap | credits/hour | vs now | margin |
+  |---|---:|---:|---:|
+  | ≤ 1 | 21.80 M/h | **−4.70 M/h** | +1.45 pts |
+  | ≤ 2 | 25.84 M/h | **−0.66 M/h** | +1.36 pts |
+  | ≤ 3 | 26.54 M/h | **+0.04 M/h** | +1.24 pts |
+  | ≤ 4 | 26.93 M/h | +0.43 M/h | +1.11 pts |
+
+  1.8 sits between the cap≤1 and cap≤2 rows — squarely in the region where **margin rises and
+  credits/hour falls**. 2.0 buys nearly the same margin for roughly a third of the throughput risk,
+  and it simultaneously reduces the solver-vs-ledger inconsistency sp-68h6w is about. **Go to 1.8
+  only if 2.0 shows credits/hour holding.**
+- **Prediction:** +1.0 to +1.4 margin points; credits/hour −0.7 M/h to flat in the static bound,
+  plausibly positive once faster departures are counted (the bound cannot see them). **This trades
+  credits for margin and must be judged on credits/hour, not margin.**
+- **Watch, in priority order:**
+  1. **Decision metric — net credits/hour over a trailing 6h window** (`sells − buys − fuel −
+     travel`, `operation_type='tour'`). *Not* margin.
+  2. Mechanism check — 6h margin ratio; expect +1.0 to +1.4 pts.
+  3. Did the cap bind — share of sell visits exceeding the new cap; should collapse toward 0.
+- **Protocol.** 6h window minimum, 12h preferred: a 2h window has p5–p95 of 11.6%–24.2% (§2), so a
+  1.4-point effect is invisible inside it. A restart also emits a liquidation transition artifact
+  that contaminates the first window. So: **read at T+8h, decide at T+12h.** **Revert if 6h
+  credits/hour drops more than 2% across two consecutive 6h windows.**
+- **Sequencing.** R1 (routing-service) and R3 (daemon) are separate processes and separate deploys.
+  Changing both at once makes the result unattributable. Bounce the daemon for R3 first, then
+  deploy R1 **≥ 12h later** — a routing-service restart needs no daemon bounce, so it costs no
+  additional liquidation artifact.
 
 ---
 
-**R2 — Widen the candidate shortlist so hulls stop stacking on the same lane.**
+**R2 — ~~Widen the candidate shortlist~~ — RETRACTED 2026-08-26. The knob is inert; do not set it.**
 
-- **Knobs:** `[trade_fleet] candidate_shortlist_top_n` and `candidate_hop_depth` (currently **3**),
-  `gobot/config.yaml:213`. Boot-only — needs `make deploy-daemon`.
-- **Test value:** raise `candidate_shortlist_top_n` by 50% while holding `candidate_hop_depth: 3`
-  and `max_tour_systems` at its default 2. **Do not raise `max_tour_systems`** — the recorded
-  replay (config.yaml:205-212) says cap-4 costs −26%, and the mechanism given there (shortlist
-  dilution) is *exactly* what a wider shortlist is meant to fix, so these two must not move
-  together.
-- **Prediction:** the share of capital at `vshare > 3` falls from 14.4%; at the measured hourly
-  slope of −0.296 pts/pp, halving it to 7% is worth **≈ +2.2 margin points ≈ +3.2 M/h**.
-- **Watch:** hourly `vshare > 3` capital share (query in §7), 6h margin ratio.
-- **Risk:** the same dilution effect the `max_tour_systems` replay found. Ship it alone,
-  and revert on any 6h margin drop.
+> **Correction.** The first version of this document recommended raising
+> `[trade_fleet] candidate_shortlist_top_n` by ~50% for ≈ +2.2 margin points ≈ +3.2 M/h. **That
+> recommendation was wrong and is withdrawn.** The knob has no effect at the live
+> `max_tour_systems`, and acting on it would at best do nothing and at worst prompt an operator to
+> raise `max_tour_systems`, which the prior replay says is strongly negative. The error was mine:
+> I named a knob whose measured *effect size* I had estimated correctly but whose *arming gate* I
+> had not traced. Recorded here rather than silently edited, because the analysis is the artifact.
+
+**The knob is arming-gated inert.** The chain, read end to end:
+
+1. `run_tour_coordinator_planning.go:377-381` — `tourSystemsFrom` returns the 1-hop set outright
+   when `h.effectiveCandidateHopDepth(cmd) <= 1`. `widenedTourSystems` is **never called**.
+2. `run_tour_coordinator_candidates.go:80-100` — `widenedTourSystems` is the **sole** consumer of
+   `resolveCandidateShortlistTopN` (line 96). No other call site exists.
+3. `run_tour_coordinator_candidates.go:67-76` — `effectiveCandidateHopDepth` returns **1** whenever
+   `cmd.MaxTourSystems <= 2`, regardless of the configured depth. The comment at lines 63-66 is
+   explicit: the 0→2 mapping lives in `tour_solver.py`, so "both 0 and 2 mean *clamp unchanged, do
+   not widen*; only a value strictly greater than 2 opens the gate."
+4. Belt-and-braces: even if it *were* reached at depth 1, `far` would be the 1-hop set and line 99
+   unions the shortlist back with `oneHop` — an identity.
+
+**Live confirmation** — the stamped launch config of a RUNNING per-hull `TRADING` container:
+
+```
+"max_tour_systems": 0,  "candidate_hop_depth": 3,  "candidate_shortlist_top_n": 0
+```
+
+`resolveCandidateHopDepth(3) = 3`, then `MaxTourSystems (0) <= 2` → `effectiveCandidateHopDepth = 1`.
+The shortlist is dead code on the live path today.
+
+**⚠ Do NOT raise `max_tour_systems` to open the gate.** The recorded replay (`config.yaml:205-212`,
+170 joint-feasible cases / 24h / hull 220 / live candidate-hop-depth 3) measured cap-2 at
+1,133,056 cr/hr, **cap-4 at 837,748 (−26.06%)** and **cap-6 at 703,918 (−37.87%)**, with the stated
+mechanism being *shortlist dilution* — looser caps choose worse plans despite the larger space.
+**Nothing in this analysis gives grounds to overturn that.** This work measured own-market impact,
+not tour-horizon width; the two are independent, and opening the gate would incur the dilution
+penalty immediately in exchange for a dispersion benefit that is speculative.
+
+**The dispersion valuation survives; only its attachment to this knob was wrong.** The measured
+hourly slope — **−0.296 margin points per +1pp of capital in `vshare > 3` markets, 95% CI
+[−0.433, −0.147]**, n=25 hours, corr −0.560 — remains the best available estimate of *what
+dispersion is worth*. Halving the 14.4% saturated-capital share is still worth ≈ +2.2 points ≈
++3.2 M/h **if some mechanism can deliver it**. That number should not be discarded along with the
+recommendation; it is the size of the prize that justifies the code beads below.
+
+**FINDING (replaces R2): there is no config-only lever that disperses per-lane concentration at
+`max_tour_systems: 2`.** This is a result in its own right, not an absence of one. It is what makes
+**sp-68h6w** and **sp-y2evb** — the absorption-ledger beads — the actual path to the 4.14 points in
+B1, rather than a nice-to-have behind a config retune. Every config knob that *sounds* like
+dispersion either is gated inert (`candidate_shortlist_top_n`), is contraindicated
+(`max_tour_systems`), or governs something else:
+
+- `spawn_dispersal_min_other_hulls` (live-tunable) sets how many other trade hulls must share a
+  system before a **no-plan verdict** skips its breathing retries and goes to reposition discovery.
+  It governs **post-no-plan reposition timing**, not **sink selection** — a hull that is planning
+  happily into a crushed sink never reaches it. It will not move the `vshare` distribution.
+- `reposition_reach_max_hulls_per_system` is a per-**system** anti-herd cap; the measured
+  concentration is per-**(waypoint, good)** lane, one level finer. A system can be within its hull
+  cap while every hull in it sells the same good into the same dock.
+
+**The two "shortlists" are different quantities at different layers.** They are easy to conflate by
+name; they are not the same thing and neither offers headroom:
+
+| | `candidate_shortlist_top_n` | `TOUR_SOLVER_FULL_SCORE_TOP_N` |
+|---|---|---|
+| Layer | Go coordinator (`run_tour_coordinator_candidates.go`) | Python solver, inside `solve_tour` |
+| Governs | how many **≥2-hop SYSTEMS** with a profitable incident edge join the allowed-systems set | how many **candidate SEQUENCES** survive the beam into stage-2 full tranche scoring |
+| Default | **6** (`candidates.go:27`) | **20** in-code (`utils/tour_solver.py:123`) |
+| Clamp | none (0/negative → default) | **[10, 150]** (`tour_solver.py:125-126`) |
+| Live value | 0/absent — **and gated inert** | exported **150** (`run.sh:72`) = **at its clamp ceiling, no headroom** |
+| Bind | container launch/rebuild | per-solve env read, routing-service restart |
+
+*Code-hygiene note (not actioned — outside a measurement-only lane):* the inline comment on
+`utils/tour_solver.py:123` reads `clamp [10, 100]` while `FULL_SCORE_TOP_N_MAX = 150` on line 126.
+The constant governs; the comment is stale from an earlier ceiling. Worth a one-line fix alongside
+sp-68h6w, where the tranche-cap constants are already being reconciled.
 
 ---
 
 **R3 — Arm the own-fleet externality harder on the sell side.**
 
 - **Knob:** `[trade_fleet] externality_weight`, `gobot/config.yaml:215`, currently **0.35**.
-  Boot-only (stamped into container config at `StartTourRun`; running containers keep the old
-  value until rebuilt).
+- **Bind semantics — launch/rebuild boundary, NOT live per-tick.**
+  `container_ops_tour.go:150-179` (`addTradeFleetTourKnobs`) stamps
+  `s.tradeFleetConfig.ExternalityWeight` into the container's launch config **at `StartTourRun`** —
+  "Persisted as-is including zero/false, so an absent knob survives a recovery rebuild."
+  `command_factory_builders.go:679` reads it back from the **persisted container row** via
+  `cfg.OptionalFloat("externality_weight", 0)`, and `s.tradeFleetConfig` is loaded from config.yaml
+  at daemon boot. So a retune needs **both** (a) `make restart-daemon`, to re-read config.yaml, and
+  (b) containers re-stamped through `StartTourRun` — a *recovery* rebuild replays the old persisted
+  value.
+- **In practice this is one bounce, not a fleet stop.** The per-hull `TRADING` containers complete
+  and relaunch on their own cadence (observed tour spans 3.5–4h in this window), so after the
+  daemon bounce the new weight phases in as each tour finishes. No force-kill needed; budget ~4h
+  for full fleet coverage. Verify on a *newly started* container:
+
+  ```sql
+  SELECT id, (config::jsonb)->>'externality_weight', started_at
+  FROM containers WHERE player_id=9 AND container_type='TRADING' AND status='RUNNING'
+  ORDER BY started_at DESC LIMIT 5;
+  ```
+
+  (The live stamp at the time of writing is `0.35` — so this is a 0.35 → 0.70 change, not an
+  unarmed → armed one.)
 - **Test value: 0.70.** The term is sell-side only
   (`tour_solver.py:605-637 externality_cost_per_unit`) and prices exactly the recovery burden this
   analysis measures, but it **re-orders preference without gating eligibility** — the `min_margin`
   test still runs on the raw margin (`tour_solver.py:1228-1231`). So it can only shift flow toward
-  un-crushed sinks; it cannot refuse a crushed one. That ceiling is why this is R3 and not R1.
-- **Prediction:** +0.5 to +1.0 margin points, +0.7 to +1.5 M/h. Smaller and less certain than R2
-  because of the eligibility ceiling.
+  un-crushed sinks; it cannot refuse a crushed one. That ceiling is why this is R3 and not R1, and
+  why **sp-q5l63 is the change that turns this from a nudge into a bound.**
+- **Prediction:** +0.5 to +1.0 margin points, +0.7 to +1.5 M/h. Judge it against that ceiling — a
+  small move is the predicted outcome, not a failed test.
 - **Watch:** distribution of `vshare` at the sell leg; the p90 should fall from 3.9.
 
 ---
@@ -576,6 +712,13 @@ session.**
 ---
 
 ### 6.2 Needs code — beads filed
+
+**These are the primary path, not a backlog.** With R2 retracted (§6.1), the 4.14 margin points of
+own-market impact in B1 have **no config-only remedy** at `max_tour_systems: 2`. R1 trims the
+loss-making tail and R3 nudges preference, but the mechanism that can actually bound per-lane
+concentration is the absorption ledger — **sp-68h6w** and **sp-y2evb** — and the mechanism that can
+refuse a crushed sink outright is **sp-k1x3h**. The dispersion valuation (+2.2 pts ≈ +3.2 M/h for
+halving the saturated-capital share) is the size of the prize these three are competing for.
 
 | bead | title | expected value |
 |---|---|---|
@@ -657,7 +800,7 @@ WHERE player_id=9 AND operation_type='tour'
   AND category IN ('FUEL_COSTS','TRAVEL_COSTS')
 GROUP BY 1;
 
--- 4. Own-volume share per sell leg — the R2/R3 monitoring query (§4b, §6.1)
+-- 4. Own-volume share per sell leg — the R3 / sp-68h6w monitoring query (§4b, §6.1)
 WITH sells AS (
   SELECT waypoint, good, realized_at, realized_units,
          realized_units*realized_unit_price AS cr
@@ -726,6 +869,14 @@ Validate by comparing residual lots against `sum(ships.cargo_units)`.
   variable with a within-R² of 0.385. 14.4% of the fleet's capital is deployed at a negative
   realized margin because we have already crushed the market we are selling into.
 - **Fleet size is not the constraint. Lane dispersion is.**
+- **There is no config-only lever that disperses per-lane concentration at `max_tour_systems: 2`.**
+  `candidate_shortlist_top_n` is arming-gated inert, raising `max_tour_systems` is contraindicated
+  by replay, and `spawn_dispersal_min_other_hulls` governs post-no-plan reposition timing rather
+  than sink selection. The absorption ledger is the only mechanism at the right granularity, and it
+  needs code (sp-68h6w, sp-y2evb).
+- **Trace the arming gate before naming a knob.** Rev 1 of this document recommended a knob whose
+  effect size was measured correctly and whose wiring was never read. A knob's default is not its
+  effect; check what gates it, and check the live stamped container config rather than config.yaml.
 
 ---
 
