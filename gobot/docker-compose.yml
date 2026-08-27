@@ -10,6 +10,15 @@ services:
       POSTGRES_PASSWORD: dev_password
     ports:
       - "5432:5432"
+    # Postgres allocates the shared memory for parallel workers out of /dev/shm.
+    # Docker's default is 64MB, which is smaller than a single parallel gather
+    # wants on this database: `VACUUM (ANALYZE) container_logs` failed outright
+    # with `could not resize shared memory segment ... to 67128704 bytes: No
+    # space left on device` and completed only with PARALLEL 0. Every parallel
+    # seq scan and hash join was degrading the same way, silently, on the
+    # instance the tour planner depends on. 1g is well clear of
+    # max_parallel_workers (8) at any work_mem this instance will run.
+    shm_size: 1g
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:

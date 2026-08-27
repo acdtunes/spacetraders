@@ -10,6 +10,11 @@ services:
       POSTGRES_PASSWORD: dev_password
     ports:
       - "5432:5432"
+    # Matches gobot/docker-compose.yml, which is the file the live container is
+    # actually created from (its volume is gobot_postgres_data). This twin
+    # declares the same container_name, so a recreate from here would otherwise
+    # silently reinstate the 64MB /dev/shm that broke parallel query and VACUUM.
+    shm_size: 1g
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:

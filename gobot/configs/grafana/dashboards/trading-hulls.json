@@ -3261,7 +3261,7 @@
     }
   ],
   "preload": false,
-  "refresh": "30s",
+  "refresh": "",
   "schemaVersion": 41,
   "tags": [
     "spacetraders",
@@ -3302,7 +3302,7 @@
   "timezone": "browser",
   "title": "SpaceTraders - Trading P&L by Hull",
   "uid": "spacetraders-trading-hulls",
-  "description": "Per-hull trading profit and loss with fleet aggregations. Realised net, capital deployed in cargo, and the operation split that explains treasury movement. Complements 'SpaceTraders - Heavy Trading' (tour lifecycle and guard diagnostics).",
+  "description": "Per-hull trading profit and loss with fleet aggregations. Realised net, capital deployed in cargo, and the operation split that explains treasury movement. Complements 'SpaceTraders - Heavy Trading' (tour lifecycle and guard diagnostics). AUTO-REFRESH IS DELIBERATELY OFF (sp-7djkm): one full load of this dashboard costs 53.8 seconds of database time and 5.6 GB of temp-file writes against the live trading instance, 93% of it in the two recursive-walk panels (Gross Margin, Per-Hull P&L). At the former 30s refresh each cycle could not finish before the next began, so an unattended browser tab held the planner's database in permanent overload. Refresh by hand when you want current numbers; do not re-arm the timer until those two panels are bounded.",
   "version": 1,
   "weekStart": ""
 }

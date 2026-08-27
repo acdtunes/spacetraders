@@ -18,10 +18,15 @@ datasources:
     uid: postgresql
     url: host.docker.internal:5432
     database: spacetraders
-    user: spacetraders
+    # grafana_ro is SELECT-only and carries its own ceilings (statement_timeout
+    # 20s, temp_file_limit 1GB, work_mem 4MB) from migration 057. Grafana shares
+    # this instance with the tour planner, so the reader must not be able to
+    # spend the planner's headroom — connecting as the daemon's superuser meant
+    # a single runaway panel could, and did.
+    user: grafana_ro
     editable: false
     secureJsonData:
-      password: dev_password
+      password: grafana_ro_password
     jsonData:
       # Grafana 13's postgres FRONTEND reads the database from jsonData only;
       # the top-level `database:` field is legacy (backend still honors it,
