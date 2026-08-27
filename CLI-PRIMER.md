@@ -381,6 +381,8 @@ a **routing-service restart** (not a daemon restart).
 | `TOUR_SOLVER_ORTOOLS_BUDGET_SECONDS` | (unset → default) | 3 | [2,5] | global per-call OR-Tools wall budget (protects p99 solve latency) |
 | `TOUR_SOLVER_ORTOOLS_MAX_SUBSETS` | (unset → default) | 8 | [1,32] | max subset models solved per call |
 | `TOUR_SOLVER_ORTOOLS_TIME_VALUE` | (unset → default) | 10.0 | [0,1000] | time-value pricing (credits/second) in the objective |
+| `TOUR_SOLVER_API_SATURATION_PERMILLE` | (unset → daemon) | 0 | [0,1000] | manual limiter-saturation override; the daemon's per-solve measurement OUTRANKS it |
+| `TOUR_SOLVER_API_CALL_SECONDS` | (unset → default) | 29.0 | [0,3600] | tour-seconds one API request displaces; **`=0` disarms the call-cost term at every saturation** |
 
 Also in `run.sh` (process knobs, not solver policy): `ROUTING_HOST` (0.0.0.0), `ROUTING_PORT`
 (50051), `TSP_TIMEOUT` (5s), `VRP_TIMEOUT` (30s). Solver constant worth knowing:

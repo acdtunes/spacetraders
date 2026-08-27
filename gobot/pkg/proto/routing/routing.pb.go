@@ -1484,8 +1484,20 @@ type TourConstraints struct {
 	// same bounds as the env path, so a wild estimate can price a crossing neither at zero
 	// nor absurdly.
 	InterSystemTravelPerHopSeconds int32 `protobuf:"varint,14,opt,name=inter_system_travel_per_hop_seconds,json=interSystemTravelPerHopSeconds,proto3" json:"inter_system_travel_per_hop_seconds,omitempty"`
-	unknownFields                  protoimpl.UnknownFields
-	sizeCache                      protoimpl.SizeCache
+	// How hard the account's shared API request budget is binding, in permille of the
+	// ceiling, measured Go-side from the daemon's own request tracker. It exists because a
+	// tour spends TWO scarce resources — the hull's wall clock and the fleet's request
+	// budget — and the solver's objective models only the first, so at the ceiling it
+	// prefers the tour that earns more per hour over the one that earns more per request.
+	//
+	// The solver blends the two costs by this reading, PREFERRING it over its env override
+	// and then a default of zero — so 0/unset (a fleet with headroom, a window too thin to
+	// read, or any older caller) selects on credits/hour byte-identically to today. Permille
+	// rather than a fraction keeps "no opinion" and "no saturation" the same zero and keeps
+	// NaN off the wire; the solver clamps to the same [0, 1000] bound this side does.
+	ApiSaturationPermille int32 `protobuf:"varint,15,opt,name=api_saturation_permille,json=apiSaturationPermille,proto3" json:"api_saturation_permille,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
 }
 
 func (x *TourConstraints) Reset() {
@@ -1612,6 +1624,13 @@ func (x *TourConstraints) GetGateFees() []*GateFee {
 func (x *TourConstraints) GetInterSystemTravelPerHopSeconds() int32 {
 	if x != nil {
 		return x.InterSystemTravelPerHopSeconds
+	}
+	return 0
+}
+
+func (x *TourConstraints) GetApiSaturationPermille() int32 {
+	if x != nil {
+		return x.ApiSaturationPermille
 	}
 	return 0
 }
@@ -2692,7 +2711,7 @@ const file_pkg_proto_routing_routing_proto_rawDesc = "" +
 	"\rTourCargoItem\x12\x1f\n" +
 	"\vgood_symbol\x18\x01 \x01(\tR\n" +
 	"goodSymbol\x12\x14\n" +
-	"\x05units\x18\x02 \x01(\x05R\x05units\"\xa7\x05\n" +
+	"\x05units\x18\x02 \x01(\x05R\x05units\"\xdf\x05\n" +
 	"\x0fTourConstraints\x12\x19\n" +
 	"\bmax_hops\x18\x01 \x01(\x05R\amaxHops\x12\x1b\n" +
 	"\tmax_spend\x18\x02 \x01(\x03R\bmaxSpend\x12-\n" +
@@ -2708,7 +2727,8 @@ const file_pkg_proto_routing_routing_proto_rawDesc = "" +
 	"\x11inter_system_hops\x18\v \x03(\v2\x1f.routing.InterSystemHopDistanceR\x0finterSystemHops\x12-\n" +
 	"\x12externality_weight\x18\f \x01(\x01R\x11externalityWeight\x12-\n" +
 	"\tgate_fees\x18\r \x03(\v2\x10.routing.GateFeeR\bgateFees\x12K\n" +
-	"#inter_system_travel_per_hop_seconds\x18\x0e \x01(\x05R\x1einterSystemTravelPerHopSeconds\"B\n" +
+	"#inter_system_travel_per_hop_seconds\x18\x0e \x01(\x05R\x1einterSystemTravelPerHopSeconds\x126\n" +
+	"\x17api_saturation_permille\x18\x0f \x01(\x05R\x15apiSaturationPermille\"B\n" +
 	"\aGateFee\x12\x16\n" +
 	"\x06system\x18\x01 \x01(\tR\x06system\x12\x1f\n" +
 	"\vfee_credits\x18\x02 \x01(\x03R\n" +

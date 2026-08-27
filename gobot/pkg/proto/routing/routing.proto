@@ -360,6 +360,18 @@ message TourConstraints {
   // same bounds as the env path, so a wild estimate can price a crossing neither at zero
   // nor absurdly.
   int32 inter_system_travel_per_hop_seconds = 14;
+  // How hard the account's shared API request budget is binding, in permille of the
+  // ceiling, measured Go-side from the daemon's own request tracker. It exists because a
+  // tour spends TWO scarce resources — the hull's wall clock and the fleet's request
+  // budget — and the solver's objective models only the first, so at the ceiling it
+  // prefers the tour that earns more per hour over the one that earns more per request.
+  //
+  // The solver blends the two costs by this reading, PREFERRING it over its env override
+  // and then a default of zero — so 0/unset (a fleet with headroom, a window too thin to
+  // read, or any older caller) selects on credits/hour byte-identically to today. Permille
+  // rather than a fraction keeps "no opinion" and "no saturation" the same zero and keeps
+  // NaN off the wire; the solver clamps to the same [0, 1000] bound this side does.
+  int32 api_saturation_permille = 15;
 }
 
 // GateFee is one departure system's jump-gate fee in credits (sp-9idvn).

@@ -127,6 +127,13 @@ class TourHandlerMixin:
                 # to today.
                 inter_system_travel_per_hop_seconds=(
                     request.constraints.inter_system_travel_per_hop_seconds),
+                # How hard the shared API request budget is binding, measured Go-side from
+                # the daemon's own request tracker. It OUTRANKS the env override where both
+                # are present — a live reading beats a number exported by hand — and 0/unset
+                # (a fleet with headroom, a window too thin to read, or an older caller)
+                # falls through to env and then to a saturation of zero, which selects on
+                # credits/hour byte-identically to a time-only objective.
+                api_saturation_permille=request.constraints.api_saturation_permille,
                 expected_model_version=request.constraints.expected_model_version)
             waypoints = [dict(symbol=w.symbol, system_symbol=w.system_symbol,
                               x=w.x, y=w.y)

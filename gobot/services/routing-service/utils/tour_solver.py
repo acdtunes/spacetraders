@@ -67,6 +67,26 @@ under both objectives (the sp-1wp8 invariant); (d) armed by exporting
 TOUR_SOLVER_RATE_ARMED_LONG=1 in the Go manager's / process-manager's environment
 (inherited via os.Environ()), reversible without a redeploy.
 
+The RATE objective's denominator is SATURATION-AWARE, because a tour spends
+two scarce resources and time is only one of them. The other is the account's
+shared API request budget: at the ceiling a hull idling out a cooldown costs
+nothing, while a stop-dense tour spends the budget every other hull is queued
+behind, so credits per REQUEST is what the fleet actually banks. Selection
+therefore ranks on profit / (seconds + s x calls x API_CALL_SECONDS): a
+congestion SURCHARGE on top of the hull's own clock, never a reweighting that
+lets time drop out. `calls` is the plan's request cost read off its own leg
+structure (_plan_api_calls — visits, jumps, and ceil(units/tradeVolume) per
+trade, so a shallow market costs several requests where a deep one costs one);
+`s` is the limiter saturation the daemon measures and sends per solve (request >
+TOUR_SOLVER_API_SATURATION_PERMILLE > 0). s=0 — absent, malformed, or a fleet
+with headroom — makes the key the candidate's own cph object, so a fleet that is
+not call-bound selects byte-identically to a time-only objective.
+
+SELECTION ONLY, on the sp-1wp8 invariant: candidate generation, tranche pricing,
+guards and every reported projection are untouched, and charging the DENOMINATOR
+rather than profit is what keeps it that way — a per-call charge on profit could
+take a whole pool negative and idle the fleet through the feasibility gate.
+
 Every hop must add positive marginal profit under EITHER objective —
 allocations only exist at margin >= the min-margin gate, and hops with no
 allocation are pruned from the plan.
@@ -362,6 +382,76 @@ _ARMED_LONG_LOG_KEY = "armed_long"   # DISTINCT once-log key so the tier-2 and t
                                      # RATE logs never suppress each other
 _ARM_TRUTHY = frozenset({"1", "true", "yes", "on"})
 
+# API-CALL COST OF A PLAN, and the saturation-aware selection blend.
+#
+# THE RESOURCE THE OBJECTIVE WAS MISSING. A tour consumes two scarce things: the HULL's
+# wall clock, and the account's shared API request budget. Only the first is modelled
+# above — every crossing, hop and dwell is priced in seconds — so selection maximises
+# credits per HOUR. When the fleet's request rate sits against its ceiling, the second
+# resource is the binding one: a hull idling out a jump cooldown costs zero requests,
+# while a stop-dense tour spends the budget every other hull is queued behind. On that
+# axis a longer tour with a higher hourly rate can be strictly worse per request, and a
+# time-only objective cannot see it.
+#
+# THE CALL MODEL is structural, read off the plan the solver already built:
+#
+#   calls = visits x PER_VISIT + transactions x PER_TRANSACTION + crossings x PER_CROSSING
+#
+# PER_VISIT is the movement bundle a market stop always costs (orbit, navigate, dock)
+# plus the share of a refuel that a stop carries; PER_CROSSING is the jump itself.
+#
+# TRANSACTIONS ARE NOT PLANNED TRADES. The API caps one buy or sell at the market's own
+# tradeVolume, so moving `units` of a good through a leg costs ceil(units / trade_volume)
+# requests — three through a tradeVolume-100 market, one through a tradeVolume-300 one.
+# The fleet already transacts at that ceiling (realized 110 units/buy, 94/sell against a
+# live tradeVolume median of 100), so the count is governed by WHICH MARKET a plan picks,
+# not by any tranche policy, and two plans with identical stop counts can differ
+# severalfold in request cost. Across the live depth distribution (n=10,692 rows: p10 20,
+# median 100, p90 360, max 900) the cheapest decile moves 1,000 units in 1.7 requests and
+# the dearest needs 80.2 — a 47x spread a stops-only model cannot see at all.
+#
+# Nothing else steers toward depth. Execution CHUNKS an oversized tranche down to the
+# limit the API states rather than failing the sale, so a plan that ignores tradeVolume
+# no longer breaks — it silently costs extra requests. This term is what makes that cost
+# visible to selection. It also runs WITH the own-market impact charge rather than against
+# it: units/tradeVolume is both the request count here and the own-volume share that
+# drives realized price decay, so the plan that spends fewer requests is the same plan
+# that crushes its own markets less.
+#
+# Calibrated against the live endpoint mix over a 180s window at the ceiling (2.000
+# req/s), counted by endpoint: navigate 50, dock 45, orbit 39, refuel 13, jump 10, buy 41,
+# sell 52. Taking dock as the visit marker gives 1.11 navigate, 0.87 orbit and 0.29 refuel
+# per visit — and 2.07 transaction requests per visit, which is the chunk count, not the
+# trade count. The constants below reproduce that window's 250 movement-and-trade requests
+# to within 0.6%.
+API_CALLS_PER_VISIT = 3.3        # orbit + navigate + dock, plus the measured refuel share
+API_CALLS_PER_TRANSACTION = 1.0  # one request per tradeVolume-sized chunk of a planned trade
+API_CALLS_PER_CROSSING = 1.0     # the jump; its gate-approach navigate is a visit's own
+# The exchange rate between the two resources: how many seconds of tour time one request
+# displaces. It makes the blend's two denominator terms commensurate, and it is pinned to
+# the fleet-typical ratio of planned tour seconds to planned tour calls, so a TYPICAL plan
+# scores alike on either axis and only the atypical ones move. A scale far off that ratio
+# would leave the call term inert or dominant regardless of what the limiter is doing.
+# Measured over 144 replayed plans on reconstructed live snapshots: median plan 480s /
+# 17.6 calls / 3 stops, per-plan seconds-per-call p25 17.3, MEDIAN 28.6, p75 77.1. The
+# median rather than the mean (48.6) because the ratio is right-skewed by the few very
+# long crossing-heavy plans, and a mean would price every ordinary plan off them. At full
+# saturation the scale cancels out of the ranking entirely — it governs only the blend's
+# crossover in between.
+API_CALL_SECONDS = 29.0
+API_CALL_SECONDS_ENV_VAR = "TOUR_SOLVER_API_CALL_SECONDS"
+API_CALL_SECONDS_MIN = 0.0      # floor 0 disarms the call term at every saturation
+API_CALL_SECONDS_MAX = 3600.0   # ceiling: one request may not price a whole hour of tour
+# Measured limiter saturation, in permille of the account's request ceiling. The daemon
+# owns the limiter and the budget tracker, so it measures this and sends it per solve;
+# the env var underneath is the manual override for a fleet whose daemon is silent.
+# 0 — absent, unset, malformed, or a genuinely unsaturated fleet — is the fail-open value
+# and every one of those cases selects on credits/hour exactly as a time-only objective
+# does. Permille rather than a float keeps "no opinion" and "no saturation" the same
+# zero, and keeps NaN off the wire.
+API_SATURATION_ENV_VAR = "TOUR_SOLVER_API_SATURATION_PERMILLE"
+API_SATURATION_PERMILLE_MAX = 1000
+
 _warned_tiers = set()
 _logged_objective = set()
 _logged_sequencer = set()
@@ -442,7 +532,124 @@ def _resolve_sequencer(sequencer):
     return SEQUENCER_BEAM
 
 
-def _sort_scored(scored, objective):
+def _transaction_chunks(leg, markets):
+    """Requests the trades planned at one leg cost, at ceil(units / tradeVolume) each.
+
+    The market's own tradeVolume is the API's per-request cap, so a deep market moves a
+    load in one request where a shallow one needs several — the term that makes two plans
+    with the same stop count differ severalfold in request cost. A trade whose depth is
+    unreadable (a deposit sink, a warehouse withdrawal, a good absent from the priced
+    market) charges ONE request: the conservative floor, never zero."""
+    chunks = 0
+    goods = (markets.get(leg["waypoint_symbol"]) or {}).get("goods") or {}
+    for trade in leg.get("trades") or ():
+        units = trade.get("units") or 0
+        volume = (goods.get(trade["good_symbol"]) or {}).get("trade_volume") or 0
+        if units <= 0:
+            continue
+        chunks += math.ceil(units / volume) if volume > 0 else 1
+    return chunks
+
+
+def _plan_api_calls(legs, start_system, markets):
+    """The API requests a planned tour spends, from its leg structure.
+
+    Three independent terms — the movement bundle each market stop costs, the chunked
+    transaction requests its trades cost, and one per system change along the walk. The
+    walk starts at the hull's own system, so a tour that leaves and returns is charged BOTH
+    crossings; charging only the departure would make a far cluster look half price on
+    exactly the axis this term exists to price.
+
+    An empty plan costs 0, not a per-visit floor: a bare single-market seed carries no legs
+    and must stay the degenerate candidate selection already quarantines rather than
+    acquire a cost that makes it look merely cheap."""
+    calls = 0.0
+    system = start_system
+    for leg in legs:
+        calls += (API_CALLS_PER_VISIT
+                  + API_CALLS_PER_TRANSACTION * _transaction_chunks(leg, markets))
+        leg_system = leg.get("system_symbol")
+        if leg_system and leg_system != system:
+            calls += API_CALLS_PER_CROSSING
+            system = leg_system
+    return calls
+
+
+def _resolve_api_saturation(constraints):
+    """Resolve measured limiter saturation as a fraction of the request ceiling.
+
+    PRECEDENCE: request-carried MEASUREMENT > env override > 0.
+
+    The request value wins because the daemon owns the limiter and the budget tracker: a
+    live reading of what the fleet is actually spending is strictly better evidence than a
+    number exported by hand. Underneath, TOUR_SOLVER_API_SATURATION_PERMILLE is the manual
+    override for a fleet whose daemon has nothing to say.
+
+    A request value counts only when it is a real positive integer permille. Absent, zero,
+    negative, a bool, a float or a string all fall through, so a caller that predates the
+    field selects byte-identically to a time-only objective. Bools are excluded explicitly
+    because True is an int in Python and would otherwise read as one permille.
+
+    Both sources clamp to [0, 1000]: saturation is a fraction of a KNOWN ceiling, so a
+    reading past it means the limiter is fully bound, never that requests outrank
+    everything else."""
+    measured = (constraints or {}).get("api_saturation_permille")
+    if isinstance(measured, int) and not isinstance(measured, bool) and measured > 0:
+        return min(measured, API_SATURATION_PERMILLE_MAX) / float(API_SATURATION_PERMILLE_MAX)
+    permille = _sequencer_env_scalar(API_SATURATION_ENV_VAR, 0, 0,
+                                     API_SATURATION_PERMILLE_MAX, int)
+    return permille / float(API_SATURATION_PERMILLE_MAX)
+
+
+def _resolve_api_call_seconds():
+    """Per-solve env override for the seconds of tour time one request displaces
+    (TOUR_SOLVER_API_CALL_SECONDS). Same clamp-and-fall-back discipline as the travel
+    terms. The floor is 0 on purpose: exporting 0 makes the call term inert at every
+    saturation, which is the disarm that needs no code change."""
+    return _sequencer_env_scalar(API_CALL_SECONDS_ENV_VAR, API_CALL_SECONDS,
+                                 API_CALL_SECONDS_MIN, API_CALL_SECONDS_MAX, float)
+
+
+def _selection_rate(result, saturation, call_seconds):
+    """The rate RATE-primary selection ranks a candidate by.
+
+    A plan's cost is its own wall clock PLUS the queue its requests impose on every other
+    hull, the second term scaled by how hard the limiter is binding:
+
+        denominator = tour_seconds + s x calls x call_seconds
+
+    A SURCHARGE, NOT AN INTERPOLATION, and the difference is the whole design. Interpolating
+    — (1-s) x seconds + s x calls x call_seconds — drives the weight on the hull's own clock
+    to ZERO at full saturation, and a solver that cannot see time will fly for three quarters
+    of an hour to save half a request. Measured on reconstructed live snapshots, that form
+    chose a 5.04x LONGER tour in 71% of the cases where it changed the route, for a 3% call
+    saving. Time never stops being a real cost; congestion is an EXTRA one, which is exactly
+    what a shared-resource externality is.
+
+    At s = 0 the surcharge vanishes and the function returns the candidate's own cph object
+    untouched — not a value that merely rounds to it, so the sort key cannot differ from a
+    time-only objective's by a float ULP. As s rises, a call-heavy plan is marked down
+    continuously against a call-light one of equal duration: nothing switches, and a
+    candidate's score is monotone in s.
+
+    Charging the DENOMINATOR rather than profit is what keeps this a ranking change. A
+    per-call charge subtracted from profit would make whole pools score negative under a
+    bound limiter and could idle the fleet through the feasibility gate; here every
+    profitable plan keeps a positive score and the gate never sees this term.
+
+    A non-positive denominator pins to 0.0 — the same quarantine cph already applies to a
+    zero-time candidate, so a bare seed costing nothing on both axes cannot divide its way
+    to the top of the pool."""
+    if saturation <= 0 or call_seconds <= 0:
+        return result["cph"]
+    denominator = (result["seconds"]
+                   + saturation * result.get("api_calls", 0.0) * call_seconds)
+    if denominator <= 0:
+        return 0.0
+    return result["profit"] / (denominator / 3600.0)
+
+
+def _sort_scored(scored, objective, saturation=0.0, call_seconds=API_CALL_SECONDS):
     """Order fully-scored candidates by the selection objective (sp-1wp8); returns
     the objective that ACTUALLY ordered the list.
 
@@ -475,9 +682,15 @@ def _sort_scored(scored, objective):
     Ordering now depends only on the objective, never on pool composition, which
     is what restores the strict-superset property (wide >= home-only on every
     case). An all-nonpositive pool still sorts a nonpositive candidate first under
-    both objectives, so the no_profitable_tour guard below is unchanged."""
+    both objectives, so the no_profitable_tour guard below is unchanged.
+
+    `saturation` shifts the rate the RATE branch ranks by from credits/hour toward credits
+    per API request (_selection_rate). At 0 the key is the candidate's own cph, so the
+    ordering is the time-only one. PROFIT-primary selection never consults it: profit has
+    no denominator for the second resource to reshape."""
     if objective == OBJECTIVE_RATE:
-        scored.sort(key=lambda rs: (-rs[0]["cph"], -rs[0]["profit"], rs[1]))
+        scored.sort(key=lambda rs: (-_selection_rate(rs[0], saturation, call_seconds),
+                                    -rs[0]["profit"], rs[1]))
         return OBJECTIVE_RATE
     scored.sort(key=lambda rs: (-rs[0]["profit"], -rs[0]["cph"], rs[1]))
     return OBJECTIVE_PROFIT
@@ -1374,9 +1587,14 @@ def score_sequence(seq, markets, ship, constraints, model, travel_fn, deposit_si
     profit -= gate_fees
 
     cph = profit / (seconds / 3600.0) if seconds > 0 else 0.0
+    # The plan's cost in API requests, priced off the SAME walk that priced its seconds and
+    # the SAME market depths that priced its tranches — so a candidate can never be charged
+    # one resource without the other. Reported alongside profit and time; nothing here
+    # consumes it, which keeps it a pure selection input and every projection unrestated.
+    api_calls = _plan_api_calls(legs, ship["current_system"], markets)
     return dict(profit=profit, spend=spend, seconds=seconds, cph=cph, legs=legs,
                 held_liquidation=held_liquidation, deposit_value=deposit_value,
-                stock_value=stock_value, gate_fees=gate_fees)
+                stock_value=stock_value, gate_fees=gate_fees, api_calls=api_calls)
 
 
 def _held_liquidation_value(wp, markets, initial_cargo):
@@ -2209,6 +2427,11 @@ def solve_tour(snapshot, ship, constraints, model, waypoints=None,
     # solve (env TOUR_SOLVER_FULL_SCORE_TOP_N, default 20 == byte-identical) so the
     # widened beam candidates can actually survive to full scoring.
     full_score_top_n = _resolve_full_score_top_n()
+    # The second scarce resource. Resolved ONCE per solve so every candidate in this pool
+    # is ranked against the same reading of the limiter — the discipline the tranche caps
+    # and travel terms already follow. 0 (no daemon reading, no env) ranks on credits/hour.
+    api_saturation = _resolve_api_saturation(constraints)
+    api_call_seconds = _resolve_api_call_seconds()
     beam_cands = beam_sequences(markets, ship, constraints, travel_fn, deposit_sinks,
                                 stock_source_idx,
                                 max_planned_tranches=max_planned_tranches)
@@ -2345,7 +2568,8 @@ def solve_tour(snapshot, ship, constraints, model, waypoints=None,
     # is what actually ordered the list (rate falls back to profit on any
     # zero-time candidate), so the rejection reasons below can never claim a
     # comparison the sort didn't make.
-    effective = _sort_scored(scored, objective)
+    effective = _sort_scored(scored, objective, saturation=api_saturation,
+                             call_seconds=api_call_seconds)
 
     def rejected(entries, winner=None):
         # winner=None only on the infeasible path, where the sort invariant
@@ -2356,12 +2580,20 @@ def solve_tour(snapshot, ship, constraints, model, waypoints=None,
             if result["profit"] <= 0:
                 reason = "no profitable allocation under tranche decay/guards"
             elif effective == OBJECTIVE_RATE:
-                # Rate-primary honesty: name the cph comparison that decided it.
-                if result["cph"] < winner["cph"]:
-                    reason = (f"cph {result['cph']:,.0f}/hr < winner "
-                              f"{winner['cph']:,.0f}/hr (profit {result['profit']:,})")
+                # Rate-primary honesty: name the comparison the sort ACTUALLY made. Under a
+                # bound limiter that is the call-blended rate, not cph, and reporting cph
+                # there would describe a ranking that did not happen — the failure mode the
+                # `effective` split above exists to prevent.
+                rate = _selection_rate(result, api_saturation, api_call_seconds)
+                win_rate = _selection_rate(winner, api_saturation, api_call_seconds)
+                axis = ("cph" if api_saturation <= 0
+                        else f"rate at {api_saturation:.0%} limiter load")
+                if rate < win_rate:
+                    reason = (f"{axis} {rate:,.0f}/hr < winner "
+                              f"{win_rate:,.0f}/hr (profit {result['profit']:,}, "
+                              f"{result['api_calls']:,.0f} calls)")
                 else:
-                    reason = (f"cph tie, profit {result['profit']:,} <= winner "
+                    reason = (f"{axis} tie, profit {result['profit']:,} <= winner "
                               f"{winner['profit']:,}")
             elif result["profit"] < winner["profit"]:
                 reason = (f"profit {result['profit']:,} < winner "
@@ -2391,5 +2623,10 @@ def solve_tour(snapshot, ship, constraints, model, waypoints=None,
                 # compare this against the tour's actual JUMP/TRAVEL_COSTS rows and the
                 # per-hop constant can be re-fitted from the gap instead of re-derived.
                 gate_fees=best["gate_fees"],
+                # The winner's cost in API requests. Reported but never netted out of any
+                # projection: it is a selection input, and publishing it is what lets the
+                # realized request spend of a flown tour be compared against the plan so the
+                # per-visit constants can be re-fitted from the gap instead of re-derived.
+                projected_api_calls=best["api_calls"],
                 top_rejected=rejected(scored[1:], winner=best),
                 model_version=model_version)

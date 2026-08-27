@@ -116,6 +116,12 @@ func (h *RunTourCoordinatorHandler) SetGateFeeReader(r GateFeeReader) {
 	h.gateFees = r
 }
 
+// SetAPISaturationReader injects the request-budget pressure estimator. Unset (every
+// existing test) leaves apiSaturation nil, which ranks tours on credits per hour.
+func (h *RunTourCoordinatorHandler) SetAPISaturationReader(r APISaturationReader) {
+	h.apiSaturation = r
+}
+
 // SetJumpTollReader injects the sample-backed per-gate-hop travel estimator (sp-3x143).
 // Unset (every existing test) leaves jumpTolls nil, which plans byte-identically to today.
 func (h *RunTourCoordinatorHandler) SetJumpTollReader(r JumpTollReader) {

@@ -101,6 +101,7 @@ type TourConstraints struct {
 	// the table omits likewise falls back.
 	GateFees                       []GateFee
 	InterSystemTravelPerHopSeconds int
+	APISaturationPermille          int
 }
 
 // GateFee is one departure system's jump-gate fee in credits.

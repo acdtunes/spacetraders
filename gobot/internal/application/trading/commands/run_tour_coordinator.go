@@ -159,6 +159,9 @@ type RunTourCoordinatorHandler struct {
 	// solver prices the MARGINAL term of a crossing at. nil, or a fleet with too few measured
 	// hops => 0 on the wire => the solver keeps its fitted default, byte-identical to today.
 	jumpTolls JumpTollReader
+	// apiSaturation reads how hard the shared request budget is binding; nil, or a fleet
+	// with headroom => 0 on the wire => selection on credits/hour.
+	apiSaturation APISaturationReader
 	// modelArtifactPath is the daemon-configured (absolute) path to the market-model
 	// artifact this coordinator reads at launch, injected from cfg.Routing.ModelArtifactPath.
 	// Empty → the repo-relative defaultModelArtifactPath fallback. A per-run

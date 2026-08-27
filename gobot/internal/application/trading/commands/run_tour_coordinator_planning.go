@@ -51,6 +51,20 @@ func (h *RunTourCoordinatorHandler) tourPerHopToll(
 	return seconds
 }
 
+// tourAPISaturation resolves how hard the shared API request budget is binding for this
+// plan. 0 IS THE FAIL-OPEN VALUE that every non-reading lands on — unwired estimator, thin
+// window, real headroom, and a negative reading the objective must never see.
+func (h *RunTourCoordinatorHandler) tourAPISaturation(ctx context.Context) int {
+	if h.apiSaturation == nil {
+		return 0
+	}
+	permille := h.apiSaturation.SaturationPermille(ctx)
+	if permille <= 0 {
+		return 0
+	}
+	return permille
+}
+
 // planForState assembles the market snapshot + era-scoped coordinates over allowedSystems
 // and calls the depth-aware planner for the given ship state. It is the plan core shared
 // by the live tour (planAndReserve — ship state + tour graph derived from the hull's real
@@ -190,6 +204,9 @@ func (h *RunTourCoordinatorHandler) buildTourPlanRequest(
 		// The MARGINAL term of a crossing, measured from the hops the fleet has actually
 		// flown. 0 (nil reader / too few hops) leaves the solver on its fitted default.
 		InterSystemTravelPerHopSeconds: h.tourPerHopToll(ctx, cmd),
+		// The second resource a tour spends. 0 (nil reader / headroom / a thin window)
+		// leaves the solver ranking on credits per hour.
+		APISaturationPermille: h.tourAPISaturation(ctx),
 	}
 	return &tourPlanRequest{
 		shipState: shipState, snapshot: snapshot, waypoints: waypoints,

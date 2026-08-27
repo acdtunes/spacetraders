@@ -336,3 +336,34 @@ def test_handler_forwards_the_measured_per_hop_travel_toll(tmp_path):
     # THE FAIL-OPEN PIN: the field left at its proto3 default prices exactly as a request
     # from a binary that predates it.
     assert priced_seconds(handler.OptimizeTradeTour(request(), None)) == priced_seconds(base)
+
+
+def test_handler_forwards_the_measured_api_saturation(tmp_path, monkeypatch):
+    # The pb TourConstraints.api_saturation_permille must be BRIDGED into the solver
+    # constraints dict, or the second resource a tour spends is priced nowhere. A dropped
+    # scalar is silent here: the solver keeps ranking on credits per hour and the plan looks
+    # entirely normal — the same inert-on-the-wire failure a dropped travel toll would have.
+    #
+    # Asserted at the CONVERSION seam, which is the only thing this handler owns, so the test
+    # does not depend on the golden board happening to hold two candidates that disagree
+    # about which axis they win on.
+    from utils import tour_solver
+    monkeypatch.delenv(tour_solver.API_SATURATION_ENV_VAR, raising=False)
+    handler = RoutingServiceHandler(tour_artifact_path=_artifact(tmp_path))
+    seen = []
+    original = handler.solve_pool.run
+
+    def spy(fn, payload):
+        seen.append(tour_solver._resolve_api_saturation(payload["constraints"]))
+        return original(fn, payload)
+
+    monkeypatch.setattr(handler.solve_pool, "run", spy)
+
+    req = request()
+    req.constraints.api_saturation_permille = 800
+    handler.OptimizeTradeTour(req, None)
+    # THE FAIL-OPEN PIN: the field left at its proto3 default reads as no opinion, which
+    # ranks candidates exactly as a request from a binary that predates it does.
+    handler.OptimizeTradeTour(request(), None)
+
+    assert seen == [pytest.approx(0.8), 0.0], seen

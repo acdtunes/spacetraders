@@ -135,6 +135,7 @@ func (w circuitWiring) configureTourCoordinator(h *tradeRouteCmd.RunTourCoordina
 	h.SetJumpTollReader(tradeRouteCmd.NewLedgerJumpTollReader(
 		w.jumpTolls(), nil, domainTrading.DefaultJumpTollParams(), // nil clock = RealClock
 	))
+	h.SetAPISaturationReader(grpc.NewTourAPISaturationReader())
 	h.SetChartGateOnArrival(w.chartGateOnArrival)
 	// Lets the tour see profitable exotic lanes whose sink sits beyond the tour graph's
 	// own hop horizon.

@@ -434,6 +434,7 @@ func buildTourRequest(
 			// request is byte-identical to a binary that predates the table.
 			GateFees:                       pbGateFees,
 			InterSystemTravelPerHopSeconds: int32(cons.InterSystemTravelPerHopSeconds),
+			ApiSaturationPermille:          int32(cons.APISaturationPermille),
 		},
 		Waypoints:         pbWaypoints,
 		DepositCandidates: pbDeposits,
