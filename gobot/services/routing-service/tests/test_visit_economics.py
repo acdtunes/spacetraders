@@ -74,6 +74,25 @@ def test_the_request_bill_splits_into_movement_and_transactions():
     assert row["movement_share"] == pytest.approx(movement / (movement + 3))
 
 
+def test_an_empty_window_degrades_to_zeros_and_never_divides():
+    """THE DEGRADE-SAFELY GATE. Whoever next asks whether the bundling lever exists will point
+    this at whatever window they have — a quiet hour, a fleet between eras, a fresh database.
+    Every ratio it reports carries a count in its denominator, so an empty read has to come
+    back as zeros rather than as a traceback that only reads as "no data" to someone who
+    already knows the script."""
+    assert ve.dock_sessions([], gap_seconds=600) == []
+    empty = ve.session_report([])
+    assert len(empty) == 1, "the ALL row is always reported, so this check is never vacuous"
+    for row in empty:
+        assert row["visits"] == 0
+        assert row["goods_per_visit"] == 0.0
+        assert row["chunks_per_visit"] == 0.0
+        assert row["single_share"] == 0.0
+        assert row["calls_per_transaction"] == 0.0
+        assert row["movement_share"] == 0.0
+    assert ve.pack_ceiling({}, hold=490, tranches=3, min_margin=1) == ({}, [])
+
+
 def _market(ask, bid, volume):
     return (ask, bid, volume)
 
