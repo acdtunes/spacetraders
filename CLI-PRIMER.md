@@ -383,6 +383,7 @@ a **routing-service restart** (not a daemon restart).
 | `TOUR_SOLVER_ORTOOLS_TIME_VALUE` | (unset → default) | 10.0 | [0,1000] | time-value pricing (credits/second) in the objective |
 | `TOUR_SOLVER_API_SATURATION_PERMILLE` | (unset → daemon) | 0 | [0,1000] | manual limiter-saturation override; the daemon's per-solve measurement OUTRANKS it |
 | `TOUR_SOLVER_API_CALL_SECONDS` | (unset → default) | 29.0 | [0,3600] | tour-seconds one API request displaces; **`=0` disarms the call-cost term at every saturation** |
+| `TOUR_SOLVER_STAGE1_CALL_CREDITS` | (unset → default) | 10000.0 | [0,100000] | credits STAGE-1 candidate generation charges per request a candidate's packed units imply (beam + OR-Tools). **Fitted default is ACTIVE** (+1.20% fleet rate at the tour budget share, `replay_stage1_depth.py`); **`=0` disarms it at every saturation** |
 
 Also in `run.sh` (process knobs, not solver policy): `ROUTING_HOST` (0.0.0.0), `ROUTING_PORT`
 (50051), `TSP_TIMEOUT` (5s), `VRP_TIMEOUT` (30s). Solver constant worth knowing:

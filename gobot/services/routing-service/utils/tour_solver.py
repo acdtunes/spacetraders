@@ -82,10 +82,27 @@ TOUR_SOLVER_API_SATURATION_PERMILLE > 0). s=0 — absent, malformed, or a fleet
 with headroom — makes the key the candidate's own cph object, so a fleet that is
 not call-bound selects byte-identically to a time-only objective.
 
-SELECTION ONLY, on the sp-1wp8 invariant: candidate generation, tranche pricing,
-guards and every reported projection are untouched, and charging the DENOMINATOR
-rather than profit is what keeps it that way — a per-call charge on profit could
-take a whole pool negative and idle the fleet through the feasibility gate.
+That surcharge ranks; it cannot GENERATE. The pool it orders is whatever survived
+stage 1, so a call-cheap candidate the beam's width cuts, the OR-Tools node cap or
+the FULL_SCORE_TOP_N shortlist dropped is absent rather than merely ranked low.
+STAGE 1 THEREFORE PAYS THE SAME PRICE IN ITS OWN CURRENCY: the optimistic packing
+bound is charged STAGE1_CALL_CREDITS per request its packed units imply, at
+ceil(units / tradeVolume) on each side of every good — the same rule stage 2
+charges off final units, applied to the bound's estimate of them. It is scaled by
+the SAME saturation reading, so a fleet with headroom generates candidates exactly
+as before, and it prices ONLY the transaction term, because depth is the one thing
+no other stage-1 term can see. The price is REPLAY-FITTED AND ACTIVE
+(STAGE1_CALL_CREDITS: +1.20% fleet rate at the measured tour budget share, pooled
+over two independent replay windows). Read the constant before retuning it: the
+win comes from spending fewer requests, not from the deeper markets the term was
+built to find.
+
+SELECTION ONLY, on the sp-1wp8 invariant: tranche pricing, guards and every
+reported projection are untouched, and charging the DENOMINATOR rather than profit
+is what keeps it that way — a per-call charge on profit could take a whole pool
+negative and idle the fleet through the feasibility gate. The stage-1 charge moves
+which candidates are OFFERED to that selection and nothing else: it never reaches a
+price, a projection or a spend gate.
 
 Every hop must add positive marginal profit under EITHER objective —
 allocations only exist at margin >= the min-margin gate, and hops with no
@@ -452,6 +469,92 @@ API_CALL_SECONDS_MAX = 3600.0   # ceiling: one request may not price a whole hou
 API_SATURATION_ENV_VAR = "TOUR_SOLVER_API_SATURATION_PERMILLE"
 API_SATURATION_PERMILLE_MAX = 1000
 
+# STAGE-1 CONGESTION CHARGE: the same request cost, priced where candidates are still being
+# GENERATED rather than merely ranked.
+#
+# WHAT THE SURCHARGE ABOVE CANNOT REACH. It ranks fully-scored candidates, and the pool it
+# ranks is whatever survived stage 1 — the beam's width-BEAM_WIDTH cuts, the OR-Tools node
+# cap and subset choice, then the FULL_SCORE_TOP_N shortlist. A call-cheap candidate those
+# cuts dropped is not merely ranked low, it is absent, and no amount of reordering recovers
+# it. Measured on the deployed term: it moved units-weighted depth of the chosen legs 92 ->
+# 89 and own-volume share 6.09 -> 6.08 — flat, because its win came from cheaper ROUTES, not
+# from better market selection. Selection is upstream of it.
+#
+# WHAT STAGE 1 WAS BLIND TO. The optimistic packing bound values a hop by the credits it can
+# fill the hold with, and every good in it is charged the same nothing for the requests it
+# takes to move. Across the 4,714 (waypoint, good) pairs the fleet actually traded in 24h,
+# tradeVolume runs p10 30 / median 100 / p90 300, and the requests to move 1,000 units by
+# depth decile run 63.05 down to 3.01 — a 21x spread invisible to the bound. Eleven
+# tradeVolume-20 goods fill a 220-unit hold for the same credits as one tradeVolume-300 good
+# and cost an order of magnitude more of the fleet's shared budget doing it.
+#
+# THE CHARGE IS THAT SAME QUANTITY, CHARGED EARLIER: for each good the bound packs, the
+# requests its units imply on BOTH sides of the trade, ceil(units / tradeVolume) each — the
+# rule _transaction_chunks applies at stage 2, applied to the bound's own units. Subtracted
+# from the pair's optimistic gain, so the bound keeps its meaning (credits a hop can earn,
+# net of the queue those earnings impose) and a pair whose only value is a shallow trade can
+# fall out of contention BEFORE the cut instead of after it.
+#
+# THE UNITS ARE AN ESTIMATE AND THE CHARGE SAYS SO. The bound's per-good allocation is
+# optimistic — undecayed spreads, no spend cap, no absorption netting, no per-visit sink cap
+# — so it over-states units, and therefore over-states requests, against what the allocator
+# finally plans. That is tolerable precisely because this is a RANKING term: every candidate's
+# charge is computed on the same optimistic basis, so the comparison between two candidates
+# is like-for-like even where the level is not. The exact count stays stage 2's
+# (_plan_api_calls, off final units), and nothing here reaches a projection.
+#
+# ONLY THE TRANSACTION TERM. The call model above also charges per visit and per crossing;
+# those are deliberately NOT charged here. Stage 1 already prices a stop's time (the OR-Tools
+# arc costs value travel and dwell at lam) and stage 2 prices all three exactly, whereas
+# nothing anywhere in stage 1 could see depth. A per-stop charge here would add a second,
+# unmeasured pressure on tour LENGTH — the shape that produced 5.04x longer tours for a 3%
+# call saving once the hull's own clock was allowed to leave the objective.
+#
+# STAGE1_CALL_CREDITS is the price of one request, in credits of optimistic packing bound, and
+# it is REPLAY-FITTED AND ACTIVE — absent env means the charge is levied, not that it is off.
+# The disarm is one export (TOUR_SOLVER_STAGE1_CALL_CREDITS=0) plus a routing restart, which
+# makes stage 1 byte-identical at every saturation again.
+#
+# THE PRICE IS SWEPT, NOT DERIVED, and the derivation is only where the sweep started: one
+# request is API_CALL_SECONDS = 29 seconds of tour time, and stage 1's only price of a second
+# is the OR-Tools in-model time value at 10 credits, so 290 credits is what a request already
+# costs elsewhere in this file. At 290 the replay changed 0 of 842 routes — the packing bound
+# is optimistic by a factor no derivation from realized quantities can know, which is exactly
+# why the price had to be measured against the bound rather than reasoned onto it.
+#
+# THE MEASUREMENT (replay_stage1_depth.py; both arms carrying the deployed selection surcharge
+# at a limiter pinned to the ceiling, both routes valued by ONE saturation-free evaluator).
+# Fleet rate at the measured tour budget share, 842 cases per price on a 36h window:
+#   2k -0.23%   5k +0.00%   10k +1.06%   20k +0.23%
+# and on an INDEPENDENT 48h window over every home, 620 cases per price:
+#   7k +0.46%   10k +1.41%   14k +1.64%
+# 10,000 is the only price measured in BOTH windows and positive in both, and it is an INTERIOR
+# optimum rather than a boundary — 5k below it and 20k above it both read zero, so the sweep is
+# not censored at its own answer. Pooled over both windows (n=1,462) it is +1.20%, paired
+# bootstrap CI [+0.52%, +1.94%], and the adoption bar is met on the axis the change optimises:
+# credits-per-request losses are 7.3% of cases against the 10% ceiling. Solve latency IMPROVES
+# (5.2s -> 4.8s median) because a charged pair that nets non-positive leaves the pool entirely.
+#
+# WHAT IT IS NOT. The gain is an order of magnitude below the selection surcharge's own +11.55%,
+# and it does NOT come from the mechanism the bead predicted. Units-weighted depth of the chosen
+# legs moves only 85.7 -> 86.1 and 84.3 -> 86.9 fleet-wide; even among the cases whose route
+# CHANGED it moves 93.7 -> 101.5 with deeper legs in just 112 of 258. The dominant channel is
+# request DEMAND (7,375 -> 7,252 req/hr at 60 hulls) bought with a small credits-per-hour cost
+# (mean -0.29%), because chunks = units/tradeVolume falls as readily by carrying less as by
+# carrying it deeper. Credits per hour LOSES more cases than it wins (108W/147L pooled) with a
+# heavy tail — this trade is only correct while the fleet is genuinely call-bound, which is the
+# condition the saturation reading already gates it on.
+#
+# WATCH AND REVERT. Charging depth does pull hulls further: on the cases whose route changes,
+# tour seconds run 1,877 -> 1,963 and crossings 0.75 -> 0.82. That is the far-market pull the
+# surcharge form exists to bound and it stayed bounded, but it is the thing that would go wrong
+# first at a higher price. Revert on 6h credits/hour dropping more than 2% across two
+# consecutive windows.
+STAGE1_CALL_CREDITS = 10_000.0   # env TOUR_SOLVER_STAGE1_CALL_CREDITS, clamp [0, 100000]
+STAGE1_CALL_CREDITS_ENV_VAR = "TOUR_SOLVER_STAGE1_CALL_CREDITS"
+STAGE1_CALL_CREDITS_MIN = 0.0        # floor 0 IS the disarm, at every saturation
+STAGE1_CALL_CREDITS_MAX = 100_000.0  # ceiling: one request may not outprice a whole hold
+
 _warned_tiers = set()
 _logged_objective = set()
 _logged_sequencer = set()
@@ -532,22 +635,30 @@ def _resolve_sequencer(sequencer):
     return SEQUENCER_BEAM
 
 
-def _transaction_chunks(leg, markets):
-    """Requests the trades planned at one leg cost, at ceil(units / tradeVolume) each.
+def _request_chunks(units, volume):
+    """Requests one side of one trade costs: ceil(units / tradeVolume).
 
-    The market's own tradeVolume is the API's per-request cap, so a deep market moves a
-    load in one request where a shallow one needs several — the term that makes two plans
-    with the same stop count differ severalfold in request cost. A trade whose depth is
-    unreadable (a deposit sink, a warehouse withdrawal, a good absent from the priced
-    market) charges ONE request: the conservative floor, never zero."""
+    The market's own tradeVolume is the API's per-request cap, so a deep market moves a load
+    in one request where a shallow one needs several — the term that makes two plans with the
+    same stop count differ severalfold in request cost. Depth that is unreadable (a deposit
+    sink, a warehouse withdrawal, a good absent from the priced market) charges ONE request:
+    the conservative floor, never zero and never a divide.
+
+    THE ONE DEFINITION both stages charge from — stage 2 off the allocator's final units,
+    stage 1 off the packing bound's estimate — so the two can never disagree about what a
+    market's depth costs."""
+    if not units or units <= 0:
+        return 0
+    return math.ceil(units / volume) if volume and volume > 0 else 1
+
+
+def _transaction_chunks(leg, markets):
+    """Requests the trades planned at one leg cost, at _request_chunks each."""
     chunks = 0
     goods = (markets.get(leg["waypoint_symbol"]) or {}).get("goods") or {}
     for trade in leg.get("trades") or ():
-        units = trade.get("units") or 0
         volume = (goods.get(trade["good_symbol"]) or {}).get("trade_volume") or 0
-        if units <= 0:
-            continue
-        chunks += math.ceil(units / volume) if volume > 0 else 1
+        chunks += _request_chunks(trade.get("units") or 0, volume)
     return chunks
 
 
@@ -608,6 +719,24 @@ def _resolve_api_call_seconds():
     saturation, which is the disarm that needs no code change."""
     return _sequencer_env_scalar(API_CALL_SECONDS_ENV_VAR, API_CALL_SECONDS,
                                  API_CALL_SECONDS_MIN, API_CALL_SECONDS_MAX, float)
+
+
+def _resolve_stage1_call_charge(constraints):
+    """Credits stage 1 charges per request a candidate's packed units would spend.
+
+    ONE saturation notion, the one the daemon already measures and sends
+    (_resolve_api_saturation — request > env > 0), multiplied by the armed price of a
+    request. Both factors are fail-open and either one at zero disarms the whole term:
+    a fleet with headroom, a window too thin to read, a caller that predates the field, a
+    malformed reading, or an unarmed price all return an integer 0, so every downstream
+    bound subtracts an exact integer zero and stage 1 is byte-identical to a depth-blind
+    one rather than merely close to it."""
+    saturation = _resolve_api_saturation(constraints)
+    credits = _sequencer_env_scalar(STAGE1_CALL_CREDITS_ENV_VAR, STAGE1_CALL_CREDITS,
+                                    STAGE1_CALL_CREDITS_MIN, STAGE1_CALL_CREDITS_MAX, float)
+    if saturation <= 0 or credits <= 0:
+        return 0
+    return saturation * credits
 
 
 def _selection_rate(result, saturation, call_seconds):
@@ -1609,13 +1738,19 @@ def _held_liquidation_value(wp, markets, initial_cargo):
 
 
 def _pair_gain(wp_from, wp_to, markets, hold, deposit_sinks, stock_by_wp,
-               max_planned_tranches=MAX_PLANNED_TRANCHES_PER_MARKET_GOOD_SIDE):
+               max_planned_tranches=MAX_PLANNED_TRANCHES_PER_MARKET_GOOD_SIDE,
+               call_charge=0):
     """Optimistic multi-good hold-packing value of the DIRECTED pair (buy at
     wp_from, sell/deposit at wp_to) — directional: gain(a,b) != gain(b,a), so
     buy-before-sell precedence is priced into the ortools arc costs.
 
     Mirror of beam_sequences.pack_gain — keep in sync (sp-y05b). Module-level
-    TRANSCRIPTION on explicit args; beam's closure stays byte-untouched."""
+    TRANSCRIPTION on explicit args; beam's closure stays byte-untouched.
+
+    `call_charge` is the credits per request stage 1 pays for the queue its trades impose
+    (_resolve_stage1_call_charge). Each packed good is charged the requests its units imply
+    on BOTH sides — the depth of the market it is bought from and of the one it is sold into
+    — and 0 (the unarmed or unsaturated default) subtracts an exact integer zero."""
     goods_to = markets[wp_to]["goods"]
     spreads = []
     for good, brow in markets[wp_from]["goods"].items():
@@ -1623,28 +1758,37 @@ def _pair_gain(wp_from, wp_to, markets, hold, deposit_sinks, stock_by_wp,
         if srow and brow["ask"] > 0 and srow["bid"] > brow["ask"]:
             depth = max_planned_tranches * max(
                 1, min(brow["trade_volume"], srow["trade_volume"]))
-            spreads.append((srow["bid"] - brow["ask"], depth))
+            spreads.append((srow["bid"] - brow["ask"], depth,
+                            (brow["trade_volume"], srow["trade_volume"])))
         dsink = deposit_sinks.get((wp_to, good))
         if dsink and brow["ask"] > 0 and dsink["bid"] > brow["ask"]:
-            spreads.append((dsink["bid"] - brow["ask"], dsink["units_wanted"]))
+            spreads.append((dsink["bid"] - brow["ask"], dsink["units_wanted"],
+                            (brow["trade_volume"], 0)))
     for good, ssrc in stock_by_wp.get(wp_from, {}).items():
         srow = goods_to.get(good)
         if srow and srow["bid"] > ssrc["ask"]:
-            spreads.append((srow["bid"] - ssrc["ask"], ssrc["units_available"]))
-    spreads.sort(reverse=True)
-    gain, cap = 0, hold
-    for spread, depth in spreads:
+            spreads.append((srow["bid"] - ssrc["ask"], ssrc["units_available"],
+                            (0, srow["trade_volume"])))
+    # Keyed on the (spread, depth) pair alone, which is the incumbent's whole sort key: the
+    # depths ride along as payload, and a stable sort leaves ties in insertion order exactly
+    # as the two-tuple sort did.
+    spreads.sort(key=lambda e: (e[0], e[1]), reverse=True)
+    gain, calls, cap = 0, 0, hold
+    for spread, depth, volumes in spreads:
         if cap <= 0:
             break
         units = min(cap, depth)
         gain += spread * units
+        if call_charge:
+            calls += (_request_chunks(units, volumes[0])
+                      + _request_chunks(units, volumes[1]))
         cap -= units
-    return gain
+    return gain - call_charge * calls
 
 
 def _prune_nodes(markets, ship, constraints, deposit_sinks, stock_by_wp,
                  max_planned_tranches=MAX_PLANNED_TRANCHES_PER_MARKET_GOOD_SIDE,
-                 ortools_max_nodes=ORTOOLS_MAX_NODES):
+                 ortools_max_nodes=ORTOOLS_MAX_NODES, call_charge=0):
     """Two-phase node pruning for the ortools subset models (sp-y05b).
 
     Phase 1 — cheap prefilter on per-good global max_bid/min_ask with the
@@ -1657,7 +1801,12 @@ def _prune_nodes(markets, ship, constraints, deposit_sinks, stock_by_wp,
 
     Phase 2 — if still over the node cap ortools_max_nodes, rank by max incident
     _pair_gain + liquidation value and truncate, with start/deposit/stock/
-    liquidation-positive nodes EXEMPT from truncation."""
+    liquidation-positive nodes EXEMPT from truncation. `call_charge` reaches the phase-2
+    ranking through _pair_gain, so a market whose only value is a shallow trade loses the
+    node cut to a deep one — the earliest cut in the whole pipeline, and the one nothing
+    downstream can undo. Phase 1 is deliberately untouched: it is the margin-floor prefilter
+    whose superset property guarantees no pair participant is ever dropped, and depth is a
+    reason to rank a node lower, never to declare it unable to trade."""
     deposit_sinks = deposit_sinks or {}
     stock_by_wp = stock_by_wp or {}
     initial = {c["good_symbol"]: c["units"] for c in ship.get("cargo") or []}
@@ -1700,9 +1849,9 @@ def _prune_nodes(markets, ship, constraints, deposit_sinks, stock_by_wp,
             if other == wp:
                 continue
             g = max(_pair_gain(wp, other, markets, hold, deposit_sinks, stock_by_wp,
-                               max_planned_tranches),
+                               max_planned_tranches, call_charge),
                     _pair_gain(other, wp, markets, hold, deposit_sinks, stock_by_wp,
-                               max_planned_tranches))
+                               max_planned_tranches, call_charge))
             if g > best:
                 best = g
         return best + _held_liquidation_value(wp, markets, initial)
@@ -1715,7 +1864,7 @@ def _prune_nodes(markets, ship, constraints, deposit_sinks, stock_by_wp,
 
 
 def beam_sequences(markets, ship, constraints, travel_fn, deposit_sinks=None,
-                   stock_sources=None, max_planned_tranches=None):
+                   stock_sources=None, max_planned_tranches=None, call_charge=0):
     """Beam search over hop sequences; every prefix is a candidate tour.
 
     Ranking uses an optimistic MULTI-GOOD hold-packing bound (sp-gm00): for
@@ -1740,6 +1889,12 @@ def beam_sequences(markets, ship, constraints, travel_fn, deposit_sinks=None,
     stored beam score stays the real liquidation value, so a bare 1-hop seed
     never crowds the top-N scoring pool on lookahead credit it can't realize.
     Returns candidate sequences (tuples) sorted best-bound-first.
+
+    `call_charge` nets the requests a hop's packed units would spend out of its bound
+    (_resolve_stage1_call_charge), so a hop that fills the hold out of shallow markets ranks
+    below one that fills it out of deep markets for the same credits — at the seed cut, at
+    every per-level width cut, and in the final ordering. 0 leaves every bound an exact
+    integer and the search byte-identical.
     """
     if max_planned_tranches is None:   # sp-acb8: env-resolve for direct callers; solve_tour threads it
         max_planned_tranches = _resolve_max_planned_tranches()
@@ -1775,15 +1930,18 @@ def beam_sequences(markets, ship, constraints, travel_fn, deposit_sinks=None,
             if srow and brow["ask"] > 0 and srow["bid"] > brow["ask"]:
                 depth = max_planned_tranches * max(
                     1, min(brow["trade_volume"], srow["trade_volume"]))
-                spreads.append((srow["bid"] - brow["ask"], depth))
+                spreads.append((srow["bid"] - brow["ask"], depth,
+                                (brow["trade_volume"], srow["trade_volume"])))
             # Deposit sink at wp_to (sp-dchv): a synthetic sink priced at home_ask
             # absorbs up to units_wanted with no depth decay. Credit it in the
             # packing bound so the beam explores sequences that reach the warehouse
             # to deposit cheap foreign buys — otherwise a rich foreign source whose
             # only profitable sink is the warehouse never survives the beam cut.
+            # Its sell side has no market depth to read, so it charges the one-request floor.
             dsink = deposit_sinks.get((wp_to, good))
             if dsink and brow["ask"] > 0 and dsink["bid"] > brow["ask"]:
-                spreads.append((dsink["bid"] - brow["ask"], dsink["units_wanted"]))
+                spreads.append((dsink["bid"] - brow["ask"], dsink["units_wanted"],
+                                (brow["trade_volume"], 0)))
         # Stock source at wp_from (C1, sp-64je): a good stocked in the warehouse here is
         # WITHDRAWN at basis and sold at wp_to's market bid. Credit it in the packing
         # bound (source-side mirror of the deposit sink) so the beam explores sequences
@@ -1792,16 +1950,20 @@ def beam_sequences(markets, ship, constraints, travel_fn, deposit_sinks=None,
         for good, ssrc in stock_by_wp.get(wp_from, {}).items():
             srow = goods_to.get(good)
             if srow and srow["bid"] > ssrc["ask"]:
-                spreads.append((srow["bid"] - ssrc["ask"], ssrc["units_available"]))
-        spreads.sort(reverse=True)
-        gain, cap = 0, hold
-        for spread, depth in spreads:
+                spreads.append((srow["bid"] - ssrc["ask"], ssrc["units_available"],
+                                (0, srow["trade_volume"])))
+        spreads.sort(key=lambda e: (e[0], e[1]), reverse=True)
+        gain, calls, cap = 0, 0, hold
+        for spread, depth, volumes in spreads:
             if cap <= 0:
                 break
             units = min(cap, depth)
             gain += spread * units
+            if call_charge:
+                calls += (_request_chunks(units, volumes[0])
+                          + _request_chunks(units, volumes[1]))
             cap -= units
-        return gain
+        return gain - call_charge * calls
 
     def within_cap(*systems):
         return len(frozenset((start_system, *systems))) <= max_tour_systems
@@ -1998,7 +2160,8 @@ def _resolve_inter_system_jump_fee_per_hop():
 
 
 def ortools_sequences(markets, ship, constraints, travel_fn, deposit_sinks=None,
-                      stock_sources=None, stats_out=None, max_planned_tranches=None):
+                      stock_sources=None, stats_out=None, max_planned_tranches=None,
+                      call_charge=0):
     """OR-Tools prize-collecting stage-1 sequencer (sp-y05b). Same contract as
     beam_sequences: list of waypoint-symbol tuples, best-first. Returning []
     is the no-solution surface; the solve_tour seam catches any exception and
@@ -2025,6 +2188,10 @@ def ortools_sequences(markets, ship, constraints, travel_fn, deposit_sinks=None,
       commensurate with beam's semantics.
     - Stop cap lives IN the model (AddConstantDimension), not in post-hoc
       truncation. A single GLOBAL wall budget spans all subset models.
+    - `call_charge` nets each pair's request cost out of its gain before any of that runs, so
+      depth reaches every cut this path makes: the node prune, the subset potentials that
+      choose which models are solved at all, the in-model arc prizes, and the emission
+      ranking that feeds the shortlist. 0 leaves all four byte-identical.
     """
     # Lazy import: the beam default path never calls this function, so a
     # broken ortools wheel cannot affect default mode.
@@ -2052,7 +2219,8 @@ def ortools_sequences(markets, ship, constraints, travel_fn, deposit_sinks=None,
     ortools_max_nodes = _resolve_ortools_max_nodes()
 
     pruned = _prune_nodes(markets, ship, constraints, deposit_sinks, stock_by_wp,
-                          max_planned_tranches, ortools_max_nodes=ortools_max_nodes)
+                          max_planned_tranches, ortools_max_nodes=ortools_max_nodes,
+                          call_charge=call_charge)
     # sp-im74: CLOSED mode prices the return-to-anchor on the virtual END arc, so the
     # in-model route optimum is a closed circuit. Open (closed falsey, or a direct
     # caller without the solve_tour stash) keeps all end arcs at 0 — byte-identical.
@@ -2084,7 +2252,7 @@ def ortools_sequences(markets, ship, constraints, travel_fn, deposit_sinks=None,
             if a == b:
                 continue
             g = _pair_gain(a, b, markets, hold, deposit_sinks, stock_by_wp,
-                           max_planned_tranches)
+                           max_planned_tranches, call_charge)
             if g > 0:
                 pair[(a, b)] = g
                 key = (sys_of[a], sys_of[b])
@@ -2141,7 +2309,10 @@ def ortools_sequences(markets, ship, constraints, travel_fn, deposit_sinks=None,
                 top = max(top, liq_scaled[i])
                 for j, b in enumerate(real):
                     if i != j:
-                        gain[i][j] = COST_SCALE * pair.get((a, b), 0)
+                        # int() because a charged gain is fractional and the routing model's
+                        # transit callback is integral; an uncharged gain is already whole,
+                        # so the cast is a no-op on the default path.
+                        gain[i][j] = int(COST_SCALE * pair.get((a, b), 0))
                         top = max(top, gain[i][j])
             offset = top + 1
             arc_cost = [[0] * n_real for _ in range(n_real)]
@@ -2432,15 +2603,21 @@ def solve_tour(snapshot, ship, constraints, model, waypoints=None,
     # and travel terms already follow. 0 (no daemon reading, no env) ranks on credits/hour.
     api_saturation = _resolve_api_saturation(constraints)
     api_call_seconds = _resolve_api_call_seconds()
+    # The stage-1 half of the same congestion price, off the SAME saturation reading, so the
+    # two stages can never disagree about how hard the limiter is binding within one solve.
+    # 0 (no reading, or an unarmed price) makes every stage-1 cut below byte-identical.
+    stage1_call_charge = _resolve_stage1_call_charge(constraints)
     beam_cands = beam_sequences(markets, ship, constraints, travel_fn, deposit_sinks,
                                 stock_source_idx,
-                                max_planned_tranches=max_planned_tranches)
+                                max_planned_tranches=max_planned_tranches,
+                                call_charge=stage1_call_charge)
     if sequencer == SEQUENCER_ORTOOLS:
         # F9: pass the BUILT indices positionally, byte-mirroring the beam call.
         try:
             ortools_cands = ortools_sequences(markets, ship, constraints, travel_fn,
                                               deposit_sinks, stock_source_idx,
-                                              max_planned_tranches=max_planned_tranches)
+                                              max_planned_tranches=max_planned_tranches,
+                                              call_charge=stage1_call_charge)
         except Exception:
             # The servicer never dies on the new path — beam carries the solve.
             # Once-per-process with traceback (a broken wheel fails identically
@@ -2508,13 +2685,15 @@ def solve_tour(snapshot, ship, constraints, model, waypoints=None,
         # model per solve, which is the discipline the rest of solve_tour follows.
         home_beam = beam_sequences(home_markets, ship, constraints, travel_fn,
                                    home_deposit_sinks, home_stock_sources,
-                                   max_planned_tranches=max_planned_tranches)
+                                   max_planned_tranches=max_planned_tranches,
+                                   call_charge=stage1_call_charge)
         if sequencer == SEQUENCER_ORTOOLS:
             try:
                 home_ortools = ortools_sequences(home_markets, ship, constraints,
                                                  travel_fn, home_deposit_sinks,
                                                  home_stock_sources,
-                                                 max_planned_tranches=max_planned_tranches)
+                                                 max_planned_tranches=max_planned_tranches,
+                                                 call_charge=stage1_call_charge)
             except Exception:
                 # Same never-die contract as the wide call. DISTINCT once-log key so
                 # a home failure can never suppress the wide traceback, or vice versa.
