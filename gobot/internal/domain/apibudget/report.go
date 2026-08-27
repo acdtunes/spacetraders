@@ -65,6 +65,8 @@ type Event struct {
 	Source      Source
 	Timestamp   time.Time
 	RateLimited bool // true if this attempt received a 429
+	// RateLimitWait is how long this attempt queued for a token; 0 when unmeasured.
+	RateLimitWait time.Duration
 }
 
 // HullStats is one hull's request volume within a report window.
@@ -87,6 +89,9 @@ type Report struct {
 	RateLimited429PerMin float64             `json:"rate_limited_429_per_min"`
 	PurposeCounts        map[Purpose]int     `json:"purpose_counts"`
 	PurposeSharePct      map[Purpose]float64 `json:"purpose_share_pct"`
+	// MeanRateLimitWaitSeconds is the mean wait per REQUEST: the delay requests actually
+	// meet, not one a clock would average through the idle gaps between bursts.
+	MeanRateLimitWaitSeconds float64 `json:"mean_rate_limit_wait_seconds"`
 	// HullsToCeiling is the derived scaling number: how many hulls like the
 	// currently-observed average could run before saturating the ceiling. 0
 	// when no hull-scoped traffic was observed (avoids reporting a
@@ -171,6 +176,7 @@ func ComputeReport(events []Event, now time.Time, window time.Duration, ceilingR
 
 	cutoff := now.Add(-window)
 	hullCounts := make(map[string]int)
+	var waitTotal time.Duration
 
 	for _, e := range events {
 		if e.Timestamp.Before(cutoff) || e.Timestamp.After(now) {
@@ -180,6 +186,9 @@ func ComputeReport(events []Event, now time.Time, window time.Duration, ceilingR
 		report.PurposeCounts[e.Purpose]++
 		if e.RateLimited {
 			report.RateLimited429++
+		}
+		if e.RateLimitWait > 0 {
+			waitTotal += e.RateLimitWait
 		}
 		if e.Hull != "" {
 			hullCounts[e.Hull]++
@@ -201,6 +210,7 @@ func ComputeReport(events []Event, now time.Time, window time.Duration, ceilingR
 		for purpose, count := range report.PurposeCounts {
 			report.PurposeSharePct[purpose] = float64(count) / float64(report.TotalRequests) * 100
 		}
+		report.MeanRateLimitWaitSeconds = waitTotal.Seconds() / float64(report.TotalRequests)
 	}
 
 	report.PerHull, report.HullsToCeiling = perHullBreakdown(hullCounts, windowSeconds, ceilingReqPerSec)

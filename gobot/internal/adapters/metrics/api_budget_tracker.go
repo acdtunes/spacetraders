@@ -56,8 +56,8 @@ func NewAPIBudgetTracker(ceilingReqPerSec float64, clock shared.Clock) *APIBudge
 	}
 }
 
-// Record appends one observed API attempt. Safe to call on a nil receiver.
-func (t *APIBudgetTracker) Record(hull string, purpose apibudget.Purpose, source apibudget.Source, rateLimited bool) {
+// Record appends one observed API attempt and the wait it queued for a token. Nil-safe.
+func (t *APIBudgetTracker) Record(hull string, purpose apibudget.Purpose, source apibudget.Source, rateLimited bool, rateLimitWait time.Duration) {
 	if t == nil {
 		return
 	}
@@ -66,11 +66,12 @@ func (t *APIBudgetTracker) Record(hull string, purpose apibudget.Purpose, source
 
 	now := t.clock.Now()
 	t.events = append(t.events, apibudget.Event{
-		Hull:        hull,
-		Purpose:     purpose,
-		Source:      source,
-		Timestamp:   now,
-		RateLimited: rateLimited,
+		Hull:          hull,
+		Purpose:       purpose,
+		Source:        source,
+		Timestamp:     now,
+		RateLimited:   rateLimited,
+		RateLimitWait: rateLimitWait,
 	})
 	t.pruneLocked(now)
 }

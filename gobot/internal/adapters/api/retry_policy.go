@@ -167,13 +167,13 @@ func (c *SpaceTradersClient) doWithRetry(ctx context.Context, call apiRequest, o
 			return err
 		}
 
-		// Record one budget event per attempt — this single call
-		// site covers both terminal and retry paths, since it runs before
+		// Record one budget event per attempt, carrying the wait it already paid — this
+		// single call site covers both terminal and retry paths, since it runs before
 		// classify() branches on the outcome.
 		if tracker := c.getBudgetTracker(); tracker != nil {
 			hull := extractShipSymbol(call.path)
 			purpose := classifyPurpose(call.method, attempt)
-			tracker.Record(hull, purpose, sourceFromContext(ctx), outcome.statusCode == http.StatusTooManyRequests)
+			tracker.Record(hull, purpose, sourceFromContext(ctx), outcome.statusCode == http.StatusTooManyRequests, rateLimitWait)
 		}
 
 		decision := outcome.classify()

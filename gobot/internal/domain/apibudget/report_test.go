@@ -175,3 +175,31 @@ func TestComputeDualReport_ReturnsCurrentAndRolling5mWindows(t *testing.T) {
 	assert.Equal(t, float64(10), dual.Current.WindowSeconds, "a warm observer uses the full nominal window")
 	assert.Equal(t, float64(300), dual.Rolling5m.WindowSeconds, "a warm observer uses the full nominal window")
 }
+
+func TestComputeReport_MeanRateLimitWaitIsAveragedOverInWindowRequests(t *testing.T) {
+	events := []Event{
+		waited("HULL-1", 10*time.Second, 12*time.Second),
+		waited("HULL-2", 20*time.Second, 8*time.Second),
+		waited("HULL-3", 4*time.Minute, 60*time.Second), // outside a 1m window
+	}
+
+	report := ComputeReport(events, fixedNow, time.Minute, 2.0)
+
+	assert.Equal(t, 2, report.TotalRequests)
+	assert.InDelta(t, 10.0, report.MeanRateLimitWaitSeconds, 0.0001,
+		"only the in-window waits average, so the pruned 60s wait cannot inflate the mean")
+}
+
+func TestComputeReport_MeanRateLimitWaitIsZeroWithoutRequests(t *testing.T) {
+	// An empty window divides nothing by nothing; the estimator reads the zero as no queue.
+	report := ComputeReport(nil, fixedNow, time.Minute, 2.0)
+
+	assert.Zero(t, report.MeanRateLimitWaitSeconds)
+}
+
+// waited builds an event that queued for the given span before the limiter admitted it.
+func waited(hull string, age, wait time.Duration) Event {
+	e := evt(hull, PurposePoll, age, false)
+	e.RateLimitWait = wait
+	return e
+}
