@@ -641,16 +641,19 @@ func (h *RunTourCoordinatorHandler) recordLeg(
 // now one fact with two renderings rather than two independent classifications of the same
 // leg.
 //
-// A liquidation reports its own basis rather than borrowing the solver's. No series moves
-// either way: it leaves its plan basis at zero rather than inventing one, and a non-positive
-// basis is skipped before any drift counter is touched — so this label never materialises.
-// It is the honest value for a leg that is genuinely not solver evidence.
+// A liquidation and a resumed leg each report their own basis rather than borrowing the
+// solver's. No series moves either way: both leave the plan basis at zero rather than
+// inventing one, and a non-positive basis is skipped before any drift counter is touched — so
+// neither label ever materialises. They are the honest values for legs that are genuinely not
+// solver evidence.
 func legPlanBasis(engine trading.LegEngine) string {
 	switch engine {
 	case trading.LegEngineLookback:
 		return metrics.PlanBasisLookback
 	case trading.LegEngineLiquidation:
 		return metrics.PlanBasisLiquidation
+	case trading.LegEngineResume:
+		return metrics.PlanBasisResume
 	default:
 		return metrics.PlanBasisSolver
 	}

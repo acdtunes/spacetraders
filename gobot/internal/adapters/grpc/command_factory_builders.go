@@ -630,6 +630,11 @@ func buildTourCoordinatorCommand(cfg *configReader, playerID int, containerID st
 		RepositionInProgress:     cfg.OptionalBool("reposition_in_progress"),
 		RepositionTargetSystem:   cfg.OptionalString("reposition_target_system"),
 		RepositionTargetWaypoint: cfg.OptionalString("reposition_target_waypoint"),
+		// The in-flight SELL leg: the READ side paired with the container_ops_tour.go WRITE side,
+		// so the sink a hull was already carrying cargo toward survives the rebuild. Absent →
+		// no leg in flight → the run plans from the hull's current position exactly as before.
+		TourLegWaypoint: cfg.OptionalString(tourLegWaypointConfigKey),
+		TourLegGoods:    cfg.OptionalString(tourLegGoodsConfigKey),
 		// sp-686e: stranded-hull detector threshold from [trade_fleet]; 0/absent → the
 		// coordinator's own default (3, resolveStrandedThreshold).
 		StrandedConsecutiveThreshold: cfg.OptionalInt("stranded_consecutive_threshold", 0),

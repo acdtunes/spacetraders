@@ -161,6 +161,7 @@ const (
 	PlanBasisSolver      = "solver"
 	PlanBasisLookback    = "lookback"
 	PlanBasisLiquidation = "liquidation"
+	PlanBasisResume      = "resume"
 )
 
 // NewTourMetricsCollector creates a new tour metrics collector.

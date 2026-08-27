@@ -273,3 +273,42 @@ func (p *TourRepositionConfigPersister) PersistRepositionState(ctx context.Conte
 	}
 	return p.containerRepo.UpdateContainerConfig(ctx, containerID, playerID, string(merged))
 }
+
+// Named once so this WRITE side and buildTourCoordinatorCommand's READ side cannot drift apart.
+const (
+	tourLegWaypointConfigKey = "tour_leg_waypoint"
+	tourLegGoodsConfigKey    = "tour_leg_goods"
+)
+
+// PersistTourLegState merges the SELL leg a hull is currently flying — its sink waypoint and
+// the goods carried there — into the container's persisted config, so a restart mid-leg
+// finishes that discharge instead of making a laden hull wait out a re-plan first (RULINGS #2).
+//
+// A ZERO state writes empty strings, which is how the leg is CLEARED: an absent waypoint reads
+// as "no leg in flight", so clearing degrades to today's behaviour rather than to a hull
+// re-flying a leg it already flew. Guarded to its two keys like its siblings above; a returned
+// error is advisory — resume durability, never a spend or movement guard.
+func (p *TourRepositionConfigPersister) PersistTourLegState(ctx context.Context, containerID string, playerID int, state tradingCmd.TourLegState) error {
+	model, err := p.containerRepo.Get(ctx, containerID, playerID)
+	if err != nil {
+		return fmt.Errorf("load container %s to persist the in-flight tour leg: %w", containerID, err)
+	}
+	if model == nil {
+		return fmt.Errorf("container %s not found - cannot persist the in-flight tour leg", containerID)
+	}
+
+	config := map[string]interface{}{}
+	if model.Config != "" {
+		if uerr := json.Unmarshal([]byte(model.Config), &config); uerr != nil {
+			return fmt.Errorf("deserialize container %s config to persist the in-flight tour leg: %w", containerID, uerr)
+		}
+	}
+	config[tourLegWaypointConfigKey] = state.Waypoint
+	config[tourLegGoodsConfigKey] = state.Goods
+
+	merged, err := json.Marshal(config)
+	if err != nil {
+		return fmt.Errorf("serialize container %s config after merging the in-flight tour leg: %w", containerID, err)
+	}
+	return p.containerRepo.UpdateContainerConfig(ctx, containerID, playerID, string(merged))
+}

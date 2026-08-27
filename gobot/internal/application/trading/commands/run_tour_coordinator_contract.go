@@ -226,6 +226,16 @@ type RunTourCoordinatorCommand struct {
 	// config so a restart does not forget that this hull's last offer went unclaimed and immediately pay
 	// another window (RULINGS #2).
 	RelocationOfferBackoffUntil time.Time
+
+	// TourLegWaypoint / TourLegGoods are the in-flight SELL leg reloaded from the container
+	// config: the sink the hull was flying to and the goods it was carrying there. Written the
+	// instant the leg is chosen and cleared once it is finished, so a re-adopted hull discharges
+	// cargo it already paid for where it was always going instead of idling through a full
+	// re-plan first (RULINGS #2). Both empty on a fresh launch, and on any hull whose leg was
+	// already flown — the resume then declines and the run plans exactly as before. See
+	// run_tour_coordinator_legresume.go for why the buy side is deliberately absent.
+	TourLegWaypoint string
+	TourLegGoods    string
 }
 
 // RunTourCoordinatorResponse reports the realised tour economics and — via
@@ -284,6 +294,12 @@ type RunTourCoordinatorResponse struct {
 	// — a run whose hold emptied for any OTHER reason leaves this at zero — so a regression that
 	// stops consulting the invariant shows up as a flat counter, not just a changed row.
 	ExitHoldLiquidations int
+
+	// ResumedLegs counts the in-flight sell legs this run finished on re-adoption instead of
+	// abandoning to a fresh plan. It is the falsifier for the restart resume — a run that was
+	// launched rather than recovered, or one whose persisted sink no longer bid, leaves it at
+	// zero — so a regression that stops resuming shows up as a flat counter across a bounce.
+	ResumedLegs int
 
 	// CapitalDeniedBuys counts buys a MONEY GUARD refused: the working-capital floor, or a
 	// fail-closed unreadable balance. A tour that flew zero trades while this rose was

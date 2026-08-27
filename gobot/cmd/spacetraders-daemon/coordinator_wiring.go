@@ -146,6 +146,7 @@ func (w circuitWiring) configureTourCoordinator(h *tradeRouteCmd.RunTourCoordina
 	// Durably records an in-flight margins-death reposition so a restart-rebuilt resume
 	// continues toward the same ground instead of re-planning mid-hop.
 	h.SetRepositionPersister(tourRepositionPersister)
+	h.SetTourLegPersister(tourRepositionPersister)
 	// Records the relocation offer a tour writes at its boundary, letting the relocator
 	// claim an idle hull before the tour re-anchors it locally; unwired, no offer is
 	// written and the fleet tours exactly as today.

@@ -219,6 +219,14 @@ type RunTourCoordinatorHandler struct {
 	// SetRepositionPersister.
 	repositionPersister RepositionStatePersister
 
+	// tourLegPersister durably records the SELL leg a hull is flying (sink + goods) into the
+	// container config, so a restart mid-leg finishes that discharge before re-planning rather
+	// than making a laden hull wait out a planner round trip first (RULINGS #2). Optional; nil
+	// disables persistence and a restart re-plans at the hull's current position — fail-open,
+	// matching the sibling optional-port contract. The daemon injects a container-config-backed
+	// persister via SetTourLegPersister.
+	tourLegPersister TourLegStatePersister
+
 	// offerPersister durably records the sp-e8d92 relocation OFFER into this container's own config, so
 	// the relocator can take a hull at its tour boundary instead of losing the race for the 2.6% of time
 	// a hull is idle. Optional and nil-safe: unset, no offer is ever written and the fleet tours exactly
@@ -586,6 +594,17 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 			return rerr
 		}
 		episode = resumed
+		// A hull re-adopted MID-JUMP has left the ground its leg was flown on, so the jump
+		// destination wins and the abandoned leg is dropped: flying back across a gate to a
+		// sink the hull is no longer near is the one outcome worse than re-planning.
+		if !episode.repositioned {
+			if lerr := h.resumeInFlightTourLeg(ctx, cmd, response, netBought); lerr != nil {
+				return lerr
+			}
+		}
+		// Asked AFTER the resume: a hull that just discharged the leg it was flying is no
+		// longer stuck-laden, and promoting the offload rung for it would rank fresh grounds
+		// against a hold that no longer exists.
 		launchedLaden = h.launchedStuckLaden(ctx, cmd)
 	}
 
@@ -822,7 +841,8 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 	logger.Log("INFO", "Tour run complete", map[string]interface{}{
 		"ship_symbol": cmd.ShipSymbol, "tours_completed": response.ToursCompleted, "exit_reason": response.ExitReason,
 		"legs_executed": response.LegsExecuted, "trades_executed": response.TradesExecuted, "replans": response.Replans,
-		"repositions": response.Repositions, "spent": response.TotalSpent, "revenue": response.TotalRevenue, "net": response.NetProfit,
+		"repositions": response.Repositions, "resumed_legs": response.ResumedLegs,
+		"spent": response.TotalSpent, "revenue": response.TotalRevenue, "net": response.NetProfit,
 	})
 	return nil
 }
@@ -1152,6 +1172,11 @@ func (h *RunTourCoordinatorHandler) executePlan(
 			run.response.RetirementStandDown = true
 			return false, nil
 		}
+		// Record the leg the instant it is chosen and BEFORE the hull moves, so a daemon
+		// restart mid-flight finds the sink this cargo was already going to (RULINGS #2). A
+		// leg that discharges nothing the hull holds writes the CLEAR, so a leg already flown
+		// can never be resumed a second time.
+		h.persistTourLeg(ctx, cmd, legSellState(leg, h.tourShipState(ship).Cargo))
 		// True leg-start stamp: travel() blocks through arrival, so this is the only
 		// place the real departure time exists. It anchors the visualizer's
 		// schedule-drift glyph (drift = arrivesAt − (departedAt + travelSeconds)).

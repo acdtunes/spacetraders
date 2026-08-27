@@ -93,7 +93,7 @@ type TourLegTelemetry struct {
 }
 
 // LegEngine names an execution path that writes tour leg telemetry. The vocabulary is
-// CLOSED — these three are every path that calls RecordLeg — and the values are the
+// CLOSED — these four are every path that calls RecordLeg — and the values are the
 // literals stored in the engine column, so a SQL reader and a Go reader agree by
 // construction.
 type LegEngine string
@@ -116,6 +116,11 @@ const (
 	// planned-vs-realized measurement — and, before sp-fzt09, was indistinguishable in SQL
 	// from a solver leg whose plan had failed to persist.
 	LegEngineLiquidation LegEngine = "liquidation"
+
+	// LegEngineResume finishes a SELL leg the hull was flying when the daemon bounced: a ZERO
+	// basis like a liquidation, but cargo delivered where it was always going rather than dumped
+	// to free a hull, so a restart cannot read as a wave of distress.
+	LegEngineResume LegEngine = "resume"
 )
 
 // LiquidationLegIndexBase is the LegIndex floor stamped on a liquidation sale. It lives in
@@ -154,6 +159,9 @@ func EngineForLegIndex(legIdx int) LegEngine {
 // and the graduation report classifies plan basis by it — and a second copy of the literal
 // would be free to drift away from this one.
 const LookbackLegIndex = -1
+
+// ResumeLegIndex sits one below the look-back sentinel: it too precedes this run's first plan.
+const ResumeLegIndex = -2
 
 // IsLookbackManifestLeg reports whether this row's PlannedUnitPrice came from the look-back
 // manifest's CACHED SourceAsk rather than the solver's own projection.
