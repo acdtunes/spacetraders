@@ -67,6 +67,12 @@ func (s *DaemonServer) Start() error {
 		s.sup.Go(s.runCtx, "container-retention", s.containerRetentionScheduler.Run)
 	}
 
+	// Bounds container_logs, the highest-volume table in the database. Sweeps once at start,
+	// then daily, in bounded batches. Nil only when the operator disabled it outright.
+	if s.containerLogRetentionScheduler != nil {
+		s.sup.Go(s.runCtx, "container-log-retention", s.containerLogRetentionScheduler.Run)
+	}
+
 	// Unconditional, like the ship state scheduler — not gated behind metricsConfig.Enabled.
 	if s.dutyCycleSampler != nil {
 		s.dutyCycleSampler.Start()

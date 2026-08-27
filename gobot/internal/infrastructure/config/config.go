@@ -70,6 +70,10 @@ type Config struct {
 	// interval + jitter — consumed by the daemon's ShipResyncScheduler. Zero defers to the
 	// documented defaults (1h +/-10min).
 	ShipResync ResyncConfig `mapstructure:"ship_resync"`
+	// ContainerLogRetention holds the container_logs retention windows and batch bounds
+	// (sp-p1jo4), consumed by the daemon's ContainerLogRetentionScheduler. An absent section
+	// leaves the sweep ARMED on its documented defaults (48h chatter / 14d problems).
+	ContainerLogRetention ContainerLogRetentionConfig `mapstructure:"container_log_retention"`
 	// Refuel holds the fleet's refuel threshold; an absent section resolves to the floor.
 	Refuel RefuelConfig `mapstructure:"refuel"`
 }

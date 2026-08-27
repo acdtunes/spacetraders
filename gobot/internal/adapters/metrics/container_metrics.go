@@ -46,6 +46,10 @@ type ContainerMetricsCollector struct {
 	// chasing a container that has vanished needs to know whether retention took it.
 	containerRetentionDeleted *prometheus.CounterVec
 
+	// containerLogRetentionDeleted counts container_logs rows the log-retention sweep removed,
+	// by the window class that took them. Same reasoning as the counter above.
+	containerLogRetentionDeleted *prometheus.CounterVec
+
 	// Ship metrics
 	shipsTotal      *prometheus.GaugeVec
 	shipStatusTotal *prometheus.GaugeVec
@@ -118,6 +122,12 @@ func NewContainerMetricsCollector(
 			"container_retention_deleted_total",
 			"Container rows deleted by the retention pruner, by the status they were in",
 			"status",
+		),
+
+		containerLogRetentionDeleted: newCounterVec(
+			"container_log_retention_deleted_total",
+			"container_logs rows deleted by the log-retention sweep, by window class (transient|problem)",
+			"class",
 		),
 
 		// Container iterations counter
@@ -193,6 +203,7 @@ func (c *ContainerMetricsCollector) Register() error {
 		c.containerDuration,
 		c.containerRestarts,
 		c.containerRetentionDeleted,
+		c.containerLogRetentionDeleted,
 		c.containerIterations,
 		c.containerExitTotal,
 		c.daemonComponentRestarts,
@@ -368,6 +379,16 @@ func (c *ContainerMetricsCollector) RecordContainerRetentionDeleted(status strin
 	c.containerRetentionDeleted.WithLabelValues(status).Add(float64(deleted))
 }
 
+// RecordContainerLogRetentionDeleted records a log-retention sweep's per-class deletions.
+// Nil-safe like every recorder here (RULINGS #4). A zero count is still recorded, so a sweep that
+// found nothing is visible as a sweep that RAN rather than as silence.
+func (c *ContainerMetricsCollector) RecordContainerLogRetentionDeleted(class string, deleted int64) {
+	if c == nil || c.containerLogRetentionDeleted == nil {
+		return
+	}
+	c.containerLogRetentionDeleted.WithLabelValues(class).Add(float64(deleted))
+}
+
 // RecordShipVersionConflict implements ShipWriteConflictRecorder.
 func (c *ContainerMetricsCollector) RecordShipVersionConflict() {
 	c.shipVersionConflicts.Inc()
@@ -430,6 +451,12 @@ type ContainerRetentionRecorder interface {
 	RecordContainerRetentionDeleted(status string, deleted int64)
 }
 
+// ContainerLogRetentionRecorder is implemented by collectors that track the container_logs
+// retention sweep. Separate single-method interface, like the ones above.
+type ContainerLogRetentionRecorder interface {
+	RecordContainerLogRetentionDeleted(class string, deleted int64)
+}
+
 // SetGlobalCollector sets the global metrics collector
 // This should be called after the collector is created and started
 func SetGlobalCollector(collector MetricsRecorder) {
@@ -448,6 +475,13 @@ func RecordContainerCompletion(containerInfo ContainerInfo) {
 func RecordContainerRetentionDeleted(status string, deleted int64) {
 	if rec, ok := globalCollector.(ContainerRetentionRecorder); ok {
 		rec.RecordContainerRetentionDeleted(status, deleted)
+	}
+}
+
+// RecordContainerLogRetentionDeleted is the package-level shim over the global collector.
+func RecordContainerLogRetentionDeleted(class string, deleted int64) {
+	if rec, ok := globalCollector.(ContainerLogRetentionRecorder); ok {
+		rec.RecordContainerLogRetentionDeleted(class, deleted)
 	}
 }
 

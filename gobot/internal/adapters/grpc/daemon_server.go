@@ -120,6 +120,12 @@ type DaemonServer struct {
 	// Start; halted by runCtx cancellation on shutdown.
 	containerRetentionScheduler *ContainerRetentionScheduler
 
+	// Container LOG retention sweep (sp-p1jo4): deletes container_logs rows past their level's
+	// retention window in bounded batches, so the highest-volume table in the database cannot
+	// grow without bound. Launched under supervision in Start; halted by runCtx cancellation on
+	// shutdown. Nil when the operator has explicitly disabled the sweep.
+	containerLogRetentionScheduler *ContainerLogRetentionScheduler
+
 	// Duty-cycle KPI sampler (sp-51ti captain amendment): ship-hours
 	// EARNING/day per hull.
 	dutyCycleSampler *metrics.DutyCycleSampler
@@ -236,6 +242,7 @@ func NewDaemonServer(
 	sensingConfig config.SensingConfig,
 	bootstrapConfig config.BootstrapConfig,
 	resyncConfig config.ResyncConfig,
+	containerLogRetentionConfig config.ContainerLogRetentionConfig,
 	shipEventPublisher navigation.ShipEventPublisher,
 ) (*DaemonServer, error) {
 	listener, err := listenOnDaemonSocket(socketPath)
@@ -293,6 +300,17 @@ func NewDaemonServer(
 	// sp-20eyn crash loop put 34,279 FAILED rows in it in a day. Sweeps at start and daily
 	// thereafter; only terminal rows past the window are ever touched.
 	server.containerRetentionScheduler = NewContainerRetentionScheduler(containerRepo)
+
+	// Container LOG retention (sp-p1jo4): container_logs had no bound either, and it grows
+	// ~400x faster than the containers table — 3,938,300 rows over 18 days, 1,591MB of a
+	// 2,510MB database, all of it duplicating what daemon.log already holds on disk. Sweeps at
+	// start and daily thereafter, in bounded batches, and never touches a row inside its
+	// level's window. Built over db directly (the "repositories on demand" pattern) because the
+	// injected logRepo is the write-side interface, not the concrete repository the sweep needs.
+	server.containerLogRetentionScheduler = NewContainerLogRetentionScheduler(
+		persistence.NewGormContainerLogRepository(db, nil),
+		containerLogRetentionConfig,
+	)
 
 	// Hoisted above the metricsConfig.Enabled block: the duty-cycle sampler needs it
 	// unconditionally, so it cannot live inside the optional Prometheus wiring.
