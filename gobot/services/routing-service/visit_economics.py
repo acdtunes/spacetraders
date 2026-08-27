@@ -19,7 +19,13 @@ WHAT IT REPORTS
      and the liquidation path make visits of very different shapes and averaging them hides
      which one is expensive.
 
-  2. THE BUNDLING CEILING, off market_data. For every in-system directed market pair, the
+  2. LOOK-BACK MANIFEST SHAPE, off the same telemetry. The pre-jump loader's rows group into
+     MANIFESTS — one load each, bought across the departure system before a jump — so the
+     source waypoints one load shops, and the docks it spends shopping them, are readable
+     directly. That pair is the mechanism any sourcing change has to move: a report of better
+     calls-per-transaction beside an unmoved source count is a change that did not happen.
+
+  3. THE BUNDLING CEILING, off market_data. For every in-system directed market pair, the
      goods a single hop could pack into one hold at the live quotes — the same greedy
      best-spread-first fill the solver's stage-1 packing bound performs, at the same A-cap
      tranche depth. Its mean is the most goods a hop can bundle even with a perfect planner,
@@ -108,6 +114,50 @@ def dock_sessions(rows, gap_seconds):
         cur["chunks"] += 1
         cur["last_at"] = at
     return sessions
+
+
+def lookback_manifests(rows):
+    """Group the look-back loader's rows into MANIFESTS: one pre-jump load each.
+
+    A manifest is bought entirely inside the departure system and then flown across a gate, so
+    a run of one hull's look-back rows within a single system is one manifest and the jump ends
+    it. Grouping by time gap instead would be wrong in both directions — an in-system hop to a
+    far source can idle longer than a gate crossing, and two manifests bought back to back in
+    different systems would merge.
+
+    Returns one dict per manifest: the SOURCE WAYPOINTS it spans in visit order, and the DOCKS
+    it costs. Those differ whenever the manifest's order leaves a source and returns to it,
+    which is a re-dock the same load did not need — so reading them together separates how many
+    markets a load shops from how much it pays to shop them."""
+    manifests, cur = [], None
+    for ship, wp, _good, _at, engine in rows:
+        if engine != "lookback":
+            continue
+        system = "-".join(wp.split("-")[:2])
+        if cur is None or cur["ship"] != ship or cur["system"] != system:
+            cur = dict(ship=ship, system=system, sources=[], docks=0, last=None)
+            manifests.append(cur)
+        if wp != cur["last"]:
+            cur["docks"] += 1
+            cur["last"] = wp
+            if wp not in cur["sources"]:
+                cur["sources"].append(wp)
+    return manifests
+
+
+def manifest_report(manifests):
+    """The look-back loader's own mechanism: how many markets one load shops, and how many
+    docks it spends doing it. This is the quantity a sourcing change has to move — a manifest
+    engine whose calls-per-transaction improved while this stayed flat did not change the
+    mechanism it claimed to."""
+    total = len(manifests)
+    histogram = collections.Counter(len(m["sources"]) for m in manifests)
+    sources = sum(len(m["sources"]) for m in manifests)
+    docks = sum(m["docks"] for m in manifests)
+    return dict(manifests=total, histogram=histogram,
+                sources_per_manifest=sources / total if total else 0.0,
+                docks_per_manifest=docks / total if total else 0.0,
+                redock_share=(docks - sources) / docks if docks else 0.0)
 
 
 def session_report(sessions):
@@ -211,6 +261,19 @@ def main():
               f"{r['calls_per_transaction']:10.2f} {r['movement_share']:8.1%}")
     print(f"  (movement = the {API_CALLS_PER_VISIT} navigate/dock/orbit requests a visit "
           f"spends before it trades anything)")
+
+    manifests = manifest_report(lookback_manifests(
+        [(r[0], r[1], r[2], int(r[3]), r[4]) for r in rows]))
+    print(f"\n=== LOOK-BACK MANIFESTS ({manifests['manifests']} pre-jump loads) ===")
+    for count in sorted(manifests["histogram"]):
+        share = (manifests["histogram"][count] / manifests["manifests"]
+                 if manifests["manifests"] else 0)
+        print(f"    {count:2d} source wp  {manifests['histogram'][count]:6d}  {share:6.1%}")
+    print(f"  MEAN source waypoints per manifest: "
+          f"{manifests['sources_per_manifest']:.2f}")
+    print(f"  MEAN docks per manifest: {manifests['docks_per_manifest']:.2f}   "
+          f"docks spent re-entering a source the load already shopped: "
+          f"{manifests['redock_share']:.1%}")
 
     quotes = psql(f"""SELECT waypoint_symbol, good_symbol, purchase_price, sell_price,
                              trade_volume

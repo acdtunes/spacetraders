@@ -24,7 +24,7 @@ func TestBuildLookbackManifest_PairsDepartureExportToDestinationImport(t *testin
 	src := []trading.GoodListing{gl("PARTS", "HU21-D46", "EXPORT", 40, 100, 30)}
 	dest := []trading.GoodListing{gl("PARTS", "UQ16-A1", "IMPORT", 300, 999, 20)}
 
-	manifest := buildLookbackManifest(src, dest, 100, 10)
+	manifest := buildLookbackManifest(src, dest, 100, 10, lookbackSourcing{})
 
 	if len(manifest) != 1 {
 		t.Fatalf("expected one manifest item (PARTS export->import), got %d: %+v", len(manifest), manifest)
@@ -51,7 +51,7 @@ func TestBuildLookbackManifest_NeverSellsIntoAnExporterBid(t *testing.T) {
 	// trade type is unambiguously what rejects it — not an impossible crossed quote.
 	dest := []trading.GoodListing{gl("PARTS", "UQ16-D9", "EXPORT", 300, 320, 20)}
 
-	manifest := buildLookbackManifest(src, dest, 100, 10)
+	manifest := buildLookbackManifest(src, dest, 100, 10, lookbackSourcing{})
 
 	if len(manifest) != 0 {
 		t.Fatalf("an EXPORT destination bid must never be a look-back sink (sp-9mkf), got %+v", manifest)
@@ -64,10 +64,10 @@ func TestBuildLookbackManifest_RejectsBelowFloorSpread(t *testing.T) {
 	src := []trading.GoodListing{gl("PARTS", "HU21-D46", "EXPORT", 40, 100, 30)}
 	dest := []trading.GoodListing{gl("PARTS", "UQ16-A1", "IMPORT", 250, 999, 20)} // spread 150
 
-	if m := buildLookbackManifest(src, dest, 100, 200); len(m) != 0 { // floor 200 > spread 150
+	if m := buildLookbackManifest(src, dest, 100, 200, lookbackSourcing{}); len(m) != 0 { // floor 200 > spread 150
 		t.Fatalf("a below-floor spread must not load, got %+v", m)
 	}
-	if m := buildLookbackManifest(src, dest, 100, 150); len(m) != 1 { // floor 150 == spread 150 clears
+	if m := buildLookbackManifest(src, dest, 100, 150, lookbackSourcing{}); len(m) != 1 { // floor 150 == spread 150 clears
 		t.Fatalf("a spread meeting the floor must load, got %+v", m)
 	}
 }
@@ -84,7 +84,7 @@ func TestBuildLookbackManifest_RanksByCappedSpreadAndFillsHold(t *testing.T) {
 		gl("PLATING", "UQ16-A2", "IMPORT", 600, 999, 40),
 	}
 
-	manifest := buildLookbackManifest(src, dest, 50, 10) // hold only fits 50 of the 80 available
+	manifest := buildLookbackManifest(src, dest, 50, 10, lookbackSourcing{}) // hold only fits 50 of the 80 available
 
 	if len(manifest) != 2 {
 		t.Fatalf("expected both goods to enter the manifest, got %d: %+v", len(manifest), manifest)
@@ -103,11 +103,11 @@ func TestBuildLookbackManifest_EmptyWhenNoLaneOrNoHold(t *testing.T) {
 	src := []trading.GoodListing{gl("PARTS", "HU21-D46", "EXPORT", 40, 100, 30)}
 	dest := []trading.GoodListing{gl("FUEL", "UQ16-A1", "IMPORT", 300, 999, 20)} // different good
 
-	if m := buildLookbackManifest(src, dest, 100, 10); len(m) != 0 {
+	if m := buildLookbackManifest(src, dest, 100, 10, lookbackSourcing{}); len(m) != 0 {
 		t.Fatalf("no shared good = no manifest, got %+v", m)
 	}
 	good := []trading.GoodListing{gl("PARTS", "UQ16-A1", "IMPORT", 300, 999, 20)}
-	if m := buildLookbackManifest(src, good, 0, 10); len(m) != 0 {
+	if m := buildLookbackManifest(src, good, 0, 10, lookbackSourcing{}); len(m) != 0 {
 		t.Fatalf("zero hold = no manifest, got %+v", m)
 	}
 }
@@ -372,11 +372,11 @@ func TestBuildLookbackManifest_DefaultFloorRefusesBulkThatOutranksOnDepth(t *tes
 	}
 
 	// Reference frame: unfloored, the bulk lane outranks the rich one and takes the whole hold.
-	if loose := buildLookbackManifest(src, dest, 400, 1); len(loose) == 0 || loose[0].Good != "BULK" || loose[0].Units != 400 {
+	if loose := buildLookbackManifest(src, dest, 400, 1, lookbackSourcing{}); len(loose) == 0 || loose[0].Good != "BULK" || loose[0].Units != 400 {
 		t.Fatalf("fixture must reproduce bulk crowding out the rich lane, got %+v", loose)
 	}
 
-	manifest := buildLookbackManifest(src, dest, 400, lookbackMinMarginDefault)
+	manifest := buildLookbackManifest(src, dest, 400, lookbackMinMarginDefault, lookbackSourcing{})
 
 	for _, item := range manifest {
 		if item.Good == "BULK" {
@@ -393,7 +393,7 @@ func TestBuildLookbackManifest_DefaultFloorAdmitsAFatLaneInACheapGood(t *testing
 	src := []trading.GoodListing{gl("BULK", "HU21-D46", "EXPORT", 60, 70, 600)}
 	dest := []trading.GoodListing{gl("BULK", "UQ16-A1", "IMPORT", 150, 999, 600)} // spread 80
 
-	manifest := buildLookbackManifest(src, dest, 400, lookbackMinMarginDefault)
+	manifest := buildLookbackManifest(src, dest, 400, lookbackMinMarginDefault, lookbackSourcing{})
 
 	if len(manifest) != 1 || manifest[0].Good != "BULK" {
 		t.Fatalf("a fat lane in a cheap good must still load — the floor is not a good blocklist, got %+v", manifest)

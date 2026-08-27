@@ -591,11 +591,12 @@ func buildTourCoordinatorCommand(cfg *configReader, playerID int, containerID st
 		// boundary, mirroring max_tour_systems). OptionalBool yields false for an absent
 		// key → cmd.ClosedTours=false → im74's cons.Closed reads an OPEN tour,
 		// byte-identical to today; true arms the return-to-anchor closed circuit.
-		ClosedTours:       cfg.OptionalBool("closed_tours"),
-		MaxSpend:          int64(cfg.OptionalInt("max_spend", 0)),
-		MinMargin:         cfg.OptionalInt("min_margin", 0),
-		LookbackMinMargin: cfg.OptionalInt("lookback_min_margin", 0),
-		ReplanLimit:       cfg.OptionalInt("replan_limit", 0),
+		ClosedTours:               cfg.OptionalBool("closed_tours"),
+		MaxSpend:                  int64(cfg.OptionalInt("max_spend", 0)),
+		MinMargin:                 cfg.OptionalInt("min_margin", 0),
+		LookbackMinMargin:         cfg.OptionalInt("lookback_min_margin", 0),
+		LookbackSourceCallCredits: cfg.OptionalInt("lookback_source_call_credits", 0),
+		ReplanLimit:               cfg.OptionalInt("replan_limit", 0),
 		// sp-ggk2 RULINGS #4: the reserve is a money guard — a PRESENT-but-unparseable
 		// value fails the build (fail closed), never a silent 0 → 50k floor. An absent key
 		// still defers to the coordinator's own default (0 → defaultWorkingCapitalReserve),

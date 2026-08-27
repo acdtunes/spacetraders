@@ -58,6 +58,45 @@ func lookbackFloor(cmd *RunTourCoordinatorCommand) int {
 	return lookbackMinMarginDefault
 }
 
+// lookbackSourceCallCreditsDefault is what one further SOURCE WAYPOINT has to add to a
+// manifest, in credits of that manifest's own gross margin, to be worth the movement bundle
+// it costs at a fully bound request budget — the same shared budget the tour selection
+// surcharge prices, charged where a load decides how many markets to shop.
+//
+// SWEPT, NOT DERIVED, because the basis is optimistic: value here is undecayed spread x
+// capped volume, before the live-ask re-verification, the reserve and the spend cap take
+// their bites, so a charge reasoned from seconds-per-request onto realized credits lands on
+// the wrong scale. TestReplay_LookbackSourceCharge rebuilds each reposition seam from the
+// quotes readable at that instant and sweeps across it. The stopping rule is not the peak —
+// credits-per-request improves well past here — but what a request is WORTH: above this a
+// further step gives up more credits per request it frees than the fleet earns spending one.
+//
+// WATCH AND REVERT. The cost lands on UNITS: the hold loads less, at a better margin per
+// unit. Revert if units per manifest fall while margin per unit does not rise.
+const lookbackSourceCallCreditsDefault = 20_000
+
+// lookbackVisitCharge resolves what a further source waypoint must earn for THIS load, from
+// the armed price and how hard the request budget is actually binding.
+//
+// SATURATION SCALES IT, exactly as it scales the selection surcharge: at genuine headroom a
+// request displaces nothing, so the charge is 0 and every source that adds value is bought.
+// 0 IS THE FAIL-OPEN VALUE an unwired estimator, a thin window and a negative reading all
+// land on, so there is one degrade path rather than three; a reading past the ceiling clamps;
+// and a negative knob is the operator's disarm at every saturation.
+func lookbackVisitCharge(cmd *RunTourCoordinatorCommand, saturationPermille int) int {
+	price := lookbackSourceCallCreditsDefault
+	if cmd.LookbackSourceCallCredits != 0 {
+		price = cmd.LookbackSourceCallCredits
+	}
+	if price <= 0 || saturationPermille <= 0 {
+		return 0
+	}
+	if saturationPermille > trading.APISaturationPermilleMax {
+		saturationPermille = trading.APISaturationPermilleMax
+	}
+	return price * saturationPermille / trading.APISaturationPermilleMax
+}
+
 // lookbackExportType is the GoodListing.TradeType value a look-back destination must NOT
 // carry: an exporter's Bid is a low sellback price, not a real import demand (sp-9mkf). It
 // mirrors domain/trading.tradeTypeExport, sourced from the market constant so the value
@@ -97,6 +136,32 @@ func filterBlocklistedListings(rows []trading.GoodListing, block map[string]bool
 	return kept
 }
 
+// lookbackSourcing is what the manifest builder needs to know about the REQUESTS a manifest
+// will spend, as distinct from the credits it will earn. A manifest is flown one source at a
+// time — navigate, dock, orbit, then the buys — so its request bill is governed by how many
+// DISTINCT waypoints it spans, and neither fact below is readable from listings.
+type lookbackSourcing struct {
+	// StandWaypoint is where the hull is at reposition-commit time. Sourcing there costs no
+	// movement bundle — the navigate short-circuits at the destination and EnsureDocked is a
+	// no-op on a docked hull. Empty means no free stop.
+	StandWaypoint string
+	// VisitCharge is the manifest value a FURTHER source must add to earn its movement bundle.
+	// 0 prices no visit and keeps every source that adds value.
+	VisitCharge int
+}
+
+// lookbackSrcRow is one buyable (waypoint, good) quote in the departure system.
+type lookbackSrcRow struct {
+	ask    int
+	volume int
+}
+
+// lookbackDestRow is the best import sink for a good in the destination system.
+type lookbackDestRow struct {
+	bid    int
+	volume int
+}
+
 // buildLookbackManifest pairs departure-system buyable rows (src) against destination-system
 // import rows (dest) into a hold-capped, floor-cleared, best-spread-first manifest — the
 // pure core of look-back loading (sp-ed4i), computed exactly like a cross-system slice of
@@ -116,9 +181,23 @@ func filterBlocklistedListings(rows []trading.GoodListing, block map[string]bool
 //   - RANK + FILL: goods are ordered by capped spread (spread x volumeCap) desc, then raw
 //     spread desc, then good asc (RankSpreads' tie-break), and greedily packed into holdCap.
 //
+// WHICH WAYPOINTS THE MANIFEST SPANS is the question this function also answers, because
+// nothing else in the look-back path does. Taking each good's cheapest ask INDEPENDENTLY
+// leaves the source set a by-product of per-good ask minimisation, and each waypoint it lands
+// on costs a full movement bundle for the one or two goods it carries. So the set is PRUNED
+// once priced: a source is dropped while the value LOST by re-sourcing its goods at the
+// survivors is under sourcing.VisitCharge, cheapest loss first, never the free standing
+// waypoint and never the last source; survivors come back GROUPED by waypoint so the flight
+// docks each once rather than wherever the capped-spread order interleaves two.
+//
+// Pruning rather than admitting is what makes the disarmed path exact: the hold-capped pack
+// is itself greedy, so a deep thin lane can displace a shallow rich one and make a LARGER
+// source set worth less, which a forward loop would stop early on and quietly re-rank the
+// manifest at a zero charge.
+//
 // Returns nil when no good clears the floor or the hold is zero — the caller then jumps
 // empty exactly as today.
-func buildLookbackManifest(src, dest []trading.GoodListing, holdCap, minMargin int) []lookbackItem {
+func buildLookbackManifest(src, dest []trading.GoodListing, holdCap, minMargin int, sourcing lookbackSourcing) []lookbackItem {
 	if holdCap <= 0 {
 		return nil
 	}
@@ -127,28 +206,25 @@ func buildLookbackManifest(src, dest []trading.GoodListing, holdCap, minMargin i
 		floor = 1 // mirror the solver's max(1, min_margin) — a zero floor still bars a zero spread
 	}
 
-	// Best (lowest-ask) buyable source per good, and its trade volume.
-	type srcRow struct {
-		waypoint string
-		ask      int
-		volume   int
-	}
-	bestSrc := map[string]srcRow{}
+	// Every buyable quote, kept per waypoint: which waypoints a good can be sourced at is
+	// exactly the choice the pruning makes, so it cannot be collapsed up front.
+	byWaypoint := map[string]map[string]lookbackSrcRow{}
 	for _, l := range src {
 		if l.Ask <= 0 {
 			continue
 		}
-		if cur, ok := bestSrc[l.Good]; !ok || l.Ask < cur.ask {
-			bestSrc[l.Good] = srcRow{waypoint: l.Waypoint, ask: l.Ask, volume: l.Volume}
+		rows, ok := byWaypoint[l.Waypoint]
+		if !ok {
+			rows = map[string]lookbackSrcRow{}
+			byWaypoint[l.Waypoint] = rows
+		}
+		if cur, seen := rows[l.Good]; !seen || l.Ask < cur.ask {
+			rows[l.Good] = lookbackSrcRow{ask: l.Ask, volume: l.Volume}
 		}
 	}
 
 	// Best (highest-bid) IMPORT sink per good in the destination system.
-	type destRow struct {
-		bid    int
-		volume int
-	}
-	bestDest := map[string]destRow{}
+	bestDest := map[string]lookbackDestRow{}
 	for _, l := range dest {
 		if l.Bid <= 0 {
 			continue
@@ -157,22 +233,125 @@ func buildLookbackManifest(src, dest []trading.GoodListing, holdCap, minMargin i
 			continue // sp-9mkf: an exporter's bid is not an import sink
 		}
 		if cur, ok := bestDest[l.Good]; !ok || l.Bid > cur.bid {
-			bestDest[l.Good] = destRow{bid: l.Bid, volume: l.Volume}
+			bestDest[l.Good] = lookbackDestRow{bid: l.Bid, volume: l.Volume}
 		}
 	}
 
-	// Rank floor-clearing cross-system lanes exactly like RankSpreads' output would.
-	lanes := make([]trading.ArbitrageLane, 0, len(bestSrc))
-	for good, s := range bestSrc {
+	admitted := make([]string, 0, len(byWaypoint))
+	for waypoint := range byWaypoint {
+		admitted = append(admitted, waypoint)
+	}
+	items, value := packLookbackFrom(byWaypoint, bestDest, admitted, holdCap, floor, sourcing.StandWaypoint)
+	admitted = pruneLookbackSources(byWaypoint, bestDest, admitted, holdCap, floor, value, sourcing)
+	if len(admitted) != len(byWaypoint) {
+		items, _ = packLookbackFrom(byWaypoint, bestDest, admitted, holdCap, floor, sourcing.StandWaypoint)
+	}
+	if len(items) == 0 {
+		return nil
+	}
+	return groupLookbackByWaypoint(items, sourcing.StandWaypoint)
+}
+
+// pruneLookbackSources drops source waypoints that cannot earn the movement bundle they cost,
+// cheapest loss first. A non-positive charge prices no visit and returns the admitted set
+// untouched — the single degrade path every unreadable, thin-window, slack-budget and
+// operator-disarmed caller lands on.
+//
+// IT NEVER EMPTIES THE MANIFEST. Whether to carry anything across the jump is already decided
+// by the min-margin floor and the guards below it, and a crossing that loads nothing is the
+// deadhead look-back loading exists to end. So a drop leaving no items is refused however
+// cheap, and this charge only answers the question it was posed: how many markets to shop.
+func pruneLookbackSources(
+	byWaypoint map[string]map[string]lookbackSrcRow,
+	bestDest map[string]lookbackDestRow,
+	admitted []string,
+	holdCap, floor, value int,
+	sourcing lookbackSourcing,
+) []string {
+	if sourcing.VisitCharge <= 0 {
+		return admitted
+	}
+	kept := append([]string(nil), admitted...)
+	trial := make([]string, 0, len(kept))
+	for len(kept) > 0 {
+		dropIdx, dropLoss := -1, 0
+		for i, waypoint := range kept {
+			if waypoint == sourcing.StandWaypoint {
+				continue // a free stop saves nothing when dropped
+			}
+			trial = trial[:0]
+			trial = append(trial, kept[:i]...)
+			trial = append(trial, kept[i+1:]...)
+			items, without := packLookbackFrom(byWaypoint, bestDest, trial, holdCap, floor, sourcing.StandWaypoint)
+			if len(items) == 0 {
+				continue // the last source standing: dropping it is a deadhead, not a saving
+			}
+			loss := value - without
+			// Waypoint asc on an equal loss so one board always yields one manifest.
+			if dropIdx < 0 || loss < dropLoss || (loss == dropLoss && waypoint < kept[dropIdx]) {
+				dropIdx, dropLoss = i, loss
+			}
+		}
+		if dropIdx < 0 || dropLoss >= sourcing.VisitCharge {
+			break
+		}
+		kept = append(kept[:dropIdx], kept[dropIdx+1:]...)
+		value -= dropLoss
+	}
+	return kept
+}
+
+// betterLookbackSource reports whether sourcing a good at waypoint beats sourcing it at cur.
+// The ask decides it; on an EQUAL ask the hull's standing waypoint wins, because the same
+// price bought where the hull already stands costs no movement bundle at all. Waypoint asc
+// settles the rest, so one board always yields one manifest.
+func betterLookbackSource(waypoint string, row lookbackSrcRow, curWaypoint string, cur lookbackSrcRow, standWaypoint string) bool {
+	if row.ask != cur.ask {
+		return row.ask < cur.ask
+	}
+	if standWaypoint != "" && (waypoint == standWaypoint) != (curWaypoint == standWaypoint) {
+		return waypoint == standWaypoint
+	}
+	return waypoint < curWaypoint
+}
+
+// packLookbackFrom fills the hold from the admitted source waypoints only: each good at its
+// best admitted source, floor-cleared, ranked by capped spread and greedily packed. The value
+// it returns is the manifest's gross margin in credits — the quantity a further waypoint's
+// movement bundle is priced against.
+func packLookbackFrom(
+	byWaypoint map[string]map[string]lookbackSrcRow,
+	bestDest map[string]lookbackDestRow,
+	admitted []string,
+	holdCap, floor int,
+	standWaypoint string,
+) ([]lookbackItem, int) {
+	type sourced struct {
+		waypoint string
+		row      lookbackSrcRow
+	}
+	best := map[string]sourced{}
+	for _, waypoint := range admitted {
+		for good, row := range byWaypoint[waypoint] {
+			cur, ok := best[good]
+			if ok && !betterLookbackSource(waypoint, row, cur.waypoint, cur.row, standWaypoint) {
+				continue
+			}
+			best[good] = sourced{waypoint: waypoint, row: row}
+		}
+	}
+
+	lanes := make([]trading.ArbitrageLane, 0, len(best))
+	for good, s := range best {
 		d, ok := bestDest[good]
 		if !ok {
 			continue
 		}
-		spread := d.bid - s.ask
+		spread := d.bid - s.row.ask
 		if spread < floor {
 			continue
 		}
-		volumeCap := s.volume
+		volumeCap := s.row.volume
 		if d.volume < volumeCap {
 			volumeCap = d.volume
 		}
@@ -182,7 +361,7 @@ func buildLookbackManifest(src, dest []trading.GoodListing, holdCap, minMargin i
 		lanes = append(lanes, trading.ArbitrageLane{
 			Good:           good,
 			SourceWaypoint: s.waypoint,
-			SourceAsk:      s.ask,
+			SourceAsk:      s.row.ask,
 			DestBid:        d.bid,
 			SpreadPerUnit:  spread,
 			VolumeCap:      volumeCap,
@@ -190,13 +369,13 @@ func buildLookbackManifest(src, dest []trading.GoodListing, holdCap, minMargin i
 		})
 	}
 	if len(lanes) == 0 {
-		return nil
+		return nil, 0
 	}
 	sortLookbackLanes(lanes)
 
 	// Greedily pack the hold best-lane-first; a shallow single-tranche load per good.
-	manifest := make([]lookbackItem, 0, len(lanes))
-	remaining := holdCap
+	items := make([]lookbackItem, 0, len(lanes))
+	remaining, value := holdCap, 0
 	for _, l := range lanes {
 		if remaining <= 0 {
 			break
@@ -205,7 +384,7 @@ func buildLookbackManifest(src, dest []trading.GoodListing, holdCap, minMargin i
 		if units > remaining {
 			units = remaining
 		}
-		manifest = append(manifest, lookbackItem{
+		items = append(items, lookbackItem{
 			Good:           l.Good,
 			SourceWaypoint: l.SourceWaypoint,
 			Units:          units,
@@ -213,8 +392,42 @@ func buildLookbackManifest(src, dest []trading.GoodListing, holdCap, minMargin i
 			DestBid:        l.DestBid,
 		})
 		remaining -= units
+		value += units * l.SpreadPerUnit
 	}
-	return manifest
+	return items, value
+}
+
+// groupLookbackByWaypoint re-orders a packed manifest so every item at one source is
+// contiguous, keeping the capped-spread rank WITHIN a source, so the flight pays one movement
+// bundle per source instead of one per interleaving. The standing waypoint leads: it is free
+// only while the hull has not left it, and buying there after a hop away costs the return
+// navigate the co-location exists to avoid.
+func groupLookbackByWaypoint(items []lookbackItem, standWaypoint string) []lookbackItem {
+	order := make([]string, 0, len(items))
+	seen := map[string]bool{}
+	for _, item := range items {
+		if item.SourceWaypoint == standWaypoint || seen[item.SourceWaypoint] {
+			continue
+		}
+		seen[item.SourceWaypoint] = true
+		order = append(order, item.SourceWaypoint)
+	}
+	if standWaypoint != "" {
+		order = append([]string{standWaypoint}, order...)
+	}
+
+	grouped := make([]lookbackItem, 0, len(items))
+	for _, waypoint := range order {
+		for _, item := range items {
+			if item.SourceWaypoint == waypoint {
+				grouped = append(grouped, item)
+			}
+		}
+	}
+	if len(grouped) != len(items) {
+		return items // every item's source is in the order above; never drop one
+	}
+	return grouped
 }
 
 // loadLookbackManifest is the sp-ed4i deadhead fix at the reposition seam: BEFORE the
@@ -268,7 +481,15 @@ func (h *RunTourCoordinatorHandler) loadLookbackManifest(
 	if err != nil {
 		return 0
 	}
-	manifest := buildLookbackManifest(src, dst, ship.AvailableCargoSpace(), lookbackFloor(cmd))
+	// The hull is standing somewhere when the reposition commits — normally the market its last
+	// plan leg traded at. Sourcing there costs no movement bundle, so it is the one stop the
+	// manifest gets for free, and every other source is priced against the request budget's
+	// live pressure.
+	sourcing := lookbackSourcing{
+		StandWaypoint: ship.CurrentLocation().Symbol,
+		VisitCharge:   lookbackVisitCharge(cmd, h.tourAPISaturation(ctx)),
+	}
+	manifest := buildLookbackManifest(src, dst, ship.AvailableCargoSpace(), lookbackFloor(cmd), sourcing)
 	if len(manifest) == 0 {
 		logger.Log("INFO", fmt.Sprintf("Look-back: no %s export clears the min-margin floor into a %s import sink (candidates src=%d dst=%d) - jumping empty", fromSystem, toSystem, len(src), len(dst)), map[string]interface{}{
 			"ship_symbol": cmd.ShipSymbol, "from_system": fromSystem, "to_system": toSystem,

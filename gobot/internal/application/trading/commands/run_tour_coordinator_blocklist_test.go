@@ -216,13 +216,13 @@ func TestLookback_BlocklistedGoodExcludedFromManifest(t *testing.T) {
 	}
 
 	// Control: without a blocklist, BOTH FUEL and PARTS clear into the manifest.
-	ctrl := manifestGoods(buildLookbackManifest(filterBlocklistedListings(src, nil), dest, 100, 10))
+	ctrl := manifestGoods(buildLookbackManifest(filterBlocklistedListings(src, nil), dest, 100, 10, lookbackSourcing{}))
 	if !ctrl["FUEL"] || !ctrl["PARTS"] {
 		t.Fatalf("control: expected both FUEL and PARTS to clear, got %v", ctrl)
 	}
 
 	// With FUEL blocklisted, only PARTS survives — FUEL is never bought as look-back cargo.
-	got := manifestGoods(buildLookbackManifest(filterBlocklistedListings(src, stringSet([]string{"FUEL"})), dest, 100, 10))
+	got := manifestGoods(buildLookbackManifest(filterBlocklistedListings(src, stringSet([]string{"FUEL"})), dest, 100, 10, lookbackSourcing{}))
 	if got["FUEL"] {
 		t.Errorf("blocklisted FUEL leaked into the look-back manifest: %v", got)
 	}

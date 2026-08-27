@@ -35,7 +35,13 @@ type RunTourCoordinatorCommand struct {
 	MaxSpend          int64 // 0 → the capital budget (re-resolved per tour when Iterations != 0/1)
 	MinMargin         int
 	LookbackMinMargin int // the look-back manifest's own floor; 0 → lookbackMinMarginDefault
-	ReplanLimit       int // 0 → tourMaxReplansDefault (PER TOUR)
+	// LookbackSourceCallCredits is what a FURTHER source waypoint must add to a look-back
+	// manifest to earn the navigate/dock/orbit bundle it costs, in credits of that manifest's
+	// own gross margin and scaled by how hard the request budget is binding. 0 →
+	// lookbackSourceCallCreditsDefault (the armed price); negative is the operator's disarm,
+	// sourcing every waypoint that adds value.
+	LookbackSourceCallCredits int
+	ReplanLimit               int // 0 → tourMaxReplansDefault (PER TOUR)
 	// Iterations is the tour count, unifying the container iteration semantics
 	// (registry invariant 3): -1 = CONTINUOUS (tour, re-plan from the new position,
 	// tour again — until margins die/starvation/stop), N>0 = exactly N tours, 0 =

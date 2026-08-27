@@ -93,6 +93,64 @@ def test_an_empty_window_degrades_to_zeros_and_never_divides():
     assert ve.pack_ceiling({}, hold=490, tranches=3, min_margin=1) == ({}, [])
 
 
+def test_a_manifest_ends_at_the_jump_not_at_a_time_gap():
+    # A manifest is bought in ONE system and then flown across a gate, so the change of system
+    # is what ends it. Two loads bought back to back in different systems are two manifests
+    # however close together they are, and a slow in-system hop inside one load is still one.
+    manifests = ve.lookback_manifests(_rows(
+        ("H", "X1-AA-1", "G", 0, "lookback"),
+        ("H", "X1-AA-2", "G", 9_000, "lookback"),
+        ("H", "X1-BB-1", "G", 9_100, "lookback")))
+    assert [m["system"] for m in manifests] == ["X1-AA", "X1-BB"]
+    assert [m["sources"] for m in manifests] == [["X1-AA-1", "X1-AA-2"], ["X1-BB-1"]]
+
+
+def test_only_the_look_back_loader_forms_manifests():
+    # Solver and liquidation rows share the table and would inflate every count here.
+    manifests = ve.lookback_manifests(_rows(
+        ("H", "X1-AA-1", "G", 0, "solver"),
+        ("H", "X1-AA-2", "G", 10, "lookback"),
+        ("H", "X1-AA-3", "G", 20, "liquidation")))
+    assert len(manifests) == 1
+    assert manifests[0]["sources"] == ["X1-AA-2"]
+
+
+def test_a_load_that_returns_to_a_source_pays_a_dock_it_did_not_need():
+    # THE NUMBER THE SOURCING QUESTION TURNS ON. Sources counts the markets a load shops;
+    # docks counts what it pays to shop them. They diverge exactly when the load's order leaves
+    # a waypoint and comes back, which is a movement bundle bought for nothing.
+    report = ve.manifest_report(ve.lookback_manifests(_rows(
+        ("H", "X1-AA-1", "G", 0, "lookback"),
+        ("H", "X1-AA-2", "F", 10, "lookback"),
+        ("H", "X1-AA-1", "E", 20, "lookback"))))
+    assert report["manifests"] == 1
+    assert report["sources_per_manifest"] == pytest.approx(2.0)
+    assert report["docks_per_manifest"] == pytest.approx(3.0)
+    assert report["redock_share"] == pytest.approx(1 / 3)
+
+
+def test_consecutive_goods_at_one_source_are_one_dock():
+    report = ve.manifest_report(ve.lookback_manifests(_rows(
+        ("H", "X1-AA-1", "G", 0, "lookback"),
+        ("H", "X1-AA-1", "F", 10, "lookback"))))
+    assert report["sources_per_manifest"] == pytest.approx(1.0)
+    assert report["docks_per_manifest"] == pytest.approx(1.0)
+    assert report["redock_share"] == pytest.approx(0.0)
+
+
+def test_a_window_with_no_look_back_load_reports_zeros_and_never_divides():
+    """THE DEGRADE-SAFELY GATE for the manifest half. A window before look-back loading ran, a
+    fleet that never repositioned, or a fresh database all hold no manifests at all, and every
+    quantity here is a mean over that count."""
+    assert ve.lookback_manifests([]) == []
+    empty = ve.manifest_report([])
+    assert empty["manifests"] == 0
+    assert empty["histogram"] == {}
+    assert empty["sources_per_manifest"] == 0.0
+    assert empty["docks_per_manifest"] == 0.0
+    assert empty["redock_share"] == 0.0
+
+
 def _market(ask, bid, volume):
     return (ask, bid, volume)
 

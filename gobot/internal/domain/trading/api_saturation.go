@@ -17,6 +17,10 @@ import "math"
 // headroom already spent, so weight shifts continuously. Utilization rather than queue delay
 // because it is a ratio to a stated ceiling, so it reads as a fraction with no new constant.
 
+// APISaturationPermilleMax is a fully bound budget: the top of the permille scale readers
+// clamp into, and the denominator anything scaled BY saturation divides through.
+const APISaturationPermilleMax = 1000
+
 // APISaturationHeadroomFloorPct is the utilization below which the budget counts as slack.
 //
 // The limiter is a token bucket, so a fleet whose average sits well under the ceiling never
@@ -71,9 +75,9 @@ func SaturationPermille(utilizationPct float64, observedRequests int, p APISatur
 		return 0, false
 	}
 	consumed := (utilizationPct - p.HeadroomFloorPct) / (100 - p.HeadroomFloorPct)
-	permille := int(math.Round(consumed * 1000))
-	if permille > 1000 {
-		return 1000, true
+	permille := int(math.Round(consumed * APISaturationPermilleMax))
+	if permille > APISaturationPermilleMax {
+		return APISaturationPermilleMax, true
 	}
 	if permille <= 0 {
 		return 0, false
