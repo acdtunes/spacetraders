@@ -462,8 +462,8 @@ func (h *RunBootstrapCoordinatorHandler) maybeBuyGateWorker(ctx context.Context,
 // expansionHandoffRetryTicks consecutive ticks and then exits anyway, because bootstrap is boot-standing
 // and every launch is idempotent — the retry continues at the next daemon boot rather than every tick
 // forever. That bound is load-bearing on a MATURE fleet: this coordinator's whole tick-cadence budget
-// assumes it exits once the gate is built, and each tick it does not costs a fully-paginated fleet re-read
-// against an account-wide request limit that fleet growth cannot raise.
+// assumes it exits once the gate is built, and every tick it does not spends the phantom-cache guard's
+// live re-read against an account-wide request limit that fleet growth cannot raise.
 //
 // The distinction that keeps this safe is in the SIGNAL, not here: obs.ConstructionComplete is a positive
 // live-API assertion, and every read miss on the gate-snapshot path leaves it false, so an unreadable or

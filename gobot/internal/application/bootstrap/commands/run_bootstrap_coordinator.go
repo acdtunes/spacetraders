@@ -126,9 +126,9 @@ const (
 	// The bound is what keeps BOTH failure modes covered. A TRANSIENT launcher fault is fully inside the
 	// window (it succeeds on a later tick and exits with the hand-off confirmed, so a fleet that has just
 	// finished its gate never exits half-handed-off). A PERSISTENT one — a launcher that is down, absent,
-	// or observe-only — can no longer pin the coordinator in a per-tick full-fleet re-read on a mature
-	// fleet, where that loop costs a double-digit share of the account-wide (unraisable) request budget
-	// while achieving nothing. In-memory per container and fails SAFE on restart: a dropped streak just
+	// or observe-only — can no longer pin the coordinator in a per-tick live re-read on a mature fleet,
+	// where that loop spends the account-wide (unraisable) request budget while achieving nothing.
+	// In-memory per container and fails SAFE on restart: a dropped streak just
 	// re-accrues from 0, and the exit is a pure loop-exit (no spend, no assignment), so it never
 	// double-acts. 3 ticks ≈ 2.25 min at the 45s cadence.
 	expansionHandoffRetryTicks = 3
