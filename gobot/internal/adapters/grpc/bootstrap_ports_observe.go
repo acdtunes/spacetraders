@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"time"
 
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/api"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	bootstrapCmd "github.com/andrescamacho/spacetraders-go/internal/application/bootstrap/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
@@ -17,16 +19,87 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
-// bootstrapRefresher force-syncs the fleet from the API — the phantom-cache guard.
-type bootstrapRefresher struct{ shipRepo navigation.ShipRepository }
+// bootstrapFleetRefreshBudgetPerHour is the API allowance the phantom-cache guard may spend on
+// full-fleet re-reads. An allowance, not an interval: the guard's cost rises with the fleet
+// while its value falls, so a flat interval must be wrong at one end — ruinous at scale, or
+// absent from the cold start it exists for. A fixed rate lets the cadence fall out of the price.
+const bootstrapFleetRefreshBudgetPerHour = 72.0
 
+// fleetRefreshThrottle prices each re-read at its API cost and grants permission at that rate.
+// Per player, in-memory: a restart forgets it and so refreshes — the fail-safe way (RULINGS #2).
+type fleetRefreshThrottle struct {
+	mu sync.Mutex
+	// lastHulls is the learned price: an unpriced sweep is allowed, and sets the next spacing.
+	lastAt    map[int]time.Time
+	lastHulls map[int]int
+	perHour   float64
+	now       func() time.Time
+}
+
+func newFleetRefreshThrottle() *fleetRefreshThrottle {
+	return &fleetRefreshThrottle{
+		lastAt:    map[int]time.Time{},
+		lastHulls: map[int]int{},
+		perHour:   bootstrapFleetRefreshBudgetPerHour,
+		now:       time.Now,
+	}
+}
+
+// spacing is how much quiet the last sweep's price buys: pages over allowance per second.
+func (t *fleetRefreshThrottle) spacing(hulls int) time.Duration {
+	if hulls <= 0 || t.perHour <= 0 {
+		return 0
+	}
+	pages := (hulls + api.FleetPageLimit - 1) / api.FleetPageLimit
+	return time.Duration(float64(pages) / (t.perHour / 3600.0) * float64(time.Second))
+}
+
+func (t *fleetRefreshThrottle) allow(playerID int) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	last, seen := t.lastAt[playerID]
+	if !seen {
+		return true
+	}
+	return t.now().Sub(last) >= t.spacing(t.lastHulls[playerID])
+}
+
+// record prices a COMPLETED sweep; a failure must not buy quiet or one bad read silences the guard.
+func (t *fleetRefreshThrottle) record(playerID, hulls int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.lastAt[playerID] = t.now()
+	t.lastHulls[playerID] = hulls
+}
+
+// bootstrapRefresher syncs the fleet from the API — the phantom-cache guard — within its allowance.
+type bootstrapRefresher struct {
+	shipRepo navigation.ShipRepository
+	throttle *fleetRefreshThrottle
+}
+
+// RefreshFleet re-reads when the allowance permits, else reports success WITHOUT reading —
+// skipping is not failing, and an error here fails the reconciler's whole tick closed. Between
+// sweeps the tick runs on the projection the observer reads anyway: the fields it decides on
+// (assignment, dedicated-fleet tag, captain reservation) are daemon-owned columns the sync
+// preserves rather than supplies, and hulls whose nav and cargo move have a coordinator writing
+// that state already.
 func (r *bootstrapRefresher) RefreshFleet(ctx context.Context, playerID int) error {
+	if r.throttle != nil && !r.throttle.allow(playerID) {
+		return nil
+	}
 	pid, err := shared.NewPlayerID(playerID)
 	if err != nil {
 		return err
 	}
-	_, err = r.shipRepo.SyncAllFromAPI(ctx, pid)
-	return err
+	hulls, err := r.shipRepo.SyncAllFromAPI(ctx, pid)
+	if err != nil {
+		return err
+	}
+	if r.throttle != nil {
+		r.throttle.record(playerID, hulls)
+	}
+	return nil
 }
 
 // bootstrapObserver reads the reconciler's world snapshot: fleet shape, home coverage,

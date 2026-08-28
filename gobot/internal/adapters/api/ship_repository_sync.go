@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"reflect"
 	"strconv"
+	"strings"
 
 	"gorm.io/gorm/clause"
 
@@ -127,16 +129,46 @@ func preserveLocallyOwnedColumns(model *persistence.ShipModel, existingModel per
 	model.RetiringAt = existingModel.RetiringAt
 }
 
+// maxBindParameters is one statement's bind-parameter ceiling — SQLite's, the stricter backend.
+const maxBindParameters = 32766
+
+// shipUpsertBatchRows caps a multi-row INSERT: rows * persisted-columns must stay under
+// maxBindParameters, or a sync fails outright once the fleet outgrows one statement.
+func shipUpsertBatchRows() int {
+	cols := shipModelColumnCount()
+	if cols <= 0 {
+		return 1
+	}
+	rows := maxBindParameters / cols
+	if rows < 1 {
+		return 1
+	}
+	return rows
+}
+
+// shipModelColumnCount counts persisted columns — the per-row bind-parameter cost.
+func shipModelColumnCount() int {
+	t := reflect.TypeOf(persistence.ShipModel{})
+	n := 0
+	for i := 0; i < t.NumField(); i++ {
+		if strings.Contains(t.Field(i).Tag.Get("gorm"), "column:") {
+			n++
+		}
+	}
+	return n
+}
+
 func (r *ShipRepository) upsertShipModels(ctx context.Context, models []persistence.ShipModel) error {
 	if len(models) == 0 {
 		return nil
 	}
+	// CreateInBatches, never Create: it bounds the statement, not the transaction.
 	err := r.db.WithContext(ctx).
 		Clauses(clause.OnConflict{
 			Columns:   []clause.Column{{Name: "ship_symbol"}, {Name: "player_id"}},
 			UpdateAll: true,
 		}).
-		Create(&models).Error
+		CreateInBatches(&models, shipUpsertBatchRows()).Error
 	if err != nil {
 		return fmt.Errorf("failed to upsert ships: %w", err)
 	}

@@ -41,6 +41,10 @@ const (
 	// apiPageLimitMax is the largest page size SpaceTraders accepts (openapi.json: limit maximum 20).
 	apiPageLimitMax = 20
 
+	// FleetPageLimit exports apiPageLimitMax for callers pricing a fleet enumeration: the
+	// divisor turning a hull count into the API cost of one sweep, so no caller keeps its own.
+	FleetPageLimit = apiPageLimitMax
+
 	// defaultFleetIsolationAbortStreak: consecutive per-hull probe failures that end
 	// an isolation sweep and fail the read CLOSED — the line between "one poisoned
 	// record" and "the API is down". Tunable (RULINGS #5).

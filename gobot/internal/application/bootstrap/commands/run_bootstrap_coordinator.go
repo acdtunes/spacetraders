@@ -146,10 +146,10 @@ func pendingScalingReservationTarget(price int64) int64 {
 	return price + contractWorkingCapitalFloor
 }
 
-// ShipRefresher forces a live re-read of the player's hulls before any role/assignment decision —
-// the phantom-cache guard (captain L47): the ship cache desyncs (a phantom-idle hull misread as
-// busy, or vice-versa), so the reconciler refreshes the pool at the top of every tick. An error
-// fails the tick CLOSED (no action) rather than acting on stale state.
+// ShipRefresher refreshes the player's hulls before any role/assignment decision — the
+// phantom-cache guard against a desynced cache (a phantom-idle hull misread as busy). An error
+// fails the tick CLOSED. A fleet read is priced per page, so an implementation may serve a tick
+// from the projection instead: that is nil, never an error, which would stop the coordinator.
 type ShipRefresher interface {
 	RefreshFleet(ctx context.Context, playerID int) error
 }
