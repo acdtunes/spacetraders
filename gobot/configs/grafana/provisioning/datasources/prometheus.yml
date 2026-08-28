@@ -26,7 +26,7 @@ datasources:
     user: grafana_ro
     editable: false
     secureJsonData:
-      password: grafana_ro_password
+      password: ${GRAFANA_RO_PASSWORD}
     jsonData:
       # Grafana 13's postgres FRONTEND reads the database from jsonData only;
       # the top-level `database:` field is legacy (backend still honors it,

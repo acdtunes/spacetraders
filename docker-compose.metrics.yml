@@ -32,6 +32,15 @@ services:
       - GF_SECURITY_ADMIN_USER=admin
       - GF_SECURITY_ADMIN_PASSWORD=admin
       - GF_USERS_ALLOW_SIGN_UP=false
+      # The grafana_ro Postgres password, read by the datasource provisioning at
+      # configs/grafana/provisioning/datasources/prometheus.yml. INTERPOLATED from
+      # the environment (shell export, or a `.env` beside this file — .env is
+      # gitignored); it must NEVER be written as a literal here. This repository
+      # is public: a literal in a tracked compose file is published the moment it
+      # merges, which is exactly how the credential in 1357c05c leaked.
+      # Set the matching value on the role out of band:
+      #   ALTER ROLE grafana_ro PASSWORD '<secret>';
+      - GRAFANA_RO_PASSWORD=${GRAFANA_RO_PASSWORD}
     restart: unless-stopped
     networks:
       - metrics

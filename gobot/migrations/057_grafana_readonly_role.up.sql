@@ -33,11 +33,14 @@
 -- grants: the grants are the real guarantee, this makes an accidental write
 -- fail with a clear message rather than a permission error.
 --
--- The password matches the local-dev convention already in this stack (the
--- daemon uses dev_password, Grafana's admin login is admin:admin). This
--- instance is bound to the loopback interface of a single workstation.
+-- The role is created WITHOUT a password here. This repository is public, so a
+-- literal secret in a tracked migration is published the moment it merges. Set
+-- the password out of band after applying:
+--   ALTER ROLE grafana_ro PASSWORD '<secret>';
+-- and give Grafana the same value through GRAFANA_RO_PASSWORD in its
+-- environment, which the datasource provisioning reads.
 
-CREATE ROLE grafana_ro LOGIN PASSWORD 'grafana_ro_password';
+CREATE ROLE grafana_ro LOGIN;
 
 GRANT CONNECT ON DATABASE spacetraders TO grafana_ro;
 GRANT USAGE ON SCHEMA public TO grafana_ro;
