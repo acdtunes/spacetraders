@@ -171,6 +171,13 @@ type TradeFleetConfig struct {
 	RepositionReachHopDecayPct       int  `mapstructure:"reposition_reach_hop_decay_pct"`
 	RepositionReachMaxHullsPerSystem int  `mapstructure:"reposition_reach_max_hulls_per_system"`
 
+	// Own-trade recency de-ranking: stamped and read back as the reach knobs above, but shipped
+	// ARMED (RULINGS #22) — ints at 0 ⇒ the coordinator's fitted defaults, kill switch FALSE ⇒
+	// live with no config present. Retune via config.yaml + restart.
+	OwnTradePenaltyPct      int  `mapstructure:"reposition_own_trade_penalty_pct"`
+	OwnTradeColdMinutes     int  `mapstructure:"reposition_own_trade_cold_minutes"`
+	OwnTradePenaltyDisabled bool `mapstructure:"reposition_own_trade_penalty_disabled"`
+
 	// --- Rate-floor early-reposition (epic sp-fguo, Part 2) ---
 	// Daemon-global tour tunings, same for every tour container (the mirror of reposition_reach_*
 	// above): StartTourRun stamps them into every tour launch config, buildTourCoordinatorCommand

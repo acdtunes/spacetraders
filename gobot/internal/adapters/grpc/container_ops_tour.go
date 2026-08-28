@@ -164,6 +164,10 @@ func (s *DaemonServer) addTradeFleetTourKnobs(config map[string]interface{}) {
 	config["reposition_reach_hop_decay_pct"] = s.tradeFleetConfig.RepositionReachHopDecayPct
 	config["reposition_reach_max_hulls_per_system"] = s.tradeFleetConfig.RepositionReachMaxHullsPerSystem
 
+	config["reposition_own_trade_penalty_pct"] = s.tradeFleetConfig.OwnTradePenaltyPct
+	config["reposition_own_trade_cold_minutes"] = s.tradeFleetConfig.OwnTradeColdMinutes
+	config["reposition_own_trade_penalty_disabled"] = s.tradeFleetConfig.OwnTradePenaltyDisabled
+
 	config["reposition_rate_floor_enabled"] = s.tradeFleetConfig.RepositionRateFloorEnabled
 	config["reposition_rate_floor_pct"] = s.tradeFleetConfig.RepositionRateFloorPct
 	config["reposition_rate_floor_improvement_pct"] = s.tradeFleetConfig.RepositionRateFloorImprovementPct

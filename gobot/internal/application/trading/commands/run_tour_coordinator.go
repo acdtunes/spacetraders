@@ -162,6 +162,12 @@ type RunTourCoordinatorHandler struct {
 	// apiSaturation reads how hard the shared request budget is binding; nil, or a fleet
 	// with headroom => 0 on the wire => selection on credits/hour.
 	apiSaturation APISaturationReader
+	// ownTradeRecency reports when the fleet itself last traded in each system, which the
+	// reposition pre-rank charges a bounded haircut for. DERIVED from the ledger and never
+	// persisted (RULINGS #2): the transactions table already dates every buy and sell, so a
+	// second stored copy could only drift from it. nil (every existing test, and any daemon
+	// that does not wire it) => no candidate is stamped => the pre-rank orders exactly as before.
+	ownTradeRecency OwnTradeRecencyReader
 	// modelArtifactPath is the daemon-configured (absolute) path to the market-model
 	// artifact this coordinator reads at launch, injected from cfg.Routing.ModelArtifactPath.
 	// Empty → the repo-relative defaultModelArtifactPath fallback. A per-run

@@ -657,6 +657,11 @@ func buildTourCoordinatorCommand(cfg *configReader, playerID int, containerID st
 		RepositionReachEnabled:           cfg.OptionalBool("reposition_reach_enabled"),
 		RepositionReachHopDecayPct:       cfg.OptionalInt("reposition_reach_hop_decay_pct", 0),
 		RepositionReachMaxHullsPerSystem: cfg.OptionalInt("reposition_reach_max_hulls_per_system", 0),
+		// Own-trade recency de-ranking, ARMED (RULINGS #22): OptionalInt 0 ⇒ the coordinator's own
+		// ownTrade*Default, and the kill switch absent ⇒ live, including on a recovery rebuild.
+		OwnTradePenaltyPct:      cfg.OptionalInt("reposition_own_trade_penalty_pct", 0),
+		OwnTradeColdMinutes:     cfg.OptionalInt("reposition_own_trade_cold_minutes", 0),
+		OwnTradePenaltyDisabled: cfg.OptionalBool("reposition_own_trade_penalty_disabled"),
 		// epic sp-fguo Part 2 rate-floor early-reposition. OptionalBool/OptionalInt yield zero values
 		// for absent keys — the exact default-OFF dormancy the Reposition*/Placement* knobs use:
 		// reposition_rate_floor_enabled absent ⇒ false ⇒ the trigger is dormant, byte-identical to

@@ -122,6 +122,25 @@ type RunTourCoordinatorCommand struct {
 	// repositionReachMaxHullsPerSystemDefault (5). Only read when RepositionReachEnabled is true.
 	RepositionReachMaxHullsPerSystem int
 
+	// --- Own-trade recency de-ranking (ARMED by default) ---
+	// The anti-herd cap above counts hulls RESIDENT in a system at one instant, so a queue of
+	// hulls each staying minutes and leaving never trips it while the system is drained
+	// continuously. These charge the pre-rank for ground the fleet ITSELF worked recently.
+
+	// OwnTradePenaltyPct is the largest share of its pre-rank score a candidate can lose for
+	// having been traded moments ago, decaying to nothing as the ground rests. 0/absent →
+	// ownTradePenaltyPctDefault; >100 is clamped so the multiplier can never go negative and
+	// invert the ranking. It re-orders candidates only: nothing is excluded and the money floor
+	// is untouched.
+	OwnTradePenaltyPct int
+	// OwnTradeColdMinutes is the age at which ground counts as rested and the penalty reaches
+	// zero. 0/absent → ownTradeColdMinutesDefault, clamped to ownTradeColdMinutesMax because
+	// this horizon is also the ledger scan's lookback.
+	OwnTradeColdMinutes int
+	// OwnTradePenaltyDisabled is the kill switch. false (the zero value / absent config) leaves
+	// the de-ranking ARMED; true restores the crowding-blind pre-rank.
+	OwnTradePenaltyDisabled bool
+
 	// --- Rate-floor early-reposition (always-relocate chronic under-earners) ---
 	// The margins-death reposition only fires when a continuous tour's margins DIE. A hull earning
 	// mediocre-but-profitable local arb (say 80k/hr while frontier pays 360-480k/hr) never

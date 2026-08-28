@@ -468,3 +468,45 @@ func TestResolvedSinkFreshnessMaxAge_ConfiguredValueStillWinsAndStaysArmed(t *te
 	require.Positive(t, TradeFleetConfig{SinkFreshnessMaxMinutes: -1}.ResolvedSinkFreshnessMaxAge(),
 		"no reachable config value may resolve to a non-positive age, which would leave the clause inert")
 }
+
+// The own-trade de-ranking ships ARMED, so its round-trip test has to prove two things a
+// default-off knob does not: that a captain can retune and kill-switch it from config, and
+// that an ABSENT block still leaves it live (RULINGS #22) rather than silently dormant.
+func TestLoadConfig_OwnTradePenalty_RoundTrips(t *testing.T) {
+	t.Setenv("SPACETRADERS_CONFIG", "")
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(
+		"trade_fleet:\n"+
+			"  enabled: true\n"+
+			"  reposition_own_trade_penalty_pct: 20\n"+
+			"  reposition_own_trade_cold_minutes: 90\n"+
+			"  reposition_own_trade_penalty_disabled: true\n"), 0o644))
+	t.Chdir(dir)
+
+	cfg, err := LoadConfig("")
+
+	require.NoError(t, err)
+	require.Equal(t, 20, cfg.TradeFleet.OwnTradePenaltyPct,
+		"reposition_own_trade_penalty_pct must round-trip so the haircut's size is operator-tunable")
+	require.Equal(t, 90, cfg.TradeFleet.OwnTradeColdMinutes,
+		"reposition_own_trade_cold_minutes must round-trip so the rest horizon is operator-tunable")
+	require.True(t, cfg.TradeFleet.OwnTradePenaltyDisabled,
+		"reposition_own_trade_penalty_disabled must round-trip so the kill switch is reachable")
+}
+
+func TestLoadConfig_OwnTradePenalty_AbsentIsArmed(t *testing.T) {
+	t.Setenv("SPACETRADERS_CONFIG", "")
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(
+		"trade_fleet:\n  enabled: true\n"), 0o644))
+	t.Chdir(dir)
+
+	cfg, err := LoadConfig("")
+
+	require.NoError(t, err)
+	require.False(t, cfg.TradeFleet.OwnTradePenaltyDisabled,
+		"an absent block must leave the de-ranking ARMED, not dormant")
+	require.Zero(t, cfg.TradeFleet.OwnTradePenaltyPct,
+		"0 is the consumer's resolve-to-default sentinel, so the default stays in ONE place")
+	require.Zero(t, cfg.TradeFleet.OwnTradeColdMinutes)
+}

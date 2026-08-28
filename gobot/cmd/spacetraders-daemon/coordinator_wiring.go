@@ -136,6 +136,12 @@ func (w circuitWiring) configureTourCoordinator(h *tradeRouteCmd.RunTourCoordina
 		w.jumpTolls(), nil, domainTrading.DefaultJumpTollParams(), // nil clock = RealClock
 	))
 	h.SetAPISaturationReader(grpc.NewTourAPISaturationReader())
+	// De-ranks a candidate the fleet itself worked recently; the scan reaches as far as the
+	// penalty does, and an unreadable ledger ranks as before.
+	h.SetOwnTradeRecencyReader(tradeRouteCmd.NewLedgerOwnTradeRecencyReader(
+		w.transactionRepo, nil,
+		tradeRouteCmd.OwnTradeRecencyLookback(w.cfg.TradeFleet.OwnTradeColdMinutes),
+	))
 	h.SetChartGateOnArrival(w.chartGateOnArrival)
 	// Lets the tour see profitable exotic lanes whose sink sits beyond the tour graph's
 	// own hop horizon.

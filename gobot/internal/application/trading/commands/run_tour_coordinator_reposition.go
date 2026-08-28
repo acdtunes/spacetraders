@@ -181,6 +181,11 @@ type repositionCandidate struct {
 	// tradeVolume is the deepest per-visit volume quoted anywhere on the candidate's fresh board:
 	// the absorption half of that same bar. Zero means unstamped, which no bar clears.
 	tradeVolume int
+	// ownTradeAgeMinutes is how long ago the fleet ITSELF last bought or sold in this system,
+	// which the pre-rank charges a bounded haircut for (own_trade_recency.go). Zero means
+	// unknown — no record inside the scan window, or no recency table wired at all — and is
+	// never penalised, so a candidate built without this field ranks exactly as it used to.
+	ownTradeAgeMinutes float64
 }
 
 // repositionScore is one candidate's evaluated result for the ranking-table log and the
@@ -193,6 +198,9 @@ type repositionScore struct {
 	prerank     int
 	freshProfit int64
 	feasible    bool
+	// ownTradeAgeMinutes carries the candidate's last-own-trade age onto the ranking line, so
+	// the haircut the pre-rank charged is visible where the choice is read. 0 renders nothing.
+	ownTradeAgeMinutes float64
 	// rate is the candidate's projected fresh credits/HOUR over its full time-to-value
 	// (jump + re-plan + the plan's own projected wall-clock) — the sp-1wp8 ranking key.
 	// hasRate=false means the pre-flight plan carried no usable time estimate (cph<=0);
@@ -410,7 +418,10 @@ func (h *RunTourCoordinatorHandler) evaluateRepositionCandidates(
 		if i >= k {
 			break
 		}
-		s := repositionScore{system: cand.system, waypoint: cand.waypoint, prerank: cand.score}
+		s := repositionScore{
+			system: cand.system, waypoint: cand.waypoint, prerank: cand.score,
+			ownTradeAgeMinutes: cand.ownTradeAgeMinutes,
+		}
 		plan, perr := h.planAtCandidate(ctx, ship, cand, cmd, budget)
 		if perr == nil && plan != nil && plan.Feasible {
 			s.feasible = true
@@ -511,8 +522,9 @@ func (h *RunTourCoordinatorHandler) buildRepositionCandidates(ctx context.Contex
 		// Cheap pre-rank: highest cached in-system capped spread first (a proxy for tour
 		// margin), system symbol as a stable tie-break so the top-K bound is deterministic.
 		sort.SliceStable(candidates, func(i, j int) bool {
-			if candidates[i].score != candidates[j].score {
-				return candidates[i].score > candidates[j].score
+			ki, kj := repositionRankKey(candidates[i], cmd), repositionRankKey(candidates[j], cmd)
+			if ki != kj {
+				return ki > kj
 			}
 			return candidates[i].system < candidates[j].system
 		})
@@ -567,11 +579,12 @@ func (h *RunTourCoordinatorHandler) repositionReachCandidates(
 	merged := mergeRepositionCandidates(oneHop, broadened)
 	kept, herdExcluded := h.excludeHerdedSystems(ctx, cmd, merged)
 
-	// Deadhead-decayed pre-rank: score·decay^hops descending, system symbol as the stable tie-break
-	// (preserved from the legacy sort) so the top-K bound stays deterministic.
+	// Deadhead-decayed pre-rank: score·decay^hops, haircut for ground the fleet just worked,
+	// descending, with the system symbol as the stable tie-break (preserved from the legacy sort)
+	// so the top-K bound stays deterministic.
 	decay := resolveRepositionReachHopDecay(cmd.RepositionReachHopDecayPct)
 	sort.SliceStable(kept, func(i, j int) bool {
-		di, dj := repositionDecayedScore(kept[i], decay), repositionDecayedScore(kept[j], decay)
+		di, dj := repositionRankKey(kept[i], cmd), repositionRankKey(kept[j], cmd)
 		if di != dj {
 			return di > dj
 		}
@@ -617,15 +630,35 @@ func repositionDecayedScore(candidate repositionCandidate, decay float64) float6
 	return float64(candidate.score) * math.Pow(decay, float64(hops))
 }
 
-// repositionRankKey is the value the candidate list was SORTED by, mirroring BOTH ranking paths:
-// the deadhead-decayed score when reach is armed (repositionReachCandidates) and the bare pre-rank
-// score otherwise (buildRepositionCandidates). Recomputed from the candidate rather than
-// remembered, so the tie test below can never drift from the sort that produced the order.
-func repositionRankKey(candidate repositionCandidate, cmd *RunTourCoordinatorCommand) float64 {
-	if cmd.RepositionReachEnabled {
-		return repositionDecayedScore(candidate, resolveRepositionReachHopDecay(cmd.RepositionReachHopDecayPct))
+// repositionOwnTradeMultiplier is the bounded haircut the pre-rank charges a candidate for
+// ground the fleet itself worked recently (own_trade_recency.go). Disarmed, or on a candidate
+// carrying no recency stamp, it is exactly 1 and leaves the ranking untouched.
+func repositionOwnTradeMultiplier(candidate repositionCandidate, cmd *RunTourCoordinatorCommand) float64 {
+	if cmd.OwnTradePenaltyDisabled {
+		return 1
 	}
-	return float64(candidate.score)
+	return ownTradeFreshnessMultiplier(
+		candidate.ownTradeAgeMinutes,
+		resolveOwnTradePenaltyPct(cmd.OwnTradePenaltyPct),
+		resolveOwnTradeColdMinutes(cmd.OwnTradeColdMinutes),
+	)
+}
+
+// repositionRankKey is the value the candidate list is SORTED by, mirroring BOTH ranking paths:
+// the deadhead-decayed score when reach is armed (repositionReachCandidates) and the bare pre-rank
+// score otherwise (buildRepositionCandidates), in either case haircut for how recently the fleet
+// last worked the ground. Recomputed from the candidate rather than remembered, so the tie test
+// below can never drift from the sort that produced the order.
+//
+// The two charges compose multiplicatively because they price different things — one a deadhead
+// the hull must fly, the other a board the fleet has already drained — and neither is the
+// anti-herd cap, which has removed its candidates outright before any of this runs.
+func repositionRankKey(candidate repositionCandidate, cmd *RunTourCoordinatorCommand) float64 {
+	base := float64(candidate.score)
+	if cmd.RepositionReachEnabled {
+		base = repositionDecayedScore(candidate, resolveRepositionReachHopDecay(cmd.RepositionReachHopDecayPct))
+	}
+	return base * repositionOwnTradeMultiplier(candidate, cmd)
 }
 
 // repositionCutIsTied reports whether the top-K cut falls INSIDE a run of candidates the pre-rank
@@ -836,6 +869,9 @@ func (h *RunTourCoordinatorHandler) scoreRepositionNeighbors(ctx context.Context
 	// Resolved once, outside the neighbour loop: the cap is a live read and the loop
 	// walks every reachable neighbour system.
 	maxAge := h.listingMaxAge(ctx, cmd.PlayerID)
+	// One table for the whole scan, for the same reason: the reader is TTL-cached, but the
+	// loop walks up to the full BFS reach and the answer cannot change within one scan.
+	ownTrades := h.ownTradeRecencyTable(ctx, cmd.PlayerID)
 	for _, nb := range neighbors {
 		sys := nb.system
 		if sys == "" || seen[sys] {
@@ -882,7 +918,11 @@ func (h *RunTourCoordinatorHandler) scoreRepositionNeighbors(ctx context.Context
 			rejections = append(rejections, neighborRejection{system: sys, reason: "no-waypoint"})
 			continue
 		}
-		candidates = append(candidates, repositionCandidate{system: sys, waypoint: waypoint, score: score, hops: nb.hops, freshLanes: len(fresh), tradeVolume: deepestFreshVolume(fresh)})
+		candidates = append(candidates, repositionCandidate{
+			system: sys, waypoint: waypoint, score: score, hops: nb.hops,
+			freshLanes: len(fresh), tradeVolume: deepestFreshVolume(fresh),
+			ownTradeAgeMinutes: ownTradeAgeMinutes(ownTrades[sys], now),
+		})
 	}
 	return candidates, rejections
 }
@@ -1175,6 +1215,7 @@ func (h *RunTourCoordinatorHandler) persistReposition(ctx context.Context, cmd *
 func logRepositionRanking(logger common.ContainerLogger, shipSymbol, fromSystem string, evaluated []repositionScore, best *repositionScore, floor int64) {
 	parts := make([]string, 0, len(evaluated))
 	for _, s := range evaluated {
+		age := ownTradeAgeNote(s.ownTradeAgeMinutes)
 		switch {
 		case !s.feasible:
 			// Name the SPECIFIC rejection reason (the solver's own "no_profitable_tour", a
@@ -1183,13 +1224,13 @@ func logRepositionRanking(logger common.ContainerLogger, shipSymbol, fromSystem 
 			if reason == "" {
 				reason = "infeasible"
 			}
-			parts = append(parts, fmt.Sprintf("%s(prerank=%d,%s)", s.system, s.prerank, reason))
+			parts = append(parts, fmt.Sprintf("%s(prerank=%d%s,%s)", s.system, s.prerank, age, reason))
 		case s.freshProfit < floor:
-			parts = append(parts, fmt.Sprintf("%s(prerank=%d,fresh=%d,below-floor)", s.system, s.prerank, s.freshProfit))
+			parts = append(parts, fmt.Sprintf("%s(prerank=%d%s,fresh=%d,below-floor)", s.system, s.prerank, age, s.freshProfit))
 		case s.hasRate:
-			parts = append(parts, fmt.Sprintf("%s(prerank=%d,fresh=%d,rate=%.0f/hr)", s.system, s.prerank, s.freshProfit, s.rate))
+			parts = append(parts, fmt.Sprintf("%s(prerank=%d%s,fresh=%d,rate=%.0f/hr)", s.system, s.prerank, age, s.freshProfit, s.rate))
 		default:
-			parts = append(parts, fmt.Sprintf("%s(prerank=%d,fresh=%d)", s.system, s.prerank, s.freshProfit))
+			parts = append(parts, fmt.Sprintf("%s(prerank=%d%s,fresh=%d)", s.system, s.prerank, age, s.freshProfit))
 		}
 	}
 	var chosen string

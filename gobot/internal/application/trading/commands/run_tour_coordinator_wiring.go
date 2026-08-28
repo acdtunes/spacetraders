@@ -116,6 +116,13 @@ func (h *RunTourCoordinatorHandler) SetGateFeeReader(r GateFeeReader) {
 	h.gateFees = r
 }
 
+// SetOwnTradeRecencyReader injects the ledger-backed per-system last-own-trade table the
+// reposition pre-rank de-ranks against. Unset (every existing test) leaves ownTradeRecency
+// nil, which stamps no candidate and ranks byte-identically to today.
+func (h *RunTourCoordinatorHandler) SetOwnTradeRecencyReader(r OwnTradeRecencyReader) {
+	h.ownTradeRecency = r
+}
+
 // SetAPISaturationReader injects the request-budget pressure estimator. Unset (every
 // existing test) leaves apiSaturation nil, which ranks tours on credits per hour.
 func (h *RunTourCoordinatorHandler) SetAPISaturationReader(r APISaturationReader) {

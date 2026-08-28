@@ -3,6 +3,7 @@ package persistence
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -154,6 +155,94 @@ func (r *GormTransactionRepository) PerOriginGateFees(
 		fees[rw.OriginSystem] = int64(math.Round(rw.MeanFee))
 	}
 	return fees, nil
+}
+
+// aggregateTime scans a timestamp that came out of a SQL AGGREGATE rather than off a typed
+// column. Postgres hands back a time.Time; sqlite loses the column's datetime affinity
+// through MAX() and hands back a bare string, which no standard destination will take. A
+// per-row query would dodge that (LatestLogTimestamps does exactly this) but is only
+// affordable when the keys number in the tens, and markets do not.
+//
+// An unparseable value scans as the zero time rather than erroring: the caller already drops
+// undated rows, and one odd row must not fail a whole ranking read.
+type aggregateTime struct{ time.Time }
+
+// Value is never used to WRITE — this type only ever appears in a read destination — but GORM
+// refuses to treat a struct field as a scalar column unless both halves of the interface pair
+// are present, and without it the field is parsed as a relation.
+func (a aggregateTime) Value() (driver.Value, error) { return a.Time, nil }
+
+func (a *aggregateTime) Scan(src any) error {
+	switch v := src.(type) {
+	case nil:
+		a.Time = time.Time{}
+	case time.Time:
+		a.Time = v
+	case []byte:
+		a.Time = parseAggregateTime(string(v))
+	case string:
+		a.Time = parseAggregateTime(v)
+	default:
+		a.Time = time.Time{}
+	}
+	return nil
+}
+
+func parseAggregateTime(s string) time.Time {
+	for _, layout := range []string{
+		time.RFC3339Nano,
+		"2006-01-02 15:04:05.999999999-07:00",
+		"2006-01-02 15:04:05.999999999Z07:00",
+		"2006-01-02 15:04:05",
+	} {
+		if at, err := time.Parse(layout, s); err == nil {
+			return at
+		}
+	}
+	return time.Time{}
+}
+
+var _ ledger.OwnTradeRecencyReader = (*GormTransactionRepository)(nil)
+
+// LastTradeByWaypoint reports the most recent cargo buy or sell the fleet booked at each
+// waypoint inside the window — see ledger.OwnTradeRecencyReader.
+//
+// Only the two CARGO types count. A refuel, a jump toll or a hull purchase moves credits
+// without moving a tradeable good's price, so counting them would report ground as worked
+// that nobody traded on.
+func (r *GormTransactionRepository) LastTradeByWaypoint(
+	ctx context.Context, playerID shared.PlayerID, since time.Time,
+) (map[string]time.Time, error) {
+	type row struct {
+		Waypoint  string
+		LastTrade aggregateTime
+	}
+	var rows []row
+	result := r.db.WithContext(ctx).Model(&TransactionModel{}).
+		Select("metadata->>'waypoint' AS waypoint, MAX(timestamp) AS last_trade").
+		Where("player_id = ?", playerID.Value()).
+		Where("transaction_type IN ?", []string{
+			string(ledger.TransactionTypePurchaseCargo),
+			string(ledger.TransactionTypeSellCargo),
+		}).
+		// `timestamp`, not created_at: the half of idx_player_timestamp that bounds this scan.
+		Where("timestamp >= ?", since).
+		Where("metadata->>'waypoint' IS NOT NULL").
+		Where("metadata->>'waypoint' <> ''").
+		Group("metadata->>'waypoint'").
+		Scan(&rows)
+	if result.Error != nil {
+		return nil, fmt.Errorf("failed to aggregate last trade by waypoint: %w", result.Error)
+	}
+
+	last := make(map[string]time.Time, len(rows))
+	for _, rw := range rows {
+		if rw.LastTrade.IsZero() {
+			continue // an unstamped row cannot date anything
+		}
+		last[rw.Waypoint] = rw.LastTrade.Time
+	}
+	return last, nil
 }
 
 var _ ledger.CategoryTotalsReader = (*GormTransactionRepository)(nil)

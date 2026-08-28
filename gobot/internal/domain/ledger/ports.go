@@ -52,6 +52,14 @@ type TreasuryHighWaterReader interface {
 	) (highWater int64, readable bool, err error)
 }
 
+// OwnTradeRecencyReader reports when the fleet itself last traded cargo at each waypoint, telling
+// ground it just worked from ground it left alone. Keyed by WAYPOINT so the caller picks its grain.
+type OwnTradeRecencyReader interface {
+	LastTradeByWaypoint(
+		ctx context.Context, playerID shared.PlayerID, since time.Time,
+	) (map[string]time.Time, error)
+}
+
 // CategoryTotalsReader sums signed amounts per category over a window in SQL, mirroring
 // GateFeeAggregator's separation from TransactionRepository above.
 type CategoryTotalsReader interface {
