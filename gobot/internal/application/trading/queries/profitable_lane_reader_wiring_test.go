@@ -80,10 +80,12 @@ func goodWithActivity(t *testing.T, symbol string, bid, ask, volume int, tradeTy
 // The invariant is deliberately about SHAPE: every construction is bound to a name and that same
 // name is handed the table in the same file. An inline construction fails this even though it may be
 // harmless, which is the correct trade — a reader nobody named is a reader nobody can wire.
-const (
-	laneReaderCtor        = "NewProfitableLaneReader"
-	laneReaderAgeCapsSetr = "SetRankerAgeCaps"
-)
+const laneReaderCtor = "NewProfitableLaneReader"
+
+// laneReaderSetters is every boot injection a census must receive: the backstop table AND the
+// quote-age discount charged inside it. A census handed one but not the other prices lanes on
+// half the ranker's model.
+var laneReaderSetters = []string{"SetRankerAgeCaps", "SetStalenessDiscount"}
 
 func TestProfitableLaneReader_EveryConstructionIsHandedTheFreshnessTable(t *testing.T) {
 	root := moduleRoot(t)
@@ -126,9 +128,13 @@ func assertLaneReaderWiring(t *testing.T, path string, src []byte) int {
 	file, err := parser.ParseFile(fset, path, src, 0)
 	require.NoError(t, err, "parse %s", path)
 
-	boundNames := map[string]token.Pos{} // identifier -> where it was constructed
-	inlineAt := []token.Pos{}            // constructions bound to no name at all
-	wired := map[string]bool{}           // identifier -> was handed the table
+	boundNames := map[string]token.Pos{}  // identifier -> where it was constructed
+	inlineAt := []token.Pos{}             // constructions bound to no name at all
+	wired := map[string]map[string]bool{} // identifier -> which setters it was handed
+	setters := map[string]bool{}
+	for _, name := range laneReaderSetters {
+		setters[name] = true
+	}
 
 	ast.Inspect(file, func(n ast.Node) bool {
 		switch node := n.(type) {
@@ -137,9 +143,12 @@ func assertLaneReaderWiring(t *testing.T, path string, src []byte) int {
 		case *ast.ValueSpec:
 			bindLaneReaders(identExprs(node.Names), node.Values, boundNames)
 		case *ast.CallExpr:
-			if sel, ok := node.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == laneReaderAgeCapsSetr {
+			if sel, ok := node.Fun.(*ast.SelectorExpr); ok && setters[sel.Sel.Name] {
 				if recv, ok := sel.X.(*ast.Ident); ok {
-					wired[recv.Name] = true
+					if wired[recv.Name] == nil {
+						wired[recv.Name] = map[string]bool{}
+					}
+					wired[recv.Name][sel.Sel.Name] = true
 				}
 			}
 		}
@@ -163,13 +172,15 @@ func assertLaneReaderWiring(t *testing.T, path string, src []byte) int {
 	// assert, not require: the scan reports EVERY unwired site in one run rather than stopping the
 	// walk at the first.
 	assert.Empty(t, inlineAt,
-		"%s constructs %s inline (%d construction(s), %d named): bind it to a name and hand it %s, or the freshness table can never reach it",
-		path, laneReaderCtor, total, len(boundNames), laneReaderAgeCapsSetr)
+		"%s constructs %s inline (%d construction(s), %d named): bind it to a name and hand it %v, or the freshness model can never reach it",
+		path, laneReaderCtor, total, len(boundNames), laneReaderSetters)
 
 	for name, pos := range boundNames {
-		assert.True(t, wired[name],
-			"%s: %s built at %s is never handed the resolved freshness table (%s) — it will run the fitted defaults while the executor's ranker runs the captain's, and count lanes the ranker has already dropped",
-			path, name, fset.Position(pos), laneReaderAgeCapsSetr)
+		for _, setter := range laneReaderSetters {
+			assert.True(t, wired[name][setter],
+				"%s: %s built at %s is never handed %s — it will run the fitted defaults while the executor's ranker runs the captain's, and count lanes the ranker has already dropped",
+				path, name, fset.Position(pos), setter)
+		}
 	}
 	return total
 }

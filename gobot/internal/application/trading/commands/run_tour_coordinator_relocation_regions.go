@@ -281,7 +281,7 @@ func (h *RunTourCoordinatorHandler) relocationRegionFreshness(ctx context.Contex
 	if sinkAge := relocationListingAge(sink, now); sinkAge > age {
 		age = sinkAge
 	}
-	return age, h.tighterAgeCapActivity(source.Activity, sink.Activity), true
+	return age, h.harsherStalenessActivity(source.Activity, sink.Activity), true
 }
 
 // relocationListingAge is how old a cached quote is. A ZERO ObservedAt means "unknown age" and reads
@@ -309,12 +309,12 @@ func findRelocationListing(listings []trading.GoodListing, waypoint, good string
 	return trading.GoodListing{}, false
 }
 
-// tighterAgeCapActivity returns whichever activity level the handler's age-cap table holds to the
-// STRICTER freshness bound. It reads h.rankerAgeCaps — the same config-resolved table the daemon
-// injects into the relocator via SetRankerAgeCaps — so the activity chosen here and the cap applied
-// there come from one definition and cannot drift.
-func (h *RunTourCoordinatorHandler) tighterAgeCapActivity(a, b string) string {
-	if h.rankerAgeCaps.For(b) < h.rankerAgeCaps.For(a) {
+// harsherStalenessActivity returns whichever of a lane's two activity levels is charged MORE for
+// the same quote age, so the region is reported under the half of its pricing that ages worst. It
+// reads the same StalenessDiscount the ranker charges, so label and haircut cannot drift apart.
+func (h *RunTourCoordinatorHandler) harsherStalenessActivity(a, b string) string {
+	const probe = time.Hour
+	if h.stalenessDiscount.DriftFraction(b, probe) > h.stalenessDiscount.DriftFraction(a, probe) {
 		return b
 	}
 	return a

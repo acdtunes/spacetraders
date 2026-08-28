@@ -8,19 +8,47 @@ package commands
 // snapshot spread and hulls rotate to fresh lanes. The coefficients live in
 // config.TradeImpactConfig (refit per era); the ledger lives in domain/trading.
 
-import "github.com/andrescamacho/spacetraders-go/internal/domain/trading"
+import (
+	"time"
+
+	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
+)
 
 // laneImpactModel folds the era-3 price-impact coefficients and a live shared
 // compression-debt lookup into lane ranking. Its ZERO VALUE is INERT — zero impact
-// coefficients and a nil debt lookup — so effectiveSpreadPerUnit returns the snapshot
-// spread unchanged and every ranking caller that supplies no model (every existing
-// test) ranks exactly as the snapshot ranker did.
+// coefficients, a nil debt lookup and an unset ranking clock — so effectiveSpreadPerUnit
+// returns the snapshot spread unchanged and every ranking caller that supplies no model
+// (every existing test) ranks exactly as the snapshot ranker did.
 type laneImpactModel struct {
 	buyImpact  float64 // era-3 config: fractional ask rise per full tradeVolume bought (~0.050)
 	sellImpact float64 // era-3 config: fractional bid fall per full tradeVolume sold (~0.015)
 	// debt returns the lane's live decayed compression fraction from the shared cooldown
 	// ledger. Nil (no ledger wired, or in a unit test) contributes zero.
 	debt func(l trading.ArbitrageLane) float64
+	// staleness prices what each end's quote AGE costs; rankedAt is the single instant
+	// every lane's age is measured from, and a zero one disables the term.
+	staleness trading.StalenessDiscount
+	rankedAt  time.Time
+}
+
+// rankingSpreadPerUnit is the per-unit spread the LANE RANKER scores on:
+// effectiveSpreadPerUnit less the staleness haircut on the two quotes the lane was priced
+// from. It stays SEPARATE from effectiveSpreadPerUnit because that one is also the
+// long-haul engine's marginal-value function, where it SIZES a tranche — and a ranking
+// adjustment must not reach a quantity decision. laneCircuitValue calls this one function,
+// so there is still exactly one ranking pass over one key.
+func (m laneImpactModel) rankingSpreadPerUnit(l trading.ArbitrageLane, plannedUnits int) float64 {
+	spread := m.effectiveSpreadPerUnit(l, plannedUnits)
+	if m.rankedAt.IsZero() {
+		return spread
+	}
+	spread -= m.staleness.SpreadHaircutPerUnit(l, m.rankedAt)
+	if spread < 0 {
+		// Bottom of the order, never a negative that sorts as if the lane earned in the
+		// other direction. Removing it is the backstop's job, and that runs as its own step.
+		return 0
+	}
+	return spread
 }
 
 // effectiveSpreadPerUnit is the per-unit spread the ranker scores a lane on: the

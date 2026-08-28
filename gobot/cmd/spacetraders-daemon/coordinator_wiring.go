@@ -84,8 +84,9 @@ func (w circuitWiring) configureTradeRouteCoordinator(h *tradeRouteCmd.RunTradeR
 		w.cfg.TradeImpact.ResolvedSellImpact(),
 		w.laneCooldown,
 	)
-	// Activity-conditioned ranker freshness caps for the undirected auto-scan.
+	// The backstop horizon, and the adverse-drift haircut charged inside it.
 	h.SetRankerAgeCaps(w.cfg.Trading.RankerAgeCapMinutes.Resolved())
+	h.SetStalenessDiscount(w.cfg.Trading.StalenessDiscount.Resolved())
 	// The scan-dedup A/B test's live, operator-settable allowlist. Defaults empty
 	// (every ship disarmed, unchanged behavior); an operator arms a hull via
 	// `fleet scan-dedup add`, no daemon restart.
@@ -169,8 +170,10 @@ func (w circuitWiring) configureTourCoordinator(h *tradeRouteCmd.RunTourCoordina
 	// Samples the deliberate price-impact instrumentation instead of scanning every
 	// market around every trade.
 	h.SetScanPolicy(w.cfg.TradeImpact.ResolvedScanPolicy())
-	// Same activity-conditioned freshness caps as the lane ranker, one config-resolved table.
+	// Same backstop and same quote-age discount as the lane ranker, so the tour snapshot
+	// hands the solver a board priced on one curve.
 	h.SetRankerAgeCaps(w.cfg.Trading.RankerAgeCapMinutes.Resolved())
+	h.SetStalenessDiscount(w.cfg.Trading.StalenessDiscount.Resolved())
 	// Arms the firm-sink buy gate's FRESH clause: at execution it refuses a held sink
 	// whose live market_data is older than this floor.
 	h.SetSinkFreshness(w.cfg.TradeFleet.ResolvedSinkFreshnessMaxAge())

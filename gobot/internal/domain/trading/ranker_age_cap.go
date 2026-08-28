@@ -6,42 +6,50 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
-// Activity-conditioned ranker freshness caps. The economy analyst fit
-// these on era3/4 telemetry (n=3,236 trades): a stale listing's price barely drifts,
-// and the drift COST is activity-dependent — a WEAK market is nearly static for
-// hours, a STRONG one moves fast — so a single uniform freshness cap (the retired
-// flat 75-minute maxListingAge) is the wrong SHAPE. Each cap is fitted so the p90
-// sell-price drift over its window stays ≤ ~5%:
+// Ranker age caps — the BACKSTOP horizon, no longer a freshness cliff.
 //
-//   - WEAK       → 480 min (8h)  — nearly static, safe to rank off an 8h-old quote
-//   - RESTRICTED → 180 min (3h)  — the conservative middle (also the unknown default)
-//   - GROWING    →  60 min       — competition churns prices within the hour
-//   - STRONG     →  30 min       — fastest-moving; a half-hour-old quote is unreliable
+// These caps used to BE the freshness model: a quote inside its activity's cap ranked
+// at full face value, a quote a minute past it was refused outright. Both halves were
+// wrong, and the cap was unachievable besides — the scan rotation over the probe-held
+// map cannot refresh every waypoint inside a 30-minute STRONG cap at any affordable
+// request budget, so a tight setting mass-refused good data and a loose one traded
+// hours-old quotes at par. StalenessDiscount now prices age continuously, and the caps
+// have one job left: stop ranking where the fitted curve stops saying anything.
 //
-// These are the ARMED defaults (RULINGS #5): they are the single numeric source the
-// config layer's absent-knob fallback and the RankerAgeCaps zero-value defense both
-// reference, so the table is DEFINED ONCE and a captain retunes it purely from
-// config.yaml ([trading] ranker_age_cap_minutes.{weak,restricted,growing,strong}).
+// The horizon is therefore StalenessDiscountHorizon, uniformly. The activity
+// conditioning moved to the discount, where it is measured; past saturation every
+// class's curve is flat, so ranking beyond it would score a three-day-old quote exactly
+// like a twelve-hour-old one — the very error the discount exists to remove. A
+// per-activity backstop was considered and refused: the observed saturation ages are
+// neither cleanly ordered nor separated by more than the noise (GROWING ~11h, STRONG
+// and WEAK ~13.5h, RESTRICTED still creeping at 21h), so splitting them would fit noise
+// into a money-adjacent threshold.
+//
+// These are the ARMED defaults (RULINGS #5): the single numeric source the config
+// layer's absent-knob fallback and the RankerAgeCaps zero-value defense both reference,
+// so the table is DEFINED ONCE and a captain retunes it purely from config.yaml
+// ([trading] ranker_age_cap_minutes.{weak,restricted,growing,strong}). The four keys
+// survive so one class can still be tightened alone.
 const (
-	DefaultRankerAgeCapWeak       = 480 * time.Minute
-	DefaultRankerAgeCapRestricted = 180 * time.Minute
-	DefaultRankerAgeCapGrowing    = 60 * time.Minute
-	DefaultRankerAgeCapStrong     = 30 * time.Minute
+	DefaultRankerAgeCapWeak       = StalenessDiscountHorizon
+	DefaultRankerAgeCapRestricted = StalenessDiscountHorizon
+	DefaultRankerAgeCapGrowing    = StalenessDiscountHorizon
+	DefaultRankerAgeCapStrong     = StalenessDiscountHorizon
 )
 
-// RankerAgeCaps is the activity-conditioned freshness table the UNDIRECTED lane
-// ranker (partitionListingsByAge) and the tour snapshot builder (BuildTourSnapshot)
-// drop stale listings against — each listing measured against ITS OWN activity's cap
-// instead of one flat threshold. It is the one table both ranker sites reference
-// (defined once, sp-t5sh5), resolved from config so the caps are tune knobs, not a
-// hardcoded 4-way constant.
+// RankerAgeCaps is the backstop table the UNDIRECTED lane ranker
+// (partitionListingsByAge) and the tour snapshot builder (BuildTourSnapshot) drop
+// listings against, each measured against ITS OWN activity's cap. It is the one table
+// both ranker sites reference (defined once, sp-t5sh5), resolved from config so the
+// caps are tune knobs, not a hardcoded 4-way constant.
 //
-// It changes only the ranker's VISIBILITY cap (which cached rows are eligible to be
-// RANKED). The execution money guards — staleAskAborts, the per-visit margin
-// re-check, min-margin/price/reserve — are untouched (RULINGS #4): a directed --dest
-// lane keeps its stale rows and is re-verified LIVE at execution, so a
-// loosened visibility cap can never spend into a moved price; the execution tail
-// still aborts.
+// It is a VISIBILITY bound (which cached rows are eligible to be RANKED at all), and
+// it is now the outer bound only: within it, StalenessDiscount does the work of pricing
+// how much an old quote is worth. The execution money guards — staleAskAborts, the
+// per-visit margin re-check, min-margin/price/reserve — are untouched (RULINGS #4): a
+// directed --dest lane keeps its stale rows and is re-verified LIVE at execution, so a
+// loosened visibility cap can never spend into a moved price; the execution tail still
+// aborts.
 type RankerAgeCaps struct {
 	Weak       time.Duration
 	Restricted time.Duration

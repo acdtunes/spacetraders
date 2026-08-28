@@ -53,6 +53,9 @@ type ProfitableLaneReader struct {
 	// ageCaps drops stale listings. Its ZERO VALUE is the fitted armed default (RankerAgeCaps.For);
 	// a captain's RETUNE reaches the census only through SetRankerAgeCaps.
 	ageCaps trading.RankerAgeCaps
+	// staleness charges each surviving listing for its age, so the census counts the lanes
+	// still worth flying rather than the lanes an hours-old quote makes look worth flying.
+	staleness trading.StalenessDiscount
 }
 
 // NewProfitableLaneReader wires the reader over its market and reachability sources. Both are
@@ -67,6 +70,12 @@ func NewProfitableLaneReader(markets laneMarketReader, reach laneReachabilityRea
 // dropped, and each one sizes a hull purchase (RULINGS #4) — so every construction calls this.
 func (r *ProfitableLaneReader) SetRankerAgeCaps(caps trading.RankerAgeCaps) {
 	r.ageCaps = caps
+}
+
+// SetStalenessDiscount wires the same quote-age discount the ranker charges. Without it the
+// census counts at face value lanes the ranker has already discounted out of contention.
+func (r *ProfitableLaneReader) SetStalenessDiscount(discount trading.StalenessDiscount) {
+	r.staleness = discount
 }
 
 // LaneCensus is one census reading: Profitable is the count the wave consumes, CrossSystem how many
@@ -246,6 +255,11 @@ func (r *ProfitableLaneReader) collectSystemListings(ctx context.Context, system
 			}
 			if !r.ageCaps.Fresh(listing, now) {
 				continue
+			}
+			if !listing.ObservedAt.IsZero() {
+				age := now.Sub(listing.ObservedAt)
+				listing.Ask = r.staleness.AdjustedAsk(listing.Ask, listing.Activity, age)
+				listing.Bid = r.staleness.AdjustedBid(listing.Bid, listing.Activity, age)
 			}
 			listings = append(listings, listing)
 		}

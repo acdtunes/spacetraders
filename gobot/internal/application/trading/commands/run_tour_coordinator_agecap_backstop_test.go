@@ -43,12 +43,11 @@ func planStalenessInputs(t *testing.T, fx *tourFixture, caps trading.RankerAgeCa
 	return planner.snapshots[0], planner.snapshotAgeCaps[0]
 }
 
-// A WEAK row the Go-side activity cap DELIBERATELY preserves past 75 minutes must reach the
-// solver intact: it is both present in the snapshot AND inside the staleness backstop the
-// same request carries. A backstop tighter than the row's age re-drops it inside the solver,
-// nullifying the activity-conditioned model for every row between the two thresholds.
+// A WEAK row the Go-side cap DELIBERATELY preserves must reach the solver intact: present in
+// the snapshot AND inside the staleness backstop the same request carries. A backstop tighter
+// than the row's age would re-drop inside the solver what the Go side kept.
 func TestTour_WeakRowPastTheFlatCutoffSurvivesIntoTheSolverRequest(t *testing.T) {
-	const age = 120 * time.Minute // past the retired flat 75, well inside the fitted WEAK cap
+	const age = 120 * time.Minute
 	snapshot, backstopMinutes := planStalenessInputs(t, backstopFixture("WEAK", age), trading.RankerAgeCaps{})
 
 	if len(snapshot) == 0 {
@@ -61,16 +60,17 @@ func TestTour_WeakRowPastTheFlatCutoffSurvivesIntoTheSolverRequest(t *testing.T)
 	}
 }
 
-// The upstream per-activity filter is the real guard and must keep binding: a STRONG row past
-// its fitted 30-minute cap stays dropped even though it is younger than the retired flat 75.
-// Widening the backstop is only safe while this holds.
-func TestTour_StrongRowPastItsFittedCapIsStillDroppedBeforeTheSolver(t *testing.T) {
-	// 45 min: past the fitted STRONG cap, under the retired flat cutoff.
-	snapshot, _ := planStalenessInputs(t, backstopFixture("STRONG", 45*time.Minute), trading.RankerAgeCaps{})
+// The upstream per-activity filter is the real guard and must keep binding: a row past its
+// activity's backstop stays dropped before the solver ever sees it. Pricing staleness does
+// not mean ranking a quote of any age.
+func TestTour_RowPastItsBackstopIsStillDroppedBeforeTheSolver(t *testing.T) {
+	caps := trading.DefaultRankerAgeCaps()
+	age := caps.For("STRONG") + time.Hour
+	snapshot, _ := planStalenessInputs(t, backstopFixture("STRONG", age), trading.RankerAgeCaps{})
 
 	if len(snapshot) != 0 {
-		t.Fatalf("expected the STRONG rows to be dropped past their 30-min cap, got %d rows: %+v",
-			len(snapshot), snapshot)
+		t.Fatalf("expected the STRONG rows to be dropped past their %v backstop, got %d rows: %+v",
+			caps.For("STRONG"), len(snapshot), snapshot)
 	}
 }
 

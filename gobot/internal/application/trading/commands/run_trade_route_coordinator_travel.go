@@ -961,14 +961,13 @@ func laneCircuitValue(l trading.ArbitrageLane, shipCapacity int, model laneImpac
 	if shipCapacity > 0 {
 		weight = trading.HoldFitWeight(l.VolumeCap, shipCapacity)
 	}
-	// Rank on the EFFECTIVE spread, not the snapshot. plannedUnits = shipCapacity
-	// (the units this hull would move on the lane); effectiveSpreadPerUnit nets out the
-	// self-compression that volume would cause plus the live shared cooldown debt, so a
-	// lane this hull would compress (high units/tv) or one the fleet has hammered scores
-	// below its snapshot spread. An inert model (no coefficients, no ledger) returns the
-	// snapshot spread, so this is byte-identical to the previous value for every caller
-	// that supplies no model.
-	return model.effectiveSpreadPerUnit(l, shipCapacity) * float64(l.VolumeCap) * weight
+	// Rank on the EFFECTIVE spread, not the snapshot. plannedUnits = shipCapacity;
+	// rankingSpreadPerUnit nets out the self-compression that volume would cause, the live
+	// shared cooldown debt, and the expected adverse drift in each end's quote — so a lane
+	// this hull would compress, one the fleet has hammered, or one priced off hours-old
+	// quotes all score below their snapshot spread. An inert model returns the snapshot
+	// spread, so this is byte-identical for every caller that supplies no model.
+	return model.rankingSpreadPerUnit(l, shipCapacity) * float64(l.VolumeCap) * weight
 }
 
 // laneCircuitRatePerHour is the sp-1wp8 ranking score: the lane's hold-fit-weighted

@@ -24,15 +24,13 @@ import (
 // (WaypointRepository.ListBySystem is already era-filtered, so dead-era coords never
 // leak into routing).
 //
-// Staleness: each GOOD row is excluded when its market's cached snapshot is older than
-// that good's ACTIVITY-conditioned freshness cap: caps.For(good.Activity) —
-// a WEAK good survives for hours, a STRONG one only ~30 min — the same activity-cap
-// discipline as the undirected lane ranker (partitionListingsByAge). The check is
-// per-good, not per-market, so a market with mixed activities keeps its WEAK rows while
-// dropping its STRONG ones. The caller passes the same config-resolved RankerAgeCaps
-// table the lane ranker uses, so the caps are defined once, not redeclared here. A zero
-// ObservedAt means "unknown age" and is treated as fresh (matching GoodListing
-// semantics).
+// Staleness is PRICED, not gated: each row's Ask is marked UP and its Bid marked DOWN by the
+// expected adverse drift at its own age and activity, so the solver — which has no age model
+// of its own — ranks an hours-old quote at a haircut instead of at par. One-directional, so
+// it can only make the solver more conservative (RULINGS #4). caps.For(good.Activity)
+// survives as the BACKSTOP, dropping rows past the age at which the curve saturates. Both are
+// the caller's, so tour and lane ranker share one definition; a zero ObservedAt is "unknown
+// age" — neither dropped nor discounted.
 //
 // Failure posture: a market that cannot be read simply contributes no rows (an
 // unreadable market is not a lane); a per-system waypoint-repo error degrades that
@@ -50,6 +48,7 @@ func BuildTourSnapshot(
 	playerID int,
 	now time.Time,
 	caps trading.RankerAgeCaps,
+	discount trading.StalenessDiscount,
 ) ([]routing.TourGoodSnapshot, []routing.TourWaypoint, error) {
 	var snapshot []routing.TourGoodSnapshot
 	var waypoints []routing.TourWaypoint
@@ -110,6 +109,12 @@ func BuildTourSnapshot(
 				}
 				if g.TradeType() == market.TradeTypeExport {
 					bid = 0
+				}
+				// After the crossed-quote refusal, so that guard keeps reading the raw quote,
+				// and after the EXPORT zeroing, so a zeroed bid stays exactly zero.
+				if observedKnown {
+					ask = discount.AdjustedAsk(ask, activity, age)
+					bid = discount.AdjustedBid(bid, activity, age)
 				}
 				snapshot = append(snapshot, routing.TourGoodSnapshot{
 					Waypoint:    mkt.WaypointSymbol(),

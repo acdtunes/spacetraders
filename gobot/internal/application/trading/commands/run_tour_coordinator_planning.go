@@ -116,7 +116,7 @@ func (h *RunTourCoordinatorHandler) buildTourPlanRequest(
 	cmd *RunTourCoordinatorCommand,
 	budget tourPlanBudget,
 ) (*tourPlanRequest, error) {
-	snapshot, waypoints, err := tradingsvc.BuildTourSnapshot(ctx, h.marketRepo, h.waypointRepo, allowedSystems, cmd.PlayerID, h.clock.Now(), h.rankerAgeCaps)
+	snapshot, waypoints, err := tradingsvc.BuildTourSnapshot(ctx, h.marketRepo, h.waypointRepo, allowedSystems, cmd.PlayerID, h.clock.Now(), h.rankerAgeCaps, h.stalenessDiscount)
 	if err != nil {
 		return nil, err
 	}

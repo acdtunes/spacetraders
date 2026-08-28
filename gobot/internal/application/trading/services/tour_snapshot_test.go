@@ -99,7 +99,7 @@ func TestBuildTourSnapshot_ExcludesStaleAndAssemblesCoords(t *testing.T) {
 	}}
 
 	snapshot, waypoints, err := BuildTourSnapshot(context.Background(), repo, wps,
-		[]string{"X1-NK36"}, 1, now, trading.DefaultRankerAgeCaps())
+		[]string{"X1-NK36"}, 1, now, splitBackstopCaps(), noStalenessDiscount())
 	if err != nil {
 		t.Fatalf("BuildTourSnapshot: %v", err)
 	}
@@ -171,7 +171,7 @@ func TestBuildTourSnapshot_PerGoodActivityStaleness(t *testing.T) {
 	}
 	wps := &snapFakeWaypointRepo{byS: map[string][]*shared.Waypoint{"X1-MIX": {mustWaypoint(t, "X1-MIX-M1", 1, 1)}}}
 
-	snapshot, _, err := BuildTourSnapshot(context.Background(), repo, wps, []string{"X1-MIX"}, 1, now, trading.DefaultRankerAgeCaps())
+	snapshot, _, err := BuildTourSnapshot(context.Background(), repo, wps, []string{"X1-MIX"}, 1, now, splitBackstopCaps(), noStalenessDiscount())
 	if err != nil {
 		t.Fatalf("BuildTourSnapshot: %v", err)
 	}
@@ -219,7 +219,7 @@ func TestBuildTourSnapshot_StaleDrop_IncrementsExclusionCounter(t *testing.T) {
 	}
 	wps := &snapFakeWaypointRepo{byS: map[string][]*shared.Waypoint{"X1-NK36": {mustWaypoint(t, "X1-NK36-FRESH", 1, 2)}}}
 
-	if _, _, err := BuildTourSnapshot(context.Background(), repo, wps, []string{"X1-NK36"}, 1, now, trading.DefaultRankerAgeCaps()); err != nil {
+	if _, _, err := BuildTourSnapshot(context.Background(), repo, wps, []string{"X1-NK36"}, 1, now, splitBackstopCaps(), noStalenessDiscount()); err != nil {
 		t.Fatalf("BuildTourSnapshot: %v", err)
 	}
 
@@ -249,4 +249,20 @@ func gatherStaleExcluded(t *testing.T, system string) float64 {
 		}
 	}
 	return 0
+}
+
+// splitBackstopCaps is a captain's per-activity RETUNE: the fitted defaults hold every
+// class to one horizon, so a case proving the filter reads each row's OWN activity must
+// set the four keys apart itself.
+func splitBackstopCaps() trading.RankerAgeCaps {
+	return trading.RankerAgeCaps{
+		Weak: 480 * time.Minute, Restricted: 180 * time.Minute,
+		Growing: 60 * time.Minute, Strong: 30 * time.Minute,
+	}
+}
+
+// noStalenessDiscount is for cases asserting the price MAPPING: a haircut of a few credits
+// would mask exactly the transposition they exist to catch.
+func noStalenessDiscount() trading.StalenessDiscount {
+	return trading.StalenessDiscount{Disabled: true}
 }

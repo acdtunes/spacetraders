@@ -92,11 +92,23 @@ func widenedFarCmd() *RunTourCoordinatorCommand {
 	return &RunTourCoordinatorCommand{PlayerID: 1, CandidateHopDepth: 2, MaxTourSystems: 5}
 }
 
+// splitBackstopCaps is a captain's per-activity RETUNE of the backstop table: the four keys
+// are separately tunable, and the arrival filter must measure each row against ITS OWN
+// activity's window. The fitted defaults give every class the same horizon, which would make
+// these cases test nothing.
+func splitBackstopCaps() trading.RankerAgeCaps {
+	return trading.RankerAgeCaps{
+		Weak: 480 * time.Minute, Restricted: 180 * time.Minute,
+		Growing: 60 * time.Minute, Strong: 30 * time.Minute,
+	}
+}
+
 func farSinkHandler(t *testing.T, fx *tourFixture, graph *fakeGateGraph, scanner *stubScanner) *RunTourCoordinatorHandler {
 	t.Helper()
 	h := newCandidatesHandler(t, fx)
 	h.SetGateGraph(graph)
 	h.SetOutOfHorizonSinkScanner(scanner)
+	h.SetRankerAgeCaps(splitBackstopCaps())
 	return h
 }
 
@@ -105,7 +117,7 @@ func farSinkHandler(t *testing.T, fx *tourFixture, graph *fakeGateGraph, scanner
 func baseSnapshotOver(t *testing.T, h *RunTourCoordinatorHandler, allowed []string) []routing.TourGoodSnapshot {
 	t.Helper()
 	snap, _, err := tradingsvc.BuildTourSnapshot(context.Background(), h.marketRepo, h.waypointRepo,
-		allowed, 1, h.clock.Now(), h.rankerAgeCaps)
+		allowed, 1, h.clock.Now(), h.rankerAgeCaps, trading.DefaultStalenessDiscount())
 	if err != nil {
 		t.Fatalf("build base snapshot: %v", err)
 	}
@@ -563,7 +575,7 @@ func TestFarSinkReach_AgesASameSystemSinkByNothing(t *testing.T) {
 func TestKeepRowsSurvivingArrival_KeepsADeepLaneTheRetiredFlatAgerWouldHaveDiscarded(t *testing.T) {
 	now := time.Now()
 	const hops = gategraph.MaxJumpPath
-	caps := trading.DefaultRankerAgeCaps()
+	caps := splitBackstopCaps()
 	row := routing.TourGoodSnapshot{
 		Waypoint: farSys + "-W", System: farSys, Good: "GX",
 		Activity: string(shared.ActivityLevelRestricted), Bid: 30000,
@@ -589,7 +601,7 @@ func TestKeepRowsSurvivingArrival_KeepsADeepLaneTheRetiredFlatAgerWouldHaveDisca
 func TestKeepRowsSurvivingArrival_StillDiscardsARowThatAgesOutOverTheHaul(t *testing.T) {
 	now := time.Now()
 	const hops = gategraph.MaxJumpPath
-	caps := trading.DefaultRankerAgeCaps()
+	caps := splitBackstopCaps()
 	row := routing.TourGoodSnapshot{
 		Waypoint: farSys + "-S", System: farSys, Good: "GS",
 		Activity: string(shared.ActivityLevelRestricted), Bid: 40000,

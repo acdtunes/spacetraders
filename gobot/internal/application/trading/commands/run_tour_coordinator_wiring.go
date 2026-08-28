@@ -176,6 +176,13 @@ func (h *RunTourCoordinatorHandler) SetRankerAgeCaps(caps trading.RankerAgeCaps)
 	h.rankerAgeCaps = caps
 }
 
+// SetStalenessDiscount wires the config-resolved quote-age discount into the tour snapshot
+// builder, so the tour path and the lane ranker charge age off the SAME fitted curve. Unset
+// still charges the fit: armed by default, never off by omission.
+func (h *RunTourCoordinatorHandler) SetStalenessDiscount(discount trading.StalenessDiscount) {
+	h.stalenessDiscount = discount
+}
+
 // SetCargoBlocklist injects the tour cargo good-blocklist from
 // cfg.TradeFleet.CargoBlocklist at daemon boot — the same global-config → handler-setter
 // injection SetPrePositioning/SetScanPolicy use. An empty/absent list leaves the handler's

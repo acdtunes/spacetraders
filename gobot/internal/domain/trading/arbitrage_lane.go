@@ -84,6 +84,16 @@ type ArbitrageLane struct {
 	SpreadPerUnit  int // DestBid − SourceAsk (always > 0 for a returned lane)
 	VolumeCap      int // min(source.Volume, dest.Volume) — market-absorption bound
 	CappedSpread   int // SpreadPerUnit × VolumeCap — the ranking key
+
+	// SourceActivity and the two ObservedAt stamps carry each END's own quote age and
+	// activity to the ranker, which charges them a StalenessDiscount. A lane is priced
+	// from two independently-aged observations — the source may have been scanned
+	// minutes ago and the destination hours — so one lane-wide age would misprice
+	// whichever side is fresher. A zero ObservedAt is "unknown age" and is never
+	// discounted, the same fail-open rule GoodListing.ObservedAt carries.
+	SourceActivity   string
+	SourceObservedAt time.Time
+	DestObservedAt   time.Time
 }
 
 // ClearsFloor reports whether the lane's per-unit spread clears the bid-floor
@@ -376,16 +386,19 @@ func walkLaneCandidates(good string, markets []GoodListing, visit func(Arbitrage
 			}
 
 			visit(ArbitrageLane{
-				Good:           good,
-				SourceWaypoint: source.Waypoint,
-				DestWaypoint:   dest.Waypoint,
-				SourceAsk:      source.Ask,
-				DestBid:        dest.Bid,
-				SourceSupply:   source.Supply,
-				DestActivity:   dest.Activity,
-				SpreadPerUnit:  spreadPerUnit,
-				VolumeCap:      volumeCap,
-				CappedSpread:   spreadPerUnit * volumeCap,
+				Good:             good,
+				SourceWaypoint:   source.Waypoint,
+				DestWaypoint:     dest.Waypoint,
+				SourceAsk:        source.Ask,
+				DestBid:          dest.Bid,
+				SourceSupply:     source.Supply,
+				DestActivity:     dest.Activity,
+				SpreadPerUnit:    spreadPerUnit,
+				VolumeCap:        volumeCap,
+				CappedSpread:     spreadPerUnit * volumeCap,
+				SourceActivity:   source.Activity,
+				SourceObservedAt: source.ObservedAt,
+				DestObservedAt:   dest.ObservedAt,
 			})
 		}
 	}

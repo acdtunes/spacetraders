@@ -7,7 +7,6 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
 )
 
 // These tests pin BuildTourSnapshot's crossed-quote guard: a good quoting an ask BELOW its bid
@@ -51,7 +50,7 @@ func TestBuildTourSnapshot_DropsCrossedQuote_KeepsHealthyGoodInSameMarket(t *tes
 	}}
 
 	snapshot, _, err := BuildTourSnapshot(context.Background(), repo, wps,
-		[]string{"X1-CQ"}, 1, now, trading.DefaultRankerAgeCaps())
+		[]string{"X1-CQ"}, 1, now, splitBackstopCaps(), noStalenessDiscount())
 	if err != nil {
 		t.Fatalf("BuildTourSnapshot: %v", err)
 	}
@@ -93,7 +92,7 @@ func TestBuildTourSnapshot_DropsCrossedExport_BeforeZeroingItsBid(t *testing.T) 
 	}}
 
 	snapshot, waypoints, err := BuildTourSnapshot(context.Background(), repo, wps,
-		[]string{"X1-CQX"}, 1, now, trading.DefaultRankerAgeCaps())
+		[]string{"X1-CQX"}, 1, now, splitBackstopCaps(), noStalenessDiscount())
 	if err != nil {
 		t.Fatalf("BuildTourSnapshot: %v", err)
 	}
@@ -126,7 +125,7 @@ func TestBuildTourSnapshot_KeepsZeroRakeQuote_AskEqualsBid(t *testing.T) {
 	}}
 
 	snapshot, _, err := BuildTourSnapshot(context.Background(), repo, wps,
-		[]string{"X1-CQZ"}, 1, now, trading.DefaultRankerAgeCaps())
+		[]string{"X1-CQZ"}, 1, now, splitBackstopCaps(), noStalenessDiscount())
 	if err != nil {
 		t.Fatalf("BuildTourSnapshot: %v", err)
 	}

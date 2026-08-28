@@ -12,13 +12,16 @@ import (
 // intuitive key rather than being folded into the era-refit [trade_impact]
 // coefficients.
 type TradingConfig struct {
-	// RankerAgeCapMinutes is the per-activity freshness cap (in MINUTES) the UNDIRECTED
-	// lane ranker and the tour snapshot drop stale listings against. Minutes (not a raw
-	// Duration) because the analyst's fit and a captain's retune are naturally expressed
-	// in minutes. An absent section / zero field defers to the fitted armed default for
-	// that activity (trading.DefaultRankerAgeCap*), so the ranker runs the analyst's
-	// era3/4 fit unchanged out of the box.
+	// RankerAgeCapMinutes is the per-activity BACKSTOP horizon (in MINUTES) the UNDIRECTED
+	// lane ranker and the tour snapshot drop listings against. Minutes (not a raw
+	// Duration) because the fit and a captain's retune are naturally expressed in minutes.
+	// An absent section / zero field defers to the fitted armed default for that activity
+	// (trading.DefaultRankerAgeCap*), so the ranker runs the fit unchanged out of the box.
 	RankerAgeCapMinutes RankerAgeCapConfig `mapstructure:"ranker_age_cap_minutes"`
+
+	// StalenessDiscount is what a quote's AGE costs INSIDE that backstop. The caps say
+	// where to stop looking; this says what an old quote is worth while you still are.
+	StalenessDiscount StalenessDiscountConfig `mapstructure:"staleness_discount"`
 
 	// TradeSaturation is the growth wave's SWITCH-BACK boundary: the point at which the
 	// reachable surface absorbs no more, in one trip, than the trade pool's own hold

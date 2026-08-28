@@ -195,7 +195,7 @@ func (h *RunTourCoordinatorHandler) probeFarSink(
 		return probe
 	}
 	rows, waypoints, err := tradingsvc.BuildTourSnapshot(ctx, h.marketRepo, h.waypointRepo,
-		[]string{sinkSystem}, cmd.PlayerID, now, h.rankerAgeCaps)
+		[]string{sinkSystem}, cmd.PlayerID, now, h.rankerAgeCaps, h.stalenessDiscount)
 	if err != nil {
 		return probe // an unreadable system contributes nothing
 	}

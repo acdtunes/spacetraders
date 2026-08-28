@@ -379,13 +379,17 @@ type RunTradeRouteCoordinatorHandler struct {
 	// across the trade-route/arb/tour/stocker coordinators so the ledger is fleet-wide.
 	laneLedger *trading.LaneCooldownLedger
 	// rankerAgeCaps is the activity-conditioned listing freshness table the UNDIRECTED
-	// auto-scan drops stale rows against — each cached listing measured
-	// against its OWN activity's cap instead of one flat threshold. The daemon injects
-	// the config-resolved table via SetRankerAgeCaps; the zero value is SAFE (For fills
-	// the fitted armed defaults per activity), so an unwired handler — every existing
-	// test — ranks on the analyst's era3/4 fit rather than a cap of 0. Only the ranker
-	// VISIBILITY cap; the execution money guards are untouched (RULINGS #4).
+	// auto-scan drops stale rows against — the BACKSTOP horizon past which the fitted
+	// drift curve saturates and an older quote tells the ranker nothing new. The daemon
+	// injects the config-resolved table via SetRankerAgeCaps; the zero value is SAFE (For
+	// fills the fitted armed defaults per activity), so an unwired handler — every
+	// existing test — ranks on the fit rather than a cap of 0. Only the ranker VISIBILITY
+	// cap; the execution money guards are untouched (RULINGS #4).
 	rankerAgeCaps trading.RankerAgeCaps
+	// stalenessDiscount prices what a quote's AGE costs INSIDE that backstop, charged
+	// against the lane's ranked spread. The zero value is SAFE and ARMED (the fitted curve
+	// at face value), so the discount is never silently off.
+	stalenessDiscount trading.StalenessDiscount
 	// scanDedupAllowlist is the live ship-symbol allowlist for the scan-dedup A/B
 	// test: armed ships let staleAskAborts reuse a visit's own arrival scan.
 	// Optional; nil disables the dedup path entirely, byte-for-byte unchanged.
@@ -604,15 +608,26 @@ func (h *RunTradeRouteCoordinatorHandler) SetRankerAgeCaps(caps trading.RankerAg
 	h.rankerAgeCaps = caps
 }
 
-// buildLaneImpactModel snapshots the ranking-time impact model: the configured impact
-// coefficients plus a debt closure that reads the shared cooldown ledger at a SINGLE
-// `now`, fixed for the whole ranking pass so every lane is decayed to the same instant.
-// A nil ledger yields a nil debt closure (no cooldown term); zero coefficients yield no
-// self-compression — together the inert model that ranks on the snapshot spread.
+// SetStalenessDiscount injects the config-resolved quote-age discount the lane ranker
+// charges. Unset keeps the fitted curve at face value — the zero value is the armed
+// default, not "off" — so a wiring gap cannot restore par ranking of hours-old quotes.
+func (h *RunTradeRouteCoordinatorHandler) SetStalenessDiscount(discount trading.StalenessDiscount) {
+	h.stalenessDiscount = discount
+}
+
+// buildLaneImpactModel snapshots the ranking-time impact model: impact coefficients, the
+// quote-age discount, and a debt closure over the shared cooldown ledger — all at a SINGLE
+// `now`, so every lane is decayed and aged to the same instant. A nil ledger yields a nil
+// debt closure; zero coefficients yield no self-compression.
 func (h *RunTradeRouteCoordinatorHandler) buildLaneImpactModel() laneImpactModel {
-	model := laneImpactModel{buyImpact: h.buyImpactCoeff, sellImpact: h.sellImpactCoeff}
+	now := h.clock.Now()
+	model := laneImpactModel{
+		buyImpact:  h.buyImpactCoeff,
+		sellImpact: h.sellImpactCoeff,
+		staleness:  h.stalenessDiscount,
+		rankedAt:   now,
+	}
 	if h.laneLedger != nil {
-		now := h.clock.Now()
 		ledger := h.laneLedger
 		model.debt = func(l trading.ArbitrageLane) float64 {
 			return ledger.Debt(laneCooldownKey(l), now)

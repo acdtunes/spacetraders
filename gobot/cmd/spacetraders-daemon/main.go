@@ -1243,6 +1243,7 @@ func run(cfg *config.Config) error {
 	// Same freshness table as the trade ranker, or the census counts lanes the ranker already dropped.
 	profitableLaneCensus := tradingQueries.NewProfitableLaneReader(marketRepo, gateGraphService)
 	profitableLaneCensus.SetRankerAgeCaps(cfg.Trading.RankerAgeCapMinutes.Resolved())
+	profitableLaneCensus.SetStalenessDiscount(cfg.Trading.StalenessDiscount.Resolved())
 	unservedLaneReader := tradingQueries.NewUnservedLaneReader(shipRepo, profitableLaneCensus)
 	unservedLaneReader.SetSaturation(cfg.Trading.TradeSaturation.Resolved())
 

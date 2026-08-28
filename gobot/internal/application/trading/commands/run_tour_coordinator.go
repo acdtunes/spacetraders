@@ -183,13 +183,17 @@ type RunTourCoordinatorHandler struct {
 	scanPolicy    shared.ScanPolicy
 	scanPolicySet bool
 
-	// rankerAgeCaps is the activity-conditioned listing freshness table the tour
-	// snapshot builder drops stale market rows against (sp-t5sh5), each good measured
-	// against its OWN activity's cap. The daemon injects the config-resolved table via
-	// SetRankerAgeCaps; the zero value is SAFE (RankerAgeCaps.For fills the fitted armed
-	// defaults per activity), so an unwired handler — every existing test — builds the
-	// snapshot on the analyst's era3/4 fit rather than a cap of 0.
+	// rankerAgeCaps is the BACKSTOP horizon the tour snapshot builder drops stale market
+	// rows against (sp-t5sh5), each good measured against its OWN activity's cap. The
+	// daemon injects the config-resolved table via SetRankerAgeCaps; the zero value is
+	// SAFE (RankerAgeCaps.For fills the fitted armed defaults per activity), so an unwired
+	// handler — every existing test — builds the snapshot on the fit rather than a cap of 0.
 	rankerAgeCaps trading.RankerAgeCaps
+
+	// stalenessDiscount prices what a quote's AGE costs INSIDE that backstop: the snapshot
+	// emits prices already marked toward the adverse side, so the solver ranks a stale
+	// board at a haircut. The zero value is SAFE and ARMED (the fitted curve at face value).
+	stalenessDiscount trading.StalenessDiscount
 
 	// sinkFreshnessMaxAge is the sp-tgll8 item-2 "FRESH" clause on the firm-sink buy gate:
 	// at buy execution the gate re-reads each held sell-sink's LIVE cached market_data and
