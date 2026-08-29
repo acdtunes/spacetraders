@@ -27,8 +27,11 @@ type tourPlanRun struct {
 	cumulativeSpend *int64
 	shadowSinks     map[shadowSinkKey]bool
 	dispositions    tourGoodDispositions
-	maxSpend        int64
-	reserve         int64
+	// sinkBids is the planned bid of the NEXT sell of a good after a given leg — the
+	// margin bound the buy ceiling clamps to. See planSinkBids.
+	sinkBids map[sinkBidKey]int
+	maxSpend int64
+	reserve  int64
 	// sellFloorSpent names the goods whose per-tranche sell floor has already refused a
 	// tranche, spanning this tour's plans and re-plans — see sellFloorPerUnit.
 	sellFloorSpent map[string]bool
@@ -68,7 +71,62 @@ func (r tourPlanRun) noteLegSale(good string, units int) {
 func (r tourPlanRun) forPlan(plan *routing.TourPlan, shadowSinks map[shadowSinkKey]bool) tourPlanRun {
 	r.shadowSinks = shadowSinks
 	r.dispositions = planDispositions(plan)
+	r.sinkBids = planSinkBids(plan)
 	return r
+}
+
+// sinkBidKey addresses one buy's downstream sink: two buys of the same good on different
+// legs can face different sinks.
+type sinkBidKey struct {
+	leg  int
+	good string
+}
+
+// planSinkBids folds, for every (leg, good) the plan BUYS, the ExpectedUnitPrice of the
+// NEAREST sell of that good at a STRICTLY LATER leg — the sink that tranche is routed to.
+// Strictly later because a leg's own sells run before its buys (legTradesToFly). A deposit
+// counts: its synthetic bid is what that sink was valued at. Absent when nothing sells the
+// good afterwards.
+func planSinkBids(plan *routing.TourPlan) map[sinkBidKey]int {
+	bids := map[sinkBidKey]int{}
+	next := map[string]int{} // good -> nearest later sell's planned bid
+	for i := len(plan.Legs) - 1; i >= 0; i-- {
+		for _, tr := range plan.Legs[i].Trades {
+			if !tr.IsBuy {
+				continue
+			}
+			if bid, ok := next[tr.Good]; ok {
+				bids[sinkBidKey{leg: i, good: tr.Good}] = bid
+			}
+		}
+		// Folded AFTER this leg's buys are keyed, so `next` holds only legs > i.
+		for _, tr := range plan.Legs[i].Trades {
+			if !tr.IsBuy && tr.ExpectedUnitPrice > 0 {
+				next[tr.Good] = tr.ExpectedUnitPrice
+			}
+		}
+	}
+	return bids
+}
+
+// plannedSinkBid returns the planned bid of the sink this leg's buy of good is routed
+// to, or 0 when the plan has none.
+func (r tourPlanRun) plannedSinkBid(legIdx int, good string) int {
+	return r.sinkBids[sinkBidKey{leg: legIdx, good: good}]
+}
+
+// tourBuyCeiling is a plan leg's per-tranche buy ceiling: the tolerated ask (basis +
+// tourPriceTolerancePct) clamped to the planned sink's bid. The tolerance band bounds how
+// far the ask may DRIFT and says nothing about whether the drifted ask is still repayable;
+// the clamp is the sp-9mkf margin bound the look-back buy and the circuit's first buy
+// already carry. sinkBid <= 0 means no planned sink and leaves the band alone — the
+// firm-sink gate (sp-pcxju) owns that case and this must not become a second veto on it.
+func tourBuyCeiling(plannedAsk, sinkBid int) int {
+	ceiling := plannedAsk + plannedAsk*tourPriceTolerancePct/100
+	if sinkBid > 0 && sinkBid < ceiling {
+		return sinkBid
+	}
+	return ceiling
 }
 
 // legTradesToFly orders a leg's trades sells-before-buys and, once the plan has degraded into a
@@ -160,7 +218,7 @@ func (h *RunTourCoordinatorHandler) executeTrade(
 	}
 
 	if trade.IsBuy {
-		return h.executeBuy(ctx, run.cmd, leg, legIdx, trade, run.shadowSinks, run.dispositions, live, run.response, run.netBought, run.cumulativeSpend, run.maxSpend, run.reserve, dedup)
+		return h.executeBuy(ctx, run.cmd, leg, legIdx, trade, run.shadowSinks, run.dispositions, run.plannedSinkBid(legIdx, trade.Good), live, run.response, run.netBought, run.cumulativeSpend, run.maxSpend, run.reserve, dedup)
 	}
 	return h.executeSell(ctx, run, leg, legIdx, trade, live, legSells)
 }
@@ -173,6 +231,7 @@ func (h *RunTourCoordinatorHandler) executeBuy(
 	trade routing.TourTrade,
 	shadowSinks map[shadowSinkKey]bool,
 	dispositions tourGoodDispositions,
+	sinkBid int,
 	live *market.TradeGood,
 	response *RunTourCoordinatorResponse,
 	netBought map[string]int,
@@ -288,13 +347,15 @@ func (h *RunTourCoordinatorHandler) executeBuy(
 	}
 
 	plannedAt := h.clock.Now()
-	// Arm the per-tranche buy ceiling at the plan's tolerated ask — the planned basis
-	// plus the same tourPriceTolerancePct the leg-level gate above applied. That gate
-	// checked only the first live read; this bounds the intra-buy ladder a
-	// multi-tranche purchase walks up itself, aborting the remainder once a
-	// sub-tranche prices past the plan's tolerance.
+	// Arm the per-tranche buy ceiling (tourBuyCeiling). The leg-level gate above checked
+	// only the first live read; this bounds the intra-buy ladder a multi-tranche purchase
+	// walks up itself, aborting the remainder once a sub-tranche prices past the plan's
+	// tolerance or past what its sink will pay back.
 	planned := trade.ExpectedUnitPrice
-	maxAskPerUnit := planned + planned*tourPriceTolerancePct/100
+	maxAskPerUnit := tourBuyCeiling(planned, sinkBid)
+	if maxAskPerUnit <= 0 {
+		return false, nil // 0 disarms the guard downstream — refuse instead (RULINGS #4)
+	}
 	buyResp, err := h.legs.purchaseWithCeiling(ctx, cmd.ShipSymbol, trade.Good, units, cmd.PlayerID, maxAskPerUnit, dedup)
 	if err != nil {
 		return false, fmt.Errorf("purchase of %d %s at %s failed: %w", units, trade.Good, leg.Waypoint, err)
@@ -303,6 +364,7 @@ func (h *RunTourCoordinatorHandler) executeBuy(
 		logger.Log("WARNING", fmt.Sprintf("Tour leg %d: buy ceiling aborted %s at %s (live ask %d > ceiling %d) - skipping, will re-plan",
 			legIdx, trade.Good, leg.Waypoint, buyResp.CeilingObservedAsk, maxAskPerUnit), map[string]interface{}{
 			"leg": legIdx, "good": trade.Good, "live_ask": buyResp.CeilingObservedAsk, "ceiling": maxAskPerUnit,
+			"planned_ask": planned, "sink_bid": sinkBid,
 		})
 		return false, nil
 	}
