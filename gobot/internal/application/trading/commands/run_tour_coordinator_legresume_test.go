@@ -266,17 +266,24 @@ func TestTourLegResume_FullDischargeSettlesThePreRestartObligation(t *testing.T)
 
 // NO-STRAND, part 2: a resume that can only discharge PART of the hold (the sink's traded
 // volume caps one sale) discharges EXACTLY what it sold and not a unit more. The residual
-// stays owed and the stranded veto still reports it — the resume can neither settle an
-// obligation it did not meet nor hide cargo it left aboard.
+// stays owed, and whatever nothing will buy is still reported by the stranded veto — the
+// resume can neither settle an obligation it did not meet nor hide cargo it left aboard.
+//
+// The hull carries a second good, G2, that nothing in this world bids for. G1's residue is
+// legitimately cleared after the resume (the shallow sink takes 10 a sale, and the sp-b9alf
+// pre-release drain keeps selling into it), so what survives to the veto is exactly the load no
+// sale ever discharged — which is the invariant: the obligation moves on SALES, never on
+// assumption, and no rescue may quietly absorb it.
 func TestTourLegResume_PartialDischargeIsAccountedNotForgotten(t *testing.T) {
 	fx := legResumeFixture()
 	fx.tv["X1-R1-B"]["G1"] = 10 // one sale absorbs 10 of the 40 aboard
+	fx.cargo["G2"] = 15         // nothing anywhere quotes G2 — it can only ever be reported
 	planner := &tourFakeRoutingClient{planFn: func(routing.TourShipState) *routing.TourPlan {
 		return infeasibleTour()
 	}}
 	h := newTourHandler(t, fx, planner, &tourFakeTelemetry{})
 	h.SetPurchaseObligationReader(&fakeOutstandingPurchases{
-		byHull: map[string]map[string]int{"TOUR-PARTIAL": {"G1": 40}},
+		byHull: map[string]map[string]int{"TOUR-PARTIAL": {"G1": 40, "G2": 15}},
 	})
 
 	resp, err := h.Handle(context.Background(), &RunTourCoordinatorCommand{
@@ -288,8 +295,12 @@ func TestTourLegResume_PartialDischargeIsAccountedNotForgotten(t *testing.T) {
 	r := tourResponse(t, resp)
 
 	require.Equal(t, 1, r.ResumedLegs)
-	require.Positive(t, fx.cargo["G1"], "the shallow sink could not take the whole hold")
-	require.True(t, r.CargoStranded, "what the resume could not discharge is still owed and still reported")
+	require.Equal(t, 4, fx.sells, "the sink absorbs 10 a sale: one resumed leg, then three drain passes")
+	require.Equal(t, 3, r.StrandDisposalSales, "the resumed leg discharged 10 and no more; the drain cleared the other 30")
+	require.Equal(t, 15, fx.cargo["G2"], "nothing bids for G2, so no sale could have discharged it")
+	require.True(t, r.CargoStranded, "what no sale discharged is still owed and still reported")
+	require.Contains(t, r.CargoStrandedReason, "15 G2")
+	require.NotContains(t, r.CargoStrandedReason, "G1", "G1's obligation was discharged by real sales, unit for unit")
 	require.False(t, r.Completed)
 }
 

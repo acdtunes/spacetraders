@@ -610,6 +610,10 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 	// paces — re-earns the budget against a hold that only ever gets smaller.
 	retirementJumps := 0
 
+	// strandDisposalJumps is the same budget for the margins-death pre-release drain, kept apart
+	// because a marked hull breaks out at the boundary above and never reaches that rung.
+	strandDisposalJumps := 0
+
 	if continuous {
 		resumed, rerr := h.resumeInFlightReposition(ctx, cmd, logger)
 		if rerr != nil {
@@ -666,15 +670,18 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 				h.standDownRetiring(cmd, response, logger)
 				break
 			}
-			sold, derr := h.retirementDisposalPass(ctx, cmd, response, netBought)
+			sales, derr := h.disposalPass(ctx, cmd, response, netBought, retirementDisposalKind)
+			response.RetirementDisposalSales += sales
 			if derr != nil {
 				return derr
 			}
-			if sold {
+			if sales > 0 {
 				continue
 			}
 			if retirementJumps < retirementReachJumpLimit {
-				reached, rerr := h.retirementReachSink(ctx, cmd, response)
+				// nil episode: a hull leaving service is never planned another ground, so it has
+				// no reposition episode for the hop to spend.
+				reached, rerr := h.reachDisposalSink(ctx, cmd, response, nil, retirementDisposalKind)
 				if rerr != nil {
 					return rerr
 				}
@@ -883,6 +890,27 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 				return rerr
 			}
 			if rescued {
+				noProgressStreak = 0
+				continue
+			}
+
+			// LAST RUNG BEFORE RELEASE (sp-b9alf). Every value-seeking rescue has declined, so
+			// this run is about to release the hull — and a hold this system will not bid for is
+			// stranded the moment it does, vetoing the completion and costing a container failure
+			// plus a fast-fail park before the relaunch tries the same ground again. Descend the
+			// sp-58zaj disposal ladder instead: sell here, else reach one system that bids.
+			//
+			// A hull that got anything out of it keeps TOURING — an ordinary hull that just
+			// cleared its hold is ready to work, and after a reach it stands where the markets
+			// are — so it is treated exactly as the rescues above. Bounded the same way: the
+			// ladder's jumps are per-run and never refunded, and once the hold is clear it
+			// declines on a ship read. A ladder that cannot clear the hold changes nothing and
+			// the run exits below still holding.
+			progressed, derr := h.disposeStrandedHold(ctx, cmd, response, &episode, netBought, &strandDisposalJumps)
+			if derr != nil {
+				return derr
+			}
+			if progressed {
 				noProgressStreak = 0
 				continue
 			}

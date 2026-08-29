@@ -325,7 +325,16 @@ type RunTourCoordinatorResponse struct {
 	// sold its held cargo at the best AVAILABLE local bid — below the profit floor,
 	// sunk-cost cash recovery — so it re-enters planning EMPTY instead of churning
 	// relaunch-after-relaunch full. Zero on every run that never strands a hull laden.
+	// It is the >50%-laden, one-per-episode rung ABOVE the sp-b9alf pre-release drain, which
+	// covers the same local dump for any hold. Declared overlap (RULINGS #21, 2026-08-29): the
+	// two never fire on one episode, and sp-gzh7q folds this rung into the ladder.
 	DistressLiquidations int
+
+	// StrandDisposalSales counts the sales the sp-b9alf pre-release drain made on a hull the
+	// margins-death rescues could not clear. It is the falsifier for that ladder: a hold emptied
+	// any other way leaves it at zero, so a regression shows up as a flat counter beside a rising
+	// stranded-cargo veto rate rather than as a silent return of the old behaviour.
+	StrandDisposalSales int
 
 	// ExitHoldLiquidations counts the goods the exit sweep cleared out of the hold on
 	// the way to release: cargo that had a live local bid and would otherwise have been marooned
