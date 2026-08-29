@@ -23,19 +23,17 @@ import (
 // (chartshare.go); what lives here is the budget, the roster the partition is
 // solved over, and the angular fallback that answers when the solver cannot.
 
+// THE CREW IS SIZED ON THE MARGINAL HULL'S BREAK-EVEN, so none of the numbers below
+// is chosen. Charting a waypoint costs two seed steps and the c-th hull's walk costs
+// two per gate hop, so it is worth adding while U/c >= hops(c) + 0.5 — hops MEASURED
+// over stored gate adjacency at the rank takeReachableSpare draws each hull from.
 const (
-	// defaultChartHullCap is the most hulls one dark system may draw. Every hull
-	// past the first pays its own walk to the system before it charts anything,
-	// so the ceiling is low: past it the walks cost more than the parallelism
-	// returns.
-	defaultChartHullCap = 3
-	// defaultSecondChartHullAt and defaultThirdChartHullAt are the outstanding
-	// counts at which a system earns its second and third hull. They sit either
-	// side of the typical dark system's outstanding count, so the second hull
-	// reaches the bulk of real charting work while systems close to finished are
-	// left to the hull already on them.
-	defaultSecondChartHullAt = 12
-	defaultThirdChartHullAt  = 24
+	// The ladder that inequality yields: the last rank any system on this map is large
+	// enough to reach, the second and third hulls' break-evens, and the step past them.
+	defaultChartHullCap      = 5
+	defaultSecondChartHullAt = 16
+	defaultThirdChartHullAt  = 32
+	defaultChartHullTier     = 16
 )
 
 // chartHulls is one tick's resolved hull budget for charting tours. Zero knobs
@@ -45,17 +43,22 @@ type chartHulls struct {
 	cap    int
 	second int
 	third  int
+	tier   int
 }
 
 // resolveChartHulls fills the documented default in for every knob left unset.
 //
-// A cap of one is a legitimate operator choice and the feature's kill switch, so
-// it is honoured; only a non-positive cap reverts. The thresholds are read in
-// ascending order and a threshold below the one before it simply never binds
-// separately — the budget is monotonic in the outstanding count either way.
+// A cap of one is a legitimate operator choice and the feature's kill switch, so it
+// is honoured; only a non-positive cap reverts. A cap ABOVE the derived one clamps
+// down to it, so the tune bound's advertised range stays true through the paths that
+// never see the bound — a stored value, and the boot config.
+//
+// THE TIER IS THE OPERATOR'S OWN STEP, not a fourth knob: hulls past the third are
+// earned at the spacing between the second and the third, so retuning the pair moves
+// the whole ladder. Thresholds out of order supply none and take the documented tier.
 func resolveChartHulls(k ExpandKnobs) chartHulls {
 	h := chartHulls{cap: k.ChartHullCap, second: k.SecondChartHullAt, third: k.ThirdChartHullAt}
-	if h.cap <= 0 {
+	if h.cap <= 0 || h.cap > defaultChartHullCap {
 		h.cap = defaultChartHullCap
 	}
 	if h.second <= 0 {
@@ -64,21 +67,26 @@ func resolveChartHulls(k ExpandKnobs) chartHulls {
 	if h.third <= 0 {
 		h.third = defaultThirdChartHullAt
 	}
+	if h.tier = h.third - h.second; h.tier <= 0 {
+		h.tier = defaultChartHullTier
+	}
 	return h
 }
 
-// budgetFor is how many hulls a system with this much outstanding work may hold.
+// budgetFor is how many hulls a system with this much outstanding work may hold:
+// the second and third at their thresholds, then one per tier beyond the third.
 //
 // AN UNSWEPT SYSTEM REPORTS ZERO and therefore earns one hull, which is correct
-// rather than incidental: nobody has looked, so there is no size to scale on, and
-// the first hull's catalog sweep is what produces one.
+// rather than incidental: nobody has looked, so there is no size to scale on, and the
+// first hull's catalog sweep is what produces one. Every threshold resolves positive,
+// so zero outstanding never reaches a bump.
 func (h chartHulls) budgetFor(uncharted int) int {
 	budget := 1
 	if uncharted >= h.second {
-		budget++
+		budget = 2
 	}
 	if uncharted >= h.third {
-		budget++
+		budget = 3 + (uncharted-h.third)/h.tier
 	}
 	if budget > h.cap {
 		return h.cap

@@ -31,6 +31,8 @@ func ringStops(system string, n int) []ChartStop {
 
 // --- the budget --------------------------------------------------------------
 
+// THE BUDGET IS PROPORTIONAL TO THE WORK, not a pair of bumps that flattens: a
+// system twice as dark draws a crew that finishes it in the same time.
 func TestChartHulls_ScalesTheBudgetWithTheOutstandingWork(t *testing.T) {
 	hulls := resolveChartHulls(ExpandKnobs{})
 	for _, tc := range []struct {
@@ -38,10 +40,108 @@ func TestChartHulls_ScalesTheBudgetWithTheOutstandingWork(t *testing.T) {
 	}{
 		{0, 1}, {1, 1}, {defaultSecondChartHullAt - 1, 1},
 		{defaultSecondChartHullAt, 2}, {defaultThirdChartHullAt - 1, 2},
-		{defaultThirdChartHullAt, 3}, {1000, 3},
+		{defaultThirdChartHullAt, 3},
+		{defaultThirdChartHullAt + defaultChartHullTier - 1, 3},
+		{defaultThirdChartHullAt + defaultChartHullTier, 4},
+		{defaultThirdChartHullAt + 2*defaultChartHullTier, 5},
 	} {
 		if got := hulls.budgetFor(tc.uncharted); got != tc.want {
 			t.Fatalf("budgetFor(%d) = %d, want %d", tc.uncharted, got, tc.want)
+		}
+	}
+}
+
+// THE DERIVED CAP IS THE ONLY THING BOUNDING THE GROWTH, the old hard-coded three
+// being gone. That is what makes the knob's advertised maximum honest.
+func TestChartHulls_TheDerivedCapBoundsTheProportionalGrowth(t *testing.T) {
+	hulls := resolveChartHulls(ExpandKnobs{})
+	if got := hulls.budgetFor(defaultThirdChartHullAt + 4*defaultChartHullTier); got != defaultChartHullCap {
+		t.Fatalf("budgetFor(a system four tiers past the third hull) = %d, want the cap %d", got, defaultChartHullCap)
+	}
+	for _, uncharted := range []int{100, 1_000, 100_000} {
+		if got := hulls.budgetFor(uncharted); got != defaultChartHullCap {
+			t.Fatalf("budgetFor(%d) = %d, want the cap %d — nothing may exceed it", uncharted, got, defaultChartHullCap)
+		}
+	}
+	// A tuned cap binds the same way, below the derived one.
+	tuned := resolveChartHulls(ExpandKnobs{ChartHullCap: 2})
+	if got := tuned.budgetFor(1_000); got != 2 {
+		t.Fatalf("budgetFor(1000) = %d under a cap of 2, want 2", got)
+	}
+
+	// A cap ABOVE the derived one clamps to it: the tune bound cannot reach a value
+	// already stored, so a stale one would outlive the derivation that replaced it.
+	for _, stale := range []int{defaultChartHullCap + 1, 10, 1_000} {
+		if got := resolveChartHulls(ExpandKnobs{ChartHullCap: stale}).cap; got != defaultChartHullCap {
+			t.Fatalf("a stored cap of %d resolved to %d, want the derived cap %d", stale, got, defaultChartHullCap)
+		}
+	}
+}
+
+// A NON-POSITIVE KNOB IS THE REVERT VERB, not a disarm — and that includes the
+// derived tier, which at zero would divide by it and negative would run backwards.
+func TestChartHulls_NonPositiveKnobsRevertToTheDocumentedDefaults(t *testing.T) {
+	for _, k := range []ExpandKnobs{
+		{},
+		{ChartHullCap: 0, SecondChartHullAt: 0, ThirdChartHullAt: 0},
+		{ChartHullCap: -1, SecondChartHullAt: -5, ThirdChartHullAt: -99},
+	} {
+		hulls := resolveChartHulls(k)
+		want := chartHulls{
+			cap:    defaultChartHullCap,
+			second: defaultSecondChartHullAt,
+			third:  defaultThirdChartHullAt,
+			tier:   defaultThirdChartHullAt - defaultSecondChartHullAt,
+		}
+		if hulls != want {
+			t.Fatalf("resolveChartHulls(%+v) = %+v, want the documented defaults %+v", k, hulls, want)
+		}
+	}
+}
+
+// THE BUDGET IS MONOTONIC IN THE OUTSTANDING COUNT however the knobs are ordered:
+// a budget that dipped would stand a hull down over a system that had just got darker.
+func TestChartHulls_TheBudgetIsMonotonicUnderOutOfOrderThresholds(t *testing.T) {
+	for _, k := range []ExpandKnobs{
+		{}, // documented order
+		{SecondChartHullAt: 40, ThirdChartHullAt: 20},                   // inverted
+		{SecondChartHullAt: 20, ThirdChartHullAt: 20},                   // equal, no step to read
+		{ChartHullCap: 5, SecondChartHullAt: 500, ThirdChartHullAt: 1},  // third first, second unreachable
+		{ChartHullCap: 4, SecondChartHullAt: 2, ThirdChartHullAt: 3},    // tighter than any real system
+		{ChartHullCap: 1, SecondChartHullAt: 100, ThirdChartHullAt: 50}, // inverted under the kill switch
+	} {
+		hulls := resolveChartHulls(k)
+		if hulls.tier <= 0 {
+			t.Fatalf("resolveChartHulls(%+v) left tier %d — a non-positive tier divides by zero or counts backwards", k, hulls.tier)
+		}
+		previous := 0
+		for uncharted := 0; uncharted <= 600; uncharted++ {
+			got := hulls.budgetFor(uncharted)
+			if got < 1 {
+				t.Fatalf("budgetFor(%d) = %d under %+v, want at least one hull", uncharted, got, k)
+			}
+			if got < previous {
+				t.Fatalf("budgetFor(%d) = %d after %d under %+v — a darker system earned fewer hulls", uncharted, got, previous, k)
+			}
+			if got > hulls.cap {
+				t.Fatalf("budgetFor(%d) = %d under %+v, above its own cap %d", uncharted, got, k, hulls.cap)
+			}
+			previous = got
+		}
+	}
+}
+
+// AN UNSWEPT SYSTEM REPORTS ZERO AND STILL EARNS EXACTLY ONE HULL under every
+// configuration: the first hull's catalog sweep is what produces a count to scale on.
+func TestChartHulls_AnUnsweptSystemEarnsExactlyOneHull(t *testing.T) {
+	for _, k := range []ExpandKnobs{
+		{},
+		{SecondChartHullAt: 1, ThirdChartHullAt: 1},
+		{ChartHullCap: 5, SecondChartHullAt: 1, ThirdChartHullAt: 2},
+		{SecondChartHullAt: 40, ThirdChartHullAt: 20},
+	} {
+		if got := resolveChartHulls(k).budgetFor(0); got != 1 {
+			t.Fatalf("budgetFor(0) = %d under %+v, want exactly 1", got, k)
 		}
 	}
 }
@@ -67,9 +167,16 @@ func TestChartHulls_ACapOfOneIsTheSingleHullTourAgain(t *testing.T) {
 	}
 }
 
+// The thresholds set the first two bumps AND, in their spacing, the step every hull
+// past the third is earned at — so retuning the pair moves the whole ladder.
 func TestChartHulls_KnobsOverrideTheThresholds(t *testing.T) {
-	hulls := resolveChartHulls(ExpandKnobs{ChartHullCap: 3, SecondChartHullAt: 4, ThirdChartHullAt: 6})
-	for _, tc := range []struct{ uncharted, want int }{{3, 1}, {4, 2}, {5, 2}, {6, 3}, {60, 3}} {
+	hulls := resolveChartHulls(ExpandKnobs{ChartHullCap: 5, SecondChartHullAt: 4, ThirdChartHullAt: 6})
+	if hulls.tier != 2 {
+		t.Fatalf("tier = %d, want 2 — the step is the operator's own spacing", hulls.tier)
+	}
+	for _, tc := range []struct{ uncharted, want int }{
+		{3, 1}, {4, 2}, {5, 2}, {6, 3}, {7, 3}, {8, 4}, {10, 5}, {60, 5},
+	} {
 		if got := hulls.budgetFor(tc.uncharted); got != tc.want {
 			t.Fatalf("budgetFor(%d) = %d, want %d under tuned thresholds", tc.uncharted, got, tc.want)
 		}

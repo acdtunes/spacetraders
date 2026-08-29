@@ -109,6 +109,25 @@ func TestSensingTune_DefaultsMirrorTheRegistry(t *testing.T) {
 	}
 }
 
+// EVERY VALUE chart_hull_cap ADVERTISES MUST BE REACHABLE.
+//
+// It shipped bounded [1,10] over a budget hard-coded to three bumps, so 4 through
+// 10 were accepted, persisted, shown back by `tune --show` and did nothing at all
+// — a documented range that was three-quarters inert (sp-y31lm). The maximum is now
+// the crew the sizing function can actually produce, which is the cap derived from
+// the marginal hull's measured walk, so the advertised range and the reachable one
+// are the same set by construction rather than by anyone remembering to match them.
+func TestSensingTune_ChartHullCapAdvertisesOnlyReachableValues(t *testing.T) {
+	bound := sensingBounds(t)["chart_hull_cap"]
+
+	require.Equal(t, 1, bound.Min, "a cap of one is the feature's kill switch and must stay reachable")
+	require.Equal(t, scoutingCmd.SensingTunableDefaults()["chart_hull_cap"], bound.Max,
+		"the advertised maximum must be the derived cap, or values above it are accepted and inert")
+	require.Equal(t, bound.Max, bound.Default, "the derived cap IS the default — the feature ships at it")
+	require.Contains(t, bound.Description, "DERIVED, NOT PICKED",
+		"an operator reading the knob must be told where its ceiling comes from")
+}
+
 // expansion_enabled is bounded [1,3] and its description STATES all three states.
 //
 // The bound is what makes the encoding discoverable: `tune expansion_enabled 0`

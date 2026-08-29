@@ -337,11 +337,11 @@ type ExpandKnobs struct {
 	// one the screen uses, so a market the seed slots and a market the screen slots
 	// mean the same thing.
 	Whitelist map[string]bool
-	// ChartHullCap, SecondChartHullAt and ThirdChartHullAt size a dark system's
-	// charting crew: the ceiling on hulls one system may draw, and the outstanding
-	// counts that earn the second and third. Zero means the documented default in
-	// each case; a CAP OF ONE is the single-hull tour, and the feature's off switch.
-	// See chartcrew.go.
+	// ChartHullCap, SecondChartHullAt and ThirdChartHullAt size a dark system's charting
+	// crew: the ceiling on hulls one system may draw, the counts that earn the second and
+	// third, and — in their difference — the step each hull past the third is earned at.
+	// Zero means the documented default; a CAP OF ONE is the single-hull tour and the
+	// feature's off switch. See chartcrew.go.
 	ChartHullCap      int
 	SecondChartHullAt int
 	ThirdChartHullAt  int

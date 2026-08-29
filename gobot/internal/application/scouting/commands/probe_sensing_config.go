@@ -91,9 +91,9 @@ const (
 	// outstanding counts earning the second and third. Mirrors of the engine's own
 	// defaults (parkedsensing.chartcrew), held here so the tune registry publishes a
 	// number rather than a zero. A cap of ONE is the single-hull tour.
-	defaultChartHullCap      = 3
-	defaultSecondChartHullAt = 12
-	defaultThirdChartHullAt  = 24
+	defaultChartHullCap      = 5
+	defaultSecondChartHullAt = 16
+	defaultThirdChartHullAt  = 32
 
 	// screenSweepBatch bounds how many PENDING systems one tick screens. A plain
 	// constant, deliberately not a knob: it paces API bursts (an unresolved
