@@ -89,6 +89,21 @@ func (l *liquidationLegIndex) arrived(waypoint string) {
 	l.last = waypoint
 }
 
+// liquidationKind names the pass that ordered a liquidation sale, so the shared sale path
+// below logs and tags it for that pass. The sale itself is identical either way — the cargo is
+// already owned and the recovery is the same cash — but a margins-death dump and a retirement
+// drain are different operator situations and must not read as one another in the log.
+type liquidationKind struct {
+	prefix string // human prefix on the sale log line
+	action string // the log metadata "action" tag
+	bead   string
+}
+
+// distressLiquidationKind labels the sp-2v69u margins-death last resort.
+var distressLiquidationKind = liquidationKind{
+	prefix: "Distress liquidation", action: "distress_liquidation", bead: "sp-2v69u",
+}
+
 // distressSink is the chosen liquidation target for one held good: the CURRENT-system market
 // waypoint with the highest non-EXPORT bid, the bid itself (for the honest below-floor log), and
 // that market's traded volume (the per-sale absorption cap, mirroring executeSell's
@@ -186,7 +201,7 @@ func (h *RunTourCoordinatorHandler) maybeDistressLiquidate(
 	legs := newLiquidationLegIndex()
 	for _, good := range goods {
 		sink := sinks[good]
-		sold, serr := h.distressSellGood(ctx, cmd, response, netBought, good, sink, legs.at(sink.waypoint))
+		sold, serr := h.liquidateGoodAtSink(ctx, cmd, response, netBought, good, sink, legs.at(sink.waypoint), distressLiquidationKind)
 		if serr != nil {
 			// A partial dump may already be booked; return the resumable error so the runner
 			// retries and the run re-plans cargo-aware from the lighter hold on the next pass.
@@ -225,7 +240,7 @@ func (h *RunTourCoordinatorHandler) maybeDistressLiquidate(
 // the hull stays assigned — which it does not. maybeDistressLiquidate, three functions up, has
 // always cleared the whole hold (tourShipState) for exactly this reason; the narrow scope here
 // was an inconsistency, not a protection. Reserved cargo (MODULE_*/MOUNT_* hardware, an operator
-// `ship reserve-cargo` override) is withheld by tourShipState and re-checked in distressSellGood
+// `ship reserve-cargo` override) is withheld by tourShipState and re-checked in liquidateGoodAtSink
 // — that, not "the tour didn't buy it", is the do-not-sell mechanism.
 //
 // Deliberately NOT gated on the stuck-laden threshold or the one-action-per-episode budget the
@@ -290,7 +305,7 @@ func (h *RunTourCoordinatorHandler) liquidateStrandBeforeExit(
 	legs := newLiquidationLegIndex()
 	for _, good := range goods {
 		sink := sinks[good]
-		sold, serr := h.distressSellGood(ctx, cmd, response, netBought, good, sink, legs.at(sink.waypoint))
+		sold, serr := h.liquidateGoodAtSink(ctx, cmd, response, netBought, good, sink, legs.at(sink.waypoint), distressLiquidationKind)
 		if serr != nil {
 			logger.Log("WARNING", fmt.Sprintf("Exit liquidation of %s aboard %s failed - the remaining units report as stranded: %v", good, cmd.ShipSymbol, serr), map[string]interface{}{
 				"ship_symbol": cmd.ShipSymbol, "good": good, "error": serr.Error(),
@@ -335,16 +350,18 @@ func (h *RunTourCoordinatorHandler) reportResidualHold(
 	})
 }
 
-// distressSellGood liquidates one held good at its chosen current-system sink: move to the sink
-// waypoint if the hull is not already there, dock, and sell up to the market's traded volume via
-// the PLAIN floor-free sell() (RULINGS #4: sell-side cash recovery only, no buy guard touched).
+// liquidateGoodAtSink liquidates one held good at its chosen current-system sink: move to the
+// sink waypoint if the hull is not already there, dock, and sell up to the market's traded volume
+// via the PLAIN floor-free sell() (RULINGS #4: sell-side cash recovery only, no buy guard touched).
 // It books the recovered revenue, decrements netBought so the honest-completion stranded veto
 // stays accurate (a good sold here is no longer aboard), and logs the deliberate below-floor
 // recovery explicitly. Reserved cargo (a staged module / operator-protected good) is never sold
 // (mirrors executeSell). It returns true only when units actually left the hull.
 //
-// legIdx is the telemetry leg position for the sink being sold at (see liquidationLegIndexBase).
-func (h *RunTourCoordinatorHandler) distressSellGood(
+// legIdx is the telemetry leg position for the sink being sold at (see liquidationLegIndexBase);
+// kind names the pass that ordered the sale, which is all that differs between a margins-death
+// dump and a retirement drain.
+func (h *RunTourCoordinatorHandler) liquidateGoodAtSink(
 	ctx context.Context,
 	cmd *RunTourCoordinatorCommand,
 	response *RunTourCoordinatorResponse,
@@ -352,6 +369,7 @@ func (h *RunTourCoordinatorHandler) distressSellGood(
 	good string,
 	sink distressSink,
 	legIdx int,
+	kind liquidationKind,
 ) (bool, error) {
 	logger := common.LoggerFromContext(ctx)
 
@@ -375,17 +393,17 @@ func (h *RunTourCoordinatorHandler) distressSellGood(
 
 	if ship.CurrentLocation().Symbol != sink.waypoint {
 		if ship, err = h.legs.travel(ctx, ship, sink.waypoint, cmd.PlayerID); err != nil {
-			return false, fmt.Errorf("distress liquidation move of %s to %s failed: %w", cmd.ShipSymbol, sink.waypoint, err)
+			return false, fmt.Errorf("%s move of %s to %s failed: %w", kind.action, cmd.ShipSymbol, sink.waypoint, err)
 		}
 	}
 	if err := h.legs.dock(ctx, ship, cmd.PlayerID); err != nil {
-		return false, fmt.Errorf("distress liquidation dock of %s at %s failed: %w", cmd.ShipSymbol, sink.waypoint, err)
+		return false, fmt.Errorf("%s dock of %s at %s failed: %w", kind.action, cmd.ShipSymbol, sink.waypoint, err)
 	}
 
 	plannedAt := h.clock.Now() // stamped immediately before the sale, exactly as executeSell does
 	sellResp, err := h.legs.sell(ctx, cmd.ShipSymbol, good, units, cmd.PlayerID)
 	if err != nil {
-		return false, fmt.Errorf("distress liquidation sell of %d %s at %s failed: %w", units, good, sink.waypoint, err)
+		return false, fmt.Errorf("%s sell of %d %s at %s failed: %w", kind.action, units, good, sink.waypoint, err)
 	}
 	if sellResp.UnitsSold <= 0 {
 		return false, nil // the market took nothing — no progress, no booking
@@ -416,10 +434,10 @@ func (h *RunTourCoordinatorHandler) distressSellGood(
 		realizedUnitPrice(sellResp.TotalRevenue, sellResp.UnitsSold),
 		plannedAt,
 	)
-	logger.Log("WARNING", fmt.Sprintf("Distress liquidation: %s sold %d %s at %s for %d credits (bid %d/u, BELOW the profit floor) to free the hull; sunk-cost cash recovery, deliberate below-floor loss booked (sell-side only, RULINGS #4 buy guards untouched)", cmd.ShipSymbol, sellResp.UnitsSold, good, sink.waypoint, sellResp.TotalRevenue, sink.bid), map[string]interface{}{
+	logger.Log("WARNING", fmt.Sprintf("%s: %s sold %d %s at %s for %d credits (bid %d/u, BELOW the profit floor) to free the hull; sunk-cost cash recovery, deliberate below-floor loss booked (sell-side only, RULINGS #4 buy guards untouched)", kind.prefix, cmd.ShipSymbol, sellResp.UnitsSold, good, sink.waypoint, sellResp.TotalRevenue, sink.bid), map[string]interface{}{
 		"ship_symbol": cmd.ShipSymbol, "good": good, "waypoint": sink.waypoint,
 		"units_sold": sellResp.UnitsSold, "revenue": sellResp.TotalRevenue, "bid_per_unit": sink.bid,
-		"action": "distress_liquidation", "bead": "sp-2v69u",
+		"action": kind.action, "bead": kind.bead,
 	})
 	return true, nil
 }

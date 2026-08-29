@@ -110,6 +110,11 @@ const (
 	// tourExitRetired: the operator marked the hull retiring and a boundary found its hold
 	// EMPTY, so the run stands it down instead of planning it more work. An HONEST completion.
 	tourExitRetired = "retired"
+	// tourExitRetiredHolding: the operator marked the hull retiring and the disposal ladder ran
+	// out of rungs with cargo still aboard — nothing within reach bids for it. The run stands the
+	// hull down rather than looping on a load it cannot sell. An HONEST completion; the residue
+	// is named in the exit log so it can be cleared by hand before scrapping.
+	tourExitRetiredHolding = "retired_holding"
 )
 
 // plannerInternalErrorMarker is the prefix the routing-service stamps on any
@@ -598,6 +603,13 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 	// veto relaunch. Until it trades again its rescue is a buyer, not a fresh ground.
 	launchedLaden := false
 
+	// retirementJumps counts the reach hops the retirement disposal ladder has spent this run
+	// (see retirementReachJumpLimit); never refunded, so one run can never hunt. Per-run and
+	// deliberately not persisted: the jump itself IS persisted mid-flight (RULINGS #2) so a
+	// restart lands the hull where it was going, and a relaunch — which the fleet coordinator
+	// paces — re-earns the budget against a hold that only ever gets smaller.
+	retirementJumps := 0
+
 	if continuous {
 		resumed, rerr := h.resumeInFlightReposition(ctx, cmd, logger)
 		if rerr != nil {
@@ -638,14 +650,40 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 			return err
 		}
 
-		// RETIREMENT. A hull the operator marked leaves service at the first boundary its hold
-		// is EMPTY — here, before another plan is chosen for it. A continuous run re-plans
-		// itself indefinitely on rich ground, so a mark honoured only where the container
-		// exits never binds at all; this is where it binds. Read fresh each pass so a hull
-		// marked mid-run notices without a restart, and ahead of the relocation hold below so
-		// a hull leaving service is never parked waiting for an offer.
-		if h.retiringDrained(ctx, cmd) {
-			h.standDownRetiring(cmd, response, logger)
+		// RETIREMENT. A hull the operator marked never plans another tour — here, before any
+		// ground is chosen for it. Empty, it stands down ready to scrap; laden, it descends the
+		// sell-only disposal ladder (dispose here, else reach one sink, else stand down naming
+		// the residue) until the hold is gone. Read fresh each pass so a hull marked mid-run
+		// notices without a restart, and ahead of the relocation hold below so a hull leaving
+		// service is never parked waiting for an offer.
+		//
+		// TERMINATION: a pass that sold anything strictly shrinks a finite hold; a pass that sold
+		// nothing spends one of this run's retirementReachJumpLimit jumps, never refunded; a pass
+		// that can do neither ends the run. So the ladder is bounded by hold size plus two hops
+		// and cannot ping-pong between systems on a load it keeps failing to clear.
+		if retiring, drained := h.retirementState(ctx, cmd); retiring {
+			if drained {
+				h.standDownRetiring(cmd, response, logger)
+				break
+			}
+			sold, derr := h.retirementDisposalPass(ctx, cmd, response, netBought)
+			if derr != nil {
+				return derr
+			}
+			if sold {
+				continue
+			}
+			if retirementJumps < retirementReachJumpLimit {
+				reached, rerr := h.retirementReachSink(ctx, cmd, response)
+				if rerr != nil {
+					return rerr
+				}
+				if reached {
+					retirementJumps++
+					continue
+				}
+			}
+			h.standDownRetiringHolding(ctx, cmd, response, logger)
 			break
 		}
 
@@ -690,6 +728,18 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 			}
 			h.standDownRetiring(cmd, response, logger)
 			break
+		}
+
+		// The plan discharged under a mark set MID-FLIGHT and the hull is still laden. Go
+		// straight back to the boundary, where the disposal ladder takes over: everything below
+		// ranks fresh ground, offers the hull for relocation or waits out a treasury dip, and
+		// none of that belongs to a hull leaving service. A plan that traded still flew its tour.
+		if response.RetirementDischarging {
+			if feasible && response.TradesExecuted > tradesBefore {
+				response.ToursCompleted++
+			}
+			response.RetirementDischarging = false
+			continue
 		}
 
 		// A planner-returned internal_error is a routing-service OUTAGE (an exception it
@@ -1170,17 +1220,37 @@ func (h *RunTourCoordinatorHandler) executePlan(
 	// plan was supposed to close.
 	discharging := false
 
+	// retiring marks the hull as leaving service: the operator's mark landed on it, so every
+	// remaining BUY tranche of this plan is dropped while its sells still fly. Kept apart from
+	// discharging because the two mean different things about the PLAN — discharging says the
+	// plan's economics are void and the caller must re-plan, while a retiring hull needs no
+	// replacement plan at all; the boundary's disposal ladder takes it from here.
+	retiring := false
+
 	for legIdx, leg := range plan.Legs {
 		ship, err := h.legs.loadShip(ctx, cmd.ShipSymbol, cmd.PlayerID)
 		if err != nil {
 			return false, err
 		}
-		// Retirement binds BETWEEN legs, never mid-leg: a marked hull whose hold is empty
-		// right here flies no further leg and the caller ends the run. A laden one flies on
-		// and sells, because that flight is how a retirement drains instead of stranding.
-		if ship.RetirementDrained() {
-			run.response.RetirementStandDown = true
-			return false, nil
+		// Retirement binds BETWEEN legs, never mid-leg. A marked hull whose hold is empty right
+		// here flies no further leg and the caller ends the run. A laden one flies on — that
+		// flight is how a retirement drains instead of stranding — but DISCHARGING: the sells
+		// this plan queued still run, its remaining BUY tranches are dropped. A hull leaving
+		// service must never execute another purchase, including one already planned, or its
+		// hold refills as fast as it drains.
+		if ship.IsRetiring() {
+			if ship.CargoUnits() == 0 {
+				run.response.RetirementStandDown = true
+				return false, nil
+			}
+			if !retiring {
+				retiring = true
+				run.response.RetirementDischarging = true
+				logger.Log("INFO", fmt.Sprintf("Retirement discharge - %s was marked retiring mid-plan; the rest of this plan flies SELLS ONLY (%d leg(s) remaining, every queued buy dropped)", cmd.ShipSymbol, len(plan.Legs)-legIdx), map[string]interface{}{
+					"action": "tour_retirement_discharge", "ship_symbol": cmd.ShipSymbol,
+					"container_id": cmd.ContainerID, "leg": legIdx, "legs_remaining": len(plan.Legs) - legIdx,
+				})
+			}
 		}
 		// Record the leg the instant it is chosen and BEFORE the hull moves, so a daemon
 		// restart mid-flight finds the sink this cargo was already going to (RULINGS #2). A
@@ -1230,7 +1300,7 @@ func (h *RunTourCoordinatorHandler) executePlan(
 		run.legSold = map[string]int{}
 		// Sells before buys (errata): a leg that fills the hold both ways must free
 		// space before spending it, and sell tranches are ordered price-ascending.
-		for _, trade := range legTradesToFly(leg.Trades, discharging) {
+		for _, trade := range legTradesToFly(leg.Trades, discharging || retiring) {
 			executed, terr := h.executeTrade(ctx, run, leg, legIdx, trade, legSells, legDedupBracket)
 			if trade.IsBuy {
 				legDedupBracket = scanDedupBracket{} // exhausted once offered to one buy
@@ -1246,6 +1316,16 @@ func (h *RunTourCoordinatorHandler) executePlan(
 		// §2) — even on a degraded leg, so the tranches that DID sell shadow their crush.
 		h.convertLegShadows(ctx, cmd, leg.Waypoint, legSells)
 		run.response.LegsExecuted++
+		// A hull leaving service flies no leg that cannot discharge its hold: its buys are
+		// dropped, so a remaining buy-only leg is a wasted hop on a clock that is running out.
+		// Ending the plan here is NOT a degradation — it needs no replacement plan, because the
+		// boundary's disposal ladder takes the hull from here.
+		if retiring && !legDegraded && !discharging {
+			if !h.legsCanDischargeHold(ctx, cmd, plan.Legs[legIdx+1:]) {
+				return false, nil
+			}
+			continue
+		}
 		if !legDegraded && !discharging {
 			continue
 		}

@@ -295,11 +295,29 @@ type RunTourCoordinatorResponse struct {
 	Repositions int
 	ExitDetail  string
 
-	// RetirementStandDown records that the operator's retirement mark ended this run at a
-	// drained boundary. It is the falsifier for the stand-down — a run that stopped for any
-	// other reason leaves it false — and it is how a plan that stopped itself between legs
-	// tells the loop not to choose another ground for a hull leaving service.
+	// RetirementStandDown records that the operator's retirement mark ended this run. It is the
+	// falsifier for the stand-down — a run that stopped for any other reason leaves it false —
+	// and it is how a plan that stopped itself between legs tells the loop not to choose another
+	// ground for a hull leaving service. ExitReason separates the two shapes: tourExitRetired
+	// (drained, ready to scrap) from tourExitRetiredHolding (the ladder ran out of rungs).
 	RetirementStandDown bool
+
+	// RetirementDischarging records that a plan in flight was put into SELL-ONLY discharge by a
+	// mark set mid-tour: its queued buys were dropped and the hull is still laden. It hands the
+	// run straight back to the disposal ladder at the boundary instead of the rank-and-reposition
+	// machinery, and is cleared there — it describes one plan, not the run.
+	RetirementDischarging bool
+
+	// RetirementDisposalSales counts the sell-only disposal sales the retirement ladder made.
+	// It is the falsifier for the drain: a marked hull that emptied for any other reason (its
+	// plan's own sells, the exit sweep) leaves this at zero, so a regression that stops
+	// disposing shows up as a flat counter rather than a slower drain nobody notices.
+	RetirementDisposalSales int
+
+	// RetirementResidualUnits reports the sellable units still aboard when a marked hull stood
+	// down UNDRAINED — cargo no reachable market bids for. Non-zero means a hull that cannot be
+	// scrapped until the load is cleared by hand.
+	RetirementResidualUnits int
 
 	// DistressLiquidations counts how many stuck-laden episodes this run resolved by the
 	// sp-2v69u TERTIARY last resort: a laden hull with no profitable fresh tour AND no

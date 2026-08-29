@@ -27,7 +27,7 @@ func retireOutcomeLines(response *pb.RetireShipResponse) []string {
 	}
 	return []string{
 		fmt.Sprintf("✓ %s marked retiring — still carrying %d unit(s)", response.ShipSymbol, response.CargoUnits),
-		"  It keeps flying and selling until that load is gone, then stands down.",
+		"  It buys nothing more and sells that load off until the hold is empty, then stands down.",
 	}
 }
 
@@ -41,11 +41,16 @@ func newShipRetireCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "retire",
 		Short: "Withdraw a hull from service once it has sold its load",
-		Long: `Mark a hull for retirement. It keeps flying and selling while it holds cargo,
-and stands down at the first boundary its hold is empty — between two legs of
-the tour it is on, or between tours — after which nothing plans it again and it
-is ready to scrap. A retiring hull that still carries cargo always flies on:
-that is how it sells, so retirement drains rather than strands.
+		Long: `Mark a hull for retirement. From the mark on it BUYS NOTHING — including
+buys already planned on the tour it is flying — and disposes of what it holds:
+the sell legs of that plan still fly, and after them it sells its remaining load
+at the best bid its system offers, jumping at most twice toward a reachable one
+if nothing local bids. It stands down the first boundary its hold is empty,
+after which nothing plans it again and it is ready to scrap.
+
+A hull carrying something NO reachable market bids for stands down still holding
+it, naming the load — that residue is worth nothing to sell, but it does block
+the scrap, so clear it with 'ship jettison' before scrapping.
 
 This is not 'fleet unassign'. Unassign breaks the live claim and stops the
 container mid-tour, parking the hull wherever it stood still holding its load,

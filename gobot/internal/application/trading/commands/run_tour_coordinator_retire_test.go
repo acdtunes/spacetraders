@@ -134,19 +134,15 @@ func TestTour_ContinuousRetiringHull_StandsDownAtNextDrainedBoundary(t *testing.
 	}
 }
 
-// The drain promise: a retiring hull that still holds cargo at a boundary keeps flying and
-// selling. Its first tour's sink absorbs only part of the load, so the boundary is LADEN —
-// the run must plan the next tour, sell the remainder, and only then stand down.
-func TestTour_RetiringHullLadenAtBoundary_KeepsFlyingUntilDrained(t *testing.T) {
+// The drain promise: a retiring hull that still holds cargo at a boundary is DISPOSED of, not
+// toured. Its plan's sink absorbs only half the load, so the boundary is LADEN — and the run
+// sells the remainder sell-only until the hold is empty, never planning the hull another tour.
+// Planning one is what let a marked hull refill as fast as it drained: an ordinary tour BUYS.
+func TestTour_RetiringHullLadenAtBoundary_DisposesUntilDrained(t *testing.T) {
 	fx := oneLaneFixture()
-	fx.sellCap = map[string]int{"G": 20} // the sink takes 20 of the 40 bought
-	planner := &tourFakeRoutingClient{plans: []*routing.TourPlan{
-		oneLaneRoundTrip(),
-		{Feasible: true, Legs: []routing.TourLeg{
-			leg("X1-S1-B", "X1-S1", sell("G", 20, 200)), // the carried-forward load
-		}},
-		deadGround(),
-	}}
+	fx.sellCap = map[string]int{"G": 20}                                    // every sale absorbs 20 of the load
+	fx.tradeType = map[string]map[string]string{"X1-S1-B": {"G": "IMPORT"}} // a real sink, not an exporter's sellback
+	planner := &tourFakeRoutingClient{plans: []*routing.TourPlan{oneLaneRoundTrip(), deadGround()}}
 	repo := &retireMarkRepo{tourFakeShipRepo: &tourFakeShipRepo{fx: fx, t: t}, markWhenLaden: true}
 	h := newRetireTourHandler(t, fx, planner, repo)
 
@@ -159,17 +155,158 @@ func TestTour_RetiringHullLadenAtBoundary_KeepsFlyingUntilDrained(t *testing.T) 
 	}
 	r := tourResponse(t, resp)
 
-	if planner.calls != 2 {
-		t.Fatalf("a LADEN retiring hull must plan the next tour to sell its load; got %d planner calls", planner.calls)
+	if planner.calls != 1 {
+		t.Fatalf("a hull leaving service is never planned another tour - the disposal ladder drains it; got %d planner calls", planner.calls)
+	}
+	if fx.buys != 1 {
+		t.Fatalf("only the pre-mark buy may ever run on a retiring hull, got %d buys", fx.buys)
 	}
 	if fx.cargo["G"] != 0 {
 		t.Fatalf("the retiring hull must leave service EMPTY, got %d unit(s) aboard", fx.cargo["G"])
+	}
+	if r.RetirementDisposalSales == 0 {
+		t.Fatalf("the remainder must be cleared by the sell-only disposal, not by a fresh tour; got %+v", r)
 	}
 	if r.ExitReason != tourExitRetired {
 		t.Fatalf("exit reason = %q, want %q once the hold finally drained", r.ExitReason, tourExitRetired)
 	}
 	if ok, reason := r.CompletionOutcome(); !ok {
 		t.Fatalf("a hull that sold everything it bought completes honestly, got veto: %s", reason)
+	}
+}
+
+// THE mid-tour defect, in one test. A hull marked while a plan with a REMAINING BUY LEG is in
+// flight must execute no further purchase — not even one already planned and already reserved —
+// while the sell leg that disposes of what it is carrying still flies. Before this, the marked
+// hull flew the whole plan including its buys, so its hold refilled as fast as it drained and
+// nothing bounded how long the drain took.
+func TestTour_MarkedMidPlan_SkipsRemainingBuyLegs_StillFliesTheSell(t *testing.T) {
+	fx := &tourFixture{
+		cargo: map[string]int{}, location: "X1-S2-A", cargoCap: 100,
+		markets: map[string][]string{"X1-S2": {"X1-S2-A", "X1-S2-C", "X1-S2-D"}},
+		bid:     map[string]map[string]int{"X1-S2-D": {"G1": 300}},
+		ask: map[string]map[string]int{
+			"X1-S2-A": {"G1": 100}, "X1-S2-C": {"G2": 50}, "X1-S2-D": {"G1": 300},
+		},
+		tv: map[string]map[string]int{
+			"X1-S2-A": {"G1": 1000}, "X1-S2-C": {"G2": 1000}, "X1-S2-D": {"G1": 1000},
+		},
+	}
+	// Buy G1 at A, buy G2 at C, sell G1 at D. The mark lands at C — the hull is laden with G1,
+	// so the drained stand-down cannot fire and the ONLY thing that can stop the G2 purchase is
+	// the discharge.
+	planner := &tourFakeRoutingClient{plans: []*routing.TourPlan{
+		{Feasible: true, Legs: []routing.TourLeg{
+			leg("X1-S2-A", "X1-S2", buy("G1", 40, 100)),
+			leg("X1-S2-C", "X1-S2", buy("G2", 40, 50)), // the queued buy the mark must suppress
+			leg("X1-S2-D", "X1-S2", sell("G1", 40, 300)),
+		}},
+		deadGround(),
+	}}
+	repo := &retireMarkRepo{tourFakeShipRepo: &tourFakeShipRepo{fx: fx, t: t}, markWhenLaden: true}
+	h := newRetireTourHandler(t, fx, planner, repo)
+	logger := &propFloorCapturingLogger{}
+
+	resp, err := h.Handle(common.WithLogger(context.Background(), logger), &RunTourCoordinatorCommand{
+		ShipSymbol: "TOUR-MIDBUY", PlayerID: 1, ContainerID: "ctr-midbuy", Iterations: -1,
+		ModelArtifactPath: writeTourArtifact(t),
+	})
+	if err != nil {
+		t.Fatalf("a mid-plan discharge returned error: %v", err)
+	}
+	r := tourResponse(t, resp)
+
+	if fx.buys != 1 {
+		t.Fatalf("the mark must suppress the plan's REMAINING buys; expected only the pre-mark G1 buy, got %d buys", fx.buys)
+	}
+	if fx.cargo["G2"] != 0 {
+		t.Fatalf("a hull leaving service must never take on a new good, got %d G2 aboard", fx.cargo["G2"])
+	}
+	if fx.sells != 1 || fx.cargo["G1"] != 0 {
+		t.Fatalf("the sell leg that disposes of the hold must still fly; got %d sells, %d G1 aboard", fx.sells, fx.cargo["G1"])
+	}
+	if planner.calls != 1 {
+		t.Fatalf("a discharged plan needs no replacement - the boundary ladder takes the hull; got %d planner calls", planner.calls)
+	}
+	if !r.RetirementStandDown || r.ExitReason != tourExitRetired {
+		t.Fatalf("the drained hull must stand down retired, got stand_down=%v reason=%q", r.RetirementStandDown, r.ExitReason)
+	}
+	if !logger.infoContains("SELLS ONLY") {
+		t.Fatalf("the discharge must log once that the rest of the plan flies sells only")
+	}
+	if ok, reason := r.CompletionOutcome(); !ok {
+		t.Fatalf("a hull that sold everything it bought completes honestly, got veto: %s", reason)
+	}
+}
+
+// Rung 3. Nothing in the marked hull's own system bids for what it holds, but a reachable one
+// does: the ladder jumps ONCE toward that sink and disposes there. It never plans a tour — the
+// jump is sell-side cash recovery, not a fresh ground.
+func TestTour_RetiringHull_NoLocalBid_ReachesTheSinkAndDisposes(t *testing.T) {
+	fx := offloadFixture() // 80 PARTS at X1-O1 (no local bid); X1-O2 IMPORTS them, X1-O3 does not
+	planner := &tourFakeRoutingClient{plans: []*routing.TourPlan{oneLaneRoundTrip(), deadGround()}}
+	repo := &retireMarkRepo{tourFakeShipRepo: &tourFakeShipRepo{fx: fx, t: t}, marked: true}
+	h := newRetireTourHandler(t, fx, planner, repo)
+
+	resp, err := h.Handle(common.WithLogger(context.Background(), &propFloorCapturingLogger{}), &RunTourCoordinatorCommand{
+		ShipSymbol: "TOUR-REACH", PlayerID: 1, ContainerID: "ctr-reach", Iterations: -1,
+		ModelArtifactPath: writeTourArtifact(t),
+	})
+	if err != nil {
+		t.Fatalf("a retirement reach run returned error: %v", err)
+	}
+	r := tourResponse(t, resp)
+
+	if len(fx.jumps) != 1 || fx.jumps[0] != "X1-O2" {
+		t.Fatalf("the ladder must jump exactly once, to the only system that bids for the load; got jumps %v", fx.jumps)
+	}
+	if fx.cargo["PARTS"] != 0 {
+		t.Fatalf("the hull must be drained at the sink it reached, still holding %d PARTS", fx.cargo["PARTS"])
+	}
+	if fx.buys != 0 || planner.calls != 0 {
+		t.Fatalf("a marked hull buys nothing and is never planned a tour; got %d buys, %d planner calls", fx.buys, planner.calls)
+	}
+	if r.ExitReason != tourExitRetired {
+		t.Fatalf("exit reason = %q, want %q once the reached sink drained it", r.ExitReason, tourExitRetired)
+	}
+}
+
+// TERMINATION. A marked hull holding a good NOTHING within reach bids for cannot be drained, and
+// the ladder must end rather than loop on it (the live TORWIND-B shape: 20 firearms nobody buys).
+// It stands down naming the residue, so an operator can clear the hold by hand before scrapping
+// — the load's reachable liquidation value is zero, so nothing was left on the table.
+func TestTour_RetiringHull_UnsellableInReach_StandsDownNamingTheResidue(t *testing.T) {
+	fx := &tourFixture{
+		cargo: map[string]int{"FIREARMS": 20}, location: "X1-S3-A", cargoCap: 100,
+		markets: map[string][]string{"X1-S3": {"X1-S3-A"}},
+		ask:     map[string]map[string]int{"X1-S3-A": {"WIDGETS": 50}}, // a market, but no firearms buyer
+		tv:      map[string]map[string]int{"X1-S3-A": {"WIDGETS": 1000}},
+	}
+	planner := &tourFakeRoutingClient{plans: []*routing.TourPlan{oneLaneRoundTrip(), deadGround()}}
+	repo := &retireMarkRepo{tourFakeShipRepo: &tourFakeShipRepo{fx: fx, t: t}, marked: true}
+	h := newRetireTourHandler(t, fx, planner, repo)
+	logger := &propFloorCapturingLogger{}
+
+	resp, err := h.Handle(common.WithLogger(context.Background(), logger), &RunTourCoordinatorCommand{
+		ShipSymbol: "TOUR-STUCK", PlayerID: 1, ContainerID: "ctr-stuck", Iterations: -1,
+		ModelArtifactPath: writeTourArtifact(t),
+	})
+	if err != nil {
+		t.Fatalf("an undrainable retirement must complete honestly, not error; got %v", err)
+	}
+	r := tourResponse(t, resp)
+
+	if r.ExitReason != tourExitRetiredHolding {
+		t.Fatalf("exit reason = %q, want %q", r.ExitReason, tourExitRetiredHolding)
+	}
+	if r.RetirementResidualUnits != 20 {
+		t.Fatalf("the stand-down must report the residue that blocks the scrap, got %d unit(s)", r.RetirementResidualUnits)
+	}
+	if fx.sells != 0 || fx.buys != 0 || len(fx.jumps) != 0 || planner.calls != 0 {
+		t.Fatalf("nothing bids for the load anywhere in reach, so the ladder must do NOTHING and end; got %d sells, %d buys, jumps %v, %d planner calls", fx.sells, fx.buys, fx.jumps, planner.calls)
+	}
+	if !r.Completed {
+		t.Fatalf("standing an undrainable hull down is an HONEST completion so the claim is released, got %+v", r)
 	}
 }
 
@@ -244,8 +381,8 @@ func TestTour_RetirementMarkUnreadable_FailsOpen(t *testing.T) {
 		ModelArtifactPath: writeTourArtifact(t),
 	}
 
-	if h.retiringDrained(context.Background(), cmd) {
-		t.Fatalf("an unreadable hull must read as NOT standing down (fail open)")
+	if retiring, drained := h.retirementState(context.Background(), cmd); retiring || drained {
+		t.Fatalf("an unreadable hull must read as UNMARKED (fail open), got retiring=%v drained=%v", retiring, drained)
 	}
 
 	resp, err := h.Handle(common.WithLogger(context.Background(), &propFloorCapturingLogger{}), cmd)
