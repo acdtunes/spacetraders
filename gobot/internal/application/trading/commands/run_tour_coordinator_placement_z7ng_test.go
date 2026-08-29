@@ -99,12 +99,12 @@ func (w *windowedTelemetry) ListByPlayer(_ context.Context, _ int, since time.Ti
 	return out, nil
 }
 
-// RED#8 — the default-safety proof, byte-identical to legacy. A zero-value command (exactly what
-// buildTourCoordinatorCommand produces for every existing container: PlacementScoreEnabled=false)
-// driving the margins-death fixture must reproduce the LEGACY reposition outcome and emit the LEGACY
-// ranking log — with NO placement decision line and NO placement fallback line. The dispatch is
-// never taken when unarmed.
-func TestTour_PlacementDefaultOff_LegacyRepositionUnchanged(t *testing.T) {
+// RED#8 — the LEGACY-ESCAPE proof. Placement now ships ARMED (RULINGS #22), so the byte-identical
+// legacy path is reached only through the placement_disabled kill switch. A command carrying
+// PlacementDisabled=true, driving the margins-death fixture, must reproduce the LEGACY reposition
+// outcome and emit the LEGACY ranking log — with NO placement decision line and NO placement
+// fallback line. The dispatch is never taken when the kill switch is thrown.
+func TestTour_PlacementDisabled_LegacyRepositionUnchanged(t *testing.T) {
 	fx := repositionFixture()
 	homeCalls, s2Calls := 0, 0
 	planner := &tourFakeRoutingClient{planFn: func(ship routing.TourShipState) *routing.TourPlan {
@@ -130,15 +130,15 @@ func TestTour_PlacementDefaultOff_LegacyRepositionUnchanged(t *testing.T) {
 
 	resp, err := h.Handle(ctx, &RunTourCoordinatorCommand{
 		ShipSymbol: "TOUR-DEFOFF", PlayerID: 1, ContainerID: "ctr-defoff", Iterations: -1,
-		ModelArtifactPath: writeTourArtifact(t), // PlacementScoreEnabled defaults FALSE
+		PlacementDisabled: true, ModelArtifactPath: writeTourArtifact(t),
 	})
 	if err != nil {
-		t.Fatalf("default-off run returned error: %v", err)
+		t.Fatalf("kill-switched run returned error: %v", err)
 	}
 	r := tourResponse(t, resp)
 
 	if r.Repositions != 1 || r.ToursCompleted != 2 || r.ExitReason != tourExitStarvation {
-		t.Fatalf("default-off must reproduce the legacy reposition outcome (1 reposition, 2 tours, starvation), got %+v", r)
+		t.Fatalf("placement_disabled must reproduce the legacy reposition outcome (1 reposition, 2 tours, starvation), got %+v", r)
 	}
 	if len(fx.jumps) != 1 || fx.jumps[0] != "X1-S2" {
 		t.Fatalf("legacy reposition must jump to X1-S2, got %v", fx.jumps)
@@ -147,14 +147,14 @@ func TestTour_PlacementDefaultOff_LegacyRepositionUnchanged(t *testing.T) {
 		t.Fatalf("hull must end at X1-S2, got %q", fx.location)
 	}
 	if !logger.loggedContaining("Reposition ranking from") {
-		t.Fatalf("default-off must emit the LEGACY ranking log:\n%s", strings.Join(logger.messages, "\n"))
+		t.Fatalf("placement_disabled must emit the LEGACY ranking log:\n%s", strings.Join(logger.messages, "\n"))
 	}
 	if logger.loggedContaining("Placement decision") || logger.loggedContaining("Placement:") {
-		t.Fatalf("default-off must NOT run the placement engine (no placement log line):\n%s", strings.Join(logger.messages, "\n"))
+		t.Fatalf("placement_disabled must NOT run the placement engine (no placement log line):\n%s", strings.Join(logger.messages, "\n"))
 	}
 }
 
-// RED#9 — the kill-switch wins over placement arming (resolves the major finding). PlacementScoreEnabled
+// RED#9 — the kill-switch wins over placement arming (resolves the major finding). Placement armed
 // AND RepositionDisabled both true ⇒ (false,nil): no jump, no ranking, NO placement pre-flight, no
 // placement log. The reposition_disabled guard sits ABOVE the placement dispatch, so an armed daemon
 // keeps the muscle-memory stop.
@@ -176,7 +176,7 @@ func TestTour_PlacementArmed_KillSwitchStillWins(t *testing.T) {
 
 	resp, err := h.Handle(ctx, &RunTourCoordinatorCommand{
 		ShipSymbol: "TOUR-KILL", PlayerID: 1, ContainerID: "ctr-kill", Iterations: -1,
-		PlacementScoreEnabled: true, RepositionDisabled: true, // armed but killed
+		RepositionDisabled: true, // armed by default but killed
 		ModelArtifactPath: writeTourArtifact(t),
 	})
 	if err != nil {
@@ -244,7 +244,7 @@ func TestTour_PlacementArmed_JumpsToScoreArgmax(t *testing.T) {
 
 	resp, err := h.Handle(ctx, &RunTourCoordinatorCommand{
 		ShipSymbol: "TOUR-ARGMAX", PlayerID: 1, ContainerID: "ctr-argmax", Iterations: -1,
-		PlacementScoreEnabled: true, ModelArtifactPath: writeTourArtifact(t),
+		ModelArtifactPath: writeTourArtifact(t),
 	})
 	if err != nil {
 		t.Fatalf("argmax run returned error: %v", err)
@@ -346,7 +346,7 @@ func TestTour_PlacementArmed_MultiHopCandidateChargedPerHop(t *testing.T) {
 
 	resp, err := h.Handle(ctx, &RunTourCoordinatorCommand{
 		ShipSymbol: "TOUR-HOPS", PlayerID: 1, ContainerID: "ctr-hops", Iterations: -1,
-		PlacementScoreEnabled: true, ModelArtifactPath: writeTourArtifact(t),
+		ModelArtifactPath: writeTourArtifact(t),
 	})
 	if err != nil {
 		t.Fatalf("multi-hop run returned error: %v", err)
@@ -397,7 +397,7 @@ func TestTour_PlacementArmed_StayWins_ExitsHonestlyNamingStay(t *testing.T) {
 
 	resp, err := h.Handle(ctx, &RunTourCoordinatorCommand{
 		ShipSymbol: "TOUR-STAY", PlayerID: 1, ContainerID: "ctr-stay", Iterations: -1,
-		PlacementScoreEnabled: true, ModelArtifactPath: writeTourArtifact(t),
+		ModelArtifactPath: writeTourArtifact(t),
 	})
 	if err != nil {
 		t.Fatalf("stay run returned error: %v", err)
@@ -446,7 +446,7 @@ func TestTour_PlacementArmed_ParkFloorHolds(t *testing.T) {
 
 	resp, err := h.Handle(ctx, &RunTourCoordinatorCommand{
 		ShipSymbol: "TOUR-HOLD", PlayerID: 1, ContainerID: "ctr-hold", Iterations: -1,
-		PlacementScoreEnabled: true, ModelArtifactPath: writeTourArtifact(t),
+		ModelArtifactPath: writeTourArtifact(t),
 	})
 	if err != nil {
 		t.Fatalf("park-floor run returned error: %v", err)
@@ -499,7 +499,7 @@ func TestTour_PlacementArmed_BetaUnreadable_FallsBackToLegacy(t *testing.T) {
 
 			resp, err := h.Handle(ctx, &RunTourCoordinatorCommand{
 				ShipSymbol: "TOUR-FB", PlayerID: 1, ContainerID: "ctr-fb", Iterations: -1,
-				PlacementScoreEnabled: true, ModelArtifactPath: writeTourArtifact(t),
+				ModelArtifactPath: writeTourArtifact(t),
 			})
 			if err != nil {
 				t.Fatalf("fallback run returned error: %v", err)
@@ -566,7 +566,7 @@ func TestTour_PlacementArmed_BetaWindowExcludesOldTours(t *testing.T) {
 
 	resp, err := h.Handle(context.Background(), &RunTourCoordinatorCommand{
 		ShipSymbol: "TOUR-WIN", PlayerID: 1, ContainerID: "ctr-win", Iterations: -1,
-		PlacementScoreEnabled: true, ModelArtifactPath: writeTourArtifact(t),
+		ModelArtifactPath: writeTourArtifact(t),
 	})
 	if err != nil {
 		t.Fatalf("window run returned error: %v", err)
@@ -612,7 +612,7 @@ func TestTour_PlacementArmed_StalenessGateExcludesStaleListings(t *testing.T) {
 
 	resp, err := h.Handle(context.Background(), &RunTourCoordinatorCommand{
 		ShipSymbol: "TOUR-STALE", PlayerID: 1, ContainerID: "ctr-stale", Iterations: -1,
-		PlacementScoreEnabled: true, ModelArtifactPath: writeTourArtifact(t),
+		ModelArtifactPath: writeTourArtifact(t),
 	})
 	if err != nil {
 		t.Fatalf("staleness run returned error: %v", err)
@@ -683,10 +683,9 @@ func TestTour_PlacementArmed_SolverBudgetMatchesLegacy(t *testing.T) {
 	control := base("CTRL")
 	control.RepositionDisabled = true // kill-switch: baseline = the loop's own productive+strike calls only
 	legacy := base("LEG")
+	legacy.PlacementDisabled = true // the legacy static-floor engine is now reached only through the kill switch
 	armed := base("ARM")
-	armed.PlacementScoreEnabled = true
 	armedWide := base("ARM5")
-	armedWide.PlacementScoreEnabled = true
 	armedWide.PlacementShortlistTopN = 5
 
 	controlCalls := runCalls(control)

@@ -155,10 +155,11 @@ func (s *DaemonServer) addTradeFleetTourKnobs(config map[string]interface{}) {
 	config["max_tour_systems"] = s.tradeFleetConfig.MaxTourSystems
 	config["closed_tours"] = s.tradeFleetConfig.ClosedTours
 
-	config["placement_score_enabled"] = s.tradeFleetConfig.PlacementScoreEnabled
+	config["placement_disabled"] = s.tradeFleetConfig.PlacementDisabled
 	config["placement_beta_window_minutes"] = s.tradeFleetConfig.PlacementBetaWindowMinutes
 	config["placement_park_floor_pct"] = s.tradeFleetConfig.PlacementParkFloorPct
 	config["placement_shortlist_top_n"] = s.tradeFleetConfig.PlacementShortlistTopN
+	config["placement_horizon_minutes"] = s.tradeFleetConfig.PlacementHorizonMinutes
 
 	config["reposition_reach_enabled"] = s.tradeFleetConfig.RepositionReachEnabled
 	config["reposition_reach_hop_decay_pct"] = s.tradeFleetConfig.RepositionReachHopDecayPct

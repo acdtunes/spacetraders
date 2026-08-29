@@ -103,7 +103,7 @@ func TestTour_RotationExplainedStaleListings_StillReachTheShortlist(t *testing.T
 
 	_, err := h.Handle(context.Background(), &RunTourCoordinatorCommand{
 		ShipSymbol: "TOUR-STALE", PlayerID: 1, ContainerID: "ctr-stale", Iterations: -1,
-		PlacementScoreEnabled: true, ModelArtifactPath: writeTourArtifact(t),
+		ModelArtifactPath: writeTourArtifact(t),
 	})
 	require.NoError(t, err)
 

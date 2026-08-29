@@ -117,6 +117,7 @@ func TestTourRateFloor_GovernanceGate_RelocatesOnlyWhenArmed(t *testing.T) {
 				ShipSymbol: "TOUR-RF", PlayerID: 1, ContainerID: "ctr-rf", Iterations: -1,
 				RepositionRateFloorEnabled: tc.enabled,
 				RepositionMinMargin:        isolateLegacyReposition,
+				PlacementDisabled:          true, // isolate the rate-floor trigger: placement scores against φ·β, not RepositionMinMargin
 				ModelArtifactPath:          writeTourArtifact(t),
 			})
 			if err != nil {
@@ -199,6 +200,7 @@ func TestTourRateFloor_Dwell_StaysWhenRecentlyRelocated(t *testing.T) {
 		ShipSymbol: "TOUR-DWELL", PlayerID: 1, ContainerID: "ctr-dwell", Iterations: -1,
 		RepositionRateFloorEnabled: true,
 		RepositionMinMargin:        isolateLegacyReposition,
+		PlacementDisabled:          true, // isolate the rate-floor trigger: placement scores against φ·β, not RepositionMinMargin
 		ModelArtifactPath:          writeTourArtifact(t),
 	})
 	if err != nil {

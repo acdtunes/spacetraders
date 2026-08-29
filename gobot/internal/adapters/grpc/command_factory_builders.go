@@ -640,14 +640,15 @@ func buildTourCoordinatorCommand(cfg *configReader, playerID int, containerID st
 		StrandedConsecutiveThreshold: cfg.OptionalInt("stranded_consecutive_threshold", 0),
 		// sp-z7ng placement/relocation scoring loop. OptionalBool/OptionalInt
 		// yield zero values for absent keys — the exact default-OFF dormancy mechanism the
-		// Reposition* knobs use: placement_score_enabled absent ⇒ false ⇒ the legacy static-floor
+		// Reposition* knobs use: placement_disabled absent ⇒ false ⇒ ARMED (RULINGS #22); the legacy static-floor
 		// reposition runs, byte-identical to today; the window/floor/shortlist default to 0 ⇒ the
 		// coordinator's own placement*Default. Every existing container and recovery rebuild takes
-		// the legacy branch until a captain explicitly sets placement_score_enabled: true.
-		PlacementScoreEnabled:      cfg.OptionalBool("placement_score_enabled"),
+		// branch runs only under an explicit placement_disabled: true or an unreadable β.
+		PlacementDisabled:          cfg.OptionalBool("placement_disabled"),
 		PlacementBetaWindowMinutes: cfg.OptionalInt("placement_beta_window_minutes", 0),
 		PlacementParkFloorPct:      cfg.OptionalInt("placement_park_floor_pct", 0),
 		PlacementShortlistTopN:     cfg.OptionalInt("placement_shortlist_top_n", 0),
+		PlacementHorizonMinutes:    cfg.OptionalInt("placement_horizon_minutes", 0),
 		// sp-uf64 reposition reach (always-broaden discovery + deadhead-decay ranking + anti-herd).
 		// OptionalBool/OptionalInt yield zero values for absent keys — the exact default-OFF dormancy
 		// the Placement*/Reposition* knobs use: reposition_reach_enabled absent ⇒ false ⇒ the legacy

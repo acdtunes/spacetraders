@@ -178,11 +178,10 @@ type RunTourCoordinatorCommand struct {
 	// reposition when unarmed; the shared RepositionDisabled kill-switch and one-per-episode
 	// budget still win (they sit ABOVE the placement dispatch). Governance-owned arming.
 
-	// PlacementScoreEnabled arms the placement loop. false (the zero value / absent config) →
-	// the legacy static-floor reposition runs unchanged (byte-identical at the epic defaults);
-	// true → maybeRepositionPlacement scores candidates on score(x)=E_x−β·D_x. β unreadable
-	// (no telemetry) falls back to the legacy engine for that episode (fresh-boot rescue).
-	PlacementScoreEnabled bool
+	// PlacementDisabled is the placement loop's kill switch. false (the zero value / absent config)
+	// → ARMED: candidates are scored on score(x)=E_x·(H−D_x)/H with the current system competing as
+	// a stay at D=0. true → the legacy static-floor reposition. An unreadable β also falls back.
+	PlacementDisabled bool
 	// PlacementBetaWindowMinutes is the trailing window for the fleet rolling-median realized
 	// tour $/hr (β). 0 → placementBetaWindowMinutesDefault (60).
 	PlacementBetaWindowMinutes int
@@ -193,6 +192,9 @@ type RunTourCoordinatorCommand struct {
 	// candidates + 1 current-system E_s = N planner calls per episode, identical to legacy's K.
 	// 0 → the resolved RepositionMaxCandidates (default 3), so arming never grows the solver herd.
 	PlacementShortlistTopN int
+	// PlacementHorizonMinutes is H: a candidate keeps only the (H−D_x)/H its crossing leaves.
+	// 0 → placementHorizonMinutesDefault (60). Lower H holds hulls harder.
+	PlacementHorizonMinutes int
 
 	// StrandedConsecutiveThreshold is the stranded-hull detector threshold: how many
 	// CONSECUTIVE origin-level empty reposition discoveries (no durable adjacency + gate

@@ -170,13 +170,14 @@ func TestStartTourRun_MaxTourSystemsDefaultsZeroWhenUnset(t *testing.T) {
 // daemon-global [trade_fleet] tunings (exactly like max_tour_systems / reposition_jump_bound), so
 // StartTourRun must STAMP them into the launch config and buildTourCoordinatorCommand must READ them
 // back onto the command. Set knobs round-trip onto the command; an ABSENT knob rebuilds to the
-// zero/false value (dormant) — the default-OFF safety the whole child rides on.
+// zero/false value, which for placement_disabled is ARMED (RULINGS #22).
 func TestTourContainerConfig_ThreadsPlacementKnobs(t *testing.T) {
 	s, db, playerID := newRecoveryTestServer(t)
-	s.tradeFleetConfig.PlacementScoreEnabled = true // the captain's [trade_fleet] arming
+	s.tradeFleetConfig.PlacementDisabled = true // the captain's [trade_fleet] kill switch
 	s.tradeFleetConfig.PlacementBetaWindowMinutes = 45
 	s.tradeFleetConfig.PlacementParkFloorPct = 25
 	s.tradeFleetConfig.PlacementShortlistTopN = 5
+	s.tradeFleetConfig.PlacementHorizonMinutes = 30
 
 	hull := newIdleTradeShip(t, "TORWIND-19", playerID)
 	hull.SetDedicatedFleet("trade")
@@ -190,10 +191,11 @@ func TestTourContainerConfig_ThreadsPlacementKnobs(t *testing.T) {
 
 	var model persistence.ContainerModel
 	require.NoError(t, db.First(&model, "id = ?", result.ContainerID).Error)
-	require.Contains(t, model.Config, `"placement_score_enabled":true`, "StartTourRun must stamp placement_score_enabled so the rebuild reads it back (the arming write side)")
+	require.Contains(t, model.Config, `"placement_disabled":true`, "StartTourRun must stamp placement_disabled so the rebuild reads the kill switch back")
 	require.Contains(t, model.Config, `"placement_beta_window_minutes":45`)
 	require.Contains(t, model.Config, `"placement_park_floor_pct":25`)
 	require.Contains(t, model.Config, `"placement_shortlist_top_n":5`)
+	require.Contains(t, model.Config, `"placement_horizon_minutes":30`)
 
 	// The whole boundary round-trips onto the command.
 	var cfg map[string]interface{}
@@ -201,16 +203,18 @@ func TestTourContainerConfig_ThreadsPlacementKnobs(t *testing.T) {
 	rebuilt, err := s.buildCommandForType("tour_run", cfg, playerID, result.ContainerID)
 	require.NoError(t, err)
 	cmd := rebuilt.(*tradingCmd.RunTourCoordinatorCommand)
-	require.True(t, cmd.PlacementScoreEnabled)
+	require.True(t, cmd.PlacementDisabled)
 	require.Equal(t, 45, cmd.PlacementBetaWindowMinutes)
 	require.Equal(t, 25, cmd.PlacementParkFloorPct)
 	require.Equal(t, 5, cmd.PlacementShortlistTopN)
+	require.Equal(t, 30, cmd.PlacementHorizonMinutes)
 }
 
-// sp-z7ng default-safety companion: an UNSET [trade_fleet] placement block rebuilds to a DORMANT
-// command — placement_score_enabled false, every int 0 — so every existing container and recovery
-// rebuild takes the legacy reposition branch. This is the launch-path half of the default-off proof.
-func TestTourContainerConfig_PlacementKnobsDefaultDormantWhenUnset(t *testing.T) {
+// The arming companion (RULINGS #22): an UNSET [trade_fleet] placement block rebuilds to an ARMED
+// command — placement_disabled false, every int 0 so each resolves to its consumer default — so every
+// existing container and recovery rebuild runs the placement engine with no config present. This is
+// the launch-path half of the arming proof.
+func TestTourContainerConfig_PlacementKnobsArmedWhenUnset(t *testing.T) {
 	s, db, playerID := newRecoveryTestServer(t)
 	// tradeFleetConfig placement block left at its zero values (the operator never armed it).
 
@@ -231,10 +235,11 @@ func TestTourContainerConfig_PlacementKnobsDefaultDormantWhenUnset(t *testing.T)
 	rebuilt, err := s.buildCommandForType("tour_run", cfg, playerID, result.ContainerID)
 	require.NoError(t, err)
 	cmd := rebuilt.(*tradingCmd.RunTourCoordinatorCommand)
-	require.False(t, cmd.PlacementScoreEnabled, "an unset placement block must rebuild DORMANT (legacy reposition runs)")
+	require.False(t, cmd.PlacementDisabled, "an unset placement block must rebuild ARMED (the placement engine runs)")
 	require.Equal(t, 0, cmd.PlacementBetaWindowMinutes)
 	require.Equal(t, 0, cmd.PlacementParkFloorPct)
 	require.Equal(t, 0, cmd.PlacementShortlistTopN)
+	require.Equal(t, 0, cmd.PlacementHorizonMinutes)
 }
 
 // closed_tours THE CONFIG-KNOB PROPAGATION PIN. im74 wired cmd.ClosedTours -> cons.Closed ->

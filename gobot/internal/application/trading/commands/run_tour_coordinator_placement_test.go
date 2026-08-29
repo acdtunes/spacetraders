@@ -16,7 +16,7 @@ package commands
 // ProjectedCreditsPerHour (ship.Cargo == nil marks the clean-hold pre-flight E_x vs
 // the laden productive re-plan); fleet-median comes from
 // seededTelemetry{rows: betaSeedRows(rate)}; entry is h.Handle(ctx, cmd) with
-// PlacementScoreEnabled, asserting r.Repositions, fx.jumps, fx.location, and
+// the armed placement default, asserting r.Repositions, fx.jumps, fx.location, and
 // fakeRepositionPersister.recorded().
 
 import (
@@ -61,7 +61,7 @@ func TestPlacementRelocatesOnExhaustedPocket(t *testing.T) {
 
 	resp, err := h.Handle(context.Background(), &RunTourCoordinatorCommand{
 		ShipSymbol: "TOUR-RELOCATE", PlayerID: 1, ContainerID: "ctr-relocate", Iterations: -1,
-		PlacementScoreEnabled: true, ModelArtifactPath: writeTourArtifact(t),
+		ModelArtifactPath: writeTourArtifact(t),
 	})
 	if err != nil {
 		t.Fatalf("relocate run returned error: %v", err)
@@ -119,7 +119,7 @@ func TestPlacementParksOnGloballySaturatedFleet(t *testing.T) {
 
 	resp, err := h.Handle(context.Background(), &RunTourCoordinatorCommand{
 		ShipSymbol: "TOUR-PARK", PlayerID: 1, ContainerID: "ctr-park", Iterations: -1,
-		PlacementScoreEnabled: true, ModelArtifactPath: writeTourArtifact(t),
+		ModelArtifactPath: writeTourArtifact(t),
 	})
 	if err != nil {
 		t.Fatalf("park run returned error: %v", err)

@@ -266,11 +266,11 @@ func (h *RunTourCoordinatorHandler) maybeReposition(
 	}
 
 	// sp-z7ng placement dispatch — sits BELOW the shared kill-switch and episode-budget guards so
-	// precedence is RepositionDisabled > episode.repositioned > PlacementScoreEnabled > legacy: an
+	// precedence is RepositionDisabled > episode.repositioned > PlacementDisabled > legacy: an
 	// armed daemon still honours reposition_disabled and one-reposition-per-episode. When armed and
 	// β is readable, the placement engine decides; an unreadable β returns handled=false and falls
 	// THROUGH to the untouched legacy body below (fresh-boot rescue preserved), never a forked copy.
-	if cmd.PlacementScoreEnabled {
+	if !cmd.PlacementDisabled {
 		handled, repositioned, perr := h.maybeRepositionPlacement(ctx, cmd, response, episode, netBought, budget)
 		if handled {
 			return repositioned, perr

@@ -56,19 +56,31 @@ type Decision struct {
 	Error        string
 }
 
-// Score is the Tier-0 linear deadhead charge: the projected candidate rate E_x minus β dollars per
-// deadhead hour spent NOT trading (the one-way jump + the post-jump re-plan allowance). D=0 ⇒
-// score == E_x (the current-system D_s=0 identity).
+// ResidencyHorizonHoursDefault is the horizon H that makes staying and jumping commensurable when
+// the caller passes a non-positive horizon.
+const ResidencyHorizonHoursDefault = 1.0
+
+// Score is the horizon-normalized deadhead charge — the marginal-value comparison written as a rate.
+// Over a common horizon H a hull that stays earns E_s for all of H, while a hull that jumps earns
+// nothing for D then E_x for the remaining (H−D); dividing both by H puts them in one unit, so
+// score(x) = E_x·(H−D)/H, and D=0 ⇒ score == E_x (the current-system D_s=0 identity).
 //
-// Two dimensional caveats are carried here deliberately, because the
-// decision log emits the raw quantities separately so calibration can see both:
-//   - Tier-0 charges an implicit ~1h horizon: $/hr minus (β·hours)=$ is commensurable only under a
-//     ~1-hour residency assumption; Tier-2 (∫rate_x(t)dt with absorption-depth residency) removes it.
-//   - E_x is a PROJECTED-FRESH candidate rate while β is a REALIZED-NET fleet median — a HOT fleet
-//     (high realized β) therefore holds more and a COLD fleet jumps more; every input is logged so
-//     the φ and β window can be retuned on evidence rather than guesswork.
-func Score(ex, beta, deadheadHours float64) float64 {
-	return ex - beta*deadheadHours
+// The charge is multiplicative because the opportunity cost of a deadhead is the destination rate
+// forgone over the fraction of the horizon the crossing consumes, not a fixed toll. The retired form
+// subtracted β·D — a $ charge against a $/hr score. Score is now $/hr throughout, which is also the
+// unit Decide's φ·β park floor compares against.
+//
+// A deadhead that consumes the whole horizon scores 0: it can never win the argmax against a feasible
+// stay, and it still sorts above an infeasible candidate, which never competes at all.
+func Score(ex, deadheadHours, horizonHours float64) float64 {
+	if horizonHours <= 0 {
+		horizonHours = ResidencyHorizonHoursDefault
+	}
+	remaining := horizonHours - deadheadHours
+	if remaining <= 0 {
+		return 0
+	}
+	return ex * (remaining / horizonHours)
 }
 
 // Decide is the DIFF phase: argmax score over the FEASIBLE evaluations INCLUDING the current system

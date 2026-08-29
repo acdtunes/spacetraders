@@ -151,12 +151,13 @@ type TradeFleetConfig struct {
 	// reposition_jump_bound/max_tour_systems above): StartTourRun stamps them into every tour
 	// launch config, buildTourCoordinatorCommand reads them back onto the command. Zero =
 	// unset ⇒ defer to the consumer's default (the default lives in the coordinator, not here),
-	// so an absent knob is byte-identical to today. PlacementScoreEnabled defaults FALSE, so
-	// nothing arms without an explicit captain config change — the governance gate.
-	PlacementScoreEnabled      bool `mapstructure:"placement_score_enabled"`
+	// so an absent knob is byte-identical to today. Shipped ARMED (RULINGS #22): PlacementDisabled
+	// defaults FALSE — a kill switch, not an arming gate.
+	PlacementDisabled          bool `mapstructure:"placement_disabled"`
 	PlacementBetaWindowMinutes int  `mapstructure:"placement_beta_window_minutes"`
 	PlacementParkFloorPct      int  `mapstructure:"placement_park_floor_pct"`
 	PlacementShortlistTopN     int  `mapstructure:"placement_shortlist_top_n"`
+	PlacementHorizonMinutes    int  `mapstructure:"placement_horizon_minutes"`
 
 	// --- Reposition reach (sp-uf64) ---
 	// Daemon-global tour tunings, same for every tour container (the mirror of

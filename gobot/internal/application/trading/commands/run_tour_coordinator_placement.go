@@ -33,7 +33,27 @@ const (
 	// placementParkFloorPctDefault is φ×100 — a candidate's deadhead-charged score must clear φ·β to
 	// be worth the jump, when placement_park_floor_pct is 0. 30 ⇒ φ=0.3 (spec line 70).
 	placementParkFloorPctDefault = 30
+
+	// placementHorizonMinutesDefault is H, the residency horizon a stay and a jump are compared
+	// over, when placement_horizon_minutes is 0. A SHORTER H charges a crossing a larger share of
+	// the horizon and holds hulls harder.
+	placementHorizonMinutesDefault = 60
+
+	// The crossing time model, mirroring the tour solver's INTER_SYSTEM_TRAVEL_{BASE,PER_HOP}_SECONDS
+	// so the placement decision and the plan it produces price one crossing identically. Base is the
+	// two endpoint legs; per-hop is the fallback toll used only while the measured estimator is silent.
+	placementCrossingBaseSeconds   = 750.0
+	placementCrossingPerHopSeconds = 650.0
 )
+
+// placementHorizonHours resolves H in hours, applying the 0/absent → default rule (RULINGS #5).
+func placementHorizonHours(configuredMinutes int) float64 {
+	minutes := configuredMinutes
+	if minutes <= 0 {
+		minutes = placementHorizonMinutesDefault
+	}
+	return float64(minutes) / 60
+}
 
 // resolvePlacementBetaWindowMinutes applies the 0/absent → 60 rule (RULINGS #5), so the β window
 // default lives in ONE place, mirroring resolveRepositionJumpBound.
@@ -106,6 +126,16 @@ func (h *RunTourCoordinatorHandler) maybeRepositionPlacement(
 	// the 75-min freshListings staleness gate and the cappedSpread prerank shortlist baked in.
 	candidates := h.buildRepositionCandidates(ctx, cmd, currentSystem)
 
+	// ANTI-HERD, the same gate the legacy body and the rate-floor path apply: a candidate already at
+	// its per-system hull cap (landed + in-flight) is not a place to send another hull. Excluding
+	// before scoring also keeps a saturated system from consuming one of the N planner calls.
+	candidates, herded := h.excludeHerdedSystems(ctx, cmd, candidates)
+	if herded > 0 {
+		logger.Log("INFO", fmt.Sprintf("Placement: excluded %d herd-saturated candidate system(s) for %s before scoring", herded, cmd.ShipSymbol), map[string]interface{}{
+			"ship_symbol": cmd.ShipSymbol, "excluded": herded,
+		})
+	}
+
 	// PLAN (same-budget rule): top-(N−1) foreign candidates by prerank + 1 current-system E_s.
 	shortlist := resolvePlacementShortlist(cmd.PlacementShortlistTopN, cmd.RepositionMaxCandidates)
 	foreignBudget := shortlist - 1
@@ -117,14 +147,14 @@ func (h *RunTourCoordinatorHandler) maybeRepositionPlacement(
 		if index >= foreignBudget {
 			break
 		}
-		evals = append(evals, h.evaluateForeignPlacement(ctx, ship, candidate, beta, cmd, budget))
+		evals = append(evals, h.evaluateForeignPlacement(ctx, ship, candidate, cmd, budget))
 	}
 	// E_s: the current system as a clean-hold STAY option (Hops=0, D=0), commensurable with the
 	// candidates' clean-hold E_x. Reusing the just-failed 3-strike (laden) plan would bias E_s low
 	// and systematically over-trigger jumps, so it gets its own clean pre-flight.
-	evals = append(evals, h.evaluateStayPlacement(ctx, ship, currentSystem, currentWaypoint, beta, cmd, budget))
+	evals = append(evals, h.evaluateStayPlacement(ctx, ship, currentSystem, currentWaypoint, cmd, budget))
 
-	// DIFF: argmax score(x)=E_x−β·D_x, park floor φ·β.
+	// DIFF: argmax score(x)=E_x·(H−D_x)/H, park floor φ·β.
 	phi := float64(resolvePlacementParkFloorPct(cmd.PlacementParkFloorPct)) / 100
 	decision := placement.Decide(evals, beta, phi)
 	logPlacementDecision(logger, cmd.ShipSymbol, currentSystem, decision)
@@ -170,15 +200,26 @@ func (h *RunTourCoordinatorHandler) senseBeta(ctx context.Context, cmd *RunTourC
 	return beta, true
 }
 
-// evaluateForeignPlacement scores one foreign candidate: hop-count-aware deadhead
-// D_x=(hops·crossSystemHopSeconds + repositionReplanAllowanceSeconds)/3600, E_x from the clean-hold
-// pre-flight, score=E_x−β·D_x. A hops<=0 sentinel from any future discovery path that forgot to
-// stamp is defensively charged as 1 hop (never free).
+// placementDeadheadHours prices a hops-deep crossing the way the TOUR SOLVER prices one, so the two
+// halves of one decision cannot disagree about what leaving costs: per-crossing base + per-hop toll +
+// the post-jump re-plan allowance. The toll is the MEASURED one (jumpTolls, the estimator
+// buildTourPlanRequest already threads to the solver) whenever the fleet has flown enough hops for it.
+func (h *RunTourCoordinatorHandler) placementDeadheadHours(
+	ctx context.Context, cmd *RunTourCoordinatorCommand, hops int,
+) float64 {
+	perHop := float64(placementCrossingPerHopSeconds)
+	if measured := h.tourPerHopToll(ctx, cmd); measured > 0 {
+		perHop = float64(measured)
+	}
+	return (placementCrossingBaseSeconds + float64(hops)*perHop + repositionReplanAllowanceSeconds) / secondsPerHour
+}
+
+// evaluateForeignPlacement scores one foreign candidate: deadhead D_x from placementDeadheadHours,
+// E_x from the clean-hold pre-flight, score=E_x·(H−D_x)/H. A hops<=0 sentinel is charged one hop.
 func (h *RunTourCoordinatorHandler) evaluateForeignPlacement(
 	ctx context.Context,
 	ship *navigation.Ship,
 	candidate repositionCandidate,
-	beta float64,
 	cmd *RunTourCoordinatorCommand,
 	budget tourPlanBudget,
 ) placement.Evaluation {
@@ -186,8 +227,7 @@ func (h *RunTourCoordinatorHandler) evaluateForeignPlacement(
 	if hops <= 0 {
 		hops = 1 // defensive: an unstamped candidate is charged one hop, never a free deadhead
 	}
-	deadheadHours := (float64(hops)*crossSystemHopSeconds + repositionReplanAllowanceSeconds) / secondsPerHour
-	return h.scorePlacementCandidate(ctx, ship, candidate, hops, deadheadHours, beta, cmd, budget)
+	return h.scorePlacementCandidate(ctx, ship, candidate, hops, h.placementDeadheadHours(ctx, cmd, hops), cmd, budget)
 }
 
 // evaluateStayPlacement scores the current system as the STAY option (Hops=0, D=0 — the D_s=0
@@ -196,24 +236,21 @@ func (h *RunTourCoordinatorHandler) evaluateStayPlacement(
 	ctx context.Context,
 	ship *navigation.Ship,
 	currentSystem, currentWaypoint string,
-	beta float64,
 	cmd *RunTourCoordinatorCommand,
 	budget tourPlanBudget,
 ) placement.Evaluation {
 	stay := repositionCandidate{system: currentSystem, waypoint: currentWaypoint, hops: 0}
-	return h.scorePlacementCandidate(ctx, ship, stay, 0, 0, beta, cmd, budget)
+	return h.scorePlacementCandidate(ctx, ship, stay, 0, 0, cmd, budget)
 }
 
-// scorePlacementCandidate runs the E_x pre-flight (the spec's PlacementValue for v1 — peak $/hr via
-// the existing planAtCandidate clean-hold pre-flight) and composes score(x)=E_x−β·D_x. An infeasible
-// pre-flight yields a non-feasible Evaluation carrying the planner's own rejection reason (which
-// never wins the argmax).
+// scorePlacementCandidate runs the E_x pre-flight and composes score(x)=E_x·(H−D_x)/H. An infeasible
+// pre-flight yields a non-feasible Evaluation carrying the planner's rejection reason (never wins).
 func (h *RunTourCoordinatorHandler) scorePlacementCandidate(
 	ctx context.Context,
 	ship *navigation.Ship,
 	candidate repositionCandidate,
 	hops int,
-	deadheadHours, beta float64,
+	deadheadHours float64,
 	cmd *RunTourCoordinatorCommand,
 	budget tourPlanBudget,
 ) placement.Evaluation {
@@ -222,7 +259,7 @@ func (h *RunTourCoordinatorHandler) scorePlacementCandidate(
 	if perr == nil && plan != nil && plan.Feasible {
 		evaluation.EX = plan.ProjectedCreditsPerHour
 		evaluation.Feasible = true
-		evaluation.Score = placement.Score(evaluation.EX, beta, deadheadHours)
+		evaluation.Score = placement.Score(evaluation.EX, deadheadHours, placementHorizonHours(cmd.PlacementHorizonMinutes))
 		return evaluation
 	}
 	evaluation.Reason = repositionCandidateReason(plan, perr)
