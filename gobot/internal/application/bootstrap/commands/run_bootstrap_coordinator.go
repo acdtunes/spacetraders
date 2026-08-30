@@ -49,9 +49,9 @@ const (
 	haulerShipType = "SHIP_LIGHT_HAULER"
 	// gateWorkerTarget is the gate-construction workforce: the size GATE ramps to, one hull per tick,
 	// from the moment the pipeline exists. The gate BUYS its own workers (the contract fleet is exclusive
-	// and never repurposed), so this is also the direct bound on the construction-worker spend — 4 keeps
+	// and never repurposed), so this is also the direct bound on the construction-worker spend — it keeps
 	// that spend small enough that the contract operation still funds the material bill alongside it.
-	gateWorkerTarget = 4
+	gateWorkerTarget = 2
 
 	// contractWorkingCapitalFloor is the ABSOLUTE cash cushion (whole credits) the treasury must still
 	// clear AFTER a staged bootstrap fleet-scaling spend — the hauler buy (incl. the first-hauler
