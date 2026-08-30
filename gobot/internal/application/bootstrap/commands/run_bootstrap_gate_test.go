@@ -770,11 +770,11 @@ func TestBootstrap_PlanGateWorkers_ReleasesIdleManufacturingSurplus(t *testing.T
 		want []string
 	}{
 		{
-			// desired = gateWorkerTarget (2); 6 workers ⇒ 4 surplus. Symbols deliberately shuffled to prove sorting.
-			"over-provisioned → the 4 lowest-symbol idle surplus, deterministic",
+			// desired = gateWorkerTarget (3); 6 workers ⇒ 3 surplus. Symbols deliberately shuffled to prove sorting.
+			"over-provisioned → the 3 lowest-symbol idle surplus, deterministic",
 			Observation{Haulers: nHaulers(10), GateMaterialChains: 3, GateWorkers: 6,
 				GateWorkerHulls: idleWorkers("M5", "M4", "M3", "M2", "M1", "M6")},
-			[]string{"M1", "M2", "M3", "M4"},
+			[]string{"M1", "M2", "M3"},
 		},
 		{
 			"mid-task hulls are never selected — the surplus is drawn from the idle ones only",
@@ -782,7 +782,7 @@ func TestBootstrap_PlanGateWorkers_ReleasesIdleManufacturingSurplus(t *testing.T
 				{Symbol: "M1", Idle: false}, {Symbol: "M2", Idle: false}, // mid-construction — excluded
 				{Symbol: "M3", Idle: true}, {Symbol: "M4", Idle: true},
 				{Symbol: "M5", Idle: true}, {Symbol: "M6", Idle: true}}},
-			[]string{"M3", "M4", "M5", "M6"},
+			[]string{"M3", "M4", "M5"},
 		},
 		{
 			"surplus exceeds the idle count → release only the idle ones (fail-safe, retry next tick)",
@@ -795,12 +795,12 @@ func TestBootstrap_PlanGateWorkers_ReleasesIdleManufacturingSurplus(t *testing.T
 		},
 		{
 			"at the shape → releases nothing (byte-identical)",
-			Observation{GateMaterialChains: 3, GateWorkers: 2, GateWorkerHulls: idleWorkers("M1", "M2")},
+			Observation{GateMaterialChains: 3, GateWorkers: 3, GateWorkerHulls: idleWorkers("M1", "M2", "M3")},
 			nil,
 		},
 		{
 			"below the shape → releases nothing (the buy path sizes up instead)",
-			Observation{GateMaterialChains: 3, GateWorkers: 1, GateWorkerHulls: idleWorkers("M1")},
+			Observation{GateMaterialChains: 3, GateWorkers: 2, GateWorkerHulls: idleWorkers("M1", "M2")},
 			nil,
 		},
 		{
@@ -808,7 +808,7 @@ func TestBootstrap_PlanGateWorkers_ReleasesIdleManufacturingSurplus(t *testing.T
 			// not the pipeline has revealed a chain shape — release no longer waits on revelation either.
 			"chains unrevealed → still releases the surplus over the workforce target",
 			Observation{GateMaterialChains: 0, GateWorkers: 6, GateWorkerHulls: idleWorkers("M1", "M2", "M3", "M4", "M5", "M6")},
-			[]string{"M1", "M2", "M3", "M4"},
+			[]string{"M1", "M2", "M3"},
 		},
 	}
 	for _, tc := range cases {
@@ -878,11 +878,11 @@ func TestBootstrap_Gate_ReleasesSurplusManufacturingHulls(t *testing.T) {
 	if len(rel.calls) != 1 {
 		t.Fatalf("expected exactly one surplus-release call, got %d (%v)", len(rel.calls), rel.calls)
 	}
-	if !reflect.DeepEqual(rel.calls[0], []string{"M1", "M2", "M3", "M4"}) {
-		t.Fatalf("expected the 4 idle manufacturing surplus [M1 M2 M3 M4] released, got %v", rel.calls[0])
+	if !reflect.DeepEqual(rel.calls[0], []string{"M1", "M2", "M3"}) {
+		t.Fatalf("expected the 3 idle manufacturing surplus [M1 M2 M3] released, got %v", rel.calls[0])
 	}
-	if res.WorkersReleased != 4 {
-		t.Fatalf("expected WorkersReleased=4, got %d", res.WorkersReleased)
+	if res.WorkersReleased != 3 {
+		t.Fatalf("expected WorkersReleased=3, got %d", res.WorkersReleased)
 	}
 	if acq.buys != 0 {
 		t.Fatalf("an over-provisioned gate must NOT buy a worker, got %d buys", acq.buys)
@@ -898,13 +898,13 @@ func TestBootstrap_Gate_ReleasesSurplusManufacturingHulls(t *testing.T) {
 
 // The construction-worker cap is 2 — the Admiral's cold-start workforce, and the number the
 // sizing plan targets from GATE entry.
-func TestBootstrap_GateWorkerTarget_IsTwo(t *testing.T) {
-	if gateWorkerTarget != 2 {
-		t.Fatalf("gateWorkerTarget = %d, want 2 (the cold-start construction workforce)", gateWorkerTarget)
+func TestBootstrap_GateWorkerTarget_IsThree(t *testing.T) {
+	if gateWorkerTarget != 3 {
+		t.Fatalf("gateWorkerTarget = %d, want 3 (the cold-start construction workforce)", gateWorkerTarget)
 	}
 	obs := Observation{Haulers: nHaulers(3), GateWorkers: 0}
-	if got := planGateWorkers(obs).DesiredWorkers; got != 2 {
-		t.Fatalf("the sizing plan must target 2 gate workers, got %d", got)
+	if got := planGateWorkers(obs).DesiredWorkers; got != 3 {
+		t.Fatalf("the sizing plan must target 3 gate workers, got %d", got)
 	}
 }
 
@@ -967,7 +967,7 @@ func TestBootstrap_PlanGateWorkers_BuysOnePerTickThenStopsAtTheCap(t *testing.T)
 // the same re-observed pool yields the same single staged buy, and a pool that has grown by the hull just
 // bought stages the NEXT one — so a restart part-way up the ramp never double-buys and never re-overshoots.
 func TestBootstrap_PlanGateWorkers_RestartMidRampDoesNotDoubleBuy(t *testing.T) {
-	obs := Observation{Haulers: nHaulers(3), GateWorkers: 1, GateWorkerHulls: idleWorkers("M1")}
+	obs := Observation{Haulers: nHaulers(3), GateWorkers: 2, GateWorkerHulls: idleWorkers("M1", "M2")}
 
 	first := planGateWorkers(obs)
 	afterRestart := planGateWorkers(obs) // same observation, fresh process — same plan
@@ -975,7 +975,7 @@ func TestBootstrap_PlanGateWorkers_RestartMidRampDoesNotDoubleBuy(t *testing.T) 
 		t.Fatalf("the plan must be a pure function of the observation: %+v vs %+v", first, afterRestart)
 	}
 	if first.Buy != 1 {
-		t.Fatalf("a pool of 1 under the cap stages exactly one buy, got %d", first.Buy)
+		t.Fatalf("a pool of 2 under the cap stages exactly one buy, got %d", first.Buy)
 	}
 
 	// The bought hull is observed as a GateWorker next tick, so the deficit shrinks by one — never re-bought.
