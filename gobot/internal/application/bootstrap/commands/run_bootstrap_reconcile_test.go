@@ -300,6 +300,12 @@ func baseCmd() *RunBootstrapCoordinatorCommand {
 	return &RunBootstrapCoordinatorCommand{PlayerID: 1, ContainerID: "boot-1", AgentSymbol: "TEST"}
 }
 
+// defaultTargets is the tick config an all-zero launch with no live column resolves — the SAME
+// resolveBootstrapConfig call reconcileOnce makes every tick. Tests that need a fleet SIZE read it from
+// here rather than pinning a literal, so hauler_target / gate_worker_target stay operator knobs: a
+// re-default or a live tune flows through the suite instead of failing an arithmetic pin (sp-58pmg).
+func defaultTargets() bootstrapRunConfig { return resolveBootstrapConfig(baseCmd(), nil) }
+
 // --- live-by-default: a fresh, all-zero-config launch acts (no enablement flip) ---
 
 // Buy-to-target in ONE tick (not one probe per 5-min tick). A cold agent with 1 probe and

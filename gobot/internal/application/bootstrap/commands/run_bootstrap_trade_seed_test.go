@@ -249,10 +249,11 @@ func TestBootstrap_TradeSeedAcceptance_RoutesSecondAcquisitionToTrade(t *testing
 		}
 	}
 	final := world.snapshot()
-	// The contract ramp reaches its fixed target, PLUS exactly 1 TRADE hull (acquisition #2) — the trade hull
-	// did not consume a contract slot (decoupled from the contract scaler's ceiling).
+	// The contract ramp reaches its resolved target, PLUS exactly 1 TRADE hull (acquisition #2) — the trade
+	// hull did not consume a contract slot (decoupled from the contract scaler's ceiling).
+	haulerTarget := defaultTargets().HaulerTarget
 	if len(final.Haulers) != haulerTarget {
-		t.Fatalf("acceptance: expected %d contract haulers (the fixed target), got %d", haulerTarget, len(final.Haulers))
+		t.Fatalf("acceptance: expected %d contract haulers (the resolved target), got %d", haulerTarget, len(final.Haulers))
 	}
 	if final.TradeHullCount != 1 {
 		t.Fatalf("acceptance: expected exactly 1 trade hull (acquisition #2), got %d", final.TradeHullCount)

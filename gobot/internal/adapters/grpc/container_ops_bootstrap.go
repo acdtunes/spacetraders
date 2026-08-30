@@ -67,6 +67,8 @@ var bootstrapConfigKeys = []string{
 	"bootstrap_disabled",
 	"bootstrap_tick_secs",
 	"bootstrap_contract_start_treasury_threshold",
+	"bootstrap_hauler_target",
+	"bootstrap_gate_worker_target",
 }
 
 // resolveBootstrapConfig makes config.yaml the single LIVE source of truth for the bootstrap
@@ -98,6 +100,12 @@ func (s *DaemonServer) injectBootstrapConfig(config map[string]interface{}) {
 	if b.ContractStartTreasuryThreshold != 0 {
 		config["bootstrap_contract_start_treasury_threshold"] = b.ContractStartTreasuryThreshold
 	}
+	if b.HaulerTarget != 0 {
+		config["bootstrap_hauler_target"] = b.HaulerTarget
+	}
+	if b.GateWorkerTarget != 0 {
+		config["bootstrap_gate_worker_target"] = b.GateWorkerTarget
+	}
 }
 
 // buildBootstrapCommand rebuilds the standing bootstrap command from a persisted launch
@@ -115,5 +123,7 @@ func buildBootstrapCommand(cfg *configReader, playerID int, containerID string) 
 		Disabled:                       cfg.OptionalBool("bootstrap_disabled"),
 		TickIntervalSecs:               cfg.OptionalInt("bootstrap_tick_secs", 0),
 		ContractStartTreasuryThreshold: cfg.OptionalInt("bootstrap_contract_start_treasury_threshold", 0),
+		HaulerTarget:                   cfg.OptionalInt("bootstrap_hauler_target", 0),
+		GateWorkerTarget:               cfg.OptionalInt("bootstrap_gate_worker_target", 0),
 	}
 }

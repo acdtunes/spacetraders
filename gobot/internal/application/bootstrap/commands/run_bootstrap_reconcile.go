@@ -17,10 +17,11 @@ import (
 // in this file next to the const it mirrors. The map's KEY SET is also the contract for which
 // BARE keys resolveBootstrapConfig live-overlays.
 //
-// The cadence and the contract-start treasury threshold are what an operator retunes at runtime:
-// every other cold-start value is the shape of the seed itself, fixed in code. These keys are the
-// SEPARATE bare family — distinct from the config.yaml-authoritative prefixed bootstrap_* launch keys
-// — so a tune is never cleared by the launch-config rebuild and survives a daemon bounce (RULINGS #2).
+// The cadence, the contract-start treasury threshold and the two FLEET-SIZE bounds are what an
+// operator retunes at runtime: every other cold-start value is the shape of the seed itself, fixed in
+// code. These keys are the SEPARATE bare family — distinct from the config.yaml-authoritative prefixed
+// bootstrap_* launch keys — so a tune is never cleared by the launch-config rebuild and survives a
+// daemon bounce (RULINGS #2).
 // bootstrapOperationType is the ledger label for everything a bootstrap tick spends.
 const bootstrapOperationType = "bootstrap"
 
@@ -28,6 +29,8 @@ func BootstrapTunableDefaults() map[string]int {
 	return map[string]int{
 		"tick_secs":                         defaultBootstrapTickSeconds,
 		"contract_start_treasury_threshold": int(defaultContractStartTreasuryThreshold),
+		"hauler_target":                     defaultHaulerTarget,
+		"gate_worker_target":                defaultGateWorkerTarget,
 	}
 }
 
@@ -40,6 +43,11 @@ type bootstrapRunConfig struct {
 	// ContractStartTreasury is the FLAT treasury at which the contract operation starts. Deliberately
 	// not netted against any reserve floor — a sequencing threshold, not a spend guard.
 	ContractStartTreasury int64
+	// HaulerTarget is the contract-hull ramp cap this tick reads. Always positive after resolution.
+	HaulerTarget int
+	// GateWorkerTarget is the gate-construction workforce size this tick reads. Always positive after
+	// resolution, so the GATE sizing plan can never read a zero target and shed the whole workforce.
+	GateWorkerTarget int
 }
 
 func resolveBootstrapConfig(cmd *RunBootstrapCoordinatorCommand, live liveconfig.Snapshot) bootstrapRunConfig {
@@ -47,6 +55,8 @@ func resolveBootstrapConfig(cmd *RunBootstrapCoordinatorCommand, live liveconfig
 		Disabled:              cmd.Disabled,
 		Tick:                  time.Duration(cmd.TickIntervalSecs) * time.Second,
 		ContractStartTreasury: int64(cmd.ContractStartTreasuryThreshold),
+		HaulerTarget:          cmd.HaulerTarget,
+		GateWorkerTarget:      cmd.GateWorkerTarget,
 	}
 
 	// Live overlay: a `tune` writes a BARE positive key to the persisted config
@@ -61,6 +71,12 @@ func resolveBootstrapConfig(cmd *RunBootstrapCoordinatorCommand, live liveconfig
 		if v := live.PositiveIntOrZero("contract_start_treasury_threshold"); v > 0 {
 			c.ContractStartTreasury = int64(v)
 		}
+		if v := live.PositiveIntOrZero("hauler_target"); v > 0 {
+			c.HaulerTarget = v
+		}
+		if v := live.PositiveIntOrZero("gate_worker_target"); v > 0 {
+			c.GateWorkerTarget = v
+		}
 	}
 
 	if c.Tick <= 0 {
@@ -68,6 +84,12 @@ func resolveBootstrapConfig(cmd *RunBootstrapCoordinatorCommand, live liveconfig
 	}
 	if c.ContractStartTreasury <= 0 {
 		c.ContractStartTreasury = defaultContractStartTreasuryThreshold
+	}
+	if c.HaulerTarget <= 0 {
+		c.HaulerTarget = defaultHaulerTarget
+	}
+	if c.GateWorkerTarget <= 0 {
+		c.GateWorkerTarget = defaultGateWorkerTarget
 	}
 	return c
 }
@@ -279,7 +301,7 @@ func (h *RunBootstrapCoordinatorHandler) reconcileOnce(ctx context.Context, cmd 
 		// undedicated, which is what keeps a hull free to warm the yard — and starts the contract engine
 		// once the treasury clears the threshold (that engine holds an accepted-but-unsourceable contract
 		// gracefully and claims no ship until a market is known, so it cannot steal the hull the buy needs).
-		h.actData(ctx, cmd, obs, &res)
+		h.actData(ctx, cmd, cfg, obs, &res)
 		scanningBlocker := res.Blocker
 		h.actIncome(ctx, cmd, cfg, obs, &res)
 		// The scanning blocker is the higher-signal heartbeat line (it is the critical path to markets),
@@ -288,7 +310,7 @@ func (h *RunBootstrapCoordinatorHandler) reconcileOnce(ctx context.Context, cmd 
 			res.Blocker = scanningBlocker
 		}
 	case PhaseGate:
-		h.actGate(ctx, cmd, obs, &res)
+		h.actGate(ctx, cmd, cfg, obs, &res)
 	case PhaseExpansion:
 		h.actExpansion(ctx, cmd, cfg, obs, &res)
 	}
@@ -434,7 +456,7 @@ func (h *RunBootstrapCoordinatorHandler) resetUnderScaledStreak(containerID stri
 // so the next tick's live read succeeds. It leaves the probes IDLE — scanning them is an operator's
 // tour in this phase and parked sensing's once the gate is built. Idempotent, and it runs ALONGSIDE
 // actIncome on every cold-start tick.
-func (h *RunBootstrapCoordinatorHandler) actData(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, obs Observation, res *reconcileResult) {
+func (h *RunBootstrapCoordinatorHandler) actData(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, obs Observation, res *reconcileResult) {
 	// (1) Capital-gated probe acquisition — buy to target in ONE pass (a fresh universe must
 	// reach probeTarget fast, not one probe per 5-min tick). Guarded on the re-observed count, so a
 	// mid-purchase restart that already incremented the count simply buys the remainder. The seed is
@@ -449,7 +471,7 @@ func (h *RunBootstrapCoordinatorHandler) actData(ctx context.Context, cmd *RunBo
 	h.startHomeMarketTour(ctx, cmd, obs, res)
 
 	// (3) The yard sentinel: bootstrap's own small, independent, one-shot acquisition.
-	h.actYardSentinel(ctx, cmd, obs, res)
+	h.actYardSentinel(ctx, cmd, cfg, obs, res)
 }
 
 // actYardSentinel drives the yard sentinel toward "bought, captain-reserved, docked at the home
@@ -459,7 +481,7 @@ func (h *RunBootstrapCoordinatorHandler) actData(ctx context.Context, cmd *RunBo
 // still replaced. Gated on the SAME common.ImmutableReserveFloor the scouting buy uses (RULINGS #5),
 // never the stricter contractWorkingCapitalFloor. Re-derived every tick, and neither branch below ever
 // claims res.Blocker — the sentinel must never mask why a scouting/contract buy could not happen.
-func (h *RunBootstrapCoordinatorHandler) actYardSentinel(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, obs Observation, res *reconcileResult) {
+func (h *RunBootstrapCoordinatorHandler) actYardSentinel(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, obs Observation, res *reconcileResult) {
 	if obs.ProbeCount < probeTarget {
 		return // the higher-priority scouting seed is not yet complete; the sentinel waits its turn
 	}
@@ -467,7 +489,7 @@ func (h *RunBootstrapCoordinatorHandler) actYardSentinel(ctx context.Context, cm
 		h.buyYardSentinel(ctx, cmd, obs, res)
 		return
 	}
-	h.parkYardSentinel(ctx, cmd, obs, res)
+	h.parkYardSentinel(ctx, cmd, cfg, obs, res)
 }
 
 // buyYardSentinel evaluates and (unless blocked) executes the ONE-SHOT yard-sentinel buy, emitting the
@@ -536,7 +558,7 @@ func (h *RunBootstrapCoordinatorHandler) buyYardSentinel(ctx context.Context, cm
 // sentinelShipTypeNeed reports the ship type bootstrap is CURRENTLY trying to buy — the SAME precedence
 // actData/actIncome dispatch every COLDSTART tick (scouting seed, then contract-hauler ramp) — so the
 // sentinel can stand watch over a yard that serves it. ok=false means neither has anything left to buy.
-func sentinelShipTypeNeed(obs Observation) (shipType string, ok bool) {
+func sentinelShipTypeNeed(obs Observation, haulerTarget int) (shipType string, ok bool) {
 	if obs.ProbeCount < probeTarget {
 		return probeShipType, true
 	}
@@ -550,12 +572,12 @@ func sentinelShipTypeNeed(obs Observation) (shipType string, ok bool) {
 // re-evaluated every tick rather than latched on obs.YardSentinelParked (a purely positional fact, not
 // evidence the yard still serves what the ramp needs now). EnsureParked is a cheap no-op once correctly
 // positioned, so re-checking costs nothing and is what lets it redirect when the need shifts.
-func (h *RunBootstrapCoordinatorHandler) parkYardSentinel(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, obs Observation, res *reconcileResult) {
+func (h *RunBootstrapCoordinatorHandler) parkYardSentinel(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, obs Observation, res *reconcileResult) {
 	logger := common.LoggerFromContext(ctx)
 	if h.yardSentinel == nil || obs.HomeSystem == "" {
 		return
 	}
-	shipType, needed := sentinelShipTypeNeed(obs)
+	shipType, needed := sentinelShipTypeNeed(obs, cfg.HaulerTarget)
 	if !needed {
 		return // every ramp the sentinel could stand watch for is already at target — hold position
 	}
@@ -904,7 +926,7 @@ func (h *RunBootstrapCoordinatorHandler) emitHeartbeat(ctx context.Context, cmd 
 	}
 
 	logger.Log("INFO", fmt.Sprintf("Bootstrap heartbeat: phase=%s probes=%d/%d scouting=%d coverage=%d/%d (%.0f%%) haulers=%d/%d slots=%d income/hr=%.0f treasury=%d gate_site=%s construction=%.0f%% gate_workers=%d/%d yard_sentinel=%s · %s · next=%q · blockers=%s",
-		phase, obs.ProbeCount, probeTarget, obs.ProbesScouting, obs.MarketsCovered, obs.MarketsTotal, obs.CoverageFraction()*100, len(obs.Haulers), haulerTarget, res.PlacementSlots, obs.IncomePerHour, obs.Treasury, gateSiteOrNone(obs.GateSite), obs.ConstructionPercent, obs.GateWorkers, res.DesiredWorkers, yardSentinelStatus(obs), delta, next, blockers), map[string]interface{}{
+		phase, obs.ProbeCount, probeTarget, obs.ProbesScouting, obs.MarketsCovered, obs.MarketsTotal, obs.CoverageFraction()*100, len(obs.Haulers), cfg.HaulerTarget, res.PlacementSlots, obs.IncomePerHour, obs.Treasury, gateSiteOrNone(obs.GateSite), obs.ConstructionPercent, obs.GateWorkers, res.DesiredWorkers, yardSentinelStatus(obs), delta, next, blockers), map[string]interface{}{
 		"action":                    "bootstrap_heartbeat",
 		"container_id":              cmd.ContainerID,
 		"phase":                     string(phase),
@@ -914,7 +936,7 @@ func (h *RunBootstrapCoordinatorHandler) emitHeartbeat(ctx context.Context, cmd 
 		"markets_covered":           obs.MarketsCovered,
 		"markets_total":             obs.MarketsTotal,
 		"haulers":                   len(obs.Haulers),
-		"hauler_target":             haulerTarget,
+		"hauler_target":             cfg.HaulerTarget,
 		"trade_hulls":               obs.TradeHullCount,
 		"placement_slots":           res.PlacementSlots,
 		"income_per_hour":           obs.IncomePerHour,
@@ -963,8 +985,8 @@ func (h *RunBootstrapCoordinatorHandler) nextAction(cfg bootstrapRunConfig, phas
 		if !contractOpsWarranted(obs, cfg.ContractStartTreasury) {
 			return fmt.Sprintf("frigate trading; hold contract CAPITAL until treasury %d reaches the contract-start threshold %d", obs.Treasury, cfg.ContractStartTreasury)
 		}
-		if len(obs.Haulers) < haulerTarget {
-			return fmt.Sprintf("buy contract hauler %d/%d (staged, capital-gated, placed on a fixed delivery slot)", len(obs.Haulers)+1, haulerTarget)
+		if len(obs.Haulers) < cfg.HaulerTarget {
+			return fmt.Sprintf("buy contract hauler %d/%d (staged, capital-gated, placed on a fixed delivery slot)", len(obs.Haulers)+1, cfg.HaulerTarget)
 		}
 		return fmt.Sprintf("scan home system in parallel with contracts (coverage %.0f%%)", obs.CoverageFraction()*100)
 	case PhaseGate:
@@ -980,7 +1002,7 @@ func (h *RunBootstrapCoordinatorHandler) nextAction(cfg bootstrapRunConfig, phas
 		if !obs.ManufacturingAdopted {
 			return "bounce the manufacturing coordinator so it adopts the pipeline (L57)"
 		}
-		plan := planGateWorkers(obs)
+		plan := planGateWorkers(obs, cfg.GateWorkerTarget)
 		if len(plan.ReleaseShips) > 0 {
 			return fmt.Sprintf("repurpose %d surplus hauler(s) to gate construction", len(plan.ReleaseShips))
 		}

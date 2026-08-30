@@ -37,7 +37,7 @@ type gateWorkerPlan struct {
 	// fleet exclusive, the BUY (plus any idle non-dedicated hull the executor claims on its own) is the SOLE
 	// source of the gate workforce — it sizes it from scratch.
 	Buy int
-	// DesiredWorkers is the sizing target: gateWorkerTarget, live from GATE entry.
+	// DesiredWorkers is the sizing target: the tick's resolved gate_worker_target, live from GATE entry.
 	DesiredWorkers int
 	// KeptOnContract is how many haulers stay on contracts through GATE — the WHOLE contract delivery fleet
 	// now, never a floored subset — carried for the decision log.
@@ -52,19 +52,19 @@ type gateWorkerPlan struct {
 //     (ReleaseShips is always empty). Repurposing them churns: a contract→manufacturing re-tag drops
 //     the scaler's count below its target, the scaler re-buys, and GATE repurposes again. Contracts
 //     fund the gate build at full scale (RULINGS #1).
-//  2. RAMP TO THE WORKFORCE TARGET FROM GATE ENTRY — target gateWorkerTarget workers as soon as the
+//  2. RAMP TO THE WORKFORCE TARGET FROM GATE ENTRY — target gate_worker_target workers as soon as the
 //     pipeline exists and BUY the staged delta (one hull per tick) while the executor's workers fall short.
 //     A bought hull is dedicated to the manufacturing fleet and shows up as a GateWorker next tick, so the
 //     deficit shrinks one per tick and the buy stops at the target — never an over-buy.
 //
 // The target deliberately does NOT track the pipeline's revealed chain count: that would make it
 // non-monotone inside GATE, so a dropped chain count would turn hulls just bought into surplus and
-// release them. gateWorkerTarget is the single operator-reachable size, and the working-capital floor
-// — not the pipeline's shape — bounds the spend.
+// release them. gate_worker_target — the tick's RESOLVED value, passed in — is the single
+// operator-reachable size, and the working-capital floor, not the pipeline's shape, bounds the spend.
 //
-// It is pure and idempotent: a restart mid-GATE re-derives the same plan from the re-observed pool, so no
-// ramp hull is double-bought.
-func planGateWorkers(obs Observation) gateWorkerPlan {
+// It is pure over (observation, target): a restart mid-GATE — or a tune landing between ticks — re-derives
+// the plan with no stored state, so no ramp hull is double-bought and a tune down sheds only IDLE overage.
+func planGateWorkers(obs Observation, gateWorkerTarget int) gateWorkerPlan {
 	// (1) The exclusive contract fleet is never repurposed — release nothing, keep the whole delivery fleet.
 	kept := len(obs.Haulers)
 
@@ -143,7 +143,7 @@ func gateSiteOrNone(site string) string {
 //
 // The monitor→EXPANSION transition is derivePhase's job (obs.ConstructionComplete), so GATE has no explicit
 // "is it done?" branch — it just reconciles the construction drive each tick until the phase flips.
-func (h *RunBootstrapCoordinatorHandler) actGate(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, obs Observation, res *reconcileResult) {
+func (h *RunBootstrapCoordinatorHandler) actGate(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, obs Observation, res *reconcileResult) {
 	logger := common.LoggerFromContext(ctx)
 
 	// (1) Gate-site discovery is the observer's job; without a site GATE cannot act (fail-closed).
@@ -168,7 +168,7 @@ func (h *RunBootstrapCoordinatorHandler) actGate(ctx context.Context, cmd *RunBo
 	h.ensureExecutorAdopted(ctx, cmd, obs, res)
 
 	// (4) Size the gate workforce: buy the staged top-up if the executor's workers fall short.
-	h.sizeGateWorkers(ctx, cmd, obs, res)
+	h.sizeGateWorkers(ctx, cmd, cfg, obs, res)
 }
 
 // startConstruction drives `construction start <site>` once (idempotent at the adapter — it resumes an
@@ -267,8 +267,8 @@ func (h *RunBootstrapCoordinatorHandler) ensureExecutorAdopted(ctx context.Conte
 // hauler is ever repurposed; the loop stays only so a regression that reintroduced a release would still
 // route through the guarded, idempotent repurposer rather than a raw re-tag. Each step is independently
 // guarded, so a partial failure this tick simply retries next tick.
-func (h *RunBootstrapCoordinatorHandler) sizeGateWorkers(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, obs Observation, res *reconcileResult) {
-	plan := planGateWorkers(obs)
+func (h *RunBootstrapCoordinatorHandler) sizeGateWorkers(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, obs Observation, res *reconcileResult) {
+	plan := planGateWorkers(obs, cfg.GateWorkerTarget)
 	res.DesiredWorkers = plan.DesiredWorkers
 
 	// (1) INERT (always empty): the exclusive contract fleet is never repurposed. Retained as the

@@ -31,7 +31,8 @@ const (
 	defaultContractStartTreasuryThreshold int64 = 500_000
 
 	// The cold-start SIZES. Bootstrap seeds a fixed, known-good shape and the standing coordinators own
-	// everything above it, so these are the shape itself — not per-run knobs.
+	// everything above it, so most of these are the shape itself — not per-run knobs. The two FLEET-SIZE
+	// bounds below are the exception: config.yaml keys + live tunes (RULINGS #5).
 	//
 	// probeTarget is the scouting seed: 3 probes so market data flows ASAP.
 	probeTarget = 3
@@ -42,16 +43,21 @@ const (
 	// observeFleetShape (internal/adapters/grpc) can recognise the SAME string to tell the sentinel
 	// apart from any other captain reservation, without a second source of truth for it.
 	YardSentinelReservationReason = "bootstrap_yard_sentinel"
-	// haulerTarget caps the contract hull ramp: one hauler per viable contract hub, up to 4 (spec 4–5).
-	haulerTarget = 4
+	// defaultHaulerTarget caps the contract hull ramp: one hauler per viable contract hub, up to 4
+	// (spec 4–5). The EFFECTIVE ramp is min(this, the era's resolved delivery slots) — past the slot
+	// count firstUnservedSlot buys nothing and WARNs.
+	defaultHaulerTarget = 4
 	// haulerShipType is the ship-type bought for a contract hauler (and, reused, a gate worker). A light
 	// hauler is the cold-start workhorse: cheap, adequate cargo.
 	haulerShipType = "SHIP_LIGHT_HAULER"
-	// gateWorkerTarget is the gate-construction workforce: the size GATE ramps to, one hull per tick,
-	// from the moment the pipeline exists. The gate BUYS its own workers (the contract fleet is exclusive
-	// and never repurposed), so this is also the direct bound on the construction-worker spend — it keeps
-	// that spend small enough that the contract operation still funds the material bill alongside it.
-	gateWorkerTarget = 3
+	// defaultGateWorkerTarget is the gate-construction workforce: the size GATE ramps to, one hull per
+	// tick, from the moment the pipeline exists. The gate BUYS its own workers (the contract fleet is
+	// exclusive and never repurposed), so this is also the direct bound on the construction-worker spend
+	// — it keeps that spend small enough that the contract operation still funds the material bill
+	// alongside it. The default is one delivery sentinel plus a factory feeder per gate material chain,
+	// the shape roleTarget splits it into while delivery is paused. Tuned down it sheds the idle
+	// overage; tuned up it stages one buy per tick.
+	defaultGateWorkerTarget = 3
 
 	// contractWorkingCapitalFloor is the ABSOLUTE cash cushion (whole credits) the treasury must still
 	// clear AFTER a staged bootstrap fleet-scaling spend — the hauler buy (incl. the first-hauler
@@ -425,6 +431,14 @@ type RunBootstrapCoordinatorCommand struct {
 	// starts, live-overlaid each tick by the contract_start_treasury_threshold tune. 0/absent ⇒ the
 	// documented default.
 	ContractStartTreasuryThreshold int
+
+	// HaulerTarget is the contract-hull ramp cap, live-overlaid each tick by the hauler_target tune.
+	// 0/absent ⇒ the documented default.
+	HaulerTarget int
+
+	// GateWorkerTarget is the gate-construction workforce size, live-overlaid each tick by the
+	// gate_worker_target tune. 0/absent ⇒ the documented default.
+	GateWorkerTarget int
 }
 
 // RunBootstrapCoordinatorResponse reports reconcile progress, observed on context cancellation
@@ -669,10 +683,12 @@ func (h *RunBootstrapCoordinatorHandler) Handle(ctx context.Context, request com
 	// Startup log only — resolve from the launch command alone (nil live). Per-tick reconcile
 	// re-resolves WITH the live snapshot, so a later tune is reflected from that tick on.
 	cfg := resolveBootstrapConfig(cmd, nil)
-	logger.Log("INFO", fmt.Sprintf("Bootstrap coordinator starting (tick %s, disabled=%v, probes→%d, haulers→%d, gate workers→%d)", cfg.Tick, cfg.Disabled, probeTarget, haulerTarget, gateWorkerTarget), map[string]interface{}{
-		"action":       "bootstrap_start",
-		"container_id": cmd.ContainerID,
-		"disabled":     cfg.Disabled,
+	logger.Log("INFO", fmt.Sprintf("Bootstrap coordinator starting (tick %s, disabled=%v, probes→%d, haulers→%d, gate workers→%d)", cfg.Tick, cfg.Disabled, probeTarget, cfg.HaulerTarget, cfg.GateWorkerTarget), map[string]interface{}{
+		"action":             "bootstrap_start",
+		"container_id":       cmd.ContainerID,
+		"disabled":           cfg.Disabled,
+		"hauler_target":      cfg.HaulerTarget,
+		"gate_worker_target": cfg.GateWorkerTarget,
 	})
 
 	result := &RunBootstrapCoordinatorResponse{Errors: []string{}}

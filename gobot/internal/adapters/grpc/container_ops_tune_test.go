@@ -18,6 +18,7 @@ import (
 	tradingCmd "github.com/andrescamacho/spacetraders-go/internal/application/trading/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/contractscaler"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
 	pb "github.com/andrescamacho/spacetraders-go/pkg/proto/daemon"
 	"gorm.io/gorm"
@@ -454,6 +455,124 @@ func TestTune_Bootstrap_BareTuneKeySurvivesConfigRebuild(t *testing.T) {
 	require.False(t, hasPrefixed, "the prefixed launch key is transient — cleared and re-injected from config.yaml")
 	require.Equal(t, "boot-x", config["container_id"], "identity keys survive the rebuild")
 	require.Equal(t, "A", config["agent_symbol"], "identity keys survive the rebuild")
+}
+
+// sp-58pmg: the two FLEET-SIZE bounds are live knobs, and their advertised range must be honest —
+// EVERY value in [Min, Max] has to be a size the ramp can actually reach. hauler_target's ceiling is
+// therefore the SLOT SUPPLY, not a round number: a contract hull is only ever bought against a free
+// fixed delivery slot and an era resolves at most contractscaler.MaxDeliveryHulls of them, so a larger
+// target could never buy a hull and the knob would advertise a setting that does nothing (the
+// chart_hull_cap trap). Both Mins are 1 because `tune <key> 0` is the revert-to-default verb.
+func TestTuneRegistry_BootstrapFleetTargets_BoundsAreReachable(t *testing.T) {
+	knobs := tunableKnobsByContainerType()[bootstrapContainerType]
+
+	hauler, ok := knobs["hauler_target"]
+	require.True(t, ok, "hauler_target must be tunable — it bounds cold-start hull spend (RULINGS #5)")
+	require.Equal(t, 1, hauler.Min, "0 is the revert verb, so 1 is the smallest expressible ramp")
+	require.Equal(t, contractscaler.MaxDeliveryHulls, hauler.Max,
+		"the ceiling IS the delivery knee: a hull is bought against a free slot, and no era resolves more than that many")
+	require.Equal(t, TuneAppliesLive, hauler.Applies)
+
+	gate, ok := knobs["gate_worker_target"]
+	require.True(t, ok, "gate_worker_target must be tunable — it is the direct bound on construction-worker spend")
+	require.Equal(t, 1, gate.Min, "0 is the revert verb, so 1 is the smallest expressible workforce")
+	require.Greater(t, gate.Max, bootstrapCmd.BootstrapTunableDefaults()["gate_worker_target"],
+		"the ceiling must leave room to size the workforce UP, which is half of what the knob is for")
+	require.Equal(t, TuneAppliesLive, gate.Applies)
+
+	// Defaults must sit inside their own advertised range — a default the writer would reject is a knob
+	// that cannot be restored to its shipped value.
+	for key, bound := range map[string]TuneBound{"hauler_target": hauler, "gate_worker_target": gate} {
+		require.GreaterOrEqual(t, bound.Default, bound.Min, "%s: the documented default must be settable", key)
+		require.LessOrEqual(t, bound.Default, bound.Max, "%s: the documented default must be settable", key)
+	}
+}
+
+// THE ORDER, END TO END: resizing the gate workforce is one knob write against the RUNNING coordinator —
+// no source edit, no build, no daemon restart. The write lands in the bare-key family the per-tick live
+// reader consumes, `--show` reports it as live-config, an out-of-range value is refused before any write,
+// and `tune ... 0` puts the documented default back.
+func TestTune_Bootstrap_FleetTargets_ResizeTheFleetLive(t *testing.T) {
+	db, repo, playerID := tuneTestDB(t)
+	seedTuneContainer(t, db, playerID, tuneBootstrapContainerID, bootstrapContainerType, "bootstrap", "RUNNING", map[string]interface{}{
+		"container_id": tuneBootstrapContainerID,
+		"agent_symbol": "TUNE-AGENT",
+	})
+	s := &DaemonServer{containerRepo: repo}
+	ctx := context.Background()
+	defaults := bootstrapCmd.BootstrapTunableDefaults()
+
+	// The cut, then the restore — the two orders that each cost a redeploy cycle on 2026-08-30.
+	out, err := s.MutateContainerConfigKey(ctx, "", "bootstrap", "gate_worker_target", 2, playerID)
+	require.NoError(t, err)
+	require.Equal(t, defaults["gate_worker_target"], out.OldEffective)
+	require.Equal(t, 2, out.NewEffective)
+	require.Equal(t, TuneAppliesLive, out.Applies, "a fleet-size retune must land on the next tick, not at the next restart")
+
+	out, err = s.MutateContainerConfigKey(ctx, "", "bootstrap", "gate_worker_target", 3, playerID)
+	require.NoError(t, err)
+	require.Equal(t, 2, out.OldEffective)
+	require.Equal(t, 3, out.NewEffective)
+
+	out, err = s.MutateContainerConfigKey(ctx, "", "bootstrap", "hauler_target", contractscaler.MaxDeliveryHulls, playerID)
+	require.NoError(t, err)
+	require.Equal(t, contractscaler.MaxDeliveryHulls, out.NewEffective, "the top of the advertised range must be settable")
+
+	// The coordinator reads BARE keys per tick — that is the seam that makes this restart-free.
+	snap, err := NewContainerConfigReader(repo).Snapshot(ctx, tuneBootstrapContainerID, playerID)
+	require.NoError(t, err)
+	workers, set := snap.PositiveInt("gate_worker_target")
+	require.True(t, set)
+	require.Equal(t, 3, workers)
+
+	show, err := s.ShowTunableConfig(ctx, "", "bootstrap", playerID)
+	require.NoError(t, err)
+	byKey := map[string]TunableKnobStatus{}
+	for _, k := range show.Knobs {
+		byKey[k.Key] = k
+	}
+	require.Equal(t, 3, byKey["gate_worker_target"].Effective)
+	require.Equal(t, "live-config", byKey["gate_worker_target"].Source)
+	require.Equal(t, "hulls", byKey["gate_worker_target"].Bound.Unit)
+
+	// Past the ceiling is refused with the column untouched — no half-applied fleet size.
+	before := containerConfigJSON(t, repo, tuneBootstrapContainerID, playerID)
+	_, err = s.MutateContainerConfigKey(ctx, "", "bootstrap", "hauler_target", contractscaler.MaxDeliveryHulls+1, playerID)
+	require.Error(t, err, "a hauler target past the delivery knee could never place a hull — reject it")
+	require.Equal(t, before, containerConfigJSON(t, repo, tuneBootstrapContainerID, playerID))
+
+	// Revert restores the shipped value.
+	out, err = s.MutateContainerConfigKey(ctx, "", "bootstrap", "gate_worker_target", 0, playerID)
+	require.NoError(t, err)
+	require.Equal(t, defaults["gate_worker_target"], out.NewEffective)
+	require.Equal(t, "default", out.NewSource)
+}
+
+// A config.yaml [bootstrap] setting reaches the launch command on EVERY build (creation and restart
+// recovery), so the fleet sizes survive a rebuild without a live tune — and a live tune of the bare key
+// still outranks them, because the prefixed launch family is cleared and re-injected while the bare one
+// is not. This is what makes it safe to deploy the knobs to a running fleet: set config.yaml BEFORE the
+// restart and the very first tick after it already resolves the intended size.
+func TestBootstrap_ConfigYamlFleetTargets_ReachTheLaunchCommand(t *testing.T) {
+	s := &DaemonServer{}
+	s.bootstrapConfig.HaulerTarget = 5
+	s.bootstrapConfig.GateWorkerTarget = 3
+
+	config := map[string]interface{}{"container_id": "boot-x", "agent_symbol": "A"}
+	s.resolveBootstrapConfig(config)
+	require.EqualValues(t, 5, config["bootstrap_hauler_target"])
+	require.EqualValues(t, 3, config["bootstrap_gate_worker_target"])
+
+	cmd := buildBootstrapCommand(newConfigReader(config), 7, "boot-x").(*bootstrapCmd.RunBootstrapCoordinatorCommand)
+	require.Equal(t, 5, cmd.HaulerTarget)
+	require.Equal(t, 3, cmd.GateWorkerTarget)
+
+	// An UNSET config.yaml writes nothing, so the coordinator's documented defaults apply.
+	blank := &DaemonServer{}
+	bare := map[string]interface{}{"container_id": "boot-y", "agent_symbol": "A"}
+	blank.resolveBootstrapConfig(bare)
+	require.NotContains(t, bare, "bootstrap_hauler_target")
+	require.NotContains(t, bare, "bootstrap_gate_worker_target")
 }
 
 // Every registered knob must SAY when a tune of it reaches the running loop. The

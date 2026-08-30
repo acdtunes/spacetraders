@@ -239,7 +239,7 @@ func TestBootstrap_YardSentinel_NoAcquirerWired_IsLoudNotPanic(t *testing.T) {
 
 	log := &capturingLogger{}
 	res := reconcileResult{}
-	h.actYardSentinel(ctxWithLogger(log), baseCmd(), obs, &res)
+	h.actYardSentinel(ctxWithLogger(log), baseCmd(), defaultTargets(), obs, &res)
 	if res.Blocker != "" {
 		t.Fatalf("an unwired acquirer must not claim res.Blocker, got %q", res.Blocker)
 	}
@@ -345,7 +345,7 @@ func TestBootstrap_YardSentinel_KeepsReVerifyingPlacementWhileAnyRampStillNeedsT
 	// Once the hauler ramp ALSO reaches target there is genuinely nothing left to stand watch for, and
 	// the sentinel correctly HOLDS its position rather than being redirected on no evidence.
 	fullyStaffed := docked
-	fullyStaffed.Haulers = make([]HaulerSnapshot, haulerTarget)
+	fullyStaffed.Haulers = make([]HaulerSnapshot, defaultTargets().HaulerTarget)
 	h.SetWorldObserver(&fakeObserver{obs: fullyStaffed})
 	if _, err := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd()); err != nil {
 		t.Fatalf("tick 3: %v", err)
@@ -367,7 +367,7 @@ func TestBootstrap_YardSentinel_PositionError_RetriedNeverBlocks(t *testing.T) {
 
 	log := &capturingLogger{}
 	res := reconcileResult{}
-	h.actYardSentinel(ctxWithLogger(log), baseCmd(), obs, &res)
+	h.actYardSentinel(ctxWithLogger(log), baseCmd(), defaultTargets(), obs, &res)
 	if res.Blocker != "" {
 		t.Fatalf("positioning must never claim res.Blocker, got %q", res.Blocker)
 	}
@@ -376,7 +376,7 @@ func TestBootstrap_YardSentinel_PositionError_RetriedNeverBlocks(t *testing.T) {
 	}
 
 	res2 := reconcileResult{}
-	h.actYardSentinel(ctxWithLogger(&capturingLogger{}), baseCmd(), obs, &res2)
+	h.actYardSentinel(ctxWithLogger(&capturingLogger{}), baseCmd(), defaultTargets(), obs, &res2)
 	if ys.parkCalls != 2 {
 		t.Fatalf("a failed positioning attempt must be retried next tick, got %d calls", ys.parkCalls)
 	}
@@ -599,39 +599,56 @@ func TestBootstrap_YardSentinel_ColdStartThroughExpansion_BootstrapReleasesForAd
 // to be bought as. This pins the precedence in isolation, off the SAME counts the heartbeat itself
 // reports (probe_target/probes, hauler_target/haulers) — no Observer, no handler, no acquirer needed.
 func TestSentinelShipTypeNeed_TracksTheActiveWorkstream(t *testing.T) {
+	// The hauler bar is the tick's RESOLVED hauler_target, so a retune redirects the sentinel to the yard
+	// serving the new need on the next tick — the cases below state the target they run at.
+	haulerTarget := defaultTargets().HaulerTarget
 	cases := []struct {
 		name     string
+		target   int
 		obs      Observation
 		wantType string
 		wantOK   bool
 	}{
 		{
 			name:     "probes still short of target: the scouting seed's own asset",
+			target:   haulerTarget,
 			obs:      Observation{ProbeCount: probeTarget - 1},
 			wantType: probeShipType,
 			wantOK:   true,
 		},
 		{
 			name:     "probes complete, haulers short of target: the contract-hauler ramp's asset",
+			target:   haulerTarget,
 			obs:      Observation{ProbeCount: probeTarget, Haulers: nil},
 			wantType: haulerShipType,
 			wantOK:   true,
 		},
 		{
 			name:     "probes complete, haulers partially ramped: still the hauler ramp's asset",
+			target:   haulerTarget,
 			obs:      Observation{ProbeCount: probeTarget, Haulers: make([]HaulerSnapshot, haulerTarget-1)},
 			wantType: haulerShipType,
 			wantOK:   true,
 		},
 		{
 			name:   "both ramps at target: nothing is currently being bought",
+			target: haulerTarget,
 			obs:    Observation{ProbeCount: probeTarget, Haulers: make([]HaulerSnapshot, haulerTarget)},
 			wantOK: false,
+		},
+		{
+			// TUNED UP mid-ramp: a fleet fully staffed at the old target is short again, so the sentinel
+			// goes back to standing watch over a hauler yard on the very next tick.
+			name:     "hauler_target tuned up past the owned fleet: the ramp needs a hull again",
+			target:   haulerTarget + 1,
+			obs:      Observation{ProbeCount: probeTarget, Haulers: make([]HaulerSnapshot, haulerTarget)},
+			wantType: haulerShipType,
+			wantOK:   true,
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			gotType, gotOK := sentinelShipTypeNeed(tc.obs)
+			gotType, gotOK := sentinelShipTypeNeed(tc.obs, tc.target)
 			if gotOK != tc.wantOK {
 				t.Fatalf("ok: got %v, want %v", gotOK, tc.wantOK)
 			}

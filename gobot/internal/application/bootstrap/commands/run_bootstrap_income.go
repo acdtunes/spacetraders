@@ -56,7 +56,7 @@ const (
 //  8. Staged, capital-gated hull acquisition, ROUTED BY ORDER: #1 → the contract fleet, #2 → the TRADE
 //     fleet (held until the first contract hull exists), #3… → contract again. The ramp climbs to the
 //     fixed Phase-1 hauler target, one hull per tick, each on a distinct delivery slot; the COUNT guard
-//     (haulers < haulerTarget) is the double-buy protection. The trade hull does not count toward the
+//     (haulers < hauler_target) is the double-buy protection. The trade hull does not count toward the
 //     scaler's ceiling, and ALL the phase logic lives HERE — the coordinators stay phase-blind.
 //
 // Each action is guarded "already done / in-flight?" against the FRESH observation, so re-evaluation —
@@ -128,12 +128,12 @@ func (h *RunBootstrapCoordinatorHandler) actIncome(ctx context.Context, cmd *Run
 		return
 	}
 
-	// (8) Staged hull acquisition. The target is the FIXED Phase-1 hauler count — a constant of the plan,
-	// never a per-tick reading of markets or of whatever contract is live, so the ramp climbs to one size
-	// and stays there instead of resizing under it. The count guard is the double-buy protection; the
-	// era's fixed delivery slots decide only WHERE each hull lands.
+	// (8) Staged hull acquisition. The target is the resolved hauler_target — an operator-set size, never
+	// a per-tick reading of markets or of whatever contract is live, so the ramp climbs to one size and
+	// stays there instead of resizing under it. The count guard is the double-buy protection; the era's
+	// fixed delivery slots decide only WHERE each hull lands, and cap the ramp at their own count.
 	res.PlacementSlots = len(obs.ContractPlacementSlots)
-	desired := haulerTarget
+	desired := cfg.HaulerTarget
 	contractHaulers := len(obs.Haulers)
 
 	// (8a) HULL-ROUTING: route cold-start light-hull acquisitions by order — #1 →
@@ -153,7 +153,7 @@ func (h *RunBootstrapCoordinatorHandler) actIncome(ctx context.Context, cmd *Run
 	// contractHaulers==0 still buys contract #1 unchanged; once a trade hull exists contract buying resumes
 	// for #3…, capped at the fixed hauler target.
 	if contractHaulers < desired && (contractHaulers == 0 || obs.TradeHullCount >= 1) {
-		h.maybeBuyHauler(ctx, cmd, obs, res)
+		h.maybeBuyHauler(ctx, cmd, cfg, obs, res)
 	}
 }
 
@@ -701,17 +701,17 @@ func (h *RunBootstrapCoordinatorHandler) ensureBatchContract(ctx context.Context
 // maybeBuyHauler evaluates and (unless dry-run) executes ONE staged hauler buy behind the readiness
 // and capital gates, placing it on the first fixed delivery slot no hauler yet serves. It emits the
 // same guardrail arithmetic as the probe buy (RULINGS #4, fail closed). Caller has checked "needed"
-// (haulers < haulerTarget).
-func (h *RunBootstrapCoordinatorHandler) maybeBuyHauler(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, obs Observation, res *reconcileResult) {
+// (haulers < hauler_target).
+func (h *RunBootstrapCoordinatorHandler) maybeBuyHauler(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, obs Observation, res *reconcileResult) {
 	logger := common.LoggerFromContext(ctx)
 
 	// Placement: the first fixed slot (within the cap) no hauler already serves. Empty means the era's
 	// parks are unresolved, or the home system has fewer distinct parks than the target and all of them
 	// are served — either way there is nowhere to spread another hull, so fail closed and retry.
-	slot := firstUnservedSlot(obs.ContractPlacementSlots, obs.Haulers, haulerTarget)
+	slot := firstUnservedSlot(obs.ContractPlacementSlots, obs.Haulers, cfg.HaulerTarget)
 	if slot == "" {
 		res.Blocker = "no_placement_slot"
-		logger.Log("WARN", fmt.Sprintf("Bootstrap hauler needed (%d/%d haulers) but no free delivery slot to place it on (%d slot(s) resolved this era) — no placement target", len(obs.Haulers), haulerTarget, len(obs.ContractPlacementSlots)), map[string]interface{}{
+		logger.Log("WARN", fmt.Sprintf("Bootstrap hauler needed (%d/%d haulers) but no free delivery slot to place it on (%d slot(s) resolved this era) — no placement target", len(obs.Haulers), cfg.HaulerTarget, len(obs.ContractPlacementSlots)), map[string]interface{}{
 			"action":       "bootstrap_income_blocked",
 			"container_id": cmd.ContainerID,
 			"blocker":      "no_placement_slot",
@@ -751,7 +751,7 @@ func (h *RunBootstrapCoordinatorHandler) maybeBuyHauler(ctx context.Context, cmd
 	committedPurchaser := len(obs.Haulers) == 0 && obs.CommandFrigatePurchasing && obs.CommandFrigateID != ""
 	if !pivot && !committedPurchaser && !hasPurchaser(obs) {
 		res.Blocker = "no_purchaser"
-		logger.Log("WARN", fmt.Sprintf("Bootstrap hauler needed (%d/%d, slot %s) but BLOCKED: no idle hull to execute the purchase, no yard sentinel standing at a shipyard, and the first-hauler pivot is unavailable (haulers=%d frigate_on_trade=%v frigate_idle=%v cargo_empty=%v) — retry next tick", len(obs.Haulers), haulerTarget, slot, len(obs.Haulers), obs.CommandFrigateOnTrade, obs.CommandFrigateIdle, obs.FrigateCargoEmpty), map[string]interface{}{
+		logger.Log("WARN", fmt.Sprintf("Bootstrap hauler needed (%d/%d, slot %s) but BLOCKED: no idle hull to execute the purchase, no yard sentinel standing at a shipyard, and the first-hauler pivot is unavailable (haulers=%d frigate_on_trade=%v frigate_idle=%v cargo_empty=%v) — retry next tick", len(obs.Haulers), cfg.HaulerTarget, slot, len(obs.Haulers), obs.CommandFrigateOnTrade, obs.CommandFrigateIdle, obs.FrigateCargoEmpty), map[string]interface{}{
 			"action":       "bootstrap_income_blocked",
 			"container_id": cmd.ContainerID,
 			"blocker":      "no_purchaser",
@@ -855,7 +855,7 @@ func (h *RunBootstrapCoordinatorHandler) maybeBuyHauler(ctx context.Context, cmd
 	if h.metrics != nil {
 		h.metrics.RecordHaulerPurchased(strconv.Itoa(cmd.PlayerID))
 	}
-	logger.Log("INFO", fmt.Sprintf("Bootstrap bought contract hauler %s at %s for %d, dedicated + placed on delivery slot %s (%d/%d haulers, %d slots)", bought.ShipSymbol, yard, bought.Price, slot, len(obs.Haulers)+1, haulerTarget, res.PlacementSlots), map[string]interface{}{
+	logger.Log("INFO", fmt.Sprintf("Bootstrap bought contract hauler %s at %s for %d, dedicated + placed on delivery slot %s (%d/%d haulers, %d slots)", bought.ShipSymbol, yard, bought.Price, slot, len(obs.Haulers)+1, cfg.HaulerTarget, res.PlacementSlots), map[string]interface{}{
 		"action":       "bootstrap_bought_hauler",
 		"container_id": cmd.ContainerID,
 		"ship":         bought.ShipSymbol,

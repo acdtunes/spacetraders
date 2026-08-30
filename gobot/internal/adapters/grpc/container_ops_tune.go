@@ -17,6 +17,7 @@ import (
 	tradingCmd "github.com/andrescamacho/spacetraders-go/internal/application/trading/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/contractscaler"
 )
 
 // The daemon side of the GENERIC runtime tune mechanism (sp-vwek), generalizing the
@@ -205,11 +206,18 @@ func tunableKnobsByContainerType() map[string]map[string]TuneBound {
 		// BARE family — NOT the prefixed bootstrap_* launch keys, which resolveBootstrapConfig
 		// clears+reinjects from config.yaml on every rebuild. A bare tune therefore survives a daemon bounce
 		// (the coordinator's per-tick liveconfig reader keeps applying it) instead of being wiped. The
-		// cold-start SHAPE is fixed in the coordinator, so the cadence and the contract-start treasury
-		// threshold are the runtime levers.
+		// cold-start SEQUENCE is fixed in the coordinator; the cadence, the contract-start treasury
+		// threshold and the two FLEET-SIZE bounds are the runtime levers.
+		//
+		// BOTH COUNT KNOBS TAKE Min 1, NOT 0 — `tune <key> 0` is the revert-to-default verb fleet-wide,
+		// so 0 reaches neither, and the bound crosses the wire to `tune --show`. Neither is a money
+		// guard: they bound how many hulls the ramp WANTS, and every buy still passes the untouched
+		// working-capital floor and the immutable reserve (RULINGS #4).
 		string(container.ContainerTypeBootstrapCoordinator): {
 			"tick_secs":                         {Type: "int", Min: 10, Max: 86_400, Default: bootstrap["tick_secs"], Unit: "seconds", Applies: TuneAppliesLive, Description: "reconcile cadence — kept SHORT because bootstrap runs only at cold start (<0.1 req/s, 20x+ API headroom) and a fast tick cuts poll-latency dead time before the gate (default 45s; sp-lgo3)"},
 			"contract_start_treasury_threshold": {Type: "int", Min: 0, Max: 100_000_000, Default: bootstrap["contract_start_treasury_threshold"], Unit: "credits", Applies: TuneAppliesLive, Description: "FLAT treasury at which the CONTRACT OPERATION starts during cold start: below it the command frigate trades under the trade-fleet coordinator and nothing contract-side is launched or bought; at/above it the contract-fleet coordinator comes up and the hauler ramp begins (default 500000). Deliberately NOT netted against the reserve floor — a different reading from the GATE-entry surplus bar. SEQUENCING only, never a spend guard: every buy still passes the untouched 350k working-capital floor, and once contract ops are under way a treasury dip never stands them back down (RULINGS #1/#4)"},
+			"hauler_target":                     {Type: "int", Min: 1, Max: contractscaler.MaxDeliveryHulls, Default: bootstrap["hauler_target"], Unit: "hulls", Applies: TuneAppliesLive, Description: "how many CONTRACT DELIVERY haulers the cold-start ramp buys, one per tick, each placed on its own fixed delivery slot (default 4). THE MAX IS THE SLOT SUPPLY, NOT A ROUND NUMBER: a hull is only ever bought against a free slot, and an era resolves at most 6 of them (the contract scaler's p-median delivery knee), so 6 is the largest value that can buy anything and every value up to it is reachable. Within that, the EFFECTIVE ramp is min(this, the slots THIS era actually resolved) — the heartbeat prints `slots=`, and a target above it stops at the slot count with a no-placement WARN rather than silently. RAISING it stages one more buy per tick while the treasury clears the working-capital floor; LOWERING it below the hulls already owned buys nothing more and strands nothing — bootstrap never un-buys a contract hauler, the standing contract scaler owns the fleet from there. `tune hauler_target 0` reverts to the default. Applies next tick, no restart"},
+			"gate_worker_target":                {Type: "int", Min: 1, Max: 12, Default: bootstrap["gate_worker_target"], Unit: "hulls", Applies: TuneAppliesLive, Description: "the GATE-phase construction workforce: the size the gate ramps its OWN worker pool to, one light hauler per tick, from the moment the pipeline exists (default 3: one delivery sentinel plus a factory feeder per gate material chain, the split roleTarget drives to while delivery is paused). The contract fleet is exclusive and never repurposed, so this is the direct bound on construction-worker SPEND — the lever for trading gate throughput against the working capital the contract operation needs to fund the material bill. RAISING it stages one buy per tick until the pool matches; LOWERING it un-dedicates the IDLE overage to the undedicated pool in deterministic symbol order, so the contract scaler's reclaim-before-buy tier adopts them — a hull mid-construction is never selected and never yanked. Every value in range is reached the same way; the MAX is a fat-finger bound, not a structural one — the working-capital floor is what actually stops a buy, and past roughly one delivery sentinel plus one feeder per revealed material chain the extra hulls are still bought and roled but find no feed plan to work. `tune gate_worker_target 0` reverts to the default. Applies next tick, no restart"},
 		},
 	}
 }

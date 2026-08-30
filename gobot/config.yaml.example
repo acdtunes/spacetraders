@@ -636,9 +636,9 @@ fleet_autosizer:
 # frigate, hub-placed hauler ramp, trade seed, batch-contract) as PARALLEL workstreams; GATE builds
 # the jump gate once the contract op is scaled and funded; EXPANSION hands off and exits.
 #
-# The cold-start SHAPE - how many probes/haulers/gate workers, which hulls, every phase bar - is
-# fixed in the coordinator: it is one known-good sequence, not a per-run configuration. Two controls
-# live here.
+# The cold-start SEQUENCE - which hulls are bought, in what order, behind which phase bars - is fixed
+# in the coordinator: it is one known-good shape, not a per-run configuration. The two FLEET-SIZE
+# bounds are not: they cap the cold-start hull spend, so they are keys here AND live tunes.
 #
 # Money-guard: every bootstrap buy (probes, contract haulers, gate workers) is affordable only when
 # the treasury left AFTER the buy still clears the immutable working-capital floor: cushion =
@@ -664,6 +664,25 @@ bootstrap:
   # treasury dip never stands it back down. Also live-tunable with no restart:
   # `spacetraders tune --operation bootstrap contract_start_treasury_threshold <credits>`.
   # contract_start_treasury_threshold: 500000
+
+  # How many CONTRACT DELIVERY haulers the cold-start ramp buys, one per tick, each placed on its own
+  # fixed delivery slot (0 => 4; range 1-6). The max is the slot supply: a hull is only bought against
+  # a free slot and an era resolves at most 6 (the contract scaler's delivery knee), so the EFFECTIVE
+  # ramp is min(this, the slots THIS era resolved) - the heartbeat prints `slots=`, and a target above
+  # it stops with a no-placement WARN. Lowering it below the hulls already owned buys nothing more and
+  # releases nothing (the standing contract scaler owns the fleet from there). Also live-tunable with
+  # no restart: `spacetraders tune --operation bootstrap hauler_target <n>`.
+  # hauler_target: 4
+
+  # The GATE-phase construction workforce: the size the gate ramps its OWN worker pool to, one light
+  # hauler per tick (0 => 3; range 1-12). The contract fleet is exclusive and never repurposed, so
+  # this is the direct bound on construction-worker spend - the lever for trading gate throughput
+  # against the working capital the contract operation needs for the material bill. Raising it stages
+  # one buy per tick; lowering it un-dedicates only the IDLE overage (a hull mid-construction is never
+  # yanked). Neither this nor hauler_target is a money guard: every buy still passes the untouched
+  # working-capital floor. Also live-tunable with no restart:
+  # `spacetraders tune --operation bootstrap gate_worker_target <n>`.
+  # gate_worker_target: 3
 
 # Capacity reconciler (epic st-7zk): the standing declarative engine that drives the
 # contract-delivery machine's ACTUAL capacity topology toward a computed DESIRED topology

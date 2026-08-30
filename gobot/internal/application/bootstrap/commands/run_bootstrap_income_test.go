@@ -351,11 +351,14 @@ func incomeObs() Observation {
 	}
 }
 
-// --- the cold-start contract shape is fixed in code ---
+// --- the cold-start contract shape is fixed in code; the ramp SIZE is the operator knob ---
 
 func TestBootstrap_ContractShape_IsFixed(t *testing.T) {
-	if haulerTarget != 4 {
-		t.Fatalf("hauler target = %d, want 4 (the fixed Phase-1 contract-hauler count)", haulerTarget)
+	// The SIZE is deliberately not pinned here — it is hauler_target, a config.yaml key and a live tune
+	// (sp-58pmg). What is fixed is which HULL the ramp buys and that an untuned column resolves the
+	// documented default; the size itself is covered knob-side in run_bootstrap_tune_test.go.
+	if got := defaultTargets().HaulerTarget; got != defaultHaulerTarget {
+		t.Fatalf("an untuned column must resolve the documented hauler target %d, got %d", defaultHaulerTarget, got)
 	}
 	if haulerShipType != "SHIP_LIGHT_HAULER" {
 		t.Fatalf("contract hauler asset = %q, want SHIP_LIGHT_HAULER", haulerShipType)
@@ -701,15 +704,18 @@ func TestFirstUnservedSlot_FullFleetReportsNoSlot_MatchingAssignedSlotSurplus(t 
 func TestBootstrap_Income_NoBuyWhenTargetMet(t *testing.T) {
 	obs := incomeObs()
 	obs.BatchContractRunning = true
-	obs.TradeHullCount = 1          // Post-seed — isolate the target guard (no trade-seed detour)
-	obs.Haulers = []HaulerSnapshot{ // haulerTarget haulers, one per slot → the fixed target is met
-		{Waypoint: "X1-HUBA"}, {Waypoint: "X1-HUBB"}, {Waypoint: "X1-HUBC"}, {Waypoint: "X1-HUBD"},
+	obs.TradeHullCount = 1 // Post-seed — isolate the target guard (no trade-seed detour)
+	// hauler_target haulers, one per slot → the resolved target is met.
+	target := defaultTargets().HaulerTarget
+	obs.Haulers = nil
+	for _, wp := range []string{"X1-HUBA", "X1-HUBB", "X1-HUBC", "X1-HUBD", "X1-HUBE", "X1-HUBF"}[:target] {
+		obs.Haulers = append(obs.Haulers, HaulerSnapshot{Waypoint: wp})
 	}
 	acq := &fakeHaulerAcquirer{price: 100000, yard: "Y", readable: true}
 	h := newIncomeHandler(obs, &fakeRetirer{}, acq, &fakeContractRunner{})
 	h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
 	if acq.buys != 0 {
-		t.Fatalf("fixed target met (%d haulers): must not buy, got %d", haulerTarget, acq.buys)
+		t.Fatalf("target met (%d haulers): must not buy, got %d", target, acq.buys)
 	}
 }
 
@@ -817,9 +823,10 @@ func TestBootstrap_IncomeAcceptance_TradesLaunchesRampsHaulers(t *testing.T) {
 	if !final.BatchContractRunning {
 		t.Fatalf("acceptance: the contract coordinator should be running")
 	}
-	// The ramp climbs to the fixed hauler target, one hull per distinct slot.
+	// The ramp climbs to the resolved hauler target, one hull per distinct slot.
+	haulerTarget := defaultTargets().HaulerTarget
 	if len(final.Haulers) != haulerTarget {
-		t.Fatalf("acceptance: expected %d haulers (the fixed target), got %d", haulerTarget, len(final.Haulers))
+		t.Fatalf("acceptance: expected %d haulers (the resolved target), got %d", haulerTarget, len(final.Haulers))
 	}
 	if len(ret.tradeDedications) != 1 {
 		t.Fatalf("acceptance: the frigate is put in the trade fleet exactly once, got %v", ret.tradeDedications)
@@ -843,7 +850,7 @@ func TestBootstrap_IncomeAcceptance_TradesLaunchesRampsHaulers(t *testing.T) {
 // tick happened to sense. A sparse read (here: two resolved parks, already fully OWNED by the two existing
 // haulers per AssignedSlot — sp-94quv: ownership is symbol-based, so both correctly count as served even
 // though both are reported away delivering, not sitting on them) must not be mistaken for "nothing to do":
-// the needed-gate (len(Haulers) < haulerTarget) still fires on the FIXED target and the buy act is
+// the needed-gate (len(Haulers) < hauler_target) still fires on the RESOLVED target and the buy act is
 // ATTEMPTED — which then correctly finds no room among the sensed set and fails closed (no_placement_slot),
 // rather than either silently skipping the tick as if the sensed 2 were the real target (the stall this
 // originally pinned against) or duplicating one of the two already-owned slots (the sp-94quv bug). ---
@@ -866,8 +873,8 @@ func TestBootstrap_Income_HaulerTargetIsFixed_NotTheSensedSetSize(t *testing.T) 
 	h := newIncomeHandler(obs, &fakeRetirer{}, acq, &fakeContractRunner{})
 	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
 	if res.Blocker != "no_placement_slot" {
-		t.Fatalf("2 haulers against the fixed target of %d (sensed slots=%d, both already owned): expected the buy act to be ATTEMPTED (needed-gate on the FIXED target) and fail closed on no_placement_slot, got blocker=%q buys=%d",
-			haulerTarget, len(obs.ContractPlacementSlots), res.Blocker, acq.buys)
+		t.Fatalf("2 haulers against the resolved target of %d (sensed slots=%d, both already owned): expected the buy act to be ATTEMPTED (needed-gate on the RESOLVED target) and fail closed on no_placement_slot, got blocker=%q buys=%d",
+			defaultTargets().HaulerTarget, len(obs.ContractPlacementSlots), res.Blocker, acq.buys)
 	}
 	if acq.buys != 0 {
 		t.Fatalf("no genuinely free slot among the sensed set: must NOT buy, got %d", acq.buys)

@@ -38,14 +38,15 @@ func (f *fakeLiveConfig) set(s liveconfig.Snapshot) {
 }
 
 // BootstrapTunableDefaults is the default-of-record the daemon tune bounds registry reads; its
-// KEY SET is the contract for which bare keys resolveBootstrapConfig live-overlays. The cadence
-// is the only runtime lever — the cold-start shape is fixed in the coordinator — and it is a
+// KEY SET is the contract for which bare keys resolveBootstrapConfig live-overlays. Every entry is a
 // whole number, so the int-only tune mechanism (liveconfig.PositiveInt) can carry it.
 func TestBootstrapTunableDefaults_MirrorsCoordinatorConsts(t *testing.T) {
 	got := BootstrapTunableDefaults()
 	want := map[string]int{
 		"tick_secs":                         defaultBootstrapTickSeconds,                // 45 (sp-lgo3: short cold-start cadence)
 		"contract_start_treasury_threshold": int(defaultContractStartTreasuryThreshold), // 500000 (the contract operation's start bar)
+		"hauler_target":                     defaultHaulerTarget,                        // the cold-start contract-hull ramp cap
+		"gate_worker_target":                defaultGateWorkerTarget,                    // the GATE construction workforce
 	}
 	if len(got) != len(want) {
 		t.Fatalf("tunable defaults size: got %d want %d (%v)", len(got), len(want), got)
@@ -200,4 +201,126 @@ func TestBootstrap_LiveConfigUnreadable_FallsBackToLaunchValues(t *testing.T) {
 	if cfg.Tick != 30*time.Second {
 		t.Fatalf("an unreadable live config must fall back to the launch cadence 30s, got %v", cfg.Tick)
 	}
+}
+
+// --- the two FLEET-SIZE bounds (sp-58pmg): config.yaml key + live tune, same two-family discipline ---
+
+// Both targets follow the contract-start threshold's shape exactly: an absent or zeroed bare key keeps
+// the LAUNCH value (which is where a config.yaml [bootstrap] setting arrives), a present one overlays it
+// for the tick, and an all-zero launch with no live column resolves the documented default. The `noise`
+// row is the load-bearing one: the prefixed bootstrap_* launch keys are cleared and re-injected from
+// config.yaml on every rebuild, so a tune MUST be the separate bare key to survive a daemon bounce.
+func TestBootstrap_ResolveConfig_FleetTargets_LaunchDefaultAndOverlay(t *testing.T) {
+	if got := resolveBootstrapConfig(baseCmd(), nil); got.HaulerTarget != defaultHaulerTarget || got.GateWorkerTarget != defaultGateWorkerTarget {
+		t.Fatalf("an all-zero launch must resolve the documented defaults (%d/%d), got %d/%d",
+			defaultHaulerTarget, defaultGateWorkerTarget, got.HaulerTarget, got.GateWorkerTarget)
+	}
+
+	cmd := baseCmd()
+	cmd.HaulerTarget = 6     // as if config.yaml [bootstrap].hauler_target: 6
+	cmd.GateWorkerTarget = 5 // as if config.yaml [bootstrap].gate_worker_target: 5
+	for name, live := range map[string]liveconfig.Snapshot{
+		"absent": {},
+		"zeroed": {"hauler_target": 0, "gate_worker_target": 0},
+		"noise":  {"bootstrap_hauler_target": 2, "bootstrap_gate_worker_target": 9},
+	} {
+		got := resolveBootstrapConfig(cmd, live)
+		if got.HaulerTarget != 6 || got.GateWorkerTarget != 5 {
+			t.Errorf("%s bare keys must leave the launch targets at 6/5, got %d/%d", name, got.HaulerTarget, got.GateWorkerTarget)
+		}
+	}
+
+	got := resolveBootstrapConfig(cmd, liveconfig.Snapshot{"hauler_target": 3, "gate_worker_target": 2})
+	if got.HaulerTarget != 3 || got.GateWorkerTarget != 2 {
+		t.Fatalf("the bare tunes must beat the launch values, got %d/%d", got.HaulerTarget, got.GateWorkerTarget)
+	}
+}
+
+// THE ACCEPTANCE for this bead: the two orders that each cost an edit/compile/test/restart cycle on
+// 2026-08-30 — cut the gate workforce, then put a feeder back — are now one knob write each, landing on
+// the NEXT tick. Driven through the two calls reconcileOnce itself makes (snapshot, then resolve), and
+// the launch command is untouched throughout, so nothing here is a restart in disguise.
+func TestBootstrap_LiveRetune_FleetTargets_LandNextTick_NoRestart(t *testing.T) {
+	live := &fakeLiveConfig{snap: liveconfig.Snapshot{}} // armed, nothing tuned yet
+	h := NewRunBootstrapCoordinatorHandler(nil)
+	h.SetLiveConfigReader(live)
+	ctx := ctxWithLogger(&capturingLogger{})
+	cmd := baseCmd()
+
+	cfgNow := func() bootstrapRunConfig {
+		return resolveBootstrapConfig(cmd, h.liveConfigSnapshot(ctx, cmd))
+	}
+
+	if got := cfgNow(); got.GateWorkerTarget != defaultGateWorkerTarget || got.HaulerTarget != defaultHaulerTarget {
+		t.Fatalf("tick1: an untuned column must run the documented defaults, got %d/%d", got.HaulerTarget, got.GateWorkerTarget)
+	}
+
+	// The 4 -> 2 cut, as a knob write.
+	live.set(liveconfig.Snapshot{"gate_worker_target": 2})
+	if got := cfgNow().GateWorkerTarget; got != 2 {
+		t.Fatalf("tick2: the cut must govern the very next tick, got %d", got)
+	}
+	// ...and the 2 -> 3 restore an hour later, the same way.
+	live.set(liveconfig.Snapshot{"gate_worker_target": 3, "hauler_target": 5})
+	got := cfgNow()
+	if got.GateWorkerTarget != 3 || got.HaulerTarget != 5 {
+		t.Fatalf("tick3: the restore must govern the next tick, got %d/%d", got.HaulerTarget, got.GateWorkerTarget)
+	}
+
+	// REVERT: deleting the keys (what `tune <key> 0` does to the column) puts the defaults back.
+	live.set(liveconfig.Snapshot{})
+	if got := cfgNow(); got.GateWorkerTarget != defaultGateWorkerTarget || got.HaulerTarget != defaultHaulerTarget {
+		t.Fatalf("revert: a cleared column must fall back to the documented defaults, got %d/%d", got.HaulerTarget, got.GateWorkerTarget)
+	}
+
+	if cmd.GateWorkerTarget != 0 || cmd.HaulerTarget != 0 {
+		t.Fatalf("no restart happened: the launch cmd targets must remain 0, got %d/%d", cmd.HaulerTarget, cmd.GateWorkerTarget)
+	}
+}
+
+// A retune DOWN sheds the idle overage and buys nothing; a retune UP stages exactly one buy per tick and
+// releases nothing. Neither direction can strand a hull mid-task — the surplus is drawn from idle hulls
+// only — and the buy and release paths stay mutually exclusive across the whole range.
+func TestBootstrap_LiveRetune_GateWorkerTarget_ShedsDownStagesUp(t *testing.T) {
+	obs := Observation{
+		Haulers:     nHaulers(4),
+		GateWorkers: 4,
+		GateWorkerHulls: []GateWorkerSnapshot{
+			{Symbol: "M1", Idle: true}, {Symbol: "M2", Idle: false}, // M2 is mid-construction
+			{Symbol: "M3", Idle: true}, {Symbol: "M4", Idle: true},
+		},
+	}
+
+	down := planGateWorkers(obs, 2)
+	if down.Buy != 0 {
+		t.Fatalf("a tune DOWN must never buy, got %d", down.Buy)
+	}
+	if want := []string{"M1", "M3"}; !equalStrings(down.SurplusToUndedicate, want) {
+		t.Fatalf("a tune DOWN sheds the IDLE overage lowest-symbol first: got %v want %v", down.SurplusToUndedicate, want)
+	}
+
+	up := planGateWorkers(obs, 6)
+	if up.Buy != 1 {
+		t.Fatalf("a tune UP stages exactly one buy per tick, got %d", up.Buy)
+	}
+	if len(up.SurplusToUndedicate) != 0 {
+		t.Fatalf("a tune UP must release nothing, got %v", up.SurplusToUndedicate)
+	}
+
+	at := planGateWorkers(obs, 4)
+	if at.Buy != 0 || len(at.SurplusToUndedicate) != 0 {
+		t.Fatalf("at the target the plan is inert, got buy=%d release=%v", at.Buy, at.SurplusToUndedicate)
+	}
+}
+
+func equalStrings(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
 }

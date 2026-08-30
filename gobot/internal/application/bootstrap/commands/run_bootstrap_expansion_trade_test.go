@@ -188,8 +188,9 @@ func TestBootstrap_Expansion_MidDeliveryHullIsRedirectedOnceItGoesIdle(t *testin
 func TestBootstrap_Gate_NeverRedirectsConstructionHullsToTrade(t *testing.T) {
 	obs := gateObs()
 	obs.ConstructionPercent = 99
-	obs.GateWorkers = gateWorkerTarget
-	for i := 0; i < gateWorkerTarget; i++ {
+	workers := defaultTargets().GateWorkerTarget
+	obs.GateWorkers = workers
+	for i := 0; i < workers; i++ {
 		obs.GateWorkerHulls = append(obs.GateWorkerHulls, GateWorkerSnapshot{Symbol: string(rune('A' + i)), Idle: true})
 	}
 	h, rel := releasedToTrade(obs, &fakeHandoff{})
