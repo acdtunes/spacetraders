@@ -200,6 +200,8 @@ func (a *bootstrapAcquirer) buyWith(ctx context.Context, playerID int, shipType,
 	if err != nil {
 		return bootstrapCmd.BuyResult{}, err
 	}
+	// Non-empty only for the yard sentinel — the one purchaser the ownership gate must not judge.
+	sentinel := ""
 	if purchaser == "" {
 		// PREFER the exclusive purchasing ship (the pivoted command frigate) when it is idle, so
 		// every cold-start + scaling buy runs through the deterministic, protected buy ship rather than an
@@ -210,6 +212,12 @@ func (a *bootstrapAcquirer) buyWith(ctx context.Context, playerID int, shipType,
 				purchaser = s.ShipSymbol()
 				break
 			}
+		}
+		// Then the yard sentinel, but ONLY while already docked at THIS yard — ahead of the idle
+		// search because a hull at the counter buys with no flight, no fuel and nothing interrupted.
+		if purchaser == "" {
+			sentinel = yardSentinelAtYard(ships, yard)
+			purchaser = sentinel
 		}
 		if purchaser == "" {
 			for _, s := range ships {
@@ -241,8 +249,14 @@ func (a *bootstrapAcquirer) buyWith(ctx context.Context, playerID int, shipType,
 	//
 	// Fails CLOSED on a purchaser absent from the roster: ownership that cannot be read
 	// cannot be cleared, and a hull we cannot see is one we must not fly.
-	if err := ownedByAnotherContainer(ships, purchaser); err != nil {
-		return bootstrapCmd.BuyResult{}, err
+	//
+	// The yard sentinel is the one exemption: the assignment the gate would read is bootstrap's OWN
+	// captain reservation, and the hull is already at the target yard, so the buy issues no navigate and
+	// no dock. yardSentinelAtYard's reason + same-waypoint match keeps every other held hull out.
+	if sentinel == "" {
+		if err := ownedByAnotherContainer(ships, purchaser); err != nil {
+			return bootstrapCmd.BuyResult{}, err
+		}
 	}
 
 	resp, err := a.med.Send(ctx, &shipyardCmd.BatchPurchaseShipsCommand{
@@ -262,6 +276,24 @@ func (a *bootstrapAcquirer) buyWith(ctx context.Context, playerID int, shipType,
 	}
 	bought := batch.PurchasedShips[0]
 	return bootstrapCmd.BuyResult{ShipSymbol: bought.ShipSymbol(), Price: int64(batch.TotalCost)}, nil
+}
+
+// yardSentinelAtYard names the yard sentinel when it is DOCKED at exactly `yard`, and "" otherwise — a
+// different yard, in orbit or transit, an unresolved yard (auto-discovery), or any other reserved hull.
+// SAME-WAYPOINT ONLY: the sentinel is never sent anywhere to execute a purchase.
+func yardSentinelAtYard(ships []*navigation.Ship, yard string) string {
+	if yard == "" {
+		return ""
+	}
+	for _, s := range ships {
+		if s == nil || !isYardSentinelShip(s) || !s.IsDocked() {
+			continue
+		}
+		if loc := s.CurrentLocation(); loc != nil && loc.Symbol == yard {
+			return s.ShipSymbol()
+		}
+	}
+	return ""
 }
 
 // ownedByAnotherContainer reports the buy-blocking reason when `purchaser` is not the

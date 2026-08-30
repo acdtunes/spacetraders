@@ -749,9 +749,9 @@ func (h *RunBootstrapCoordinatorHandler) maybeBuyHauler(ctx context.Context, cmd
 	// (fault-2 pivot), so it is THE purchaser even while it is still navigating to the shipyard for
 	// the cold-price read — recognise it here so an en-route tick surfaces "positioning", not no_purchaser.
 	committedPurchaser := len(obs.Haulers) == 0 && obs.CommandFrigatePurchasing && obs.CommandFrigateID != ""
-	if !pivot && !committedPurchaser && !obs.HasIdlePurchaser {
+	if !pivot && !committedPurchaser && !hasPurchaser(obs) {
 		res.Blocker = "no_purchaser"
-		logger.Log("WARN", fmt.Sprintf("Bootstrap hauler needed (%d/%d, slot %s) but BLOCKED: no idle hull to execute the purchase and the first-hauler pivot is unavailable (haulers=%d frigate_on_trade=%v frigate_idle=%v cargo_empty=%v) — retry next tick", len(obs.Haulers), haulerTarget, slot, len(obs.Haulers), obs.CommandFrigateOnTrade, obs.CommandFrigateIdle, obs.FrigateCargoEmpty), map[string]interface{}{
+		logger.Log("WARN", fmt.Sprintf("Bootstrap hauler needed (%d/%d, slot %s) but BLOCKED: no idle hull to execute the purchase, no yard sentinel standing at a shipyard, and the first-hauler pivot is unavailable (haulers=%d frigate_on_trade=%v frigate_idle=%v cargo_empty=%v) — retry next tick", len(obs.Haulers), haulerTarget, slot, len(obs.Haulers), obs.CommandFrigateOnTrade, obs.CommandFrigateIdle, obs.FrigateCargoEmpty), map[string]interface{}{
 			"action":       "bootstrap_income_blocked",
 			"container_id": cmd.ContainerID,
 			"blocker":      "no_purchaser",

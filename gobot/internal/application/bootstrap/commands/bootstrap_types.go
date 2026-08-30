@@ -232,6 +232,9 @@ type Observation struct {
 	YardSentinelSymbol string
 	// YardSentinelParked reports whether YardSentinelSymbol is DOCKED at the home shipyard yet.
 	YardSentinelParked bool
+	// YardSentinelYard is the SHIPYARD waypoint YardSentinelSymbol is docked at ("" for none) — a buy at
+	// that same yard runs standing still, so the gates count it a purchaser though it is not idle.
+	YardSentinelYard string
 
 	// Readable reports whether the observer gathered all its inputs. false ⇒ fail-closed (no action
 	// this tick), with Reason naming what could not be read.

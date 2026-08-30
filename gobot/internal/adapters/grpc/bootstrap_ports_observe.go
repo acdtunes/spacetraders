@@ -413,7 +413,7 @@ func (o *bootstrapObserver) readUntouredProbes(ctx context.Context, playerID int
 }
 
 // readYardSentinelParked resolves whether the standing yard-sentinel probe is DOCKED at the
-// home shipyard yet — the terminal state actYardSentinel's positioning step drives toward. BEST-EFFORT
+// home shipyard yet — and WHICH yard, the waypoint a same-yard buy is matched against. BEST-EFFORT
 // like readUntouredProbes: an unreadable waypoint repo, or no sentinel bought yet, leaves it false,
 // which the reconciler reads as "keep positioning" — fail-safe, and never a spend either way.
 func (o *bootstrapObserver) readYardSentinelParked(ctx context.Context, ships []*navigation.Ship, homeSystem string, obs *bootstrapCmd.Observation) {
@@ -430,18 +430,27 @@ func (o *bootstrapObserver) readYardSentinelParked(ctx context.Context, ships []
 			isYard[wp.Symbol] = struct{}{}
 		}
 	}
+	obs.YardSentinelYard = sentinelDockedYard(ships, obs.YardSentinelSymbol, isYard)
+	obs.YardSentinelParked = obs.YardSentinelYard != ""
+}
+
+// sentinelDockedYard names the shipyard waypoint the sentinel is DOCKED at — what a same-yard buy is
+// matched against — and "" for in transit, in orbit, parked off-yard, or absent from the roster.
+func sentinelDockedYard(ships []*navigation.Ship, symbol string, isYard map[string]struct{}) string {
 	for _, s := range ships {
-		if s == nil || s.ShipSymbol() != obs.YardSentinelSymbol {
+		if s == nil || s.ShipSymbol() != symbol {
 			continue
 		}
 		loc := s.CurrentLocation()
 		if loc == nil {
-			return // in transit — not parked yet
+			return ""
 		}
-		_, atYard := isYard[loc.Symbol]
-		obs.YardSentinelParked = atYard && s.IsDocked()
-		return
+		if _, atYard := isYard[loc.Symbol]; atYard && s.IsDocked() {
+			return loc.Symbol
+		}
+		return ""
 	}
+	return ""
 }
 
 // countUntouredHomeProbes counts the probes at home that are IDLE and carry no scout-tour

@@ -699,11 +699,11 @@ func (h *RunBootstrapCoordinatorHandler) ensureContractScalerEarly(ctx context.C
 func (h *RunBootstrapCoordinatorHandler) acquireProbesToTarget(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, obs Observation, res *reconcileResult) {
 	logger := common.LoggerFromContext(ctx)
 
-	// Readiness gate, second half: unblocked? The batch-purchase path needs an idle hull to fly to
-	// the yard. No idle hull ⇒ BLOCKED (not failed) — a later tick with a free hull retries.
-	if !obs.HasIdlePurchaser {
+	// Readiness gate, second half: unblocked? The batch-purchase path needs an idle hull to fly to the
+	// yard, or the sentinel already at one. Neither ⇒ BLOCKED (not failed) — a later tick retries.
+	if !hasPurchaser(obs) {
 		res.Blocker = "no_purchaser"
-		logger.Log("WARN", fmt.Sprintf("Bootstrap probe needed (%d/%d) but BLOCKED: no idle hull to execute the purchase", obs.ProbeCount, probeTarget), map[string]interface{}{
+		logger.Log("WARN", fmt.Sprintf("Bootstrap probe needed (%d/%d) but BLOCKED: no idle hull to execute the purchase and no yard sentinel standing at a shipyard", obs.ProbeCount, probeTarget), map[string]interface{}{
 			"action":       "bootstrap_buy_blocked",
 			"container_id": cmd.ContainerID,
 			"blocker":      "no_purchaser",
@@ -855,6 +855,12 @@ func (h *RunBootstrapCoordinatorHandler) awaitReadablePrice(ctx context.Context,
 		"container_id": cmd.ContainerID,
 		"blocker":      "price_unreadable",
 	})
+}
+
+// hasPurchaser reports whether ANY hull can execute a buy this tick: an idle one, or the captain-reserved
+// yard sentinel, never idle but able to buy at the yard it stands at (matched in yardSentinelAtYard).
+func hasPurchaser(obs Observation) bool {
+	return obs.HasIdlePurchaser || obs.YardSentinelYard != ""
 }
 
 // idleTradeFrigate names the frigate only at an idle-in-trade tick, never mid-tour (PLAYBOOK §9).

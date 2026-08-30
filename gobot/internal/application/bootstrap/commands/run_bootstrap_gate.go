@@ -365,11 +365,10 @@ func (h *RunBootstrapCoordinatorHandler) repurposeHauler(ctx context.Context, cm
 func (h *RunBootstrapCoordinatorHandler) maybeBuyGateWorker(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, obs Observation, plan gateWorkerPlan, res *reconcileResult) {
 	logger := common.LoggerFromContext(ctx)
 
-	// Readiness gate: an idle hull must exist to fly to the yard and execute the buy. No idle hull ⇒
-	// BLOCKED (not failed) — a later tick with a free hull retries.
-	if !obs.HasIdlePurchaser {
+	// Readiness gate: an idle hull to fly to the yard, or the sentinel already at one. Neither ⇒ BLOCKED.
+	if !hasPurchaser(obs) {
 		res.Blocker = "no_purchaser"
-		logger.Log("WARN", fmt.Sprintf("Bootstrap gate worker needed (%d have, %d desired) but BLOCKED: no idle hull to execute the purchase", obs.GateWorkers, plan.DesiredWorkers), map[string]interface{}{
+		logger.Log("WARN", fmt.Sprintf("Bootstrap gate worker needed (%d have, %d desired) but BLOCKED: no idle hull to execute the purchase and no yard sentinel standing at a shipyard", obs.GateWorkers, plan.DesiredWorkers), map[string]interface{}{
 			"action":       "bootstrap_gate_blocked",
 			"container_id": cmd.ContainerID,
 			"blocker":      "no_purchaser",
