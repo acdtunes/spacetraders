@@ -216,7 +216,8 @@ func (t *expandTick) advanceSeed(ctx context.Context, r chartSeedRun) (bool, err
 
 // dispatchSeed gets a hull to its target system, one gate hop at a time.
 func (t *expandTick) dispatchSeed(ctx context.Context, r chartSeedRun, pos ShipPos) (bool, error) {
-	if shared.ExtractSystemSymbol(pos.Waypoint) == r.system() {
+	current := shared.ExtractSystemSymbol(pos.Waypoint)
+	if current == r.system() {
 		// Arrived. Sweep the waypoint LIST before the tour begins: the tour is
 		// driven entirely off the stored uncharted set, and for a system nobody
 		// has visited that set is EMPTY — not because the system is charted but
@@ -259,12 +260,57 @@ func (t *expandTick) dispatchSeed(ctx context.Context, r chartSeedRun, pos ShipP
 	// than re-derived. A hull mid-move is never here at all: advanceSeed has already
 	// returned on the IN_TRANSIT reading, so the step issued is the next available.
 	if err := t.p.SeedShip.JumpTo(ctx, t.playerID, r.ship, pos.Waypoint, r.system()); err != nil {
+		if errors.Is(err, ErrSeedWalkUnroutable) {
+			return t.strandSeed(ctx, r, pos, current)
+		}
 		// The hull did not leave, and the errand holds at DISPATCHED either way. A HELD
 		// step made no API call and costs nothing; a REFUSED one reached the API and pays.
 		return !errors.Is(err, ErrSeedStepHeld), nil
 	}
 	t.rep.Jumped++
 	return true, nil
+}
+
+// strandSeed ends an errand whose target cannot be walked to from where the hull has
+// got to, and stands the hull down as a spare.
+//
+// THE BOUND IS AGREEMENT, NOT A COUNT OF TICKS. The resolver has just answered from the
+// LIVE store; this asks the same question of the tick's OWN reach walker, the one
+// selection uses. Both search the same adjacency unbounded and differ only in WHEN they
+// read it, so the walker is the more connected only where the store SHRANK mid-tick;
+// the next tick re-reads the map, which bounds the retry with nothing to persist.
+//
+// AGREEMENT IS ALSO THE WHOLE OF "MARKED UNREACHABLE-FOR-NOW", with nothing written
+// down: claimSpares asks this same walker before stamping an errand, so it says no
+// there too, and yes again the moment the gate read stores the missing adjacency.
+//
+// A read failure FAILS THE TICK: either default strands hulls or restores the hold.
+func (t *expandTick) strandSeed(ctx context.Context, r chartSeedRun, pos ShipPos, current string) (bool, error) {
+	within, err := t.reach.canReach(ctx, current, r.system())
+	if err != nil {
+		return false, err
+	}
+	if within {
+		// No API call was made, so the step is charged no action — a held step's accounting.
+		logging.LoggerFromContext(ctx).Log("WARN", "charting seed's resolver found no route its own reach walker agrees is missing; holding the errand one tick", map[string]interface{}{
+			"action":        "parked_sensing_seed_walk_disputed",
+			"ship_symbol":   r.ship,
+			"from_system":   current,
+			"target_system": r.system(),
+		})
+		return false, nil
+	}
+
+	logging.LoggerFromContext(ctx).Log("WARN", "charting seed cannot be walked to its target from where it stands; ending the errand and parking the hull as a spare", map[string]interface{}{
+		"action":        "parked_sensing_seed_stranded",
+		"ship_symbol":   r.ship,
+		"from_system":   current,
+		"target_system": r.system(),
+	})
+	t.rep.SeedsStranded++
+	// The SAME stand-down a finished tour takes, in its money-safe write order:
+	// placement first, so a failure between the writes buys FEWER probes (RULINGS #4).
+	return true, t.standDownAsSpare(ctx, r, pos, current)
 }
 
 // chartSeed works one waypoint of a tour, or ends it.

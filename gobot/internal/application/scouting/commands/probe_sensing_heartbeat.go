@@ -299,6 +299,7 @@ func (h *RunProbeSensingCoordinatorHandler) heartbeat(ctx context.Context, cmd *
 			"charted":               hb.expand.Charted,
 			"markets_found":         hb.expand.MarketsFound,
 			"retargeted":            hb.expand.Retargeted,
+			"seeds_stranded":        hb.expand.SeedsStranded,
 		})
 }
 

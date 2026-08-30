@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	adapterSensing "github.com/andrescamacho/spacetraders-go/internal/adapters/parkedsensing"
+	appSensing "github.com/andrescamacho/spacetraders-go/internal/application/parkedsensing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 )
 
@@ -209,4 +210,25 @@ func TestSeedWalk_TheResolverIsNeverNarrowerThanSelection(t *testing.T) {
 			"headroom forever without ever arriving", hops)
 	require.Equal(t, []string{"X1-H01"}, world.jumps(),
 		"the resolver must name the FIRST hop toward a distant target: %v", world.commands())
+}
+
+// THE REFUSAL MUST REACH THE ENGINE, NOT JUST THE LOG. Returned as a bare error it is
+// indistinguishable from a refused command, so the engine holds and retries forever.
+func TestSeedCommandPort_JumpTo_AnUnroutableTargetIsMatchableByTheApplicationSentinel(t *testing.T) {
+	world := seedWorldAt("X1-AA-M1")
+
+	err := runJump(t, world, seedHopGates, "X1-AA-M1", "X1-ZZ")
+
+	require.ErrorIs(t, err, appSensing.ErrSeedWalkUnroutable,
+		"an unroutable target must satisfy errors.Is against the application's sentinel, or the engine "+
+			"cannot tell a graph that names no route from a command the API refused — and holds forever")
+	require.Contains(t, err.Error(), "no stored gate route",
+		"the resolver's own words must survive the wrapping, or the sentinel replaces the diagnosis")
+}
+
+// NON-VACUITY: a routable walk must not wear the sentinel, or every errand stands down.
+func TestSeedCommandPort_JumpTo_ARoutableTargetCarriesNoUnroutableSentinel(t *testing.T) {
+	world := seedWorldAt("X1-AA-J1")
+
+	require.NoError(t, runJump(t, world, seedHopGates, "X1-AA-J1", "X1-CC"))
 }

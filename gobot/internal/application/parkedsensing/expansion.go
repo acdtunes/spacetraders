@@ -154,6 +154,12 @@ type SystemScreener func(ctx context.Context, system string) (ScreenResult, erro
 // out a game timer, no request was spent, and the step must not be charged an action.
 var ErrSeedStepHeld = errors.New("charting seed step was held, not attempted")
 
+// ErrSeedWalkUnroutable reports that an unbounded search of stored adjacency found no
+// path from where the hull stands to the errand's target: no jump was attempted and no
+// request spent. A DIFFERENT ANSWER FROM ErrSeedStepHeld, which waits out a timer that
+// expires on its own; this is a fact about the graph that retrying cannot change.
+var ErrSeedWalkUnroutable = errors.New("charting seed's target is unroutable from where the hull stands")
+
 // SeedCommander drives one charting seed. Every method is a single command with no
 // retry and no waiting: the tick issues one and returns, and the next tick reads
 // the ships table to see what happened. Implementations tag every call as
@@ -395,6 +401,9 @@ type ExpandReport struct {
 	// Retargeted counts finished seeds sent on to another frontier system;
 	// Parked counts those stood down, into a placement or as a spare.
 	Retargeted, Parked int
+	// SeedsStranded counts errands ended because the target could not be walked to from
+	// where the hull had got to. Standing non-zero means the map outgrew the gate read.
+	SeedsStranded int
 	// Actions counts everything charged against MaxExpansionActions.
 	Actions int
 	// GatesRead counts jump gates this tick READ LIVE and persisted; GatesUnread is the size of the

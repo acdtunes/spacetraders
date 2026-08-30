@@ -145,22 +145,23 @@ func (p *SeedCommandPort) JumpTo(ctx context.Context, playerID int, shipSymbol, 
 		return nil
 	}
 
-	// Resolved before any movement, so an errand the stored graph cannot route
-	// never buys a wasted flight to a gate. Staging applies the same bound to
-	// the same store before an errand is ever stamped, so reaching this branch
-	// means the topology changed under us — the errand holds, the hull stays
-	// where it is, and the next tick retries for free.
+	// Resolved before any movement, so an errand the stored graph cannot route never
+	// buys a wasted flight to a gate. Reaching this branch means the hull now stands
+	// somewhere whose OWN adjacency we do not hold — routine, since the edge that
+	// carried it in was charted from the far end. PUBLISHED THROUGH THE SENTINEL: a
+	// definite store read, not a call that failed, so the engine can end the errand.
 	nextSystem, err := nextHopToward(ctx, p.neighbours, currentSystem, targetSystem)
 	if err != nil {
 		common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf(
-			"Charting seed %s is bound for %s from %s, but an unbounded search of stored adjacency found no connected path — the errand is held and retried, and the hull keeps counting against the probe cap: %v",
+			"Charting seed %s is bound for %s from %s, but an unbounded search of stored adjacency found no connected path: %v",
 			shipSymbol, targetSystem, currentSystem, err), map[string]interface{}{
 			"action":        "parked_sensing_seed_walk_unroutable",
 			"ship_symbol":   shipSymbol,
 			"from_system":   currentSystem,
 			"target_system": targetSystem,
 		})
-		return fmt.Errorf("failed to name the next system for seed %s bound for %s: %w", shipSymbol, targetSystem, err)
+		return fmt.Errorf("failed to name the next system for seed %s bound for %s: %w: %w",
+			shipSymbol, targetSystem, appSensing.ErrSeedWalkUnroutable, err)
 	}
 	return stepThroughGate(ctx, p.mediator, pid, shipSymbol, fromWaypoint, nextSystem)
 }
