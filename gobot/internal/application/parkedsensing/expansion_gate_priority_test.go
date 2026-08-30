@@ -153,8 +153,11 @@ func TestAdvanceExpansion_AnUnmappedGateTargetOutranksNearerDeeperMappedOnes(t *
 // With the unmapped-gate target already seeded, the mapped one must be served exactly as it is today.
 func TestAdvanceExpansion_AMappedGateTargetIsStillServedOnceTheUnmappedOneIsCovered(t *testing.T) {
 	h, gates := frontierRace()
-	// X1-FAR already has a seed out, so it is no longer a candidate.
+	// X1-FAR already has a seed out and is FULL on it: four outstanding waypoints two
+	// gate hops from the only system we hold, and a second hull's share of that does
+	// not pay its own walk (chartcrew.go). So it is no longer a candidate.
 	h.ledger.systems[3].SeedShip, h.ledger.systems[3].SeedState = "PROBE-OUT", SeedStateDispatched
+	h.ledger.systems[3].UnchartedCount = 4
 
 	rep, err := runWithGates(t, h, gates)
 	if err != nil {

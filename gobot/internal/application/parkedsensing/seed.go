@@ -26,12 +26,26 @@ import (
 // than queueing behind every untouched system. That ordering is the point: the
 // deepest system is the one whose serial tour runs longest, so it is where the next
 // hull buys the most time. A hull budget of one restores the old rule outright.
-func seedlessTargets(systems []ExpandSystem, hulls chartHulls) []ExpandSystem {
+//
+// THE WALK IS MEASURED ONLY WHERE IT CAN CHANGE AN ANSWER — for a system that already
+// holds a crew. One nobody is charting earns its first hull under every walk and every
+// configuration, so asking would buy a gate traversal and learn nothing.
+func seedlessTargets(ctx context.Context, systems []ExpandSystem, hulls chartHulls, walks *chartWalks) ([]ExpandSystem, error) {
 	var out []ExpandSystem
 	for _, s := range systems {
-		if (s.UnchartedCount > 0 || !s.CatalogKnown) && activeSeedCount(s) < hulls.budgetFor(s.UnchartedCount) {
-			out = append(out, s)
+		if s.UnchartedCount <= 0 && s.CatalogKnown {
+			continue
 		}
+		if crewed := activeSeedCount(s); crewed > 0 {
+			walk, err := walks.forSystem(ctx, s.System)
+			if err != nil {
+				return nil, err
+			}
+			if crewed >= hulls.budgetFor(s.UnchartedCount, walk) {
+				continue
+			}
+		}
+		out = append(out, s)
 	}
 	sort.SliceStable(out, func(i, j int) bool {
 		if out[i].UnchartedCount != out[j].UnchartedCount {
@@ -39,7 +53,7 @@ func seedlessTargets(systems []ExpandSystem, hulls chartHulls) []ExpandSystem {
 		}
 		return out[i].System < out[j].System
 	})
-	return out
+	return out, nil
 }
 
 // ChartQueueDepth counts the systems still carrying charting work — uncharted

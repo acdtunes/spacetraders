@@ -87,13 +87,13 @@ const (
 	// A constant, not a knob (RULINGS #5 as bounded): the lever is the cadence itself.
 	askFreshnessCadences = 3
 
-	// The charting crew: how many probes one dark system may be worked by, and the
-	// outstanding counts earning the second and third. Mirrors of the engine's own
-	// defaults (parkedsensing.chartcrew), held here so the tune registry publishes a
-	// number rather than a zero. A cap of ONE is the single-hull tour.
-	defaultChartHullCap      = 5
-	defaultSecondChartHullAt = 16
-	defaultThirdChartHullAt  = 32
+	// The charting crew's BOUNDS: the ceiling on how many probes one dark system may be
+	// worked by, and the outstanding-count floors its second and third hull clear on top
+	// of the walk the engine measures each tick. Mirrors of the engine's own defaults
+	// (parkedsensing.chartcrew), so the tune registry publishes a number, not a zero.
+	defaultChartHullCap      = 15
+	defaultSecondChartHullAt = 3
+	defaultThirdChartHullAt  = 4
 
 	// screenSweepBatch bounds how many PENDING systems one tick screens. A plain
 	// constant, deliberately not a knob: it paces API bursts (an unresolved

@@ -910,12 +910,16 @@ func TestAdvanceExpansion_PendingSystemWithNoChartedGatePropagatesNothing(t *tes
 // arrivals sort FIRST alphabetically and the deepest measured system sorts LAST,
 // so only a count-first ordering puts the measured work at the head.
 func TestSeedlessTargets_FreshlyDiscoveredSystemsSortBehindMeasuredWork(t *testing.T) {
-	targets := seedlessTargets([]ExpandSystem{
+	walks, _ := gateChain(1, "X1-AAA1", "X1-AAA2", "X1-MID", "X1-ZZZ")
+	targets, err := seedlessTargets(context.Background(), []ExpandSystem{
 		{System: "X1-AAA1", Verdict: VerdictPending, UnchartedCount: 0, CatalogKnown: false},
 		{System: "X1-AAA2", Verdict: VerdictPending, UnchartedCount: 0, CatalogKnown: false},
 		{System: "X1-MID", Verdict: VerdictInScope, UnchartedCount: 5, CatalogKnown: true},
 		{System: "X1-ZZZ", Verdict: VerdictInScope, UnchartedCount: 30, CatalogKnown: true},
-	}, resolveChartHulls(ExpandKnobs{}))
+	}, resolveChartHulls(ExpandKnobs{}), walks)
+	if err != nil {
+		t.Fatalf("seedlessTargets: %v", err)
+	}
 
 	var order []string
 	for _, target := range targets {
@@ -1373,9 +1377,15 @@ func TestAdvanceExpansion_AReParkedHullOnAnErrandIsNotClaimedAgainNextTick(t *te
 	// on where it is. hullsOnErrand reads the SYSTEM rows, never the ship rows —
 	// a claim must be refused because the ledger says the hull is busy, not
 	// because the fleet happens to report it in flight.
+	//
+	// A CAP OF ONE, because what is under test is one hull to one errand and not how
+	// many a system may draw: both targets sit one gate hop from the only system we
+	// hold, so the measured walk would earn X1-T1 a crew of its own and the second
+	// hull would correctly join it instead of moving on (chartcrew.go).
+	knobs := ExpandKnobs{SeedsEnabled: true, MinBudgetRate: 0.05, Whitelist: h.whitelist, ChartHullCap: 1}
 
 	// Tick one: the deepest-dark target takes the only spare there is.
-	rep, err := h.run(t, nil)
+	rep, err := h.runWithKnobs(t, nil, knobs)
 	if err != nil {
 		t.Fatalf("tick 1: unexpected error: %v", err)
 	}
@@ -1399,7 +1409,7 @@ func TestAdvanceExpansion_AReParkedHullOnAnErrandIsNotClaimedAgainNextTick(t *te
 	}
 	h.ledger.deleted = nil
 
-	rep, err = h.run(t, nil)
+	rep, err = h.runWithKnobs(t, nil, knobs)
 	if err != nil {
 		t.Fatalf("tick 2: unexpected error: %v", err)
 	}

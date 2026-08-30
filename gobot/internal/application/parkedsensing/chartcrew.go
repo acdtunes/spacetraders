@@ -1,6 +1,7 @@
 package parkedsensing
 
 import (
+	"context"
 	"math"
 	"sort"
 	"strings"
@@ -23,18 +24,78 @@ import (
 // (chartshare.go); what lives here is the budget, the roster the partition is
 // solved over, and the angular fallback that answers when the solver cannot.
 
-// THE CREW IS SIZED ON THE MARGINAL HULL'S BREAK-EVEN, so none of the numbers below
-// is chosen. Charting a waypoint costs two seed steps and the c-th hull's walk costs
-// two per gate hop, so it is worth adding while U/c >= hops(c) + 0.5 — hops MEASURED
-// over stored gate adjacency at the rank takeReachableSpare draws each hull from.
+// THE CREW IS SIZED ON THE MARGINAL HULL'S BREAK-EVEN, AND THE WALK IT IS PRICED
+// AGAINST IS MEASURED THIS TICK. Charting a waypoint costs two seed steps, so a crew
+// of c clears U outstanding in 2U/c; the c-th hull first pays two steps per gate hop
+// plus the arrival sweep, 2*hops+1. It is worth adding while U/c >= hops + 0.5.
+//
+// hops IS THE INPUT THAT ANSWER IS MOST SENSITIVE TO AND THE ONE THAT MOVES MOST: a
+// thirteen-hop walk justifies one hull on a twenty-waypoint system and a one-hop walk
+// justifies nine, and the distance from what we hold to what is dark differs by that
+// much between the start of an era and its end. Frozen as a constant it sizes today's
+// crews on a map that no longer exists (sp-glyoe), so it is read per system per tick
+// off the same gate walker claimSpares draws through.
 const (
-	// The ladder that inequality yields: the last rank any system on this map is large
-	// enough to reach, the second and third hulls' break-evens, and the step past them.
-	defaultChartHullCap      = 5
-	defaultSecondChartHullAt = 16
-	defaultThirdChartHullAt  = 32
-	defaultChartHullTier     = 16
+	// maxChartCrew is the widest crew the sizing can hand ONE system, and therefore the
+	// largest chart_hull_cap worth advertising. It is where the assembly bound below
+	// leaves the universe: the map's largest chartable system holds 57 waypoints
+	// (ASTEROID excluded by ChartSkippable), and rank*(rank-1)/2 < 2*57 fails at 16.
+	maxChartCrew = 15
+	// The operator ladder's documented defaults, which are the break-even at the
+	// SHORTEST walk stored adjacency can report — one gate hop. They therefore sit at
+	// or below the measured answer at every rank and impose nothing until raised.
+	defaultSecondChartHullAt = 3
+	defaultThirdChartHullAt  = 4
+	defaultChartHullTier     = 1
 )
+
+// chartWalk is the gate distance the next charting hull would fly to reach one dark
+// system. UNMEASURED IS NOT ZERO: nothing we hold can reach the system, so there is
+// no walk to price a second hull against and the system earns exactly one.
+type chartWalk struct {
+	hops     int
+	measured bool
+}
+
+// chartWalks measures that distance, once per system per tick, over the tick's own
+// gate walker — the memoised, store-only breadth-first search claimSpares and the
+// target ordering already share, so no origin is walked twice.
+//
+// THE ORIGINS ARE THE SYSTEMS A SEED COULD SET OUT FROM, slotBook's own set and the
+// one the distance ordering reads, so there is no second notion of where the fleet
+// is. A hull reaches a target either as a spare already parked in one of them or as a
+// probe bought at a yard in one of them, and both walk from there. IT IS OPTIMISTIC
+// where a held system holds no yard that could sell a probe, and that optimism spends
+// nothing: it can only leave a system on the target list, where the supply passes
+// apply their own reach, staffing, stock and treasury tests first (RULINGS #4).
+type chartWalks struct {
+	reach   *gateReach
+	origins []string
+	memo    map[string]chartWalk
+}
+
+func newChartWalks(reach *gateReach, origins []string) *chartWalks {
+	return &chartWalks{reach: reach, origins: origins, memo: map[string]chartWalk{}}
+}
+
+// forSystem is the shortest walk from anywhere we hold to this system.
+func (w *chartWalks) forSystem(ctx context.Context, system string) (chartWalk, error) {
+	if cached, ok := w.memo[system]; ok {
+		return cached, nil
+	}
+	walk := chartWalk{}
+	for _, origin := range w.origins {
+		hops, within, err := w.reach.hops(ctx, origin, system)
+		if err != nil {
+			return chartWalk{}, err
+		}
+		if within && (!walk.measured || hops < walk.hops) {
+			walk = chartWalk{hops: hops, measured: true}
+		}
+	}
+	w.memo[system] = walk
+	return walk, nil
+}
 
 // chartHulls is one tick's resolved hull budget for charting tours. Zero knobs
 // mean the documented defaults, which is the `tune <key> 0` revert and also the
@@ -49,17 +110,17 @@ type chartHulls struct {
 // resolveChartHulls fills the documented default in for every knob left unset.
 //
 // A cap of one is a legitimate operator choice and the feature's kill switch, so it
-// is honoured; only a non-positive cap reverts. A cap ABOVE the derived one clamps
-// down to it, so the tune bound's advertised range stays true through the paths that
-// never see the bound — a stored value, and the boot config.
+// is honoured; only a non-positive cap reverts. A cap ABOVE maxChartCrew clamps down
+// to it, so the tune bound's advertised range stays true through the paths that never
+// see the bound — a stored value, and the boot config.
 //
 // THE TIER IS THE OPERATOR'S OWN STEP, not a fourth knob: hulls past the third are
 // earned at the spacing between the second and the third, so retuning the pair moves
 // the whole ladder. Thresholds out of order supply none and take the documented tier.
 func resolveChartHulls(k ExpandKnobs) chartHulls {
 	h := chartHulls{cap: k.ChartHullCap, second: k.SecondChartHullAt, third: k.ThirdChartHullAt}
-	if h.cap <= 0 || h.cap > defaultChartHullCap {
-		h.cap = defaultChartHullCap
+	if h.cap <= 0 || h.cap > maxChartCrew {
+		h.cap = maxChartCrew
 	}
 	if h.second <= 0 {
 		h.second = defaultSecondChartHullAt
@@ -73,25 +134,56 @@ func resolveChartHulls(k ExpandKnobs) chartHulls {
 	return h
 }
 
-// budgetFor is how many hulls a system with this much outstanding work may hold:
-// the second and third at their thresholds, then one per tier beyond the third.
+// budgetFor is how many hulls a system with this much outstanding work may hold: the
+// highest rank clearing all three tests below. Each of them only tightens as the rank
+// rises, so the first failure ends the ladder and the budget stays monotonic in the
+// outstanding count whatever the knobs say.
 //
 // AN UNSWEPT SYSTEM REPORTS ZERO and therefore earns one hull, which is correct
 // rather than incidental: nobody has looked, so there is no size to scale on, and the
-// first hull's catalog sweep is what produces one. Every threshold resolves positive,
-// so zero outstanding never reaches a bump.
-func (h chartHulls) budgetFor(uncharted int) int {
+// first hull's catalog sweep is what produces one. No rank past the first clears
+// paysItsWalk at zero outstanding, under any walk and any configuration.
+func (h chartHulls) budgetFor(uncharted int, walk chartWalk) int {
+	if !walk.measured {
+		return 1
+	}
 	budget := 1
-	if uncharted >= h.second {
-		budget = 2
-	}
-	if uncharted >= h.third {
-		budget = 3 + (uncharted-h.third)/h.tier
-	}
-	if budget > h.cap {
-		return h.cap
+	for rank := 2; rank <= h.cap; rank++ {
+		if !paysItsWalk(uncharted, rank, walk.hops) ||
+			!arrivesToWork(uncharted, rank) ||
+			uncharted < h.floorFor(rank) {
+			break
+		}
+		budget = rank
 	}
 	return budget
+}
+
+// paysItsWalk is the break-even itself, in whole steps so nothing rounds: the share
+// this rank takes off the tour, 2*(U/c), against the walk it adds, 2*hops+1.
+func paysItsWalk(uncharted, rank, hops int) bool {
+	return 2*uncharted >= rank*(2*hops+1)
+}
+
+// arrivesToWork is the ASSEMBLY BOUND, and it is what stops a short walk buying an
+// arbitrarily large crew. claimSpares grants one hull per system per tick and
+// advanceSeeds moves each of them one step per tick, so rank c is granted around the
+// c-th tick, by which time the ranks before it have taken c*(c-1)/2 of the system's 2U
+// steps; past that it is granted to a system whose work is gone. Charged against the
+// WALKLESS rate no real crew reaches, so it bounds the crew rather than forecasting it.
+func arrivesToWork(uncharted, rank int) bool {
+	return rank*(rank-1)/2 < 2*uncharted
+}
+
+// floorFor is the OPERATOR'S BRAKE: the outstanding work a system must hold before
+// this rank, on top of what the walk already earns. The second and third are named
+// directly and their spacing carries every rank past them, so retuning the pair moves
+// the whole ladder rather than leaving a hidden constant to disagree with it.
+func (h chartHulls) floorFor(rank int) int {
+	if rank <= 2 {
+		return h.second
+	}
+	return h.third + (rank-3)*h.tier
 }
 
 // seedCrew is the hulls charting one system: the one named by the system row's

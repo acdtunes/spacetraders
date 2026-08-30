@@ -80,8 +80,8 @@ func TestSensingTune_LiveKnobSet(t *testing.T) {
 		// comparison window with it rather than leaving two knobs to keep in step.
 		"procurement_walkaway_mult", "procurement_jump_penalty_credits",
 		// A dark system's charting crew: the per-system hull ceiling, and the
-		// outstanding counts earning a second and a third. A cap of 1 is the
-		// single-hull tour, which is this feature's off switch.
+		// outstanding-count floors its second and third hull must clear on top of the
+		// measured walk. A cap of 1 is the single-hull tour, this feature's off switch.
 		"chart_hull_cap", "chart_hull_2_at", "chart_hull_3_at",
 	}
 	for _, key := range live {
@@ -113,19 +113,22 @@ func TestSensingTune_DefaultsMirrorTheRegistry(t *testing.T) {
 //
 // It shipped bounded [1,10] over a budget hard-coded to three bumps, so 4 through
 // 10 were accepted, persisted, shown back by `tune --show` and did nothing at all
-// — a documented range that was three-quarters inert (sp-y31lm). The maximum is now
-// the crew the sizing function can actually produce, which is the cap derived from
-// the marginal hull's measured walk, so the advertised range and the reachable one
-// are the same set by construction rather than by anyone remembering to match them.
+// — a documented range that was three-quarters inert (sp-y31lm). The crew is now
+// sized on a walk measured every tick, so no value is inert BY CONSTRUCTION; the
+// maximum is the widest crew that sizing can produce and the engine clamps a stored
+// value down to it, which is what keeps the advertised range and the reachable one
+// one set rather than leaving someone to remember to match them (sp-glyoe).
 func TestSensingTune_ChartHullCapAdvertisesOnlyReachableValues(t *testing.T) {
 	bound := sensingBounds(t)["chart_hull_cap"]
 
 	require.Equal(t, 1, bound.Min, "a cap of one is the feature's kill switch and must stay reachable")
 	require.Equal(t, scoutingCmd.SensingTunableDefaults()["chart_hull_cap"], bound.Max,
-		"the advertised maximum must be the derived cap, or values above it are accepted and inert")
-	require.Equal(t, bound.Max, bound.Default, "the derived cap IS the default — the feature ships at it")
+		"the advertised maximum must be the ceiling the engine clamps to, or values above it are accepted and inert")
+	require.Equal(t, bound.Max, bound.Default, "the ceiling IS the default — an unset cap defers to the measured walk")
 	require.Contains(t, bound.Description, "DERIVED, NOT PICKED",
 		"an operator reading the knob must be told where its ceiling comes from")
+	require.Contains(t, bound.Description, "IT DOES NOT SIZE THE CREW",
+		"a ceiling an operator reads as the thing CHOOSING the crew is the misreading this knob has already caused once")
 }
 
 // expansion_enabled is bounded [1,3] and its description STATES all three states.

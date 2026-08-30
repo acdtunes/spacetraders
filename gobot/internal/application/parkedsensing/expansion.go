@@ -343,11 +343,12 @@ type ExpandKnobs struct {
 	// one the screen uses, so a market the seed slots and a market the screen slots
 	// mean the same thing.
 	Whitelist map[string]bool
-	// ChartHullCap, SecondChartHullAt and ThirdChartHullAt size a dark system's charting
-	// crew: the ceiling on hulls one system may draw, the counts that earn the second and
-	// third, and — in their difference — the step each hull past the third is earned at.
-	// Zero means the documented default; a CAP OF ONE is the single-hull tour and the
-	// feature's off switch. See chartcrew.go.
+	// ChartHullCap, SecondChartHullAt and ThirdChartHullAt bound a dark system's charting
+	// crew; what SIZES it is the walk measured this tick (chartcrew.go). The cap is a hard
+	// ceiling over that answer, and the pair a floor on the outstanding work each rank
+	// needs — the second and third named directly, their difference carrying every rank
+	// past them. Zero means the documented default; a CAP OF ONE is the single-hull tour
+	// and the feature's off switch.
 	ChartHullCap      int
 	SecondChartHullAt int
 	ThirdChartHullAt  int
@@ -512,25 +513,31 @@ func AdvanceExpansion(
 		return rep, err
 	}
 
-	// The systems needing a hull are resolved ONCE, before anything moves, and every
-	// branch that covers one strikes it off — which is what keeps a single system
-	// from being sent both a spare and a fresh probe.
-	targets := seedlessTargets(systems, hulls)
-	covered := make(map[string]bool, len(targets))
-
 	// A system's probe-selling yards, resolved at most once per TICK and shared by the
 	// finishing seed and by seed staging, so the two never read the same catalog twice
 	// or disagree about which waypoints are yards.
 	probeYards := map[string][]string{}
 
-	// A gate walk per target, and with the seed gate shut every pass that reads it is
-	// unreachable — the retarget included, which refuses on its own.
+	// The systems needing a hull are resolved ONCE, before anything moves, and every
+	// branch that covers one strikes it off — which is what keeps a single system from
+	// being sent both a spare and a fresh probe.
+	//
+	// RESOLVED ONLY BEHIND THE SEED GATE, because every pass that reads the list is: the
+	// claim and the request sit below the spend pause, the counter loan below that, the
+	// retarget refuses on its own. Sizing a crew costs gate walks, so a shut gate must
+	// not pay for a list nothing can act on.
+	var targets []ExpandSystem
 	if k.SeedsEnabled {
+		targets, err = seedlessTargets(ctx, systems, hulls, newChartWalks(reach, book.heldSystems()))
+		if err != nil {
+			return rep, err
+		}
 		targets, err = orderTargets(ctx, reach, mapping, targets, book)
 		if err != nil {
 			return rep, err
 		}
 	}
+	covered := make(map[string]bool, len(targets))
 
 	t := &expandTick{
 		p: p, playerID: playerID, k: k,
