@@ -1412,7 +1412,7 @@ func TestFeedGateLeg_DeliversAFullHoldEvenWhenNoInputSourceResolves(t *testing.T
 	if err != nil {
 		t.Fatalf("reading the fixture pipeline: %v", err)
 	}
-	if _, _, _, _, planned := f.handler.planGateFeed(f.ctx(), gateTestCmd(), gateTestSystem, billSource, gateTestHoldCapacity); planned {
+	if _, _, _, _, planned := f.handler.planGateFeed(f.ctx(), gateTestCmd(), gateTestSystem, billSource, gateTestHoldCapacity, soleFeeder()); planned {
 		t.Fatal("fixture is inert: the buy-side planner still found a step, so this test cannot see a hold path that wrongly demands a source")
 	}
 

@@ -121,6 +121,11 @@ func (h *RunConstructionCoordinatorHandler) reallocateGateRoles(
 // constant whenever units exceeds it, making the verdict identical for any units at or above it.
 // Fails to false (assume there is work) on an unreadable pipeline, unreachable today since
 // outstandingGateMaterials already proved one exists before this runs.
+//
+// IT ASKS AS A SOLE FEEDER, and the verdict is the same for any slot: the feeder split only ROTATES
+// which chain a hull tries first, and planGateFeed walks every remaining chain behind it, so "is
+// there a feedable step anywhere in the bill" cannot depend on where the walk started. This runs
+// before hauler discovery and has no hull to place anyway.
 func (h *RunConstructionCoordinatorHandler) gateFactoryHasNoWork(
 	ctx context.Context,
 	cmd *RunConstructionCoordinatorCommand,
@@ -130,7 +135,7 @@ func (h *RunConstructionCoordinatorHandler) gateFactoryHasNoWork(
 	if pipeline == nil {
 		return false
 	}
-	_, _, _, _, planned := h.planGateFeed(ctx, cmd, systemSymbol, pipeline, mfgServices.MinViableTrancheUnits)
+	_, _, _, _, planned := h.planGateFeed(ctx, cmd, systemSymbol, pipeline, mfgServices.MinViableTrancheUnits, soleFeeder())
 	return !planned
 }
 

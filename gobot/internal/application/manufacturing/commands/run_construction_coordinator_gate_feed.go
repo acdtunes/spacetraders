@@ -105,7 +105,7 @@ func (h *RunConstructionCoordinatorHandler) feedGateLeg(
 	// Passing the hold rather than letting the planner guess keeps the prediction and the purchase
 	// talking about one quantity: a planner sizing against some other number would decline steps the
 	// buy would have afforded, or admit ones it would not.
-	step, input, target, capitalBlocked, planned := h.planGateFeed(ctx, cmd, systemSymbol, billSource, capacity)
+	step, input, target, capitalBlocked, planned := h.planGateFeed(ctx, cmd, systemSymbol, billSource, capacity, h.factoryFeederSlot(ctx, systemSymbol, lot.ship, playerID))
 	if !planned {
 		logger.Log("WARNING", fmt.Sprintf("Gate factory: %s found no feedable step this leg — every gate material is either satisfied, already ABUNDANT at its factory, has no resolvable source and destination, or costs more than the working-capital reserve allows", lot.ship.ShipSymbol()), map[string]interface{}{
 			"ship": lot.ship.ShipSymbol(), "action": "no_feed_step",
@@ -504,10 +504,11 @@ func logGateFeedRanking(ctx context.Context, root string, candidates []gateFeedC
 	})
 }
 
-// planGateFeed picks THIS leg's single feed step: walk each outstanding gate material neediest
-// first and, within a material, take the step whose destination factory is SHORTEST of that input,
-// among those whose input source AND destination factory both resolve AND whose first tranche this
-// treasury can actually pay for. A braked material is dropped before any of this — see feedableRoots.
+// planGateFeed picks THIS leg's single feed step: walk each outstanding gate material in THIS
+// FEEDER'S order (orderRootsForFeeder — neediest first when one hull feeds alone) and, within a
+// material, take the step whose destination factory is SHORTEST of that input, among those whose
+// input source AND destination factory both resolve AND whose first tranche this treasury can
+// actually pay for. A braked material is dropped before any of this — see feedableRoots.
 //
 // Ordering runs in two passes, which is what keeps the ranking from costing more than it must: the
 // two CHEAP declines (no destination factory, target ABUNDANT) are applied to every step first, only
@@ -532,6 +533,7 @@ func (h *RunConstructionCoordinatorHandler) planGateFeed(
 	systemSymbol string,
 	pipeline *manufacturing.ManufacturingPipeline,
 	units int,
+	slot feederSlot,
 ) (gate.FeedStep, *mfgServices.MarketLocatorResult, *mfgServices.MarketLocatorResult, bool, bool) {
 	logger := common.LoggerFromContext(ctx)
 	// Steps the pacing consult passed over, kept across every material so the fallback below can
@@ -541,6 +543,7 @@ func (h *RunConstructionCoordinatorHandler) planGateFeed(
 
 	roots, braked := feedableRoots(pipeline)
 	logBrakedFeedRoots(ctx, braked)
+	roots = orderRootsForFeeder(ctx, roots, slot)
 
 	for _, material := range roots {
 		plan := gate.PlanFeed(material.TradeSymbol(), h.factory.topology, gate.DefaultFeedDepthCap)
@@ -722,6 +725,109 @@ func (h *RunConstructionCoordinatorHandler) planGateFeed(
 		return best.step, best.source, best.target, capitalBlocked, true
 	}
 	return gate.FeedStep{}, nil, nil, capitalBlocked, false
+}
+
+// feederSlot places ONE factory hull in the feeding roster: which of the factory-role hulls it is,
+// and how many share the bill. It is what turns a second feeder into a second CHAIN instead of a
+// second hull on the same one.
+type feederSlot struct {
+	hull    string
+	index   int
+	feeders int
+}
+
+// soleFeeder is the slot for a caller with no hull of its own to place: one feeder at position 0,
+// which FeedRootOrder answers with the unrotated neediest-first walk.
+func soleFeeder() feederSlot { return feederSlot{feeders: 1} }
+
+// factoryFeederSlot places ship among the FACTORY-role hulls, so the leg can lead on a chain no
+// other feeder is leading on.
+//
+// THE ROSTER IS THE TAG, NOT THE STATE. Membership is `dedicated_fleet == gate-factory`, which
+// holds while a hull is docked, claimed, laden or mid-haul — and it has to, because feeding legs
+// are long and the OTHER feeder is almost always in transit when this one plans. A census that
+// dropped busy hulls would report every planning feeder as the only one, and every one of them
+// would then lead on the neediest chain: exactly the defect, rebuilt out of liveness.
+//
+// SCOPED TO THE OPERATING SYSTEM, matching gateWorkforce's own census, because a gate hull parked
+// in another system feeds nothing here and counting it would shift the in-system hulls' positions
+// into a collision. Unset system symbol means unscoped, as it does there.
+//
+// SORTED BY SYMBOL, so the same hull leads on the same chain tick after tick with no cursor to
+// persist (RULINGS #2) and no state to get out of step with the fleet — the NextRole precedent.
+//
+// SHIP IS ALWAYS IN ITS OWN ROSTER, including when the read fails, comes back empty or has lost
+// this hull's tag. It is here, feeding, so a roster without it is wrong; and a roster of one is a
+// lone feeder, which is today's neediest-first walk. That is the fail-closed direction: an
+// unreadable fleet narrows the behaviour to the one it already had, never widens it.
+func (h *RunConstructionCoordinatorHandler) factoryFeederSlot(ctx context.Context, systemSymbol string, ship *navigation.Ship, playerID shared.PlayerID) feederSlot {
+	slot := feederSlot{hull: ship.ShipSymbol(), feeders: 1}
+	ships, err := h.shipRepo.FindAllByPlayer(ctx, playerID)
+	if err != nil {
+		common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf("Gate factory: cannot read the fleet to place %s among the factory hulls, so it plans as a lone feeder and walks the whole bill neediest-first — if another feeder is live, both lead on the same chain this leg: %v", slot.hull, err), map[string]interface{}{
+			"ship": slot.hull, "action": "feeder_roster_unreadable",
+		})
+		return slot
+	}
+
+	roster := []string{slot.hull}
+	seen := map[string]bool{slot.hull: true}
+	for _, other := range ships {
+		if other == nil || seen[other.ShipSymbol()] || other.DedicatedFleet() != gate.FactoryFleetTag {
+			continue
+		}
+		if systemSymbol != "" {
+			location := other.CurrentLocation()
+			if location == nil || shared.ExtractSystemSymbol(location.Symbol) != systemSymbol {
+				continue
+			}
+		}
+		seen[other.ShipSymbol()] = true
+		roster = append(roster, other.ShipSymbol())
+	}
+	sort.Strings(roster)
+
+	slot.feeders = len(roster)
+	for position, symbol := range roster {
+		if symbol == slot.hull {
+			slot.index = position
+			break
+		}
+	}
+	return slot
+}
+
+// orderRootsForFeeder applies gate.FeedRootOrder to this pass's feedable bill: the feeder leads on
+// its own chain and then falls back through every other one, so spreading the feeders can never
+// leave a hull with nothing to do.
+//
+// IT SPEAKS WHENEVER THE SPLIT IS DECIDING SOMETHING — more than one feeder AND more than one open
+// chain — not only when it moved the head. Which hull is on which chain is the question this change
+// exists to answer, and a silent leader is indistinguishable from the serialized behaviour it
+// replaces. The chains go in the MESSAGE: the container log renderer drops metadata maps.
+func orderRootsForFeeder(ctx context.Context, roots []*manufacturing.ConstructionMaterialTarget, slot feederSlot) []*manufacturing.ConstructionMaterialTarget {
+	order := gate.FeedRootOrder(len(roots), slot.index, slot.feeders)
+	if len(order) != len(roots) {
+		return roots
+	}
+	ordered := make([]*manufacturing.ConstructionMaterialTarget, 0, len(roots))
+	for _, position := range order {
+		ordered = append(ordered, roots[position])
+	}
+	if slot.feeders < 2 || len(ordered) < 2 {
+		return ordered
+	}
+
+	fallback := make([]string, 0, len(ordered)-1)
+	for _, material := range ordered[1:] {
+		fallback = append(fallback, material.TradeSymbol())
+	}
+	common.LoggerFromContext(ctx).Log("INFO", fmt.Sprintf("Gate factory: %s is feeder %d of %d across %d open chain(s), so it LEADS on %s (%d outstanding) and falls back to %s only if that chain has nothing feedable — feeders spread across the bill instead of every hull serializing onto the neediest chain", slot.hull, slot.index+1, slot.feeders, len(ordered), ordered[0].TradeSymbol(), ordered[0].RemainingQuantity(), strings.Join(fallback, ", ")), map[string]interface{}{
+		"ship": slot.hull, "feeder": slot.index + 1, "feeders": slot.feeders,
+		"leads_on": ordered[0].TradeSymbol(), "fallback": strings.Join(fallback, ","),
+		"action": "feeder_leads_chain",
+	})
+	return ordered
 }
 
 // feedableRoots splits the outstanding bill into the gate materials this pass may plan feed steps

@@ -191,3 +191,28 @@ func PlanFeed(root string, recipes Recipe, depthCap int) FeedPlan {
 	}
 	return plan
 }
+
+// FeedRootOrder is the order ONE factory feeder walks the outstanding gate materials in, answered
+// as POSITIONS into the caller's own neediest-first root slice.
+//
+// A ROTATION, NOT A FILTER: feeder k leads on root k, then wraps through every remaining root.
+// Leading is only a preference, so a chain that is complete, braked or unfeedable this leg costs
+// the fleet no capacity — the hull falls through rather than idling in front of work.
+//
+// ONE FEEDER IS THE IDENTITY, gated on the COUNT and not on the index happening to be zero: a lone
+// hull splitting itself across chains finishes neither. Surplus feeders wrap back to the neediest.
+// Degenerate input answers rather than panics; the planner calls this every leg.
+func FeedRootOrder(roots, feeder, feeders int) []int {
+	if roots <= 0 {
+		return nil
+	}
+	start := 0
+	if feeders > 1 && feeder > 0 {
+		start = feeder % roots
+	}
+	order := make([]int, 0, roots)
+	for offset := 0; offset < roots; offset++ {
+		order = append(order, (start+offset)%roots)
+	}
+	return order
+}

@@ -346,3 +346,81 @@ func TestFeedPlan_LogLineNamesTheRootTheStepsAndEveryStopReason(t *testing.T) {
 		t.Fatal("an empty feed plan produced no log line; a factory fleet with nothing to feed and one that failed to plan must not look identical")
 	}
 }
+
+// ---------------------------------------------------------------------------------------------
+// FeedRootOrder — spreading the feeders across the bill (sp-p11ce)
+// ---------------------------------------------------------------------------------------------
+
+// A LONE FEEDER IS THE IDENTITY. Splitting one hull across chains finishes neither, so the whole
+// behaviour is gated on there being a second feeder to spread to — and the gate is on the COUNT,
+// not on the index happening to be zero.
+func TestFeedRootOrder_OneFeederKeepsTheNeediestFirstWalk(t *testing.T) {
+	for _, feeder := range []int{0, 1, 7, -3} {
+		got := FeedRootOrder(3, feeder, 1)
+		if len(got) != 3 || got[0] != 0 || got[1] != 1 || got[2] != 2 {
+			t.Fatalf("FeedRootOrder(3, %d, 1) = %v, want the caller's own neediest-first order 0,1,2 — a single hull that rotates off the neediest chain feeds the least urgent material first", feeder, got)
+		}
+	}
+}
+
+// THE DEFECT, PINNED. Two feeders planning off one bill must lead on DIFFERENT chains: identical
+// orders are what let a second hull double up on FAB_MATS while ADVANCED_CIRCUITRY never received a
+// single feed plan.
+func TestFeedRootOrder_EachFeederLeadsOnADifferentChain(t *testing.T) {
+	leaders := map[int]bool{}
+	for feeder := 0; feeder < 2; feeder++ {
+		order := FeedRootOrder(2, feeder, 2)
+		if len(order) == 0 {
+			t.Fatalf("FeedRootOrder(2, %d, 2) returned no order at all", feeder)
+		}
+		if leaders[order[0]] {
+			t.Fatalf("feeder %d also leads on chain %d; every feeder leading on the same chain is exactly the serialization this exists to break", feeder, order[0])
+		}
+		leaders[order[0]] = true
+	}
+	if len(leaders) != 2 {
+		t.Fatalf("two feeders led on %d distinct chain(s), want 2", len(leaders))
+	}
+}
+
+// LEADING IS A PREFERENCE, NEVER AN ASSIGNMENT. Every feeder still reaches every chain behind its
+// own, so a chain that is complete, braked or has nothing feedable this leg costs the fleet no
+// capacity — the hull falls through to the next one instead of standing down.
+func TestFeedRootOrder_EveryFeederStillReachesEveryChain(t *testing.T) {
+	for feeders := 1; feeders <= 4; feeders++ {
+		for feeder := 0; feeder < feeders; feeder++ {
+			order := FeedRootOrder(3, feeder, feeders)
+			seen := map[int]bool{}
+			for _, root := range order {
+				if root < 0 || root >= 3 {
+					t.Fatalf("FeedRootOrder(3, %d, %d) = %v names root %d, which is not a position in the caller's slice", feeder, feeders, order, root)
+				}
+				seen[root] = true
+			}
+			if len(order) != 3 || len(seen) != 3 {
+				t.Fatalf("FeedRootOrder(3, %d, %d) = %v; a feeder that cannot fall back onto every other chain stands down in front of work another hull could have done", feeder, feeders, order)
+			}
+		}
+	}
+}
+
+// MORE FEEDERS THAN CHAINS wrap back onto the neediest, which is where surplus capacity belongs.
+func TestFeedRootOrder_SurplusFeedersWrapBackOntoTheNeediestChain(t *testing.T) {
+	if got := FeedRootOrder(2, 2, 3); len(got) == 0 || got[0] != 0 {
+		t.Fatalf("FeedRootOrder(2, 2, 3) = %v, want the third feeder back on chain 0 — a surplus hull must not be parked on a chain that does not exist", got)
+	}
+}
+
+// TOTAL OVER DEGENERATE INPUT. The planner calls this every leg; an unwired or empty bill must
+// answer rather than panic a tick.
+func TestFeedRootOrder_AnswersRatherThanPanicsOnDegenerateInput(t *testing.T) {
+	if got := FeedRootOrder(0, 1, 2); got != nil {
+		t.Fatalf("FeedRootOrder(0, 1, 2) = %v, want nil for an empty bill", got)
+	}
+	if got := FeedRootOrder(-1, 0, 1); got != nil {
+		t.Fatalf("FeedRootOrder(-1, 0, 1) = %v, want nil", got)
+	}
+	if got := FeedRootOrder(2, -5, 2); len(got) != 2 || got[0] != 0 {
+		t.Fatalf("FeedRootOrder(2, -5, 2) = %v, want a negative index treated as the first feeder", got)
+	}
+}
