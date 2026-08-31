@@ -1,0 +1,590 @@
+{
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "links": [],
+  "preload": false,
+  "refresh": "1m",
+  "schemaVersion": 41,
+  "tags": ["spacetraders", "charting", "expansion"],
+  "time": { "from": "now-6h", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "SpaceTraders - Charting",
+  "uid": "spacetraders-charting",
+  "description": "Charting as an income line: what the fleet has charted, what it earns per waypoint, which systems are done, and whether the crews are actually being given work.",
+  "version": 1,
+  "weekStart": "",
+  "panels": [
+    {
+      "type": "row",
+      "title": "Charting income",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "stat",
+      "title": "Waypoints Charted",
+      "description": "Charting rewards booked to the ledger this era. One reward = one waypoint charted.",
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgresql" },
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 1 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "fixed", "fixedColor": "green" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgresql" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COUNT(*)::bigint AS \"Charted\"\n  FROM transactions\n WHERE player_id = (SELECT MAX(id) FROM players)\n   AND description LIKE 'Charting reward%'"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Charting Income",
+      "description": "Total credits earned from charting rewards. This is gross income with no cost of goods - the hull is already paid for.",
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgresql" },
+      "gridPos": { "h": 4, "w": 5, "x": 4, "y": 1 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "locale",
+          "color": { "mode": "fixed", "fixedColor": "green" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgresql" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COALESCE(SUM(amount),0)::bigint AS \"Credits\"\n  FROM transactions\n WHERE player_id = (SELECT MAX(id) FROM players)\n   AND description LIKE 'Charting reward%'"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Charts / hour",
+      "description": "Charting rate over the last complete hour. Partial-hour readings are misleading, so this window is closed.",
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgresql" },
+      "gridPos": { "h": 4, "w": 5, "x": 9, "y": 1 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "orange", "value": 20 },
+              { "color": "green", "value": 50 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgresql" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COUNT(*)::bigint AS \"Charts/h\"\n  FROM transactions\n WHERE player_id = (SELECT MAX(id) FROM players)\n   AND description LIKE 'Charting reward%'\n   AND created_at >= NOW() - INTERVAL '1 hour'"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Credits / chart",
+      "description": "Mean reward per waypoint over the last hour. Falls as the crews work through the barren tier, which sorts last by design.",
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgresql" },
+      "gridPos": { "h": 4, "w": 5, "x": 14, "y": 1 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "locale",
+          "decimals": 0,
+          "color": { "mode": "fixed", "fixedColor": "blue" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgresql" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COALESCE(ROUND(AVG(amount)),0)::bigint AS \"Per chart\"\n  FROM transactions\n WHERE player_id = (SELECT MAX(id) FROM players)\n   AND description LIKE 'Charting reward%'\n   AND created_at >= NOW() - INTERVAL '1 hour'"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Credits / hour",
+      "description": "Charting income over the last hour. Compare against trade margin to see which line is carrying the era.",
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgresql" },
+      "gridPos": { "h": 4, "w": 5, "x": 19, "y": 1 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "locale",
+          "color": { "mode": "fixed", "fixedColor": "green" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgresql" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COALESCE(SUM(amount),0)::bigint AS \"Credits/h\"\n  FROM transactions\n WHERE player_id = (SELECT MAX(id) FROM players)\n   AND description LIKE 'Charting reward%'\n   AND created_at >= NOW() - INTERVAL '1 hour'"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Charting rate and income (10-minute buckets)",
+      "description": "Charts and credits per 10 minutes. A falling per-chart value with steady volume is the barren tier being worked, not a fault.",
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgresql" },
+      "gridPos": { "h": 9, "w": 16, "x": 0, "y": 5 },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 60,
+            "lineWidth": 1,
+            "axisPlacement": "auto",
+            "barAlignment": 0
+          },
+          "color": { "mode": "palette-classic" }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "credits" },
+            "properties": [
+              { "id": "custom.axisPlacement", "value": "right" },
+              { "id": "unit", "value": "locale" },
+              { "id": "custom.drawStyle", "value": "line" },
+              { "id": "custom.fillOpacity", "value": 0 },
+              { "id": "custom.lineWidth", "value": 2 }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "none" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgresql" },
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT to_timestamp(floor(extract(epoch FROM created_at)/600)*600) AS time,\n       COUNT(*)::bigint AS charts,\n       SUM(amount)::bigint AS credits\n  FROM transactions\n WHERE player_id = (SELECT MAX(id) FROM players)\n   AND description LIKE 'Charting reward%'\n   AND $__timeFilter(created_at)\n GROUP BY 1\n ORDER BY 1"
+        }
+      ]
+    },
+    {
+      "type": "piechart",
+      "title": "Crews by system",
+      "description": "Where the charting hulls actually are. DISPATCHED is in transit; CHARTING is on station and working.",
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgresql" },
+      "gridPos": { "h": 9, "w": 8, "x": 16, "y": 5 },
+      "fieldConfig": {
+        "defaults": { "unit": "short", "color": { "mode": "palette-classic" } },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "right", "showLegend": true, "values": ["value"] },
+        "pieType": "donut",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgresql" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT system_symbol || ' (' || seed_state || ')' AS metric,\n       COUNT(*)::bigint AS value\n  FROM sensing_seed_hulls\n WHERE player_id = (SELECT MAX(id) FROM players)\n GROUP BY 1\n ORDER BY 2 DESC"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Coverage - what is left to chart",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 14 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "stat",
+      "title": "Waypoints Remaining",
+      "description": "Uncharted waypoints across every system the sensing ledger knows. Each one is a charting reward we have not collected.",
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgresql" },
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 15 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "fixed", "fixedColor": "orange" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "orange", "value": null }] }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgresql" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COUNT(*)::bigint AS \"Remaining\"\n  FROM waypoints w\n WHERE w.traits ILIKE '%UNCHARTED%'\n   AND w.system_symbol IN (SELECT system_symbol FROM sensing_systems\n                            WHERE player_id = (SELECT MAX(id) FROM players))"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Coverage",
+      "description": "Share of known-system waypoints already charted.",
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgresql" },
+      "gridPos": { "h": 4, "w": 5, "x": 4, "y": 15 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 1,
+          "min": 0,
+          "max": 100,
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "orange", "value": 50 },
+              { "color": "green", "value": 85 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgresql" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT ROUND(100.0 * COUNT(*) FILTER (WHERE w.traits NOT ILIKE '%UNCHARTED%')\n             / NULLIF(COUNT(*),0), 1) AS \"Coverage\"\n  FROM waypoints w\n WHERE w.system_symbol IN (SELECT system_symbol FROM sensing_systems\n                            WHERE player_id = (SELECT MAX(id) FROM players))"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Income Left On The Table",
+      "description": "Remaining uncharted waypoints valued at the last hour's mean reward. An estimate, not a promise - reward varies 5k to 214k by waypoint.",
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgresql" },
+      "gridPos": { "h": 4, "w": 5, "x": 9, "y": 15 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "locale",
+          "color": { "mode": "fixed", "fixedColor": "yellow" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "yellow", "value": null }] }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgresql" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH me AS (SELECT MAX(id) AS pid FROM players),\n     rate AS (SELECT COALESCE(AVG(amount), 0) AS per_chart\n                FROM transactions, me\n               WHERE player_id = me.pid\n                 AND description LIKE 'Charting reward%'\n                 AND created_at >= NOW() - INTERVAL '1 hour'),\n     left_over AS (SELECT COUNT(*) AS n\n                     FROM waypoints w, me\n                    WHERE w.traits ILIKE '%UNCHARTED%'\n                      AND w.system_symbol IN (SELECT system_symbol FROM sensing_systems WHERE player_id = me.pid))\nSELECT ROUND(rate.per_chart * left_over.n)::bigint AS \"Estimated\"\n  FROM rate, left_over"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Systems Known",
+      "description": "Systems in the sensing ledger. The frontier grows only when a hull arrives somewhere new and reads its gate neighbours.",
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgresql" },
+      "gridPos": { "h": 4, "w": 5, "x": 14, "y": 15 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "fixed", "fixedColor": "blue" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgresql" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COUNT(*)::bigint AS \"Systems\"\n  FROM sensing_systems\n WHERE player_id = (SELECT MAX(id) FROM players)"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Systems With No Crew",
+      "description": "Known systems holding uncharted work but with no seed hull assigned. These are idle income - the first thing to chase when the rate sags.",
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgresql" },
+      "gridPos": { "h": 4, "w": 5, "x": 19, "y": 15 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 1 },
+              { "color": "red", "value": 4 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgresql" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH me AS (SELECT MAX(id) AS pid FROM players),\n     work AS (SELECT s.system_symbol\n                FROM sensing_systems s, me\n               WHERE s.player_id = me.pid\n                 AND EXISTS (SELECT 1 FROM waypoints w\n                              WHERE w.system_symbol = s.system_symbol\n                                AND w.traits ILIKE '%UNCHARTED%')),\n     crewed AS (SELECT DISTINCT system_symbol FROM sensing_seed_hulls, me WHERE player_id = me.pid)\nSELECT COUNT(*)::bigint AS \"Uncrewed\"\n  FROM work WHERE system_symbol NOT IN (SELECT system_symbol FROM crewed)"
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "title": "Per-system charting progress",
+      "description": "Every known system: how far charted, how much is left, and whether a crew is on it. Sorted by remaining work, so the biggest untapped systems sit at the top.",
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgresql" },
+      "gridPos": { "h": 12, "w": 24, "x": 0, "y": 19 },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "align": "auto", "cellOptions": { "type": "auto" } }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Charted %" },
+            "properties": [
+              { "id": "unit", "value": "percent" },
+              { "id": "max", "value": 100 },
+              { "id": "min", "value": 0 },
+              { "id": "custom.cellOptions", "value": { "type": "gauge", "mode": "gradient" } }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Remaining" },
+            "properties": [
+              { "id": "custom.cellOptions", "value": { "type": "color-text" } },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    { "color": "green", "value": null },
+                    { "color": "orange", "value": 20 },
+                    { "color": "red", "value": 60 }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Crew" },
+            "properties": [
+              { "id": "custom.cellOptions", "value": { "type": "color-text" } },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    { "color": "red", "value": null },
+                    { "color": "green", "value": 1 }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": { "show": false, "reducer": ["sum"], "countRows": false, "fields": "" },
+        "sortBy": [{ "displayName": "Remaining", "desc": true }]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgresql" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH me AS (SELECT MAX(id) AS pid FROM players),\n     wp AS (SELECT w.system_symbol,\n                   COUNT(*) AS total,\n                   COUNT(*) FILTER (WHERE w.traits ILIKE '%UNCHARTED%') AS remaining\n              FROM waypoints w\n             GROUP BY 1),\n     crew AS (SELECT system_symbol, COUNT(*) AS hulls\n                FROM sensing_seed_hulls, me\n               WHERE player_id = me.pid\n               GROUP BY 1)\nSELECT s.system_symbol            AS \"System\",\n       s.verdict                  AS \"Verdict\",\n       COALESCE(s.seed_state,'-') AS \"Seed\",\n       COALESCE(c.hulls,0)::bigint AS \"Crew\",\n       COALESCE(wp.total,0)::bigint AS \"Waypoints\",\n       COALESCE(wp.remaining,0)::bigint AS \"Remaining\",\n       COALESCE(ROUND(100.0*(wp.total-wp.remaining)/NULLIF(wp.total,0),1),0) AS \"Charted %\"\n  FROM sensing_systems s\n  LEFT JOIN wp     ON wp.system_symbol = s.system_symbol\n  LEFT JOIN crew c ON c.system_symbol = s.system_symbol\n WHERE s.player_id = (SELECT pid FROM me)\n ORDER BY \"Remaining\" DESC"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Partition health - is the crew being given work",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 31 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Fleet-partition answers (solved vs fallback)",
+      "description": "A fallback means the routing service could not solve and the crew was split by angular sector with no balancing - one hull takes nearly everything and the rest idle. This should stay at zero.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 32 },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "drawStyle": "line", "fillOpacity": 20, "lineWidth": 2, "stepInterval": null },
+          "color": { "mode": "palette-classic" },
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byRegexp", "options": ".*fallback.*" },
+            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }]
+          }
+        ]
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull"] },
+        "tooltip": { "mode": "multi", "sort": "none" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (outcome) (spacetraders_daemon_fleet_partition_answers_total)",
+          "legendFormat": "{{outcome}}"
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "title": "Stored partitions - stops per hull",
+      "description": "The live partition each crew is flying. Balance is by tour TIME, not stop count, so an uneven count is not itself a fault - but a hull with zero stops is idle, and one hull holding nearly every stop is the signature of a failed solve.",
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgresql" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 32 },
+      "fieldConfig": {
+        "defaults": { "custom": { "align": "auto", "cellOptions": { "type": "auto" } } },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Idle hulls" },
+            "properties": [
+              { "id": "custom.cellOptions", "value": { "type": "color-text" } },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    { "color": "green", "value": null },
+                    { "color": "red", "value": 1 }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": { "show": false, "reducer": ["sum"], "countRows": false, "fields": "" },
+        "sortBy": [{ "displayName": "Max stops", "desc": true }]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgresql" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT system_symbol AS \"System\",\n       COUNT(*)::bigint AS \"Hulls\",\n       SUM(json_array_length(waypoints::json))::bigint AS \"Stops\",\n       MAX(json_array_length(waypoints::json))::bigint AS \"Max stops\",\n       COUNT(*) FILTER (WHERE json_array_length(waypoints::json) = 0)::bigint AS \"Idle hulls\",\n       MAX(updated_at) AS \"Solved\"\n  FROM sensing_chart_shares\n WHERE player_id = (SELECT MAX(id) FROM players)\n GROUP BY 1\n ORDER BY 4 DESC"
+        }
+      ]
+    },
+    {
+      "type": "text",
+      "title": "How to read this",
+      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 40 },
+      "options": {
+        "mode": "markdown",
+        "content": "**Charting is gross income.** Every waypoint pays a reward regardless of type, so the barren tier is worth charting even though it holds no markets. `ChartPriority` still visits market- and shipyard-bearing types first, which is why credits-per-chart falls as a system nears completion - that is the design working, not a fault.\n\n**Crew size is decided by the walk, not by the cap.** A crew of `c` clears the outstanding count in `2*outstanding/c` turns while the c-th hull pays two turns per gate hop plus its arrival sweep; a hull is worth adding while `outstanding/c` covers that walk plus a half. `chart_hull_cap` (15) only bounds what the walk may buy.\n\n**Two things to chase when the rate sags:** systems with uncharted work and no crew, and a non-zero fallback count. A fallback means the partition was cut by angular sector with no balancing, so most of the crew idles while one hull carries the system.\n\n**Not shown, because it is not instrumented:** per-hull charts completed, time from seed dispatch to first chart, and whether a stored partition is stale relative to the live crew."
+      }
+    }
+  ]
+}
