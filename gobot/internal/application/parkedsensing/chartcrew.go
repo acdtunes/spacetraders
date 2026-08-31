@@ -37,9 +37,9 @@ import (
 // off the same gate walker claimSpares draws through.
 const (
 	// maxChartCrew is the widest crew the sizing can hand ONE system, and therefore the
-	// largest chart_hull_cap worth advertising. It is where the assembly bound below
-	// leaves the universe: the map's largest chartable system holds 57 waypoints
-	// (ASTEROID excluded by ChartSkippable), and rank*(rank-1)/2 < 2*57 fails at 16.
+	// largest chart_hull_cap worth advertising. It is a CEILING, not a derivation of the
+	// assembly bound below: that bound rises with the outstanding count, so a system
+	// whose whole catalog is dark clears it and only this holds the crew down.
 	maxChartCrew = 15
 	// The operator ladder's documented defaults, which are the break-even at the
 	// SHORTEST walk stored adjacency can report — one gate hop. They therefore sit at

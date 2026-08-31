@@ -24,8 +24,6 @@ package parkedsensing_test
 import (
 	"context"
 	"encoding/json"
-	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -34,29 +32,8 @@ import (
 
 	adapterSensing "github.com/andrescamacho/spacetraders-go/internal/adapters/parkedsensing"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
-	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	appSensing "github.com/andrescamacho/spacetraders-go/internal/application/parkedsensing"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
-
-// captureLogger records the container log so a test can assert on a line the
-// engine emits rather than on a return value it does not have.
-type captureLogger struct {
-	mu    sync.Mutex
-	lines []string
-}
-
-func (l *captureLogger) Log(level, message string, _ map[string]interface{}) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.lines = append(l.lines, level+" "+message)
-}
-
-func (l *captureLogger) text() string {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return strings.Join(l.lines, "\n")
-}
 
 // marketRow writes one persisted quote. The argument names are the PERSISTED
 // column meanings — from OUR side of the trade — which is exactly the naming the
@@ -330,21 +307,20 @@ func liveShapedSystem() []persistence.WaypointModel {
 	}
 }
 
-// THE REORDER, AND THE SKIP (sp-erdz7).
+// THE REORDER, AND THE EXHAUSTIVENESS THAT SURVIVES IT.
 //
-// Both halves matter and neither is sufficient alone. The ORDER is the original
-// speedup: the station comes first because a charted yard makes the system
-// buyable, then the market types so a parked scanner can be placed on them and
-// start producing trade data while the tour continues. The SKIP is the new one:
-// the three asteroids are gone from the work list entirely, on a census of 0
-// markets and 0 shipyards in 114,838 charted asteroids across two universes.
+// Both halves matter and neither is sufficient alone. The ORDER is the speedup:
+// the station comes first because a charted yard makes the system buyable, then
+// the market types so a parked scanner can be placed on them and start producing
+// trade data while the tour continues. EXHAUSTIVENESS is the other half — every
+// uncharted waypoint is charting work, barren rock included, because a chart pays
+// its own reward wherever it lands. The tier decides when a stop is reached,
+// never whether it is.
 //
-// GAS_GIANT SURVIVING IS THE LOAD-BEARING HALF of the skip assertion. It ranks
-// BELOW every market type and above only the asteroids, so a skip implemented as
-// "drop the last tier" or "drop anything below the market tier" would take it
-// too — and at 133 markets in 1,154 charted it is rare, not never. Its presence
-// here is what distinguishes skipping the BARREN tier from skipping the tail.
-func TestUnchartedWaypoints_OrdersByValueAndDropsOnlyTheBarrenTier(t *testing.T) {
+// GAS_GIANT AND THE ASTEROIDS SIT EITHER SIDE OF THE LAST TIER BOUNDARY, which is
+// what makes this fixture able to tell an ordering from a filter: an ordering
+// puts the gas giant ahead of the rock and keeps both, a filter drops the tail.
+func TestUnchartedWaypoints_OrdersByValueAndStillChartsTheBarrenTier(t *testing.T) {
 	db := newShipPortsDB(t)
 	require.NoError(t, db.Create(liveShapedSystem()).Error)
 
@@ -352,27 +328,29 @@ func TestUnchartedWaypoints_OrdersByValueAndDropsOnlyTheBarrenTier(t *testing.T)
 	require.NoError(t, err)
 
 	require.Equal(t, []string{
-		"X1-AA2-Z9", // ORBITAL_STATION — 1084 of the 1102 shipyards seen in era 6
+		"X1-AA2-Z9", // ORBITAL_STATION — the shipyard-bearing tier leads
 		"X1-AA2-B1", // MOON        \
 		"X1-AA2-C1", // PLANET       > market-bearing, alphabetical within the tier
 		"X1-AA2-F1", // FUEL_STATION/
-		"X1-AA2-D1", // GAS_GIANT — 133 of 1154: RARE, so still flown
+		"X1-AA2-D1", // GAS_GIANT — a market rarely, so it precedes the barren tier
+		"X1-AA2-A1", // ASTEROID \
+		"X1-AA2-A2", // ASTEROID  > barren: LAST, but still flown and still paid for
+		"X1-AA2-A3", // ASTEROID /
 	}, order,
-		"the station must be visited FIRST despite sorting last alphabetically, the gas giant must SURVIVE the skip, and no asteroid may appear")
+		"the station must be visited FIRST despite sorting last alphabetically, and the barren tier must come LAST without being dropped")
 
-	require.NotContains(t, order, "X1-AA2-A1", "ASTEROID is 0-for-114,838 and must not be charting work")
-	require.Len(t, order, 5, "three of the eight uncharted waypoints were asteroids and are now skipped")
+	require.Len(t, order, 8, "all eight uncharted waypoints are charting work; only the CHARTED moon is not")
 }
 
-// THE ACCEPTANCE CRITERION: a system whose only remaining work is barren reaches
-// a TERMINAL charted state instead of being toured for fifty hours.
+// AN ALL-BARREN SYSTEM IS A FULL TOUR, not a finished one. A system's charting
+// income does not depend on what its waypoints hold, so a system of nothing but
+// rock is worth exactly as many charts as it has rocks.
 //
-// This is the shape of X1-KC84 (51 asteroids) and five others, and before this
-// change each of them was ~50 hours of flying at ~1.1 waypoints/hr to discover
-// nothing. The count reaching ZERO is the whole point: verdictFor will not
-// durably write a system off until it does, so an empty work list alone would
-// not finish anything — it would pin the system PENDING forever.
-func TestUnchartedWaypoints_AnAllAsteroidSystemIsAlreadyComplete(t *testing.T) {
+// The count must agree with the work list here or the failure inverts: verdictFor
+// will not durably write a system off until the count reads zero, so a work list
+// the count did not match would either strand the system PENDING or write it off
+// with flights still owed.
+func TestUnchartedWaypoints_AnAllAsteroidSystemIsAFullTour(t *testing.T) {
 	db := newShipPortsDB(t)
 	require.NoError(t, db.Create(&[]persistence.WaypointModel{
 		typedWaypointRow("X1-AA3-A2", "X1-AA3", "ASTEROID", []string{"UNCHARTED"}),
@@ -382,12 +360,13 @@ func TestUnchartedWaypoints_AnAllAsteroidSystemIsAlreadyComplete(t *testing.T) {
 
 	order, err := tourSymbols(port, "X1-AA3")
 	require.NoError(t, err)
-	require.Empty(t, order, "there is no charting work here worth a flight — the seed must stand down, not tour two barren rocks")
+	require.Equal(t, []string{"X1-AA3-A1", "X1-AA3-A2"}, order,
+		"every rock is a paid chart; a seed sent here has two stops to make, in symbol order within the tier")
 
 	count, err := port.ListUnchartedCount(context.Background(), "X1-AA3")
 	require.NoError(t, err)
-	require.Zero(t, count,
-		"and the COMPLETION SIGNAL must agree. A zero work list with a non-zero count is the pinned-PENDING failure: the tour finishes, verdictFor never writes the system off, seedlessTargets keeps sending probes, and the frontier stalls behind it forever")
+	require.Equal(t, len(order), count,
+		"and the COMPLETION SIGNAL must agree. A count that disagreed with the list would either pin the system PENDING forever or write it off with charts still owed")
 }
 
 // THE COHERENCE INVARIANT, asserted directly rather than inferred.
@@ -401,12 +380,11 @@ func TestUnchartedWaypoints_AnAllAsteroidSystemIsAlreadyComplete(t *testing.T) {
 // it probes endlessly, and since only IN_SCOPE/NO_WHITELIST systems propagate
 // the frontier, expansion stalled there permanently.
 //
-// THE ORDERING was safe here for free — two reads of identical rows differing
-// only in sequence. THE SKIP IS NOT, and this is now the test that earns it: the
-// filter had to land in the ONE function both reads share (unchartedIn), because
-// a filter applied to the work list alone breaks exactly this equality while
-// every ordering test in this file stays green.
-func TestUnchartedReads_CountAndWorkListCoverTheSameSetAfterTheSkip(t *testing.T) {
+// THE ORDERING is safe here for free — two reads of identical rows differing only
+// in sequence. A FILTER WOULD NOT BE, and this is the test that would catch one
+// being introduced into the work list alone: every ordering test in this file
+// would stay green while this equality broke.
+func TestUnchartedReads_CountAndWorkListCoverTheSameSet(t *testing.T) {
 	db := newShipPortsDB(t)
 	require.NoError(t, db.Create(liveShapedSystem()).Error)
 	port := newCatalogPort(db)
@@ -417,23 +395,21 @@ func TestUnchartedReads_CountAndWorkListCoverTheSameSetAfterTheSkip(t *testing.T
 	require.NoError(t, err)
 
 	require.Equal(t, len(order), count,
-		"the completion signal must count exactly the waypoints a seed will be sent to, and nothing else. If the skip narrowed only the work list, this reads 5 != 8 — the pinned-PENDING failure")
-	require.Equal(t, 5, count,
-		"five non-barren uncharted waypoints; the three asteroids left BOTH reads together")
+		"the completion signal must count exactly the waypoints a seed will be sent to, and nothing else. A work list narrower than the count is the pinned-PENDING failure")
 
-	// NON-VACUITY: the fixture must actually contain skipped waypoints, or this
-	// equality holds trivially and says nothing about the filter being shared.
+	// GROUND TRUTH, read past the code under test: both reads must equal the rows
+	// actually carrying UNCHARTED, or an agreeing pair could still both be wrong.
 	var total int64
 	require.NoError(t, db.Model(&persistence.WaypointModel{}).
 		Where("system_symbol = ? AND traits LIKE ?", "X1-AA2", "%UNCHARTED%").Count(&total).Error)
-	require.Equal(t, int64(8), total,
-		"the system must hold 8 uncharted rows of which 3 are skipped; with nothing skipped this test cannot see the two reads disagree")
+	require.Equal(t, int64(count), total,
+		"every uncharted row is outstanding work; a count below the rows means some type is being declined")
 }
 
 // The barren tier must match the type EXACTLY. ASTEROID_BASE and
-// ENGINEERED_ASTEROID share its prefix and are 100% market-bearing — 345 of 345
-// and 22 of 22 — so a prefix test would bury 367 guaranteed markets behind every
-// barren rock in the system while still looking like a working ordering.
+// ENGINEERED_ASTEROID share its prefix and reliably carry a market, so a prefix
+// test would bury guaranteed markets behind every barren rock in the system while
+// still looking like a working ordering.
 func TestUnchartedWaypoints_AsteroidPrefixedTypesRankWithTheMarkets(t *testing.T) {
 	db := newShipPortsDB(t)
 	require.NoError(t, db.Create(&[]persistence.WaypointModel{
@@ -445,10 +421,8 @@ func TestUnchartedWaypoints_AsteroidPrefixedTypesRankWithTheMarkets(t *testing.T
 
 	order, err := tourSymbols(newCatalogPort(db), "X1-AA4")
 	require.NoError(t, err)
-	require.Equal(t, []string{"X1-AA4-B1", "X1-AA4-E1"}, order,
-		"only the bare ASTEROID is barren; its two prefix-sharing cousins always carry a market and must SURVIVE the skip")
-	require.NotContains(t, order, "X1-AA4-A1",
-		"and the bare ASTEROID is skipped — a prefix-matched skip would have taken all three and silently dropped 100%-market-bearing types")
+	require.Equal(t, []string{"X1-AA4-B1", "X1-AA4-E1", "X1-AA4-A1"}, order,
+		"the two prefix-sharing cousins rank with the markets and the bare ASTEROID falls to the tail; a prefix match would have flattened all three into one tier")
 }
 
 func TestListProbeYards_PricedFirstThenTraitFallback(t *testing.T) {
@@ -755,9 +729,8 @@ func gatedSystem() []persistence.WaypointModel {
 // A jump gate is the only waypoint type that grows the MAP: charting it reveals
 // the system's gate adjacency, which frontier propagation turns into new PENDING
 // rows, which is where the next ring of reachable systems comes from. Every other
-// market-bearing type yields at best one market. Measured live, 51 systems under
-// charting had an uncharted gate queued behind 1,787 other waypoints while the
-// reachable-target ring stood at zero.
+// market-bearing type yields at best one market, and reach is what the expansion
+// engine runs out of first.
 //
 // The shipyard still goes first, and that is deliberate rather than incidental: a
 // charted yard makes its system buyable, which funds local spares, which stage
@@ -776,19 +749,20 @@ func TestUnchartedWaypoints_ChartsTheJumpGateBeforeAnyMarket(t *testing.T) {
 		"X1-AA4-B1",  // MOON        \
 		"X1-AA4-C1",  // PLANET       > market-bearing, alphabetical within the tier
 		"X1-AA4-F1",  // FUEL_STATION/
-		"X1-AA4-D1",  // GAS_GIANT — unproven, so still flown
+		"X1-AA4-D1",  // GAS_GIANT — unproven, so it precedes the barren tier
+		"X1-AA4-A1",  // ASTEROID \ barren: last in the order, still in the tour
+		"X1-AA4-A2",  // ASTEROID /
 	}, order,
 		"the jump gate must be charted straight after the shipyard: it is the only waypoint that adds new SYSTEMS")
 
-	require.Len(t, order, 6, "the two asteroids are skipped (sp-erdz7); everything else is still charted")
+	require.Len(t, order, 8, "every uncharted waypoint in the system is charting work")
 }
 
-// MEMBERSHIP IS NOW A PROPERTY OF THE TYPE CENSUS, AND THE TWO READS MUST AGREE
-// ON IT (sp-erdz7). The gate TIER still changes only order — what removes rows is
-// ChartSkippable, applied once in unchartedIn so the count and the work list
-// narrow together. This test is the one that would catch a tier change quietly
-// becoming a second filter.
-func TestUnchartedWaypoints_TheGateTierChangesOrderAndOnlyBarrenChangesMembership(t *testing.T) {
+// A TIER IS AN ORDERING AND NEVER A MEMBERSHIP TEST. Ranking is the only lever
+// ChartPriority has, so no tier — the gate's promotion or the barren tier's
+// demotion — may add or remove a stop. This test is the one that would catch a
+// tier change quietly becoming a filter.
+func TestUnchartedWaypoints_TheTiersChangeOrderAndNeverMembership(t *testing.T) {
 	db := newShipPortsDB(t)
 	rows := gatedSystem()
 	require.NoError(t, db.Create(rows).Error)
@@ -798,17 +772,11 @@ func TestUnchartedWaypoints_TheGateTierChangesOrderAndOnlyBarrenChangesMembershi
 	require.NoError(t, err)
 
 	want := make([]string, 0, len(rows))
-	skipped := 0
 	for _, row := range rows {
-		if shared.ChartSkippable(row.Type) {
-			skipped++
-			continue
-		}
 		want = append(want, row.WaypointSymbol)
 	}
-	require.Positive(t, skipped, "fixture is inert: with nothing skipped this cannot tell membership from ordering")
 	require.ElementsMatch(t, want, order,
-		"every NON-BARREN uncharted waypoint must still be handed to the seed; the gate tier changes order, never membership")
+		"every uncharted waypoint must still be handed to the seed; the tiers change order, never membership")
 
 	// The completion signal and the work list read the same rows with no
 	// coordination between them, so the count must still equal the tour length —
@@ -987,49 +955,20 @@ func TestLastListingScan_CatalogueOnlyWithoutAProbeIsEvidenceOfNone(t *testing.T
 	require.False(t, sellsProbe, "the catalogue is complete and it does not list a probe")
 }
 
-// THE SKIP'S FALSIFIER FIRES (sp-erdz7). Skipping a type is a claim about
-// evidence, and a claim nothing can refute is a blacklist rather than evidence.
-// One counter-example refutes this one, and the fleet must SAY SO rather than
-// quietly keep not looking.
-//
-// The refutation is reachable despite the skip because it reads waypoints
-// ALREADY charted — 39,303 asteroids in the current era carry visible traits —
-// so no new flight is needed to notice the census changing.
-func TestListMarketWaypoints_ShoutsWhenABarrenTypeTurnsUpHoldingAMarket(t *testing.T) {
+// A CHARTED WAYPOINT IS ENUMERATED ON ITS TRAITS, NEVER ON ITS TYPE. The tier
+// ordering is a prediction about types made before a flight; once a waypoint is
+// charted its traits are the evidence, and a market is a market whatever body it
+// sits on. Dropping or second-guessing one here would lose a real market on the
+// strength of a heuristic that has already been overtaken by fact.
+func TestListMarketWaypoints_ReturnsAMarketOnEveryBodyThatHoldsOne(t *testing.T) {
 	db := newShipPortsDB(t)
 	require.NoError(t, db.Create(&[]persistence.WaypointModel{
 		typedWaypointRow("X1-AA9-A1", "X1-AA9", "ASTEROID", []string{"MARKETPLACE"}),
 		typedWaypointRow("X1-AA9-M1", "X1-AA9", "MOON", []string{"MARKETPLACE"}),
 	}).Error)
 
-	logs := &captureLogger{}
-	ctx := common.WithLogger(context.Background(), logs)
-	markets, err := newCatalogPort(db).ListMarketWaypoints(ctx, "X1-AA9")
+	markets, err := newCatalogPort(db).ListMarketWaypoints(context.Background(), "X1-AA9")
 	require.NoError(t, err)
-
-	// The market is still RETURNED. The premise being wrong is a reason to shout,
-	// never a reason to drop a real market on the floor.
-	require.Contains(t, markets, "X1-AA9-A1", "a refuting waypoint is still a usable market")
-
-	require.Contains(t, logs.text(), "Charting census REFUTED",
-		"an ASTEROID carrying a MARKETPLACE refutes the skip's premise and must be reported loudly")
-	require.Contains(t, logs.text(), "X1-AA9-A1", "the refutation must NAME the waypoint so it can be checked")
-}
-
-// AND STAYS SILENT OTHERWISE. A falsifier that fires on ordinary traffic is
-// noise, and noise is how a real refutation goes unnoticed.
-func TestListMarketWaypoints_SaysNothingWhenTheCensusHolds(t *testing.T) {
-	db := newShipPortsDB(t)
-	require.NoError(t, db.Create(&[]persistence.WaypointModel{
-		typedWaypointRow("X1-AB1-M1", "X1-AB1", "MOON", []string{"MARKETPLACE"}),
-		typedWaypointRow("X1-AB1-F1", "X1-AB1", "FUEL_STATION", []string{"MARKETPLACE"}),
-	}).Error)
-
-	logs := &captureLogger{}
-	ctx := common.WithLogger(context.Background(), logs)
-	_, err := newCatalogPort(db).ListMarketWaypoints(ctx, "X1-AB1")
-	require.NoError(t, err)
-
-	require.NotContains(t, logs.text(), "Charting census REFUTED",
-		"market-bearing types are exactly what the census predicts; reporting them as refutations would bury a real one")
+	require.Equal(t, []string{"X1-AA9-A1", "X1-AA9-M1"}, markets,
+		"the barren tier is an ordering hint, not a filter on charted evidence")
 }

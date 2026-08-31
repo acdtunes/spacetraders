@@ -151,14 +151,12 @@ func unchartedSymbols(t *testing.T, db *gorm.DB, system string) []string {
 	return out
 }
 
-// everyUnchartedWaypoint is the full work set the tour must cover — the nine
-// uncharted waypoints of tourFixture, in no particular order.
-// everyChartableWaypoint is the fixture's uncharted set MINUS the barren tier
-// (sp-erdz7). The four asteroids are still ROWS in the system — they are simply
-// no longer charting work, on a census of 0 markets and 0 shipyards in 114,838
-// charted asteroids across two universes.
+// everyChartableWaypoint is the full work set the tour must cover: every one of
+// tourFixture's nine uncharted waypoints, in sorted order. Nothing is exempt —
+// a chart pays its own reward whatever the waypoint turns out to hold.
 func everyChartableWaypoint() []string {
 	return []string{
+		"X1-T-A1", "X1-T-A2", "X1-T-A3", "X1-T-A4",
 		"X1-T-B1", "X1-T-C1", "X1-T-D1", "X1-T-F1", "X1-T-Z9",
 	}
 }
@@ -219,9 +217,9 @@ func tourFixture(t *testing.T) (*gorm.DB, *tourShips, *tourSeedCommander, appSen
 
 // runTourToStandDown steps the engine until the errand is cleared, and fails
 // rather than looping forever if it never is. The bound IS the termination
-// assertion: eight waypoints need a navigate and a chart each plus one closing
-// tick, so a tour that never ended would exhaust the budget here instead of
-// hanging the suite.
+// assertion: each waypoint needs a navigate and a chart, plus one closing tick,
+// so a tour that never ended would exhaust the budget here instead of hanging
+// the suite.
 func runTourToStandDown(t *testing.T, db *gorm.DB, ports appSensing.ExpandPorts) int {
 	t.Helper()
 	ctx := context.Background()
@@ -239,33 +237,35 @@ func runTourToStandDown(t *testing.T, db *gorm.DB, ports appSensing.ExpandPorts)
 }
 
 // THE HEADLINE. One reordered tour, start to stand-down.
-func TestReorderedTour_ChartsShipyardThenMarketsAndSkipsTheAsteroidsEntirely(t *testing.T) {
+func TestReorderedTour_ChartsShipyardThenMarketsThenTheBarrenTier(t *testing.T) {
 	db, _, commander, ports := tourFixture(t)
 
 	ticks := runTourToStandDown(t, db, ports)
 
-	// (a) EVERYTHING WORTH CHARTING IS CHARTED, AND NOTHING ELSE. The four
-	// asteroids are gone from the tour; every other uncharted waypoint is still
-	// flown. This is the half that would catch the skip widening past the barren
-	// tier — the order assertion below passes either way.
+	// (a) EVERY UNCHARTED WAYPOINT IS CHARTED. This is the half that would catch
+	// the ordering quietly becoming a filter — the order assertion below passes
+	// either way, because a dropped tail is still a correctly ordered prefix.
 	covered := append([]string(nil), commander.charted...)
 	sort.Strings(covered)
 	require.Equal(t, everyChartableWaypoint(), covered,
-		"only the barren tier may be skipped — every market- and shipyard-bearing type is still charted")
+		"the tour is exhaustive: every uncharted waypoint pays a chart reward, so none may be left behind")
 
 	// (b) and (c) THE SEQUENCE, across all four tiers. Shipyard type first, then
 	// the market-bearing types a scanner can be parked on, then the unproven gas
 	// giant, then the barren rock. The station is first despite sorting LAST
-	// alphabetically — which is what the old order gave us, and the reason a seed
-	// could burn dozens of hours before revealing a market.
+	// alphabetically, which is what a flat catalog order would have given us.
 	require.Equal(t, []string{
-		"X1-T-Z9", // ORBITAL_STATION — 523 of the 567 known shipyards
+		"X1-T-Z9", // ORBITAL_STATION — the shipyard-bearing tier
 		"X1-T-B1", // MOON         \
 		"X1-T-C1", // PLANET        > market-bearing: a scanner can sit here
 		"X1-T-F1", // FUEL_STATION /  and start producing trade data
-		"X1-T-D1", // GAS_GIANT — 133 of 1154, rare not never, so still flown LAST
+		"X1-T-D1", // GAS_GIANT — a market rarely, so ahead of the barren tier
+		"X1-T-A1", // ASTEROID \
+		"X1-T-A2", // ASTEROID  > barren: LAST, and still every one of them flown
+		"X1-T-A3", // ASTEROID  /
+		"X1-T-A4", // ASTEROID /
 	}, commander.charted,
-		"shipyard type before the markets, markets before the gas giant, and no asteroid flown at all")
+		"shipyard type before the markets, markets before the gas giant, and the barren tier last but not omitted")
 
 	// (d) THE TOUR TERMINATES AND THE SEED STANDS DOWN. The errand is cleared and
 	// the hull is parked as a spare, so it stays counted by the probe cap and can
@@ -273,54 +273,48 @@ func TestReorderedTour_ChartsShipyardThenMarketsAndSkipsTheAsteroidsEntirely(t *
 	require.Positive(t, ticks)
 	row := tourSystemRow(t, db, "X1-T")
 	require.Nil(t, row.SeedShip, "the errand must be cleared")
-	spare := slotRows(t, db, "X1-T-D1")
+	spare := slotRows(t, db, "X1-T-A4")
 	require.Len(t, spare, 1, "the stood-down seed must hold a placement row or it drops out of the probe cap")
 	require.Equal(t, appSensing.SlotKindSpare, spare[0].SlotKind)
 	require.Equal(t, appSensing.SlotStateParked, spare[0].State)
 	require.Equal(t, "PROBE-SEED", *spare[0].AssignedShip)
 
-	// (e) THE COMPLETION SIGNAL REACHES ZERO WHILE BARREN ROWS REMAIN UNCHARTED,
-	// and that pairing is the whole of sp-erdz7's risk.
-	//
-	// The four asteroids are STILL uncharted rows in the database — the fix does
-	// not chart them and does not pretend to. What changed is that they are no
-	// longer outstanding WORK, and because the count and the work list are both
-	// computed by unchartedIn they agree about that. Had the filter gone in only
-	// one of them, this is precisely where it would show: the tour would finish
-	// with UnchartedCount stuck at 4, verdictFor would never write the system off,
-	// seedlessTargets would keep sending probes, and the frontier would stall here
-	// permanently.
+	// (e) THE COMPLETION SIGNAL REACHES ZERO ONLY WHEN NOTHING IS LEFT UNCHARTED.
+	// The count and the work list are both computed by unchartedIn, so they agree
+	// by construction; had a filter gone into one of them, this is where it would
+	// show — either a tour that finished with the count stuck above zero, or a
+	// count of zero with rows still dark.
 	require.Equal(t, 0, row.UnchartedCount,
 		"a non-zero count strands the system PENDING forever and stalls the frontier behind it")
-	require.ElementsMatch(t, []string{"X1-T-A1", "X1-T-A2", "X1-T-A3", "X1-T-A4"},
-		unchartedSymbols(t, db, "X1-T"),
-		"the asteroids remain uncharted ROWS — deliberately. The count is zero because they are not work, not because they were charted")
+	require.Empty(t, unchartedSymbols(t, db, "X1-T"),
+		"the count reads zero because the system is charted, and nothing may be left dark behind it")
 }
 
-// A seed standing ON an uncharted waypoint charts it before flying anywhere,
-// even a barren one — and then resumes in priority order.
+// A SEED STANDING ON AN UNCHARTED WAYPOINT CHARTS IT BEFORE FLYING ANYWHERE,
+// barren or not, and then resumes in priority order.
 //
-// This is the DEPLOY-DAY shape and it is reachable no other way: the live fleet
-// has seeds parked on asteroids right now (TORWIND-18 on X1-AJ10-B26B), left
-// there by the old exhaustive order. Those hulls must not wedge — they must
-// recognise there is nothing to do underfoot and get on with the system.
-func TestReorderedTour_ASeedLeftStandingOnAnAsteroidLeavesWithoutChartingIt(t *testing.T) {
+// The tier is an ordering over the stops still to be REACHED; a stop already
+// underfoot has no walk left to save, so deferring it would pay a second flight
+// back for a chart already free. This is also the shape a hull re-tasked mid-tour
+// arrives in, so it must not wedge.
+func TestReorderedTour_ASeedStandingOnAnAsteroidTakesTheFreeChartFirst(t *testing.T) {
 	db, ships, commander, ports := tourFixture(t)
-	ships.at = "X1-T-A2" // mid-tour on an asteroid, as the old order would have left it
+	ships.at = "X1-T-A2" // mid-tour on an asteroid
 
 	runTourToStandDown(t, db, ports)
 
 	require.Equal(t, []string{
-		"X1-T-Z9", // straight to the shipyard type — the rock underfoot is not work
+		"X1-T-A2", // the rock underfoot: charted where it stands, no flight owed
+		"X1-T-Z9", // then the tier order resumes at the shipyard type
 		"X1-T-B1",
 		"X1-T-C1",
 		"X1-T-F1",
-		"X1-T-D1", // gas giant behind the markets, and the tour ends there
+		"X1-T-D1",
+		"X1-T-A1", // and the remaining barren rock closes the tour
+		"X1-T-A3",
+		"X1-T-A4",
 	}, commander.charted,
-		"the seed must leave the asteroid uncharted and fly to the station")
-
-	require.NotContains(t, commander.charted, "X1-T-A2",
-		"THE SKIP HOLDS EVEN WHEN THE CHART IS FREE, and that consistency is the point. The engine takes its next stop from the same work list the count is computed over, so a waypoint that is not work is not charted — even standing on it. Charting it here would put a waypoint in the charted set that the completion signal never tracked, which is the divergence this whole design avoids")
+		"a free chart underfoot is taken immediately; the tier decides only where the hull FLIES next")
 
 	covered := append([]string(nil), commander.charted...)
 	sort.Strings(covered)
@@ -328,16 +322,15 @@ func TestReorderedTour_ASeedLeftStandingOnAnAsteroidLeavesWithoutChartingIt(t *t
 		"and the rest of the map still finishes")
 }
 
-// THE ACCEPTANCE CRITERION, END TO END (sp-erdz7): a system whose only remaining
-// waypoints are barren reaches a terminal state and releases its seed WITHOUT
-// flying anywhere.
+// AN ALL-BARREN SYSTEM IS TOURED IN FULL, and its seed is released only when the
+// last rock is charted. A system's charting income does not depend on what its
+// waypoints hold, so there is no shape of system that is finished while any of it
+// is still dark.
 //
-// This is the live shape of X1-KC84 (51 asteroids) and five others. Before this
-// change each was ~50 hours of charting at 1.1 waypoints/hr to discover nothing;
-// now the seed stands down on the first tick. The danger it is guarding is the
-// opposite failure — a narrowed work list with an un-narrowed count, which ends
-// the tour while pinning the system PENDING forever.
-func TestReorderedTour_AnAllAsteroidSystemIsReleasedWithoutFlyingAnywhere(t *testing.T) {
+// The failure this guards is the opposite pairing — a work list and a count that
+// disagree — which either ends the tour with the system pinned PENDING forever or
+// writes the system off with charts still owed.
+func TestReorderedTour_AnAllAsteroidSystemIsTouredInFull(t *testing.T) {
 	db := newShipPortsDB(t)
 	uncharted := []string{"UNCHARTED"}
 	require.NoError(t, db.Create(&[]persistence.WaypointModel{
@@ -381,13 +374,14 @@ func TestReorderedTour_AnAllAsteroidSystemIsReleasedWithoutFlyingAnywhere(t *tes
 		}
 	}
 
-	require.Empty(t, commander.charted,
-		"not one asteroid is flown: this system's entire remaining work is barren, and ~50 hours of charting at 1.1 waypoints/hr would have revealed nothing")
+	charted := append([]string(nil), commander.charted...)
+	sort.Strings(charted)
+	require.Equal(t, []string{"X1-U-A1", "X1-U-A2", "X1-U-A3"}, charted,
+		"every rock is a paid chart, so all three are flown")
 	require.Nil(t, row.SeedShip,
-		"THE ACCEPTANCE CRITERION: a system whose only remaining waypoints are skipped must reach a TERMINAL state and RELEASE its seed. A seed never released is a hull stranded and a system pinned PENDING forever")
+		"the seed must reach a TERMINAL state and be RELEASED once the system is charted. A seed never released is a hull stranded and a system pinned PENDING forever")
 	require.Equal(t, 0, row.UnchartedCount,
 		"and the completion signal must agree, or verdictFor never writes the system off and the frontier stalls behind it")
-	require.ElementsMatch(t, []string{"X1-U-A1", "X1-U-A2", "X1-U-A3"},
-		unchartedSymbols(t, db, "X1-U"),
-		"the rows are still uncharted and that is deliberate — completion here means 'nothing worth flying to', not 'everything charted'")
+	require.Empty(t, unchartedSymbols(t, db, "X1-U"),
+		"completion means everything charted; a zero count over dark rows would be the count lying about the work")
 }

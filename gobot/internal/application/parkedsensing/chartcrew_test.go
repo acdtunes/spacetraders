@@ -100,13 +100,72 @@ func TestChartHulls_TheAssemblyBoundStopsAShortWalkFromBuyingAnUnboundedCrew(t *
 				tc.uncharted, got, map[bool]string{true: "does not", false: "does"}[tc.assembled])
 		}
 	}
-	// And it is the bound maxChartCrew is derived from: the largest chartable system
-	// this map holds is 57 waypoints, and the next rank is where the ladder ends.
-	if arrivesToWork(57, maxChartCrew+1) {
-		t.Fatalf("rank %d still arrives to work on a 57-waypoint system — maxChartCrew is below its own derivation", maxChartCrew+1)
+}
+
+// ON A WHOLLY DARK SYSTEM IT IS THE CEILING THAT BINDS, NOT THE ASSEMBLY BOUND.
+// The bound rises with the outstanding count, so a system whose entire catalog is
+// still uncharted clears it at every rank the ladder reaches and maxChartCrew is
+// the only thing left holding the crew down. That is why the ceiling stands on its
+// own rather than as a derivation of the bound, and this is what would notice it
+// quietly becoming inert.
+func TestChartHulls_TheCeilingBindsWhenAWholeCatalogIsDark(t *testing.T) {
+	hulls := resolveChartHulls(ExpandKnobs{})
+	wholeCatalog := 200 // larger than any one system's waypoint list
+
+	if got := hulls.budgetFor(wholeCatalog, walkOf(1)); got != maxChartCrew {
+		t.Fatalf("a wholly dark system one hop out earned %d hulls, want the ceiling %d", got, maxChartCrew)
 	}
-	if !arrivesToWork(57, maxChartCrew) {
-		t.Fatalf("rank %d does not arrive to work on a 57-waypoint system — maxChartCrew is above its own derivation", maxChartCrew)
+	if !arrivesToWork(wholeCatalog, maxChartCrew+1) {
+		t.Fatalf("the assembly bound still stops rank %d on a %d-waypoint system, so this test is inert and the ceiling is not what binds",
+			maxChartCrew+1, wholeCatalog)
+	}
+}
+
+// NO COUNT AND NO CONFIGURATION MAY BUY MORE THAN THE CAP. The budget is what the
+// seeder raises a crew to, so a rank past the cap is a probe bought outside the
+// operator's stated bound — and because every term is a product of the count, this
+// is also where an overflow would show, as a budget that collapsed instead of
+// saturating.
+func TestChartHulls_TheBudgetSaturatesAtTheCapForEveryCountAndConfiguration(t *testing.T) {
+	for _, k := range []ExpandKnobs{
+		{},
+		{ChartHullCap: maxChartCrew},
+		{ChartHullCap: maxChartCrew + 1000}, // an out-of-range cap clamps down
+		{ChartHullCap: -5},                  // and a nonsense one reverts
+		{SecondChartHullAt: 1, ThirdChartHullAt: 2},
+	} {
+		hulls := resolveChartHulls(k)
+		if hulls.cap > maxChartCrew {
+			t.Fatalf("resolveChartHulls(%+v) left a cap of %d above the ceiling %d", k, hulls.cap, maxChartCrew)
+		}
+		for _, uncharted := range []int{0, 1, 94, 1_000, 13_000, 1_000_000, math.MaxInt32} {
+			for _, hops := range []int{0, 1, 7, 40} {
+				got := hulls.budgetFor(uncharted, walkOf(hops))
+				if got < 1 || got > hulls.cap {
+					t.Fatalf("budgetFor(%d) at %d hops under %+v = %d, want between 1 and the cap %d",
+						uncharted, hops, k, got, hulls.cap)
+				}
+			}
+		}
+	}
+}
+
+// AND IT NEVER FALLS AS THE DARK GROWS, which is what makes the ladder safe to
+// climb as a system's outstanding work rises: a bigger dark system must not earn a
+// SMALLER crew than a smaller one at the same walk. A term that wrapped would break
+// exactly this.
+func TestChartHulls_TheBudgetNeverFallsAsTheDarkGrows(t *testing.T) {
+	hulls := resolveChartHulls(ExpandKnobs{})
+	for _, hops := range []int{1, 3, 11} {
+		previous := 0
+		for _, uncharted := range []int{0, 1, 5, 20, 57, 94, 500, 13_000, math.MaxInt32} {
+			got := hulls.budgetFor(uncharted, walkOf(hops))
+			if got < previous {
+				t.Fatalf("at %d hops the budget fell from %d to %d as outstanding rose to %d",
+					hops, previous, got, uncharted)
+			}
+			previous = got
+		}
 	}
 }
 
@@ -574,15 +633,22 @@ func TestSeedlessTargets_ACapOfOneRestoresOneHullPerSystem(t *testing.T) {
 // darkSystemCrew stands a full crew on one dark system, every hull already in
 // the system and charting, so one tick gives each of them a step.
 func darkSystemCrew(h *expandHarness, stops []ChartStop) *fakeUncharted {
+	return darkSystemCrewOf(h, []string{"PROBE-A", "PROBE-B", "PROBE-C"}, stops)
+}
+
+// darkSystemCrewOf is the same fixture for a crew of any size, which is what lets
+// the partition be exercised at the width the sizing can actually reach.
+func darkSystemCrewOf(h *expandHarness, crew []string, stops []ChartStop) *fakeUncharted {
+	extras := make([]SeedErrand, 0, len(crew)-1)
+	for _, ship := range crew[1:] {
+		extras = append(extras, SeedErrand{Ship: ship, State: SeedStateCharting})
+	}
 	h.ledger.systems = []ExpandSystem{{
 		System: "X1-DARK", Verdict: VerdictPending, UnchartedCount: len(stops),
-		SeedShip: "PROBE-A", SeedState: SeedStateCharting,
-		ExtraSeeds: []SeedErrand{
-			{Ship: "PROBE-B", State: SeedStateCharting},
-			{Ship: "PROBE-C", State: SeedStateCharting},
-		},
+		SeedShip: crew[0], SeedState: SeedStateCharting,
+		ExtraSeeds: extras,
 	}}
-	for _, ship := range []string{"PROBE-A", "PROBE-B", "PROBE-C"} {
+	for _, ship := range crew {
 		h.ships.positions[ship] = ShipPos{
 			// Parked on the system's gate rather than on any uncharted waypoint, so
 			// every hull's step is a NAVIGATE naming the waypoint it has chosen.

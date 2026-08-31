@@ -26,10 +26,9 @@ import (
 // the catalog's own order, so there is nothing to solve and nothing to store.
 
 // chartPartitionTimeout bounds the fleet-partition call. A plain constant like
-// MaxExpansionActions and for the same reason — it paces the tick, not the
-// economics. The routing service enforces its own, shorter search budget, so this
-// only ever catches a hang; without it one unresponsive service holds the whole
-// sensing tick open.
+// MaxExpansionActions and for the same reason — it paces the tick. It is a real
+// CUT-OFF and not only a hang-catcher: the solver's cost grows with the stop list,
+// so a large enough system runs past this and takes the declared sector fallback.
 const chartPartitionTimeout = time.Minute
 
 // errNoFleetPartitioner is an unwired partitioner reported as the same case as an

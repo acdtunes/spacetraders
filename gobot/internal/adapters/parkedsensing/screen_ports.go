@@ -24,7 +24,6 @@ import (
 	domainPlayer "github.com/andrescamacho/spacetraders-go/internal/domain/player"
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
-	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	appSensing "github.com/andrescamacho/spacetraders-go/internal/application/parkedsensing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	shipyardDomain "github.com/andrescamacho/spacetraders-go/internal/domain/shipyard"
@@ -111,9 +110,6 @@ func (p *WaypointCatalogPort) ListMarketWaypoints(ctx context.Context, system st
 		if hasTrait(waypoint, unchartedTrait) {
 			continue
 		}
-		// The charted-market enumeration is one of the two places the skip's premise
-		// can be refuted by live data: these rows carry real traits.
-		p.reportBarrenTypeHoldingTrait(ctx, waypoint, marketplaceTrait)
 		out = append(out, waypoint.Symbol)
 	}
 	sort.Strings(out)
@@ -122,6 +118,10 @@ func (p *WaypointCatalogPort) ListMarketWaypoints(ctx context.Context, system st
 
 // unchartedIn is the system's outstanding charting work: every waypoint still
 // carrying the UNCHARTED trait, in whatever order the store hands them back.
+//
+// EVERY UNCHARTED WAYPOINT IS OUTSTANDING, whatever its type. A chart pays a
+// reward of its own wherever it lands, so there is no type worth declining; type
+// decides only the ORDER a seed works them in, which is UnchartedStops' question.
 //
 // THE SINGLE SOURCE FOR BOTH UNCHARTED READS, and it exists for what it PREVENTS.
 // ListUnchartedCount is the charting tour's COMPLETION SIGNAL and
@@ -133,21 +133,9 @@ func (p *WaypointCatalogPort) ListMarketWaypoints(ctx context.Context, system st
 // system is then pinned PENDING forever, seedlessTargets keeps re-dispatching
 // probes to it, and because only IN_SCOPE/NO_WHITELIST systems propagate the
 // frontier, expansion stalls permanently behind the first system holding an
-// excluded waypoint. Routing both reads through here means a filter lands in ONE
-// place and applies to both, so the two can never disagree about WHICH waypoints
-// are outstanding. They are free to disagree about order — and do.
-//
-// THE BARREN-TYPE FILTER IS HERE PRECISELY BECAUSE THIS IS THE SHARED SOURCE.
-// Barren types are dropped from the outstanding set, so the COUNT and the WORK
-// LIST narrow together and stay two views of one set — which is what makes
-// completion still mean something. A system whose only remaining waypoints are
-// asteroids counts ZERO outstanding and reaches a terminal charted state instead
-// of being toured indefinitely to discover nothing. In UnchartedStops alone
-// the same filter would leave that system out of stops while the count sat
-// non-zero forever: pinned PENDING, re-dispatched probes, frontier stalled.
-//
-// Most of the fleet's remaining charting work is ASTEROID, a type charted in
-// bulk across two universes without one market or shipyard on it.
+// excluded waypoint. Routing both reads through here means any filter would land
+// in ONE place and apply to both, so the two can never disagree about WHICH
+// waypoints are outstanding. They are free to disagree about order — and do.
 func (p *WaypointCatalogPort) unchartedIn(ctx context.Context, system string) ([]*shared.Waypoint, error) {
 	waypoints, err := p.waypoints.ListBySystemWithTrait(ctx, system, unchartedTrait)
 	if err != nil {
@@ -155,43 +143,12 @@ func (p *WaypointCatalogPort) unchartedIn(ctx context.Context, system string) ([
 	}
 	outstanding := make([]*shared.Waypoint, 0, len(waypoints))
 	for _, waypoint := range waypoints {
-		if waypoint == nil || shared.ChartSkippable(waypoint.Type) {
+		if waypoint == nil {
 			continue
 		}
 		outstanding = append(outstanding, waypoint)
 	}
 	return outstanding, nil
-}
-
-// reportBarrenTypeHoldingTrait is the SKIP'S OWN FALSIFIER.
-//
-// Skipping a type is a claim about evidence — "ASTEROID has never held a market
-// or a shipyard in any charted example" — and a claim that nothing can refute is
-// not evidence, it is a blacklist. One counter-example refutes this one, so the
-// fleet is wired to notice it: every enumeration of a CHARTED market or yard
-// passes through here, and a barren-tier waypoint carrying either trait is
-// logged as an ERROR naming the waypoint.
-//
-// IT WORKS DESPITE THE SKIP, which is the part worth checking before trusting
-// it. The obvious objection is that we stop charting asteroids and therefore
-// stop learning about them — but this reads the traits of waypoints ALREADY
-// charted, and those rows keep being synced whether or not we fly anywhere. A
-// market appearing on any one of them surfaces here without a single new flight.
-//
-// It is deliberately an ERROR and not a metric: this must never fire, and if it
-// does the correct response is a human reading the census again, not a counter
-// ticking up on a dashboard nobody is watching.
-func (p *WaypointCatalogPort) reportBarrenTypeHoldingTrait(ctx context.Context, waypoint *shared.Waypoint, trait string) {
-	if waypoint == nil || !shared.ChartSkippable(waypoint.Type) {
-		return
-	}
-	common.LoggerFromContext(ctx).Log("ERROR", fmt.Sprintf(
-		"Charting census REFUTED: %s is a %s carrying %s, but %s is skipped from charting on the claim that it never holds one. The skip is now wrong — re-count the census in domain/shared/charting.go before trusting any charting completion signal",
-		waypoint.Symbol, waypoint.Type, trait, waypoint.Type),
-		map[string]interface{}{
-			"waypoint": waypoint.Symbol, "type": waypoint.Type, "trait": trait,
-			"action": "chart_skip_premise_refuted",
-		})
 }
 
 // ListUnchartedCount reports how many of the system's waypoints are still
@@ -208,21 +165,18 @@ func (p *WaypointCatalogPort) ListUnchartedCount(ctx context.Context, system str
 // charting seed should visit them: SHIPYARD-BEARING TYPES FIRST, then
 // market-bearing ones, then the rest, alphabetically inside each tier.
 //
-// THE TOUR IS NOT EXHAUSTIVE, AND THE COUNT MATCHES IT. Barren types are dropped
-// by unchartedIn, so asteroids appear in neither this list nor
-// ListUnchartedCount; the two remain views of ONE set, read from the same rows,
-// so the count falls to zero exactly when the tour runs out of stops.
-//
-// This function stays a pure ORDERING over whatever unchartedIn hands it. The
-// skip is deliberately NOT repeated here — a second copy of the predicate is
-// exactly how the list and the count would come to disagree.
+// THE TOUR IS EXHAUSTIVE, AND THE COUNT MATCHES IT. This function is a pure
+// ORDERING over whatever unchartedIn hands it: it reorders and never removes, so
+// the list and ListUnchartedCount stay views of ONE set read from the same rows,
+// and the count falls to zero exactly when the tour runs out of stops. A filter
+// applied here alone would end the tour while the count sat above zero forever.
 //
 // The tier is the point and the alphabet is only the tie-break. A charted
 // shipyard makes its system buyable, which funds local spares, which stage more
 // seeds; a charted market lets a parked scanner be placed on it and start
 // producing trade data while the tour continues. A flat alphabetical order
-// leaves both to chance, which is how a seed comes to spend fifty hours on
-// asteroids before revealing the one market in the system. Type is the only
+// leaves both to chance, which is how a seed comes to work its way through a
+// system's barren rock before revealing the one market on it. Type is the only
 // evidence available before the flight, because the SHIPYARD and MARKETPLACE
 // traits are themselves hidden until the waypoint is charted; see
 // shared.ChartPriority.
@@ -423,9 +377,6 @@ func (p *WaypointCatalogPort) OutstandingYards(ctx context.Context, playerID int
 		if yard == nil || held[yard.Symbol] || hasTrait(yard, unchartedTrait) {
 			continue
 		}
-		// The charted-yard enumeration is the second refutation point for the charting
-		// skip; a barren-tier waypoint holding a SHIPYARD breaks the census.
-		p.reportBarrenTypeHoldingTrait(ctx, yard, shipyardTrait)
 		system := yard.SystemSymbol
 		if system == "" {
 			system = shared.ExtractSystemSymbol(yard.Symbol)

@@ -3,6 +3,7 @@ package parkedsensing
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sort"
 	"strings"
 	"testing"
@@ -137,6 +138,54 @@ func TestChartShares_TheRequestCarriesTheCrewAndItsStops(t *testing.T) {
 		cfg, wired := req.ShipConfigs[ship]
 		if !wired || cfg.CurrentLocation == "" {
 			t.Fatalf("%s reached the solver with no position (%+v)", ship, cfg)
+		}
+	}
+}
+
+// A WHOLE DARK CATALOG PARTITIONS ON THE VRP PATH, at the widest crew the sizing
+// can hand one system and a stop list covering every waypoint in it.
+//
+// TWO PROPERTIES, AND THE SECOND IS WHAT BOUNDS THE SOLVE. The first is that the
+// answer is still a partition at this size — disjoint, covering, every hull
+// working. The second is that the solver is asked about ONE SYSTEM: it is handed
+// exactly that system's stops and no more, so the size of the request is bounded
+// by a system's waypoint list rather than by the fleet's outstanding total,
+// however large that total grows. The tick's timeout only ever has to cover the
+// former.
+func TestChartShares_AWholeCatalogPartitionsAcrossTheWidestCrew(t *testing.T) {
+	h := newExpandHarness()
+	stops := ringStops("X1-DARK", 120) // more waypoints than any one system holds
+	crew := make([]string, 0, maxChartCrew)
+	for i := 0; i < maxChartCrew; i++ {
+		crew = append(crew, fmt.Sprintf("PROBE-%02d", i))
+	}
+	uncharted := darkSystemCrewOf(h, crew, stops)
+
+	if _, err := h.run(t, uncharted); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if h.partitioner.calls() != 1 {
+		t.Fatalf("the solver was asked %d times, want exactly one solve for one crew", h.partitioner.calls())
+	}
+
+	req := h.partitioner.requests[0]
+	if len(req.MarketWaypoints) != len(stops) || len(req.AllWaypoints) != len(stops) {
+		t.Fatalf("the solver was given %d stops and %d coordinates, want this system's %d and nothing else",
+			len(req.MarketWaypoints), len(req.AllWaypoints), len(stops))
+	}
+
+	shares := writtenShares(t, h.ledger, "X1-DARK")
+	owner := ownerOf(t, shares)
+	if len(owner) != len(stops) {
+		t.Fatalf("the crew owns %d of %d stops, want every one — an unowned waypoint never gets charted and pins the count above zero",
+			len(owner), len(stops))
+	}
+	if len(shares) != len(crew) {
+		t.Fatalf("%d hulls hold a share, want the whole crew of %d", len(shares), len(crew))
+	}
+	for _, share := range shares {
+		if len(share.Waypoints) == 0 {
+			t.Fatalf("%s owns nothing of an evenly spread system, so its hull charts nothing", share.Ship)
 		}
 	}
 }
