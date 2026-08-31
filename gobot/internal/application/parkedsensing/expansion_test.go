@@ -1826,27 +1826,32 @@ func TestAdvanceExpansion_UnlocatableSeedIsNeverCommanded(t *testing.T) {
 	}
 }
 
-func TestAdvanceExpansion_ChartingSeedNavigatesInTheOrderTheCatalogGives(t *testing.T) {
-	// The catalog returns uncharted waypoints in VISIT order, which is what lets
-	// an adapter shorten the tour by ordering them by proximity. The engine must
-	// take the head of that list rather than re-sorting it and throwing the
-	// ordering away.
+func TestAdvanceExpansion_ChartingSeedNavigatesToTheHeadOfItsRoutedTour(t *testing.T) {
+	// A lone hull's tour is ROUTED over the system's geometry and stored, and the
+	// engine flies the head of what it stored. The catalog's own order is symbol
+	// order, which says nothing about where anything is.
 	h := newExpandHarness()
 	h.ledger.systems = []ExpandSystem{
 		{System: "X1-B", Verdict: VerdictPending, UnchartedCount: 2,
 			SeedShip: "PROBE-7", SeedState: SeedStateCharting},
 	}
 	h.ships.positions = map[string]ShipPos{
-		"PROBE-7": {Waypoint: "X1-B-GATE", NavStatus: navigation.NavStatusInOrbit, Found: true},
+		"PROBE-7": {Waypoint: "X1-B-GATE", NavStatus: navigation.NavStatusInOrbit, Found: true, X: 100, Y: 0},
 	}
+	// A1 sorts first; C3 is the one the hull is standing beside.
+	uncharted := &fakeUncharted{stops: map[string][]ChartStop{"X1-B": {
+		{Waypoint: "X1-B-A1", X: -100, Y: 0},
+		{Waypoint: "X1-B-C3", X: 90, Y: 0},
+	}}}
 
-	rep, err := h.run(t, &fakeUncharted{bySystem: map[string][]string{"X1-B": {"X1-B-C3", "X1-B-A1"}}})
+	rep, err := h.run(t, uncharted)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	if got := h.seed.calls; len(got) != 1 || got[0] != (seedCall{"navigate", "PROBE-7", "X1-B-C3"}) {
-		t.Fatalf("seed commands = %v, want one navigate to the head of the catalog's order", got)
+		t.Fatalf("seed commands = %v, want one navigate to the nearer stop — a hull that flies the "+
+			"alphabet crosses the system to reach whatever sorts first", got)
 	}
 	if rep.Navigated != 1 || rep.Actions != 1 {
 		t.Fatalf("Navigated=%d Actions=%d, want 1/1", rep.Navigated, rep.Actions)

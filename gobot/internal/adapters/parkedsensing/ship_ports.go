@@ -273,6 +273,8 @@ func (p *ShipPositionPort) ShipAt(ctx context.Context, playerID int, shipSymbol 
 		Waypoint:     model.LocationSymbol,
 		NavStatus:    navigation.NavStatus(model.NavStatus),
 		Found:        true,
+		X:            model.LocationX,
+		Y:            model.LocationY,
 		FuelCapacity: model.FuelCapacity,
 		EngineSpeed:  model.EngineSpeed,
 	}, nil

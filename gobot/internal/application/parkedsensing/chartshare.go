@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"time"
 
@@ -15,21 +16,35 @@ import (
 // chartshare.go decides which of a dark system's outstanding stops each hull of
 // its charting crew owns, and in what order it works them.
 //
-// THE PARTITION IS SOLVED ONCE PER CREW AND STORED. A charting tour runs for hours
-// and a hull picks its next stop off its share every turn, so a share that could
-// be re-derived differently between turns is a share two hulls fight over. The
+// THE TOUR IS SOLVED ONCE PER CREW AND STORED. A charting tour runs for hours and
+// a hull picks its next stop off its share every turn, so a share that could be
+// re-derived differently between turns is a share two hulls fight over — and, for a
+// lone hull, a walk that oscillates between two waypoints and never finishes. The
 // stored assignment is therefore the durable input the tour reads, and the only
 // things that invalidate it are facts about the CREW: a hull joining, a hull
 // leaving, or a stop no hull owns.
 //
-// A ONE-HULL SYSTEM NEVER REACHES ANY OF THIS. Its hull owns the whole catalog in
-// the catalog's own order, so there is nothing to solve and nothing to store.
+// A LONE HULL IS ROUTED AND STORED ON THE SAME PATH, though not by the same solver.
+// Partitioning is not routing: one hull has no partition to cut, but its walk is
+// still a travelling-salesman problem, and the catalog's (tier, symbol) order
+// answers it with the alphabet. The systems earning one hull pay most for that: one
+// is what a long walk earns.
 
 // chartPartitionTimeout bounds the fleet-partition call. A plain constant like
 // MaxExpansionActions and for the same reason — it paces the tick. It is a real
 // CUT-OFF and not only a hang-catcher: the solver's cost grows with the stop list,
 // so a large enough system runs past this and takes the declared sector fallback.
 const chartPartitionTimeout = time.Minute
+
+// chartTourUnkinkPasses bounds the crossing-removal sweeps over a lone hull's walk,
+// and legEpsilon is the leg difference below which two routings count as the same
+// one. Both pace the tick rather than the economics: the sweep already stops on the
+// first pass that improves nothing, so the bound only ever catches float noise
+// trading two orderings back and forth.
+const (
+	chartTourUnkinkPasses = 8
+	legEpsilon            = 1e-9
+)
 
 // errNoFleetPartitioner is an unwired partitioner reported as the same case as an
 // unreachable one, so the fallback has ONE trigger rather than two.
@@ -108,16 +123,13 @@ func (b *shareBook) own(ship string, stops []ChartStop) []string {
 // errand can neither fall through to the whole system nor keep flying a share the
 // crew it was solved for no longer holds it to.
 //
-// A LONE HULL OWNS THE WHOLE CATALOG, and no partition is solved or stored for it:
-// that is the single-hull tour, and the hull budget's cap of one is this branch for
-// every system in the fleet.
+// A LONE HULL OWNS THE WHOLE CATALOG, and takes it through the same freshness test
+// and the same stored row a crew does: its crew of one is a crew and its share is a
+// share. Only how the order is arrived at differs (routeShares).
 func (t *expandTick) shareFor(ctx context.Context, system, ship string, stops []ChartStop) ([]string, error) {
 	crew := t.roster.crew(system)
 	if !contains(crew, ship) {
 		return nil, nil
-	}
-	if len(crew) == 1 {
-		return waypointsOf(stops), nil
 	}
 	if err := t.loadShares(ctx); err != nil {
 		return nil, err
@@ -147,15 +159,37 @@ func (t *expandTick) loadShares(ctx context.Context) error {
 }
 
 // solveShares cuts a crew's stops into per-hull tours.
-//
-// The fleet-partitioning VRP is asked first and its answer is checked to BE a
-// partition before it is trusted; anything else — an unwired or unreachable
-// service, a refused solve, an answer that drops or double-books a stop — falls
-// open to angular sectors, named once so a service down for good cannot pass for
-// a working solve. Fail-open is the right polarity here for the same reason it is
-// on the route ETA: a partition is a scheduling nicety, and refusing to produce
-// one would stop the fleet charting at all.
 func (t *expandTick) solveShares(ctx context.Context, system string, crew []string, stops []ChartStop) []ChartShare {
+	byShip := t.routeShares(ctx, system, crew, stops)
+	key := crewKey(crew)
+	shares := make([]ChartShare, 0, len(crew))
+	for _, ship := range crew {
+		shares = append(shares, ChartShare{
+			Ship: ship, System: system, Waypoints: byShip[ship], CrewKey: key,
+		})
+	}
+	return shares
+}
+
+// routeShares puts each hull's stops in the order it works them.
+//
+// A CREW ASKS THE VRP, because cutting the work between hulls is the part no local
+// walk can do, and its answer falls open to angular sectors — named once so a
+// routing service down for good cannot pass for a working solve. Fail-open is the
+// right polarity for the same reason it is on the route ETA: a tour is a scheduling
+// nicety, and refusing to produce one would stop the fleet charting at all.
+//
+// A LONE HULL IS ROUTED HERE INSTEAD, and never asks the VRP at all. There is no
+// partition to cut, so the only question left is the walk — and the partitioner
+// answers no call in under half a minute and degrades sharply past that (sp-ev79y),
+// which the serial sensing tick cannot absorb for an answer a local walk gets within
+// a few percent of.
+func (t *expandTick) routeShares(
+	ctx context.Context, system string, crew []string, stops []ChartStop,
+) map[string][]string {
+	if len(crew) == 1 {
+		return map[string][]string{crew[0]: orderByTier(t.soloTour(ctx, crew[0], stops), stops)}
+	}
 	byShip, err := t.solvePartition(ctx, system, crew, stops)
 	if err != nil {
 		logging.LoggerFromContext(ctx).Log("WARN", fmt.Sprintf(
@@ -169,14 +203,94 @@ func (t *expandTick) solveShares(ctx context.Context, system string, crew []stri
 			})
 		byShip = partitionBySector(stops, crew)
 	}
-	key := crewKey(crew)
-	shares := make([]ChartShare, 0, len(crew))
-	for _, ship := range crew {
-		shares = append(shares, ChartShare{
-			Ship: ship, System: system, Waypoints: byShip[ship], CrewKey: key,
-		})
+	return byShip
+}
+
+// soloTour is one hull's walk of a whole system: nearest neighbour from where it
+// stands, then the crossings taken back out.
+//
+// A HULL WE CANNOT LOCATE WALKS FROM THE SYSTEM CENTRE. Stop coordinates are
+// system-relative, so the origin is a real point on the same plane: an arbitrary
+// start to a walk that is still geometric, where the catalog's order is not.
+func (t *expandTick) soloTour(ctx context.Context, ship string, stops []ChartStop) []string {
+	var x, y float64
+	if pos, err := t.p.Ships.ShipAt(ctx, t.playerID, ship); err == nil && pos.Found {
+		x, y = pos.X, pos.Y
 	}
-	return shares
+	return waypointsOf(unkink(nearestNeighbourWalk(stops, x, y)))
+}
+
+// nearestNeighbourWalk orders stops into a walk that always steps to the nearest one
+// not yet taken, from (x, y).
+//
+// EVERY TIE BREAKS ON SYMBOL, which is what makes the walk a function of the stop SET
+// rather than of the order it arrived in: candidates are ranked by symbol first and
+// only a STRICTLY nearer one displaces the incumbent, so equidistant stops resolve
+// the same way on every tick. Without that a tour re-derived next tick could lead
+// with a different waypoint and leave the hull flying between two of them forever.
+func nearestNeighbourWalk(stops []ChartStop, x, y float64) []ChartStop {
+	remaining := append([]ChartStop(nil), stops...)
+	sort.Slice(remaining, func(i, j int) bool { return remaining[i].Waypoint < remaining[j].Waypoint })
+
+	out := make([]ChartStop, 0, len(remaining))
+	for len(remaining) > 0 {
+		next, nearest := 0, squaredRange(remaining[0], x, y)
+		for i := 1; i < len(remaining); i++ {
+			if reach := squaredRange(remaining[i], x, y); reach < nearest {
+				next, nearest = i, reach
+			}
+		}
+		step := remaining[next]
+		out = append(out, step)
+		x, y = step.X, step.Y
+		remaining = append(remaining[:next], remaining[next+1:]...)
+	}
+	return out
+}
+
+// unkink takes the crossings back out of a walk: wherever two legs cross, flying the
+// span between them backwards is shorter. A nearest-neighbour walk always leaves
+// some, because the stops it passed over early are exactly what its last legs must
+// come back for.
+//
+// DETERMINISTIC BY CONSTRUCTION: the spans are scanned in one fixed order, only a
+// STRICT improvement is taken, and the sweep is bounded — so the same walk polishes
+// to the same walk, and a pair the arithmetic cannot separate is left alone rather
+// than flipped back and forth.
+func unkink(tour []ChartStop) []ChartStop {
+	out := append([]ChartStop(nil), tour...)
+	for pass := 0; pass < chartTourUnkinkPasses; pass++ {
+		improved := false
+		for i := 0; i+2 < len(out); i++ {
+			for j := i + 2; j+1 < len(out); j++ {
+				if legLength(out[i], out[i+1])+legLength(out[j], out[j+1]) >
+					legLength(out[i], out[j])+legLength(out[i+1], out[j+1])+legEpsilon {
+					reverseSpan(out[i+1 : j+1])
+					improved = true
+				}
+			}
+		}
+		if !improved {
+			break
+		}
+	}
+	return out
+}
+
+func reverseSpan(span []ChartStop) {
+	for l, r := 0, len(span)-1; l < r; l, r = l+1, r-1 {
+		span[l], span[r] = span[r], span[l]
+	}
+}
+
+func legLength(from, to ChartStop) float64 { return math.Hypot(to.X-from.X, to.Y-from.Y) }
+
+// squaredRange compares distances without the square root, which orders them
+// identically and leaves no rounding for two evaluations of the same pair to
+// disagree over.
+func squaredRange(stop ChartStop, x, y float64) float64 {
+	dx, dy := stop.X-x, stop.Y-y
+	return dx*dx + dy*dy
 }
 
 // solvePartition asks the VRP for the crew's assignment and returns it only if it

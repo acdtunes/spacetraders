@@ -13,6 +13,11 @@ type ShipPos struct {
 	// Found reports whether the ships table knows this hull at all. A hull we
 	// cannot locate is never acted on.
 	Found bool
+	// X and Y are where the hull stands, on the SAME system-relative plane a
+	// charting stop's coordinates are measured against — which is what lets a tour
+	// the solver could not answer be walked from the hull's own position
+	// (chartshare.go) rather than off the catalog's alphabet.
+	X, Y float64
 	// FuelCapacity and EngineSpeed are the hull's flight characteristics, carried
 	// so a charting crew's partition can be priced on the walk each hull actually
 	// faces (chartshare.go). Zero means the ships table has not recorded them; no

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/logging"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/routing"
 )
 
@@ -527,13 +528,13 @@ func TestChartShares_AFinishedHullDropsItsShare(t *testing.T) {
 
 // --- the kill switch ---------------------------------------------------------
 
-// A CAP OF ONE IS THE SINGLE-HULL TOUR AGAIN: no solve, no partition row, and the
-// lone hull owns the whole catalog in the catalog's own order.
-func TestChartShares_ACapOfOneNeitherSolvesNorPartitions(t *testing.T) {
+// A CAP OF ONE IS THE CREW KILL SWITCH, NOT A ROUTING ONE. It leaves the system a
+// lone hull owning the whole catalog — and that hull's walk is still a route, so it
+// is still built and still stored.
+func TestChartShares_ACapOfOneStillRoutesTheLoneHullsTour(t *testing.T) {
 	h := newExpandHarness()
 	stops := ringStops("X1-DARK", 30)
-	uncharted := darkSystemCrew(h, stops)
-	h.ledger.systems[0].ExtraSeeds = nil
+	uncharted := darkSystemSolo(h, stops)
 
 	knobs := defaultExpandKnobs(h)
 	knobs.ChartHullCap = 1
@@ -541,23 +542,330 @@ func TestChartShares_ACapOfOneNeitherSolvesNorPartitions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if h.partitioner.calls() != 0 {
-		t.Fatalf("a single-hull tour asked the solver %d times, want none", h.partitioner.calls())
-	}
-	if len(h.ledger.setShares) != 0 {
-		t.Fatalf("a single-hull tour wrote a partition: %v", h.ledger.setShares)
-	}
 	if rep.Navigated != 1 {
 		t.Fatalf("Navigated = %d, want the lone hull's single step", rep.Navigated)
 	}
+	assertRoutedNotAlphabetical(t, h, stops)
+}
+
+// --- the single-hull tour ----------------------------------------------------
+
+// THE HEADLINE. A lone hull's tour is ROUTED over the system's geometry and stored
+// the way a crew's share is. Left in the catalog's order it walks the alphabet:
+// symbol order has no relation to where anything is, so the hull zigzags across a
+// system it was sent to precisely because the walk there was long.
+func TestChartShares_ALoneHullFliesARoutedTourNotTheCatalogOrder(t *testing.T) {
+	h := newExpandHarness()
+	stops := ringStops("X1-DARK", 12)
+	uncharted := darkSystemSolo(h, stops)
+
+	if _, err := h.run(t, uncharted); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	shares := writtenShares(t, h.ledger, "X1-DARK")
+	if len(shares) != 1 || shares[0].Ship != "PROBE-A" {
+		t.Fatalf("the lone hull's tour was stored as %v, want one share held by PROBE-A", shares)
+	}
+	if shares[0].CrewKey != crewKey([]string{"PROBE-A"}) {
+		t.Fatalf("the stored tour names crew %q, want the crew of one it was routed for", shares[0].CrewKey)
+	}
+	if len(ownerOf(t, shares)) != len(stops) {
+		t.Fatalf("the lone hull owns %d of %d stops, want the whole catalog", len(shares[0].Waypoints), len(stops))
+	}
+	assertRoutedNotAlphabetical(t, h, stops)
+}
+
+// THE LONE HULL NEVER ASKS THE FLEET PARTITIONER, at any size. There is no partition
+// to cut, and the service answers no call in under half a minute (sp-ev79y) — a stall
+// the serial sensing tick would pay per system, for a route the walk built here gets
+// within a few percent of.
+func TestChartShares_ALoneHullNeverAsksTheFleetPartitioner(t *testing.T) {
+	h := newExpandHarness()
+	h.partitioner.answer = func(*routing.VRPRequest) (*routing.VRPResponse, error) {
+		t.Fatal("a single-hull tour reached the fleet partitioner")
+		return nil, nil
+	}
+	// The largest waypoint list any one system in the universe holds.
+	stops := ringStops("X1-DARK", 208)
+	uncharted := darkSystemSolo(h, stops)
+
+	if _, err := h.run(t, uncharted); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if h.partitioner.calls() != 0 {
+		t.Fatalf("the solver was asked %d times for a single-hull tour, want none", h.partitioner.calls())
+	}
+	if got := len(ownerOf(t, writtenShares(t, h.ledger, "X1-DARK"))); got != len(stops) {
+		t.Fatalf("the lone hull's stored tour covers %d of %d stops", got, len(stops))
+	}
+}
+
+// The catalog's VALUE TIER wins over travel order for a lone hull exactly as it does
+// for a crew: shipyard- and market-bearing stops first, route order inside each tier.
+// One ordering discipline, not two.
+func TestChartShares_TheTierLeadsTheLoneHullsRoutedTour(t *testing.T) {
+	h := newExpandHarness()
+	stops := ringStops("X1-DARK", 12)
+	// The catalog hands its stops tier-ordered; here the LAST two carry the value, so
+	// a routed tour that ignored the tier would bury them mid-walk.
+	value := map[string]bool{stops[10].Waypoint: true, stops[11].Waypoint: true}
+	for i := 0; i < 10; i++ {
+		stops[i].Priority = 3
+	}
+	uncharted := darkSystemSolo(h, stops)
+
+	if _, err := h.run(t, uncharted); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	tour := writtenShares(t, h.ledger, "X1-DARK")[0].Waypoints
+	if len(tour) != len(stops) {
+		t.Fatalf("the tour holds %d of %d stops", len(tour), len(stops))
+	}
+	if !value[tour[0]] || !value[tour[1]] {
+		t.Fatalf("the lone hull works %v, which puts dead rock ahead of the value tier", tour)
+	}
+	// Inside the dead-rock tier the order must still be the ROUTE's, not the alphabet's.
+	if strings.Join(tour[2:], ",") == strings.Join(waypointsOf(stops[:10]), ",") {
+		t.Fatal("the tier grouping handed the dead rock back in catalog order; the tier decides the " +
+			"blocks, the route decides the order inside them")
+	}
+}
+
+// THE SAME INPUTS GIVE THE SAME ORDER TICK AFTER TICK, because the tour is read back
+// off the stored row rather than rebuilt. An order that moved between ticks would
+// leave the hull flying at a different waypoint each turn and never finishing.
+func TestChartShares_ALoneHullsStoredTourIsReadBackNotRebuilt(t *testing.T) {
+	h := newExpandHarness()
+	stops := ringStops("X1-DARK", 12)
+	uncharted := darkSystemSolo(h, stops)
+
+	if _, err := h.run(t, uncharted); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	first := append([]string(nil), writtenShares(t, h.ledger, "X1-DARK")[0].Waypoints...)
+
+	// The second tick reads the ledger the first one wrote.
+	h.ledger.chartShares = writtenShares(t, h.ledger, "X1-DARK")
+	h.ledger.setShares = nil
+	h.seed.calls = nil
+	if _, err := h.run(t, uncharted); err != nil {
+		t.Fatalf("unexpected error on the second tick: %v", err)
+	}
+	if len(h.ledger.setShares) != 0 {
+		t.Fatalf("a stored single-hull tour was rewritten: %v", h.ledger.setShares)
+	}
 	for _, call := range h.seed.calls {
-		if call.verb == "navigate" && call.arg != stops[0].Waypoint {
-			t.Fatalf("the lone hull flew at %s, want the catalog head %s", call.arg, stops[0].Waypoint)
+		if call.verb == "navigate" && call.arg != first[0] {
+			t.Fatalf("the hull flew at %s on the second tick and %s on the first", call.arg, first[0])
 		}
+	}
+
+	// And rebuilding it from the same inputs reproduces it exactly, which is what makes
+	// the re-solve a crew change forces safe.
+	rebuilt := orderByTier(waypointsOf(unkink(nearestNeighbourWalk(stops, 0, 0))), stops)
+	if strings.Join(rebuilt, ",") != strings.Join(first, ",") {
+		t.Fatalf("the same stops routed differently on a rebuild:\n  %v\n  %v", first, rebuilt)
+	}
+}
+
+// THE WALK STARTS WHERE THE HULL STANDS, so its first leg is not a flight across the
+// system to whichever waypoint sorts first.
+func TestChartShares_TheLoneHullsWalkStartsFromWhereItStands(t *testing.T) {
+	h := newExpandHarness()
+	stops := ringStops("X1-DARK", 12)
+	uncharted := darkSystemSolo(h, stops)
+	// The hull stands on the ring beside its LAST stop, which the catalog names last.
+	standing := stops[len(stops)-1]
+	h.ships.positions["PROBE-A"] = ShipPos{
+		Waypoint: "X1-DARK-GATE", NavStatus: navigation.NavStatusInOrbit, Found: true,
+		X: standing.X, Y: standing.Y,
+	}
+
+	if _, err := h.run(t, uncharted); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	tour := writtenShares(t, h.ledger, "X1-DARK")[0].Waypoints
+	if tour[0] != standing.Waypoint {
+		t.Fatalf("the walk leads with %s, want %s — the stop the hull is standing on", tour[0], standing.Waypoint)
+	}
+}
+
+// A HULL THE SHIPS TABLE CANNOT LOCATE STILL GETS A ROUTED TOUR, walked from the
+// system centre. The read failing is no reason to hand the hull back the alphabet.
+func TestChartShares_AnUnlocatableLoneHullStillWalksTheGeometry(t *testing.T) {
+	h := newExpandHarness()
+	stops := ringStops("X1-DARK", 12)
+	uncharted := darkSystemSolo(h, stops)
+	h.ships.positions["PROBE-A"] = ShipPos{
+		Waypoint: "X1-DARK-GATE", NavStatus: navigation.NavStatusInOrbit, Found: true,
+	}
+
+	if _, err := h.run(t, uncharted); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	tour := writtenShares(t, h.ledger, "X1-DARK")[0].Waypoints
+	want := orderByTier(waypointsOf(unkink(nearestNeighbourWalk(stops, 0, 0))), stops)
+	if strings.Join(tour, ",") != strings.Join(want, ",") {
+		t.Fatalf("the tour is %v, want the walk from the system centre %v", tour, want)
+	}
+}
+
+// --- the route builder -------------------------------------------------------
+
+// THE WALK IS A FUNCTION OF THE STOP SET, not of the order the set arrives in. The
+// tour rebuilds from scratch whenever the crew changes, so two evaluations over the
+// same stops must agree exactly — including where several stops are equally near and
+// only the symbol separates them.
+func TestNearestNeighbourWalk_IsDeterministicOverTheStopSet(t *testing.T) {
+	stops := ringStops("X1-DARK", 24)
+	shuffled := append([]ChartStop(nil), stops...)
+	sort.Slice(shuffled, func(i, j int) bool { return shuffled[i].Waypoint > shuffled[j].Waypoint })
+
+	forward := waypointsOf(nearestNeighbourWalk(stops, 0, 0))
+	backward := waypointsOf(nearestNeighbourWalk(shuffled, 0, 0))
+	if strings.Join(forward, ",") != strings.Join(backward, ",") {
+		t.Fatalf("the same stops in a different order walked differently:\n  %v\n  %v", forward, backward)
+	}
+	if len(forward) != len(stops) {
+		t.Fatalf("the walk visits %d of %d stops", len(forward), len(stops))
+	}
+
+	// Four stops on the axes, each pair of candidates exactly equidistant, so every
+	// step of this walk is decided by the symbol alone.
+	tied := []ChartStop{
+		{Waypoint: "X1-DARK-D", X: 0, Y: -5},
+		{Waypoint: "X1-DARK-B", X: -5, Y: 0},
+		{Waypoint: "X1-DARK-C", X: 0, Y: 5},
+		{Waypoint: "X1-DARK-A", X: 5, Y: 0},
+	}
+	want := "X1-DARK-A,X1-DARK-C,X1-DARK-B,X1-DARK-D"
+	if got := strings.Join(waypointsOf(nearestNeighbourWalk(tied, 0, 0)), ","); got != want {
+		t.Fatalf("equidistant stops walked %s, want %s — ties must break on the symbol", got, want)
+	}
+}
+
+// UNKINKING TAKES A CROSSING OUT. Four corners of a square walked as A-C-B-D cross in
+// the middle; the same four walked round the edge are shorter by the whole diagonal,
+// and that is the shape a nearest-neighbour walk leaves behind — the stops it passed
+// over early are what its last legs must come back for.
+func TestUnkink_TakesTheCrossingOutOfAWalk(t *testing.T) {
+	square := []ChartStop{
+		{Waypoint: "X1-DARK-A", X: 0, Y: 0},
+		{Waypoint: "X1-DARK-C", X: 10, Y: 10},
+		{Waypoint: "X1-DARK-B", X: 10, Y: 0},
+		{Waypoint: "X1-DARK-D", X: 0, Y: 10},
+	}
+	polished := unkink(square)
+	if got, want := strings.Join(waypointsOf(polished), ","),
+		"X1-DARK-A,X1-DARK-B,X1-DARK-C,X1-DARK-D"; got != want {
+		t.Fatalf("the crossed walk polished to %s, want the edge %s", got, want)
+	}
+	if before, after := walkLength(square), walkLength(polished); after >= before {
+		t.Fatalf("unkinking did not shorten the walk: %.2f -> %.2f", before, after)
+	}
+}
+
+// It keeps every stop exactly once and polishes to the same walk every time, which is
+// what lets a rebuilt tour match the stored one.
+func TestUnkink_IsDeterministicAndKeepsEveryStop(t *testing.T) {
+	stops := scatterStops("X1-DARK", 60)
+	walked := nearestNeighbourWalk(stops, 0, 0)
+	polished := unkink(walked)
+
+	seen := map[string]bool{}
+	for _, stop := range polished {
+		if seen[stop.Waypoint] {
+			t.Fatalf("%s appears twice in the polished walk", stop.Waypoint)
+		}
+		seen[stop.Waypoint] = true
+	}
+	if len(seen) != len(stops) {
+		t.Fatalf("unkinking left %d of %d stops", len(seen), len(stops))
+	}
+	if walkLength(polished) >= walkLength(walked) {
+		t.Fatalf("unkinking did not shorten a nearest-neighbour walk: %.0f -> %.0f",
+			walkLength(walked), walkLength(polished))
+	}
+	if again := unkink(walked); strings.Join(waypointsOf(again), ",") != strings.Join(waypointsOf(polished), ",") {
+		t.Fatal("the same walk polished to two different walks")
+	}
+}
+
+// The whole point, on the real ceiling: a routed tour is far shorter than the
+// catalog's order over the same stops. Charting is serial per hull, so the walk IS
+// the chart rate.
+func TestSoloTour_IsFarShorterThanTheCatalogOrder(t *testing.T) {
+	stops := scatterStops("X1-DARK", 208)
+	routed := unkink(nearestNeighbourWalk(stops, 0, 0))
+
+	alphabetical := walkLength(stops) // ringStops/scatterStops hand back symbol order
+	if got := walkLength(routed); got*2 > alphabetical {
+		t.Fatalf("the routed walk is %.0f against the catalog's %.0f — a route that saves less than "+
+			"half the travel is not worth the tour it replaces", got, alphabetical)
 	}
 }
 
 // --- fixtures ----------------------------------------------------------------
+
+// darkSystemSolo is one dark system worked by a crew of ONE — the tour every system
+// too far out to earn a second hull runs.
+func darkSystemSolo(h *expandHarness, stops []ChartStop) *fakeUncharted {
+	uncharted := darkSystemCrew(h, stops)
+	h.ledger.systems[0].ExtraSeeds = nil
+	return uncharted
+}
+
+// scatterStops spreads stops over a system-sized square in SYMBOL order, so the
+// catalog's own order is a walk back and forth across the whole system — which is
+// what a real system looks like and a ring does not. The generator is a fixed
+// sequence, so the fixture is the same set on every run.
+func scatterStops(system string, n int) []ChartStop {
+	seed := uint64(1)
+	next := func() float64 {
+		seed = seed*6364136223846793005 + 1442695040888963407
+		return float64(int64(seed>>33)%1601 - 800)
+	}
+	stops := make([]ChartStop, 0, n)
+	for i := 0; i < n; i++ {
+		stops = append(stops, ChartStop{
+			Waypoint: fmt.Sprintf("%s-W%03d", system, i),
+			X:        next(),
+			Y:        next(),
+		})
+	}
+	return stops
+}
+
+func walkLength(tour []ChartStop) float64 {
+	total := 0.0
+	for i := 0; i+1 < len(tour); i++ {
+		total += legLength(tour[i], tour[i+1])
+	}
+	return total
+}
+
+// assertRoutedNotAlphabetical proves the hull flew at the head of its stored tour and
+// that the tour is not the catalog's own order.
+func assertRoutedNotAlphabetical(t *testing.T, h *expandHarness, stops []ChartStop) {
+	t.Helper()
+	tour := writtenShares(t, h.ledger, "X1-DARK")[0].Waypoints
+	if strings.Join(tour, ",") == strings.Join(waypointsOf(stops), ",") {
+		t.Fatal("the stored tour is the catalog's own order — the alphabet is the defect being fixed")
+	}
+	flown := 0
+	for _, call := range h.seed.calls {
+		if call.verb != "navigate" {
+			continue
+		}
+		flown++
+		if call.arg != tour[0] {
+			t.Fatalf("the lone hull flew at %s, want its tour's head %s", call.arg, tour[0])
+		}
+	}
+	if flown != 1 {
+		t.Fatalf("the lone hull flew %d legs, want one", flown)
+	}
+}
 
 // dealtShares is a stored partition in the fake solver's own shape, so a test can
 // stand a crew up mid-tour without running a solve first.
