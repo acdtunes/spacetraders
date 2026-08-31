@@ -28,6 +28,15 @@ type FleetHealthMetricsCollector struct {
 	// serves: page the watch, because the fleet read now SURVIVES that hull, which is
 	// what lets it fail quietly. Keyed by ship so the alert names the hull.
 	hullUnreadableTotal *prometheus.CounterVec
+
+	// hullRepairTotal increments once per automatic repair pass, labelled by what the
+	// pass established. The decision it serves: separate a fleet healing itself from one
+	// deferring every pass, which the escalation counter alone cannot show.
+	hullRepairTotal *prometheus.CounterVec
+
+	// hullRepairEscalatedTotal increments once when the repair gives up on a hull. The
+	// decision it serves: page an operator, because nothing automatic will try again.
+	hullRepairEscalatedTotal *prometheus.CounterVec
 }
 
 // NewFleetHealthMetricsCollector creates a new fleet-health metrics collector.
@@ -45,6 +54,18 @@ func NewFleetHealthMetricsCollector() *FleetHealthMetricsCollector {
 			"ship",
 			"player",
 		),
+		hullRepairTotal: newCounterVec(
+			"fleet_hull_repair_total",
+			"Automatic repair passes against a hull the API would not serialise, labelled by what the pass established (repaired, already_healthy, api_unavailable, no_fuel_market, unaffordable, not_fuel, ...)",
+			"ship",
+			"outcome",
+		),
+		hullRepairEscalatedTotal: newCounterVec(
+			"fleet_hull_repair_escalated_total",
+			"Hulls the automatic repair has given up on — the attempt bound is spent, the fault is not fuel, or the repair never became possible. Nothing automatic will try again; these need an operator",
+			"ship",
+			"outcome",
+		),
 	}
 }
 
@@ -57,6 +78,8 @@ func (c *FleetHealthMetricsCollector) Register() error {
 	return registerAll(
 		c.hullStrandedTotal,
 		c.hullUnreadableTotal,
+		c.hullRepairTotal,
+		c.hullRepairEscalatedTotal,
 	)
 }
 
@@ -76,6 +99,22 @@ func (c *FleetHealthMetricsCollector) RecordHullUnreadable(ship, player string) 
 		return // Recording is best-effort; never fail a fleet sync on a metrics miss (RULINGS #4).
 	}
 	c.hullUnreadableTotal.WithLabelValues(ship, player).Inc()
+}
+
+// RecordHullRepair records one automatic repair pass and what it established.
+func (c *FleetHealthMetricsCollector) RecordHullRepair(ship, outcome string) {
+	if c == nil || c.hullRepairTotal == nil {
+		return // Recording is best-effort; never fail a repair on a metrics miss (RULINGS #4).
+	}
+	c.hullRepairTotal.WithLabelValues(ship, outcome).Inc()
+}
+
+// RecordHullRepairEscalated records the repair giving up on one hull.
+func (c *FleetHealthMetricsCollector) RecordHullRepairEscalated(ship, outcome string) {
+	if c == nil || c.hullRepairEscalatedTotal == nil {
+		return // Recording is best-effort; never fail a repair on a metrics miss (RULINGS #4).
+	}
+	c.hullRepairEscalatedTotal.WithLabelValues(ship, outcome).Inc()
 }
 
 // globalFleetHealthCollector is the singleton fleet-health collector.
@@ -101,5 +140,19 @@ func RecordHullStranded(ship, system string) {
 func RecordHullUnreadable(ship, player string) {
 	if globalFleetHealthCollector != nil {
 		globalFleetHealthCollector.RecordHullUnreadable(ship, player)
+	}
+}
+
+// RecordHullRepair records one automatic repair pass globally.
+func RecordHullRepair(ship, outcome string) {
+	if globalFleetHealthCollector != nil {
+		globalFleetHealthCollector.RecordHullRepair(ship, outcome)
+	}
+}
+
+// RecordHullRepairEscalated records one abandoned repair globally.
+func RecordHullRepairEscalated(ship, outcome string) {
+	if globalFleetHealthCollector != nil {
+		globalFleetHealthCollector.RecordHullRepairEscalated(ship, outcome)
 	}
 }

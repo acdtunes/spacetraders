@@ -115,6 +115,11 @@ type DaemonServer struct {
 	// Start; halted by runCtx cancellation on shutdown.
 	shipResyncScheduler *ShipResyncScheduler
 
+	// Unreadable-hull repair sweep: works the open episodes of hulls the API will not
+	// serialise, confirming the fault against each hull's sub-resources before writing fuel
+	// to clear it. Launched under supervision in Start; halted by runCtx cancellation.
+	hullRepairScheduler *HullRepairScheduler
+
 	// Container retention sweep (sp-72gmi): deletes terminal container rows older than the
 	// retention window, so the table cannot grow without bound. Launched under supervision in
 	// Start; halted by runCtx cancellation on shutdown.
@@ -295,6 +300,11 @@ func NewDaemonServer(
 		resyncConfig.ResolvedInterval(),
 		resyncConfig.ResolvedJitter(),
 	)
+
+	// Unreadable-hull repair: the fault appears with no operator present and never clears
+	// on its own, so the sweep is standing and unconditional. It costs no API call while no
+	// hull is unreadable.
+	server.hullRepairScheduler = NewHullRepairScheduler(server.sweepUnreadableHulls, 0)
 
 	// Container retention (sp-72gmi): the containers table had no bound at all, and the
 	// sp-20eyn crash loop put 34,279 FAILED rows in it in a day. Sweeps at start and daily

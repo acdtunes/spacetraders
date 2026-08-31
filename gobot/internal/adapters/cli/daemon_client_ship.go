@@ -344,3 +344,45 @@ func (c *DaemonClient) JettisonCargo(
 		Message:         resp.Message,
 	}, nil
 }
+
+// RepairUnreadableShipResponse is what one repair pass established.
+type RepairUnreadableShipResponse struct {
+	Repaired   bool
+	ShipSymbol string
+	Outcome    string
+	Reason     string
+	Attempts   int32
+	Escalated  bool
+	Error      string
+}
+
+// RepairUnreadableShip asks the daemon to clear a hull the API will not serialise.
+func (c *DaemonClient) RepairUnreadableShip(
+	ctx context.Context,
+	shipSymbol string,
+	playerID int,
+	agentSymbol string,
+) (*RepairUnreadableShipResponse, error) {
+	req := &pb.RepairUnreadableShipRequest{
+		ShipSymbol: shipSymbol,
+		PlayerId:   int32(playerID),
+	}
+	if agentSymbol != "" {
+		req.AgentSymbol = &agentSymbol
+	}
+
+	resp, err := c.client.RepairUnreadableShip(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf(grpcCallFailed, err)
+	}
+
+	return &RepairUnreadableShipResponse{
+		Repaired:   resp.Repaired,
+		ShipSymbol: resp.ShipSymbol,
+		Outcome:    resp.Outcome,
+		Reason:     resp.Reason,
+		Attempts:   resp.Attempts,
+		Escalated:  resp.Escalated,
+		Error:      resp.Error,
+	}, nil
+}

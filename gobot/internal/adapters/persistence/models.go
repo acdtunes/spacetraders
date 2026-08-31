@@ -42,5 +42,6 @@ func AllModels() []any {
 		&SensingSeedHullModel{},
 		&SensingChartShareModel{},
 		&ScanDedupAllowlistModel{},
+		&UnreadableHullModel{},
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/api"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
@@ -60,6 +61,12 @@ func (s *DaemonServer) Start() error {
 	// Keeps DB ship state from drifting vs the live API between the event-driven updates.
 	if s.shipResyncScheduler != nil {
 		s.sup.Go(s.runCtx, "ship-resync", s.shipResyncScheduler.Run)
+	}
+
+	// Repairs a hull the API will not serialise, unattended: the fault does not clear on
+	// its own and nothing else in the daemon acts on the unreadable signal.
+	if s.hullRepairScheduler != nil {
+		s.sup.Go(s.runCtx, "hull-repair", s.hullRepairScheduler.Run)
 	}
 
 	// Bounds the containers table. Sweeps once at start, then daily.
@@ -279,14 +286,27 @@ func (s *DaemonServer) syncAllShips(parent context.Context) error {
 		agentLabel = p.AgentSymbol
 	}
 
-	count, err := s.shipRepo.SyncAllFromAPI(ctx, playerID)
+	// The reporting form when the repository offers it: a successful read does not imply a
+	// COMPLETE one, and the hulls it could not deliver are what the repair sweep works on.
+	result, err := s.syncFleetWithReport(ctx, playerID)
 	if err != nil {
 		return fmt.Errorf("failed to sync ships for player %s: %w", agentLabel, err)
 	}
+	s.RecordUnreadableHulls(ctx, pid, result.UnreadableHulls)
 
-	fmt.Printf("Synced %d ship(s) for player %s\n", count, agentLabel)
-	fmt.Printf("Ship sync complete: %d total ship(s) synced across 1 player(s)\n", count)
+	fmt.Printf("Synced %d ship(s) for player %s\n", result.Hulls, agentLabel)
+	fmt.Printf("Ship sync complete: %d total ship(s) synced across 1 player(s)\n", result.Hulls)
 	return nil
+}
+
+// syncFleetWithReport takes the reporting form of the sync when the wired repository
+// offers it, so the hulls the read could not deliver stay visible to the repair sweep.
+func (s *DaemonServer) syncFleetWithReport(ctx context.Context, playerID shared.PlayerID) (api.FleetSyncResult, error) {
+	if reporter, ok := s.shipRepo.(fleetSyncReporter); ok {
+		return reporter.SyncAllFromAPIWithReport(ctx, playerID)
+	}
+	hulls, err := s.shipRepo.SyncAllFromAPI(ctx, playerID)
+	return api.FleetSyncResult{Hulls: hulls}, err
 }
 
 // resetOrphanedManufacturingTasks resets ASSIGNED manufacturing tasks on daemon startup.

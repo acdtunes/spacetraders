@@ -77,6 +77,16 @@ time to rediscover. The code is always truth; this is the map.
   daemon restart re-syncs from the DB. Verify a live-mutated value by its behavioral effect or
   the DB row, never by `container get`.
 
+- **A composite resource that 500s while all its parts read 200 has ONE corrupt field —
+  write it.** Read/write asymmetry is diagnostic: writes reaching a record whose reads refuse
+  means the state is present and one field will not render. Bisect with the sub-resource
+  endpoints (`/nav`, `/cargo`, `/cooldown`, `/mounts`, `/modules` for a ship) and look for a
+  WRITE that rewrites a field they do not cover. For a hull that field is FUEL, and
+  dock + refuel clears it; the daemon now does this unattended (the hull-repair sweep, over
+  `unreadable_hulls`), and `spacetraders ship repair-unreadable --ship <SYMBOL>` runs the same
+  confirmed sequence by hand. Do NOT conclude "unfixable, report upstream" from failed reads
+  alone. If the parts refuse too, the API is down — repair nothing.
+
 ## 4. Testing & the digital twin
 
 The twin (`twin/`, branch `feat/twin-digital-twin` — unmerged; merge + run the INCOME/GATE

@@ -31,6 +31,7 @@ const (
 	DaemonService_ListShipModules_FullMethodName               = "/daemon.DaemonService/ListShipModules"
 	DaemonService_TransferCargo_FullMethodName                 = "/daemon.DaemonService/TransferCargo"
 	DaemonService_ScrapShip_FullMethodName                     = "/daemon.DaemonService/ScrapShip"
+	DaemonService_RepairUnreadableShip_FullMethodName          = "/daemon.DaemonService/RepairUnreadableShip"
 	DaemonService_BatchContractWorkflow_FullMethodName         = "/daemon.DaemonService/BatchContractWorkflow"
 	DaemonService_ContractFleetCoordinator_FullMethodName      = "/daemon.DaemonService/ContractFleetCoordinator"
 	DaemonService_ScoutTour_FullMethodName                     = "/daemon.DaemonService/ScoutTour"
@@ -148,6 +149,13 @@ type DaemonServiceClient interface {
 	// while it still holds cargo (a scrap destroys the hold and pays nothing for it),
 	// docks, sells, records the proceeds and deletes the ships row. Irreversible.
 	ScrapShip(ctx context.Context, in *ScrapShipRequest, opts ...grpc.CallOption) (*ScrapShipResponse, error)
+	// RepairUnreadableShip clears a hull the server can no longer serialise: the composite
+	// GET returns a server error forever while every sub-resource still answers, which
+	// narrows the fault to one field the parts do not cover. Single-writer daemon op
+	// (RULING #3). It runs the same confirmed sequence the standing sweep runs — re-read the
+	// composite, bisect against the sub-resources, hold the money guard, then write fuel —
+	// and refuses rather than writing when the signature does not hold.
+	RepairUnreadableShip(ctx context.Context, in *RepairUnreadableShipRequest, opts ...grpc.CallOption) (*RepairUnreadableShipResponse, error)
 	// BatchContractWorkflow executes batch contract workflow operations
 	BatchContractWorkflow(ctx context.Context, in *BatchContractWorkflowRequest, opts ...grpc.CallOption) (*BatchContractWorkflowResponse, error)
 	// ContractFleetCoordinator manages a pool of ships for continuous contract execution
@@ -477,6 +485,16 @@ func (c *daemonServiceClient) ScrapShip(ctx context.Context, in *ScrapShipReques
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ScrapShipResponse)
 	err := c.cc.Invoke(ctx, DaemonService_ScrapShip_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) RepairUnreadableShip(ctx context.Context, in *RepairUnreadableShipRequest, opts ...grpc.CallOption) (*RepairUnreadableShipResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RepairUnreadableShipResponse)
+	err := c.cc.Invoke(ctx, DaemonService_RepairUnreadableShip_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1210,6 +1228,13 @@ type DaemonServiceServer interface {
 	// while it still holds cargo (a scrap destroys the hold and pays nothing for it),
 	// docks, sells, records the proceeds and deletes the ships row. Irreversible.
 	ScrapShip(context.Context, *ScrapShipRequest) (*ScrapShipResponse, error)
+	// RepairUnreadableShip clears a hull the server can no longer serialise: the composite
+	// GET returns a server error forever while every sub-resource still answers, which
+	// narrows the fault to one field the parts do not cover. Single-writer daemon op
+	// (RULING #3). It runs the same confirmed sequence the standing sweep runs — re-read the
+	// composite, bisect against the sub-resources, hold the money guard, then write fuel —
+	// and refuses rather than writing when the signature does not hold.
+	RepairUnreadableShip(context.Context, *RepairUnreadableShipRequest) (*RepairUnreadableShipResponse, error)
 	// BatchContractWorkflow executes batch contract workflow operations
 	BatchContractWorkflow(context.Context, *BatchContractWorkflowRequest) (*BatchContractWorkflowResponse, error)
 	// ContractFleetCoordinator manages a pool of ships for continuous contract execution
@@ -1460,6 +1485,9 @@ func (UnimplementedDaemonServiceServer) TransferCargo(context.Context, *Transfer
 }
 func (UnimplementedDaemonServiceServer) ScrapShip(context.Context, *ScrapShipRequest) (*ScrapShipResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ScrapShip not implemented")
+}
+func (UnimplementedDaemonServiceServer) RepairUnreadableShip(context.Context, *RepairUnreadableShipRequest) (*RepairUnreadableShipResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RepairUnreadableShip not implemented")
 }
 func (UnimplementedDaemonServiceServer) BatchContractWorkflow(context.Context, *BatchContractWorkflowRequest) (*BatchContractWorkflowResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method BatchContractWorkflow not implemented")
@@ -1898,6 +1926,24 @@ func _DaemonService_ScrapShip_Handler(srv interface{}, ctx context.Context, dec 
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(DaemonServiceServer).ScrapShip(ctx, req.(*ScrapShipRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_RepairUnreadableShip_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RepairUnreadableShipRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).RepairUnreadableShip(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_RepairUnreadableShip_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).RepairUnreadableShip(ctx, req.(*RepairUnreadableShipRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -3180,6 +3226,10 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ScrapShip",
 			Handler:    _DaemonService_ScrapShip_Handler,
+		},
+		{
+			MethodName: "RepairUnreadableShip",
+			Handler:    _DaemonService_RepairUnreadableShip_Handler,
 		},
 		{
 			MethodName: "BatchContractWorkflow",

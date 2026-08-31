@@ -205,11 +205,13 @@ func (r *ShipRepository) reportUnreadableHulls(ctx context.Context, playerID sha
 	return names
 }
 
-const unidentifiedHull = "<unidentified>"
+// UnidentifiedHull stands in when a partial read names no hull at all. It is not a ship
+// symbol, so no caller may act on it as one.
+const UnidentifiedHull = "<unidentified>"
 
 // unreadableHullNames names the hulls the live read did not deliver, best evidence
 // first: a symbol the payload yielded, then OUR-ROWS-MINUS-READABLE (a refused page
-// carries no payload, so our rows are the only other witness), then unidentifiedHull.
+// carries no payload, so our rows are the only other witness), then UnidentifiedHull.
 // The row diff is not a claim about WHICH hull is poisoned — "unreadable" and "sold"
 // are indistinguishable on a partial read, hence the suppressed prune. It never returns
 // empty for a partial read: reporting NOTHING is the invisible failure itself.
@@ -247,7 +249,7 @@ func (r *ShipRepository) unreadableHullNames(ctx context.Context, playerID share
 	}
 
 	if len(names) == 0 {
-		return []string{unidentifiedHull}
+		return []string{UnidentifiedHull}
 	}
 	return names
 }

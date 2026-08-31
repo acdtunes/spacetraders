@@ -59,6 +59,14 @@ service DaemonService {
   // docks, sells, records the proceeds and deletes the ships row. Irreversible.
   rpc ScrapShip(ScrapShipRequest) returns (ScrapShipResponse);
 
+  // RepairUnreadableShip clears a hull the server can no longer serialise: the composite
+  // GET returns a server error forever while every sub-resource still answers, which
+  // narrows the fault to one field the parts do not cover. Single-writer daemon op
+  // (RULING #3). It runs the same confirmed sequence the standing sweep runs — re-read the
+  // composite, bisect against the sub-resources, hold the money guard, then write fuel —
+  // and refuses rather than writing when the signature does not hold.
+  rpc RepairUnreadableShip(RepairUnreadableShipRequest) returns (RepairUnreadableShipResponse);
+
   // BatchContractWorkflow executes batch contract workflow operations
   rpc BatchContractWorkflow(BatchContractWorkflowRequest) returns (BatchContractWorkflowResponse);
 
@@ -684,6 +692,42 @@ message ScrapShipResponse {
   // error carries the refusal VERBATIM. The one an operator hits most is a hull
   // that still holds cargo, which names its own condition and its own load.
   string error = 6;
+}
+
+// RepairUnreadableShipRequest asks the daemon to repair one hull the API will not serve.
+message RepairUnreadableShipRequest {
+  // Hull to repair.
+  string ship_symbol = 1;
+
+  // Player ID for authentication
+  int32 player_id = 2;
+
+  // Optional agent symbol (alternative to player_id)
+  optional string agent_symbol = 3;
+}
+
+// RepairUnreadableShipResponse reports what the pass established.
+message RepairUnreadableShipResponse {
+  // repaired is true only when the fuel write landed AND the composite record served
+  // again afterwards.
+  bool repaired = 1;
+
+  string ship_symbol = 2;
+
+  // outcome names what the pass established, using the same vocabulary the standing sweep
+  // reports on: repaired, already_healthy, api_unavailable, no_fuel_market, unaffordable,
+  // not_fuel, and so on.
+  string outcome = 3;
+
+  // reason is the human-readable account of that outcome, verbatim.
+  string reason = 4;
+
+  // attempts is how many writing passes this hull's episode has spent, and escalated says
+  // the automatic repair has given up on it.
+  int32 attempts = 5;
+  bool escalated = 6;
+
+  string error = 7;
 }
 
 // BatchContractWorkflowRequest initiates batch contract workflow

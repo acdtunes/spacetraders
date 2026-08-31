@@ -83,6 +83,10 @@ func (t *fleetRefreshThrottle) record(playerID, calls int) {
 type bootstrapRefresher struct {
 	shipRepo navigation.ShipRepository
 	throttle *fleetRefreshThrottle
+	// unreadable receives the hulls a sweep could not deliver, so the repair sweep sees
+	// them within a bootstrap tick rather than waiting for the next full resync. Nil is a
+	// no-op: reporting is not what makes the guard fail closed below.
+	unreadable func(ctx context.Context, playerID int, symbols []string)
 }
 
 // refreshPlan is the read one tick intends; empty Targets means the full sweep, at SweepPrice calls.
@@ -224,6 +228,9 @@ func (r *bootstrapRefresher) executeRefresh(ctx context.Context, pid shared.Play
 		result, err := r.syncFleet(ctx, pid)
 		if err != nil {
 			return 0, err
+		}
+		if r.unreadable != nil && len(result.UnreadableHulls) > 0 {
+			r.unreadable(ctx, pid.Value(), result.UnreadableHulls)
 		}
 		if blind := plan.blindGuardedHulls(result.UnreadableHulls); len(blind) > 0 {
 			return 0, fmt.Errorf("fleet sweep came back partial and %d guarded hull(s) went unread (%v): a bootstrap decision names these, so this tick would take their state off a stale row", len(blind), blind)

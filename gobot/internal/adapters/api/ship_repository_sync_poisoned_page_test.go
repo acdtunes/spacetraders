@@ -136,7 +136,7 @@ func TestSyncAllFromAPI_UnattributableUnreadableHullIsStillReported(t *testing.T
 	named := repo.unreadableHullNames(context.Background(), liveID, []string{"TORWIND-1"},
 		FleetReadReport{Unreadable: []UnreadableShip{{Page: 1, Index: 7, Reason: "server refused this hull"}}})
 
-	require.Equal(t, []string{unidentifiedHull}, named,
+	require.Equal(t, []string{UnidentifiedHull}, named,
 		"an unreadable hull we cannot attribute to any row must still be reported — silence here is the invisible failure")
 
 	var rows int64

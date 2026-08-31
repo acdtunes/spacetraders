@@ -56,7 +56,7 @@ func NewBootstrapCoordinatorHandler(
 	marketRepo *persistence.MarketRepositoryAdapter,
 ) *bootstrapCmd.RunBootstrapCoordinatorHandler {
 	h := bootstrapCmd.NewRunBootstrapCoordinatorHandler(nil)
-	h.SetShipRefresher(&bootstrapRefresher{shipRepo: shipRepo, throttle: newFleetRefreshThrottle()})
+	h.SetShipRefresher(&bootstrapRefresher{shipRepo: shipRepo, throttle: newFleetRefreshThrottle(), unreadable: server.RecordUnreadableHulls})
 	h.SetWorldObserver(&bootstrapObserver{
 		api: apiClient, shipRepo: shipRepo, waypointRepo: waypointRepo, marketRepo: marketRepo,
 		med: med, containerRepo: server.containerRepo, server: server,

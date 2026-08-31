@@ -184,6 +184,38 @@ groups:
             exact per-hull request. If it reproduces, file it upstream at
             github.com/SpaceTradersAPI/api-docs with the requestId from the 500.
 
+      # UnrepairableHull: the automatic repair has given up on a hull.
+      #
+      # The daemon now heals the unreadable-hull fault on its own: it confirms the composite
+      # refusal against the sub-resources and writes fuel, which re-serialises the record.
+      # This alert is the other end of that — the cases the repair cannot clear, which is the
+      # only remaining state a human has to act on.
+      #
+      # It fires on ONE escalation, unlike the UnreadableHull rule above, because escalation
+      # is already the debounced verdict: the repair spent its attempt budget, or proved the
+      # corrupt field is not fuel, or could never run at all before its deadline. Nothing
+      # automatic will try the hull again, so a recurrence threshold would only delay the page.
+      #
+      # The outcome label says which of those it was, which is what selects the runbook.
+      - alert: UnrepairableHull
+        expr: |
+          increase(spacetraders_daemon_fleet_hull_repair_escalated_total[6h]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "Hull {{ $labels.ship }} could not be repaired ({{ $labels.outcome }}) — the automatic repair gave up"
+          description: >-
+            The daemon confirmed that {{ $labels.ship }} is unreadable server-side and could not
+            clear it, so nothing automatic will retry. outcome=not_fuel means the fuel write
+            landed and the composite record still refuses — the corrupt field is something else,
+            and that is upstream's problem: file it at github.com/SpaceTradersAPI/api-docs with
+            the requestId from the 500. outcome=no_fuel_market means the hull stands where fuel
+            cannot be bought; move it with a coordinator that can, then re-run `spacetraders ship
+            repair-unreadable --ship {{ $labels.ship }}`. outcome=unaffordable or unpriceable
+            means a money guard refused to spend blind — fix the treasury or scan the waypoint's
+            market and re-run. outcome=write_failed means dock or refuel was refused; read the
+            hull_repair_escalated ERROR line, which carries the API's own words.
+
       # AgentDark: the agent stopped trading entirely while its coordinators kept running.
       #
       # WHY A CONJUNCTION. Neither half is a signal alone. A quiet stretch is normal for a

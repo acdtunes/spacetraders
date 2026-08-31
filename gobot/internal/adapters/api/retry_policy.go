@@ -26,21 +26,21 @@ func classifyResponse(statusCode int, header http.Header) retryDecision {
 			retryable:    true,
 			retryAfter:   retryAfter,
 			metricReason: "rate_limited_429",
-			failure:      &retryableError{message: "rate limited (429)", retryAfter: retryAfter},
+			failure:      &retryableError{message: "rate limited (429)", retryAfter: retryAfter, statusCode: statusCode},
 		}
 	}
 	if statusCode == http.StatusServiceUnavailable {
 		return retryDecision{
 			retryable:    true,
 			metricReason: "service_unavailable_503",
-			failure:      &retryableError{message: "service unavailable (503)"},
+			failure:      &retryableError{message: "service unavailable (503)", statusCode: statusCode},
 		}
 	}
 	if statusCode >= 500 {
 		return retryDecision{
 			retryable:    true,
 			metricReason: "server_error_5xx",
-			failure:      &retryableError{message: fmt.Sprintf("server error (%d)", statusCode)},
+			failure:      &retryableError{message: fmt.Sprintf("server error (%d)", statusCode), statusCode: statusCode},
 		}
 	}
 	return retryDecision{}
@@ -229,6 +229,10 @@ func addJitter(d time.Duration) time.Duration {
 type retryableError struct {
 	message    string
 	retryAfter time.Duration
+	// statusCode is the HTTP status that produced it, 0 for a transport failure. It
+	// survives the retry ladder so a caller can still tell a server-side failure from a
+	// network one after the ladder gave up.
+	statusCode int
 }
 
 func (e *retryableError) Error() string {
