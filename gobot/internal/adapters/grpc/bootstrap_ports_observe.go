@@ -89,6 +89,29 @@ type bootstrapRefresher struct {
 type refreshPlan struct {
 	Targets    []string
 	SweepPrice int
+	// Guarded is the hull set a bootstrap decision NAMES this tick, on BOTH plans: the
+	// sweep reads the same hulls and still has to know which ones they are to tell a
+	// tolerable gap in the fleet from a blind decision.
+	Guarded []string
+}
+
+// blindGuardedHulls is the guarded hulls a read did not deliver — the ones a decision
+// would otherwise take off a stale row.
+func (p refreshPlan) blindGuardedHulls(unreadable []string) []string {
+	if len(unreadable) == 0 || len(p.Guarded) == 0 {
+		return nil
+	}
+	missing := make(map[string]bool, len(unreadable))
+	for _, s := range unreadable {
+		missing[s] = true
+	}
+	var blind []string
+	for _, s := range p.Guarded {
+		if missing[s] {
+			blind = append(blind, s)
+		}
+	}
+	return blind
 }
 
 // bootstrapGuardedHulls names the hulls whose API-OWNED state a bootstrap decision reads — the
@@ -136,9 +159,23 @@ func (r *bootstrapRefresher) planRefresh(ctx context.Context, pid shared.PlayerI
 	pages := fleetPages(len(ships))
 	targets := bootstrapGuardedHulls(ships)
 	if len(targets) == 0 || pages <= len(targets) {
-		return refreshPlan{SweepPrice: pages}
+		return refreshPlan{SweepPrice: pages, Guarded: targets}
 	}
-	return refreshPlan{Targets: targets, SweepPrice: pages}
+	return refreshPlan{Targets: targets, SweepPrice: pages, Guarded: targets}
+}
+
+// fleetSyncReporter is the full-fleet sync that also reports what it could NOT read.
+// The domain port returns only a count, so the real repository widens it here.
+type fleetSyncReporter interface {
+	SyncAllFromAPIWithReport(ctx context.Context, playerID shared.PlayerID) (api.FleetSyncResult, error)
+}
+
+func (r *bootstrapRefresher) syncFleet(ctx context.Context, pid shared.PlayerID) (api.FleetSyncResult, error) {
+	if reporter, ok := r.shipRepo.(fleetSyncReporter); ok {
+		return reporter.SyncAllFromAPIWithReport(ctx, pid)
+	}
+	hulls, err := r.shipRepo.SyncAllFromAPI(ctx, pid)
+	return api.FleetSyncResult{Hulls: hulls}, err
 }
 
 // RefreshFleet re-reads when the allowance permits, else reports success WITHOUT reading —
@@ -172,22 +209,32 @@ func (r *bootstrapRefresher) RefreshFleet(ctx context.Context, playerID int) err
 	return nil
 }
 
-// executeRefresh runs the planned read and reports what it cost in API calls. The targeted path
-// fails CLOSED on the FIRST unreadable hull: the sweep tolerates a poisoned element because the rest
-// of the fleet still has to be usable, but every hull here is one a decision this tick reads.
+// executeRefresh runs the planned read and reports what it cost in API calls.
+//
+// BOTH paths fail CLOSED on a hull a decision NAMES, and neither fails on one it merely
+// counts. The targeted path stops at the first unreadable hull because every hull it
+// fetches is a named one. The sweep tolerates a dropped element — the rest of the fleet
+// still has to be usable — but a partial sweep missing a GUARDED hull leaves this tick
+// reading that hull's stale row, the phantom cache the guard exists to prevent. Naming
+// is conservative and may over-report, which costs at most one skipped tick.
 func (r *bootstrapRefresher) executeRefresh(ctx context.Context, pid shared.PlayerID, plan refreshPlan) (int, error) {
 	logger := common.LoggerFromContext(ctx)
 
 	if len(plan.Targets) == 0 {
-		hulls, err := r.shipRepo.SyncAllFromAPI(ctx, pid)
+		result, err := r.syncFleet(ctx, pid)
 		if err != nil {
 			return 0, err
 		}
-		pages := fleetPages(hulls)
-		logger.Log("INFO", fmt.Sprintf("Bootstrap phantom-cache guard swept the whole fleet: %d hull(s) over %d page(s)", hulls, pages), map[string]interface{}{
+		if blind := plan.blindGuardedHulls(result.UnreadableHulls); len(blind) > 0 {
+			return 0, fmt.Errorf("fleet sweep came back partial and %d guarded hull(s) went unread (%v): a bootstrap decision names these, so this tick would take their state off a stale row", len(blind), blind)
+		}
+		// Priced on the slots the SERVER holds: a short count buys less quiet.
+		pages := fleetPages(result.Hulls + result.Read.MissingHulls())
+		logger.Log("INFO", fmt.Sprintf("Bootstrap phantom-cache guard swept the whole fleet: %d hull(s) over %d page(s)", result.Hulls, pages), map[string]interface{}{
 			"action":    "bootstrap_fleet_refresh",
 			"mode":      "sweep",
-			"hulls":     hulls,
+			"hulls":     result.Hulls,
+			"unread":    result.Read.MissingHulls(),
 			"api_calls": pages,
 			"player_id": pid.Value(),
 		})

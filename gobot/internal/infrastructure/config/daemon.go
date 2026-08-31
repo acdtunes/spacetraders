@@ -37,4 +37,7 @@ type DaemonConfig struct {
 
 	// 0/unset = default; see SpaceTradersClient.SetFleetIsolationAbortStreak (RULINGS #5).
 	FleetIsolationAbortStreak int `mapstructure:"fleet_isolation_abort_streak"`
+
+	// 0/unset = default; see SpaceTradersClient.SetFleetIsolationProbeBudget (RULINGS #5).
+	FleetIsolationProbeBudget int `mapstructure:"fleet_isolation_probe_budget"`
 }

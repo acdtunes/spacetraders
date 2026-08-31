@@ -88,6 +88,94 @@ func TestSyncAllFromAPI_PartialReadDoesNotPruneUnreadableHull(t *testing.T) {
 		"the unreadable hull's row must be left exactly as it was, not zeroed")
 }
 
+// A partial read that only reaches a LOG LINE is a partial read no caller can act on.
+// SyncAllFromAPI reports a hull COUNT, and the count is of hulls the API SERVED — so
+// "2 hulls, both read" and "2 hulls, one the server would not serialise" are the same
+// number, and a caller whose decision names particular hulls cannot tell them apart.
+// The reporting form carries the unreadable set out, NAMED: a 500 yields no symbol, so
+// our own rows are the only witness to which hull went missing.
+func TestSyncAllFromAPIWithReport_NamesTheHullsTheReadCouldNotDeliver(t *testing.T) {
+	db, err := database.NewTestConnection()
+	require.NoError(t, err)
+
+	liveEra := persistence.PlayerModel{AgentSymbol: "TORWIND", Token: "tok-live", CreatedAt: time.Now()}
+	require.NoError(t, db.Create(&liveEra).Error)
+	liveID := shared.MustNewPlayerID(liveEra.ID)
+
+	require.NoError(t, db.Create(&persistence.ShipModel{
+		ShipSymbol: "TORWIND-4", PlayerID: liveEra.ID, FrameSymbol: "FRAME_PROBE",
+	}).Error)
+	require.NoError(t, db.Create(&persistence.ShipModel{
+		ShipSymbol: "TORWIND-8", PlayerID: liveEra.ID, FrameSymbol: "FRAME_LIGHT_FREIGHTER",
+	}).Error)
+
+	apiClient := &partialReadFakeAPIClient{
+		ships: []*navigation.ShipData{{
+			Symbol: "TORWIND-4", Location: "X1-TEST-A1", NavStatus: "IN_ORBIT", FrameSymbol: "FRAME_PROBE",
+		}},
+		// The sp-u5x6n shape: the server refused the window, so there is no symbol in
+		// the payload — only a page and an index.
+		report: FleetReadReport{Unreadable: []UnreadableShip{{
+			Page: 1, Index: 7, Reason: "server refused GET /my/ships?page=8&limit=1",
+		}}},
+	}
+	repo := newPartialReadRepo(t, apiClient, liveID, db)
+
+	result, err := repo.SyncAllFromAPIWithReport(context.Background(), liveID)
+	require.NoError(t, err, "a partial fleet read must still sync the hulls it could read")
+
+	require.Equal(t, 1, result.Hulls, "the readable hull is still persisted")
+	require.True(t, result.Partial(), "the caller must be able to see that this fleet is INCOMPLETE")
+	require.Equal(t, []string{"TORWIND-8"}, result.UnreadableHulls,
+		"the hull that went unread must be NAMED, recovered from our own rows since the 500 carried no symbol")
+}
+
+// The count-only form is the one every existing caller holds, so it must keep behaving
+// exactly as before — the widening is additive, not a change of contract.
+func TestSyncAllFromAPI_StillReportsTheReadableHullCount(t *testing.T) {
+	db, err := database.NewTestConnection()
+	require.NoError(t, err)
+
+	liveEra := persistence.PlayerModel{AgentSymbol: "TORWIND", Token: "tok-live", CreatedAt: time.Now()}
+	require.NoError(t, db.Create(&liveEra).Error)
+	liveID := shared.MustNewPlayerID(liveEra.ID)
+
+	apiClient := &partialReadFakeAPIClient{
+		ships: []*navigation.ShipData{
+			{Symbol: "TORWIND-4", Location: "X1-TEST-A1", NavStatus: "IN_ORBIT", FrameSymbol: "FRAME_PROBE"},
+			{Symbol: "TORWIND-6", Location: "X1-TEST-A1", NavStatus: "IN_ORBIT", FrameSymbol: "FRAME_PROBE"},
+		},
+	}
+	repo := newPartialReadRepo(t, apiClient, liveID, db)
+
+	synced, err := repo.SyncAllFromAPI(context.Background(), liveID)
+	require.NoError(t, err)
+	require.Equal(t, 2, synced)
+}
+
+// A read with nothing unreadable must report nothing unreadable — the calibration that
+// keeps the guard above from firing on every healthy tick.
+func TestSyncAllFromAPIWithReport_CompleteReadNamesNoHull(t *testing.T) {
+	db, err := database.NewTestConnection()
+	require.NoError(t, err)
+
+	liveEra := persistence.PlayerModel{AgentSymbol: "TORWIND", Token: "tok-live", CreatedAt: time.Now()}
+	require.NoError(t, db.Create(&liveEra).Error)
+	liveID := shared.MustNewPlayerID(liveEra.ID)
+
+	apiClient := &partialReadFakeAPIClient{
+		ships: []*navigation.ShipData{{
+			Symbol: "TORWIND-4", Location: "X1-TEST-A1", NavStatus: "IN_ORBIT", FrameSymbol: "FRAME_PROBE",
+		}},
+	}
+	repo := newPartialReadRepo(t, apiClient, liveID, db)
+
+	result, err := repo.SyncAllFromAPIWithReport(context.Background(), liveID)
+	require.NoError(t, err)
+	require.False(t, result.Partial(), "a complete read must never look partial")
+	require.Empty(t, result.UnreadableHulls)
+}
+
 // Calibration for the guard above: suppression must be keyed on the read being
 // PARTIAL, not on the reporting path being taken. Without this, a guard that
 // always suppressed would pass the hazard test while silently disabling the

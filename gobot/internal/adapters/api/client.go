@@ -57,6 +57,15 @@ const (
 	// the next, where it will likely read. 429s exempt (serverErrorRetryCap).
 	defaultFleetIsolationProbeRetries = 1
 
+	// defaultFleetIsolationProbeBudget caps the per-hull probes ONE enumeration may
+	// spend across ALL of its refused pages. The abort streak bounds a SINGLE page's
+	// sweep; unbounded in total, a fleet carrying a poisoned record on every page
+	// narrows every page, which IS paging at limit=1 — the cost paging at the API
+	// maximum exists to avoid. Past the budget a refused page is skipped and reported
+	// whole, for one call. Two spans: narrowing buys only the bad hull's identity, and
+	// a fleet serving several is one no decision acts on anyway. Tunable (RULINGS #5).
+	defaultFleetIsolationProbeBudget = 2 * apiPageLimitMax
+
 	errCodeAgentHasContract = 4511
 	errCodeShipMustBeDocked = 4214
 	errCodeShipNotDocked    = 4244
@@ -91,6 +100,7 @@ type SpaceTradersClient struct {
 	budgetTracker    *metrics.APIBudgetTracker
 
 	fleetIsolationAbortStreak int // 0 selects the default; written once at boot
+	fleetIsolationProbeBudget int // 0 selects the default; written once at boot
 
 	// limiterPressure is the always-on smoothed rate-limiter-wait signal
 	// (see LimiterPressure). It is updated at the same site that records the
@@ -280,6 +290,21 @@ func (c *SpaceTradersClient) isolationAbortStreak() int {
 		return c.fleetIsolationAbortStreak
 	}
 	return defaultFleetIsolationAbortStreak
+}
+
+// SetFleetIsolationProbeBudget bounds the per-hull probes ONE fleet enumeration may
+// spend narrowing refused pages (boot-time setter injection, RULINGS #5; <=0 selects
+// the default). It prices the isolation, it does not disable it: below the budget a
+// refused page is skipped and reported whole rather than narrowed.
+func (c *SpaceTradersClient) SetFleetIsolationProbeBudget(budget int) {
+	c.fleetIsolationProbeBudget = budget
+}
+
+func (c *SpaceTradersClient) isolationProbeBudget() int {
+	if c.fleetIsolationProbeBudget > 0 {
+		return c.fleetIsolationProbeBudget
+	}
+	return defaultFleetIsolationProbeBudget
 }
 
 // acquireRateToken acquires exactly ONE token from the shared rate limiter before

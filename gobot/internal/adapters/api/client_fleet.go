@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -26,27 +27,47 @@ func (c *SpaceTradersClient) GetShip(ctx context.Context, symbol, token string) 
 	return response.Data.toShipData(), nil
 }
 
-// FleetReadReport records what a fleet enumeration could NOT read.
-//
-// It is the observable half of the element-tolerant decode in
-// ListShipsWithReport. Surviving one broken hull is only safe if the caller can
-// tell a partial fleet from a complete one: SyncAllFromAPI prunes every row
-// missing from the live list, so handing it "the fleet, minus the hull we could
-// not parse" would delete exactly the hull that is already in trouble.
+// FleetReadReport records what a fleet enumeration could NOT read. Surviving a broken
+// hull is only safe if the caller can tell a partial fleet from a complete one:
+// SyncAllFromAPI prunes every row missing from the live list, so handing it "the fleet,
+// minus the hull we could not read" would delete exactly the hull already in trouble.
 type FleetReadReport struct {
 	// Unreadable holds one entry per element of GET /my/ships that could not be
 	// turned into a usable hull, in the order encountered.
 	Unreadable []UnreadableShip
+	// UnreadablePages holds one entry per page the server refused that was NOT
+	// narrowed to per-hull verdicts — a whole window with no individual reading.
+	UnreadablePages []UnreadablePage
 }
 
 // Partial reports whether the enumeration dropped at least one hull — i.e.
 // whether the returned slice is a known-INCOMPLETE view of the fleet. Every
 // destructive decision keyed on a fleet read must consult this first.
-func (r FleetReadReport) Partial() bool { return len(r.Unreadable) > 0 }
+func (r FleetReadReport) Partial() bool {
+	return len(r.Unreadable) > 0 || len(r.UnreadablePages) > 0
+}
 
-// UnreadableShip identifies a dropped element as precisely as the broken
-// payload allows. Symbol is best-effort: naming the hull is the difference
-// between an operator diagnosing it in minutes and re-running the outage.
+// MissingHulls is how many hull SLOTS the read produced no hull for: dropped elements
+// plus every slot inside a skipped page. It turns "partial" from a flag into a
+// magnitude, which is what lets a caller weigh a gap instead of only detecting one.
+func (r FleetReadReport) MissingHulls() int {
+	missing := len(r.Unreadable)
+	for _, p := range r.UnreadablePages {
+		missing += p.Hulls
+	}
+	return missing
+}
+
+// UnreadablePage is a page the server refused and the enumeration skipped whole.
+// Hulls is the page's SPAN, not a count: a refused page returns no payload to count.
+type UnreadablePage struct {
+	Page   int
+	Hulls  int
+	Reason string
+}
+
+// UnreadableShip identifies a dropped element as precisely as the broken payload
+// allows. Symbol is best-effort: a refused page carries none.
 type UnreadableShip struct {
 	Page int
 	// Index is the position WITHIN Page on BOTH paths — decode failure and isolation.
@@ -55,10 +76,7 @@ type UnreadableShip struct {
 	Reason string
 }
 
-// logPartial emits the report at WARNING. The typed report is what the sync
-// consumes; this is what an operator greps for. The 24h TORWIND outage was
-// prolonged partly because nothing on the fleet-read path ever named the hull
-// that was breaking it.
+// logPartial is what an operator greps; the typed report is what the sync consumes.
 func (r FleetReadReport) logPartial(readable int) {
 	if !r.Partial() {
 		return
@@ -71,8 +89,12 @@ func (r FleetReadReport) logPartial(readable int) {
 		log.Printf("WARNING [fleet_read_unreadable_ship] ship=%s page=%d index=%d: %s",
 			symbol, u.Page, u.Index, u.Reason)
 	}
-	log.Printf("WARNING [fleet_read_partial] unreadable=%d readable=%d: GET /my/ships served at least one hull this client cannot parse; the returned fleet is INCOMPLETE and callers must not treat it as authoritative",
-		len(r.Unreadable), readable)
+	for _, p := range r.UnreadablePages {
+		log.Printf("WARNING [fleet_read_unreadable_page] page=%d hulls=%d: %s",
+			p.Page, p.Hulls, p.Reason)
+	}
+	log.Printf("WARNING [fleet_read_partial] missing=%d readable=%d unreadable_pages=%d: GET /my/ships would not serve at least one hull; the returned fleet is INCOMPLETE and callers must not treat it as authoritative",
+		r.MissingHulls(), readable, len(r.UnreadablePages))
 }
 
 // ListShips retrieves all ships for the authenticated agent, dropping any hull
@@ -86,26 +108,28 @@ func (c *SpaceTradersClient) ListShips(ctx context.Context, token string) ([]*na
 
 // ListShipsWithReport is ListShips plus the record of what it could not read.
 //
-// One hull the API cannot serialise must not blind the whole fleet: agent
-// TORWIND was dead for 24h because a single poisoned hull (TORWIND-5) failed to
-// deserialise, and unmarshalling a page in one shot into []shipDTO turns one bad
-// element into (nil, err) for all 253 hulls — SyncAllFromAPI then aborts with
-// zero ships synced. Each element is therefore decoded on its own, and a failure
-// costs only that hull.
+// One hull the API cannot serialise must not blind the whole fleet. Fail-closed means
+// "take no action on the ship we cannot read", not "take no action at all": one bad
+// hull stopping every other hull is its blast radius being wrong, not the guard
+// working. So each element is decoded on its own — a page unmarshalled in one shot
+// into []shipDTO turns one bad element into (nil, err) for every hull on it — and a
+// page the SERVER refuses outright is re-read one hull at a time (isolatePoisonedPage),
+// since a hull it cannot serve poisons every window containing it.
 //
-// A decoded-but-symbol-less element counts as unreadable too. toShipData() is
-// total, so garbage that unmarshals cleanly into a zero-valued shipDTO would
-// otherwise be upserted as a real row under an empty ship_symbol; a corrupt row
-// is worse than an absent one.
+// A decoded-but-symbol-less element counts as unreadable too: toShipData() is total, so
+// garbage that unmarshals into a zero-valued shipDTO would otherwise be upserted as a
+// real row under an empty ship_symbol, and a corrupt row is worse than an absent one.
 //
-// A page the SERVER refuses outright (HTTP 500) is not fatal either — a hull the
-// server cannot serve poisons every window containing it, so a failed page is
-// re-read one hull at a time (isolatePoisonedPage). Fail-closed means "take
-// no action on the ship we cannot read", not "take no action at all": one bad hull
-// stopping every other hull is its blast radius being wrong, not the guard working.
-// Still fatal: a page that will not split into elements, and a read that recovers
-// NOTHING — a fleet 20 hulls lighter, or an empty one, returned as success is
-// precisely the destructive lie this report exists to prevent.
+// Narrowing is budgeted across the enumeration (isolationProbeBudget): it buys one
+// thing, WHICH hull is bad, at a full span of probes per page, so past the budget a
+// refused page is SKIPPED AND REPORTED WHOLE for one call. Skipping needs a known
+// meta.total — the only thing telling the loop where a fleet it can no longer count
+// its way through ENDS — so without one a refused page stays fatal.
+//
+// Still fatal: a page that will not split into elements, an isolation sweep that hits
+// its consecutive-failure streak (the API failing, not a record), and a read that
+// recovers NOTHING — a fleet returned short, or empty, as success is precisely the
+// destructive lie this report exists to prevent.
 //
 // Pagination is unchanged in spirit: it pages at the API maximum of 20
 // (openapi.json: limit maximum 20) and stops only when two independent signals
@@ -121,19 +145,37 @@ func (c *SpaceTradersClient) ListShipsWithReport(ctx context.Context, token stri
 	var allShips []*navigation.ShipData
 	var report FleetReadReport
 	rawRead := 0
+	// The only finish line a read that skips pages has: a skipped page yields no count.
+	metaTotal := 0
 	page := 1
 	limit := apiPageLimitMax
+	probeBudget := c.isolationProbeBudget()
 
 	for {
 		response, err := c.fetchFleetPage(ctx, token, page, limit, nil)
 		if err != nil {
-			sweep, sweepErr := c.isolatePoisonedPage(ctx, token, page, limit)
+			sweep, sweepErr := c.isolatePoisonedPage(ctx, token, page, limit, &probeBudget)
 			if sweepErr != nil {
-				return nil, FleetReadReport{}, fmt.Errorf("failed to list ships (page %d): %w", page, sweepErr)
+				if !errors.Is(sweepErr, errFleetPageUnisolable) || metaTotal <= 0 {
+					return nil, FleetReadReport{}, fmt.Errorf("failed to list ships (page %d): %w", page, sweepErr)
+				}
+				report.UnreadablePages = append(report.UnreadablePages, UnreadablePage{
+					Page: page, Hulls: limit, Reason: sweepErr.Error(),
+				})
+				// Charged its full span; over-charging a last page only ends the loop.
+				rawRead += limit
+				if rawRead >= metaTotal {
+					break
+				}
+				page++
+				continue
 			}
 			allShips = append(allShips, sweep.ships...)
 			report.Unreadable = append(report.Unreadable, sweep.unreadable...)
 			rawRead += sweep.accounted
+			if sweep.metaTotal > 0 {
+				metaTotal = sweep.metaTotal
+			}
 			if sweep.endOfFleet {
 				break
 			}
@@ -157,6 +199,9 @@ func (c *SpaceTradersClient) ListShipsWithReport(ctx context.Context, token stri
 		// total is re-read every page, so a fleet that grows mid-pagination
 		// pushes the finish line out rather than cutting the loop short.
 		rawRead += len(response.Data)
+		if response.Meta.Total > 0 {
+			metaTotal = response.Meta.Total
+		}
 		shortPage := len(response.Data) < limit
 		totalAccountedFor := response.Meta.Total > 0 && rawRead >= response.Meta.Total
 		if shortPage && totalAccountedFor {
@@ -167,7 +212,7 @@ func (c *SpaceTradersClient) ListShipsWithReport(ctx context.Context, token stri
 	}
 
 	if len(allShips) == 0 && report.Partial() {
-		return nil, FleetReadReport{}, fmt.Errorf("failed to list ships: no hull of %d was readable — treating an unreadable fleet as an empty one would let every coordinator act on a stale snapshot", len(report.Unreadable))
+		return nil, FleetReadReport{}, fmt.Errorf("failed to list ships: not one of %d hull slots was readable — treating an unreadable fleet as an empty one would let every coordinator act on a stale snapshot", report.MissingHulls())
 	}
 
 	report.logPartial(len(allShips))
@@ -203,21 +248,35 @@ type fleetPageSweep struct {
 	// accounted is how many hull slots got a definite verdict, readable or not — the
 	// page length the failed request never delivered, and like it a count of what the
 	// SERVER holds, not of what we parsed.
-	accounted  int
+	accounted int
+	// The fleet size a successful probe reported; a refused page carries no meta.
+	metaTotal  int
 	endOfFleet bool
 }
 
-// isolatePoisonedPage re-reads a failed page's span one hull at a time, turning
-// "this page is unreadable" into "THIS HULL is unreadable" — a page is 20 hulls and
-// a poisoned record is one. The span is addressable because SpaceTraders pages by
-// (page, limit) over a stable order: window (P, L) is indices [(P-1)L, PL), so hull
-// i is exactly (page=i+1, limit=1).
+// errFleetPageUnisolable marks a refused page isolation declined to resolve into
+// per-hull verdicts: the probe budget cannot cover the span, or the span gave up no
+// hull. NOT an outage — the rest of the fleet is still worth reading — so a caller that
+// knows where the fleet ends may skip the page and report it whole. The abort-streak
+// failure is deliberately unmarked: a read that walks on from that is inventing a fleet.
+var errFleetPageUnisolable = errors.New("fleet page not isolated")
+
+// isolatePoisonedPage re-reads a failed page's span one hull at a time, turning "this
+// page is unreadable" into "THIS HULL is unreadable". The span is addressable because
+// SpaceTraders pages by (page, limit) over a stable order: window (P, L) is indices
+// [(P-1)L, PL), so hull i is exactly (page=i+1, limit=1).
 //
-// It errors rather than return a PARTIAL sweep when the abort streak was reached or
-// nothing was recovered: hulls past an abort point would be neither readable nor
+// budget is the enumeration's REMAINING probe allowance. A page reserves its whole
+// span up front rather than probing until the budget runs dry mid-page, and errors
+// rather than return a PARTIAL sweep when the abort streak is reached or nothing is
+// recovered: either way hulls past the stopping point would be neither readable nor
 // reported — silently ABSENT, and absence is what buys a replacement hull.
-func (c *SpaceTradersClient) isolatePoisonedPage(ctx context.Context, token string, page, limit int) (fleetPageSweep, error) {
+func (c *SpaceTradersClient) isolatePoisonedPage(ctx context.Context, token string, page, limit int, budget *int) (fleetPageSweep, error) {
 	var sweep fleetPageSweep
+	if *budget < limit {
+		return fleetPageSweep{}, fmt.Errorf("%w: page %d needs %d per-hull probes to name its bad hull and this enumeration has %d left; skipping it whole costs one call instead",
+			errFleetPageUnisolable, page, limit, *budget)
+	}
 	firstIndex := (page - 1) * limit
 	abortStreak := c.isolationAbortStreak()
 	probeRetries := defaultFleetIsolationProbeRetries
@@ -225,6 +284,7 @@ func (c *SpaceTradersClient) isolatePoisonedPage(ctx context.Context, token stri
 
 	for offset := 0; offset < limit; offset++ {
 		index := firstIndex + offset
+		*budget--
 		probe, err := c.fetchFleetPage(ctx, token, index+1, 1, &probeRetries)
 		if err != nil {
 			streak++
@@ -240,6 +300,9 @@ func (c *SpaceTradersClient) isolatePoisonedPage(ctx context.Context, token stri
 			continue
 		}
 		streak = 0
+		if probe.Meta.Total > 0 {
+			sweep.metaTotal = probe.Meta.Total
+		}
 
 		if len(probe.Data) == 0 {
 			sweep.endOfFleet = true
@@ -256,7 +319,7 @@ func (c *SpaceTradersClient) isolatePoisonedPage(ctx context.Context, token stri
 	}
 
 	if len(sweep.ships) == 0 && !sweep.endOfFleet {
-		return fleetPageSweep{}, fmt.Errorf("fleet-read isolation recovered no hull from page %d (%d unreadable): the whole page is unreadable, which is an outage rather than a poisoned record", page, len(sweep.unreadable))
+		return fleetPageSweep{}, fmt.Errorf("%w: page %d gave up no hull at all across %d per-hull probes, so there is no poisoned record to name", errFleetPageUnisolable, page, len(sweep.unreadable))
 	}
 
 	log.Printf("WARNING [fleet_read_page_isolated] page=%d readable=%d unreadable=%d: GET /my/ships refused this page outright; it was re-read one hull at a time so the failure costs only the hulls that cause it",
