@@ -255,6 +255,17 @@ message PartitionFleetResponse {
   // Statistics
   int32 total_waypoints_assigned = 4;
   int32 ships_utilized = 5;
+
+  // True when the assignment is the service's own deterministic round-robin
+  // rather than a solved partition. A fallback is still a usable partition, but
+  // it is NOT the solver's answer, and without this flag a permanently degraded
+  // solver is indistinguishable from a working one (sp-ev79y).
+  bool fallback = 6;
+
+  // Why the service answered as it did: "solved", "solved:unplaced=N",
+  // "fallback:no-solution", "fallback:budget-spent". Log-facing detail; the
+  // machine-readable signal is `fallback`.
+  optional string solver_status = 7;
 }
 
 message ShipTour {

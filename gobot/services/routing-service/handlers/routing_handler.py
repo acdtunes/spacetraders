@@ -254,7 +254,7 @@ class RoutingServiceHandler(TourHandlerMixin, routing_pb2_grpc.RoutingServiceSer
             engine_speed = first_config.engine_speed
 
             # Partition fleet
-            assignments = self.solve_pool.run(pool_module.partition_fleet_payload, dict(
+            partition = self.solve_pool.run(pool_module.partition_fleet_payload, dict(
                 graph=graph,
                 markets=list(request.market_waypoints),
                 ship_locations=ship_locations,
@@ -263,10 +263,18 @@ class RoutingServiceHandler(TourHandlerMixin, routing_pb2_grpc.RoutingServiceSer
                 vrp_timeout=self.vrp_timeout,
             ))
 
-            if assignments is None:
+            if partition is None:
                 return routing_pb2.PartitionFleetResponse(
                     success=False,
                     error_message="Failed to partition fleet"
+                )
+            assignments = partition.assignments
+            if partition.fallback:
+                logger.warning(
+                    "PartitionFleet answering with a FALLBACK partition (%s): "
+                    "%d ships, %d markets",
+                    partition.status, len(request.ship_symbols),
+                    len(request.market_waypoints),
                 )
 
             # Convert to protobuf
@@ -331,7 +339,9 @@ class RoutingServiceHandler(TourHandlerMixin, routing_pb2_grpc.RoutingServiceSer
                 assignments=pb_assignments,
                 success=True,
                 total_waypoints_assigned=total_assigned,
-                ships_utilized=ships_utilized
+                ships_utilized=ships_utilized,
+                fallback=partition.fallback,
+                solver_status=partition.status,
             )
 
         except Exception as e:

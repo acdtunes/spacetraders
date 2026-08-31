@@ -78,7 +78,7 @@ def solve_tour_payload(payload):
 
 
 def partition_fleet_payload(payload):
-    """Worker entry point for one fleet partition: request dict in, ship -> markets out.
+    """Worker entry point for one fleet partition: request dict in, FleetPartition out.
 
     The engine is built here rather than shipped in because its only instance state is
     a pathfinding memo, which is per-process by nature.

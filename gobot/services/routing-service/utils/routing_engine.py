@@ -9,7 +9,8 @@ Implements:
 import heapq
 import logging
 import math
-from typing import Dict, List, Optional, Tuple, Any
+import time
+from typing import Dict, List, NamedTuple, Optional, Tuple, Any
 from dataclasses import dataclass
 from enum import Enum
 
@@ -17,6 +18,50 @@ from ortools.constraint_solver import routing_enums_pb2
 from ortools.constraint_solver import pywrapcp
 
 logger = logging.getLogger(__name__)
+
+# Fleet-partition outcomes. The caller must be able to tell a SOLVED partition from
+# the engine's own round-robin, because a permanently-degraded solver otherwise
+# passes for a working one (sp-ev79y).
+PARTITION_SOLVED = "solved"
+PARTITION_TRIVIAL = "trivial"
+PARTITION_FALLBACK_NO_SOLUTION = "fallback:no-solution"
+PARTITION_FALLBACK_BUDGET_SPENT = "fallback:budget-spent"
+
+# How the partition budget is split. The distance matrix is a PATHFINDING phase that
+# runs before the solver exists, so no OR-Tools time limit can reach it; it gets
+# whatever the solver's guaranteed share leaves.
+_SOLVE_BUDGET_SHARE = 0.5
+_MIN_SOLVE_RESERVE_SECONDS = 1.0
+
+# Cost of an arc between waypoints the caller never put in the graph.
+_UNREACHABLE_ARC = 1_000_000
+
+# Shared cost-model constants: the fuel kept in reserve on any hop that is not the
+# last one, the penalty that makes DRIFT a last resort, and the cost of an orbital
+# transfer. The all-origins sweep and find_optimal_path must price a leg alike.
+FUEL_SAFETY_MARGIN = 4
+DRIFT_TIME_PENALTY = 100000
+ORBITAL_HOP_TIME = 1
+ORBITAL_HOP_DISTANCE = 0.0
+
+
+class FleetPartition(NamedTuple):
+    """A fleet partition and whether it was solved or fallen back to.
+
+    `assignments` is always a full partition of the requested markets over the
+    requested ships. `fallback` is True when it is the engine's deterministic
+    round-robin rather than a solved assignment, and `status` names why.
+    """
+    assignments: Dict[str, List[str]]
+    fallback: bool
+    status: str
+
+
+def _set_time_limit(duration, seconds: float) -> None:
+    """Write a float second count into a protobuf Duration."""
+    millis = max(1, int(seconds * 1000))
+    duration.seconds = millis // 1000
+    duration.nanos = (millis % 1000) * 1_000_000
 
 
 class FlightMode(Enum):
@@ -63,16 +108,141 @@ class Waypoint:
         return other.symbol in self.orbitals or self.symbol in other.orbitals
 
 
+class _LegTables:
+    """Per-ordered-pair hop facts for one graph, plus the sweeps built on them.
+
+    Hoisting the geometry out of the search loop is what makes an all-origins
+    fuel-aware sweep affordable: the arithmetic below is evaluated once per pair
+    instead of once per state expansion.
+    """
+
+    __slots__ = ("size", "orbital", "burn_fuel", "cruise_fuel", "drift_fuel",
+                 "burn_time", "cruise_time", "drift_time", "has_fuel")
+
+    def __init__(self, size: int):
+        self.size = size
+        table = lambda fill: [[fill] * size for _ in range(size)]  # noqa: E731
+        self.orbital = table(False)
+        self.burn_fuel = table(0)
+        self.cruise_fuel = table(0)
+        self.drift_fuel = table(0)
+        self.burn_time = table(0)
+        self.cruise_time = table(0)
+        self.drift_time = table(0)
+        self.has_fuel: List[bool] = [False] * size
+
+    @classmethod
+    def build(cls, symbols: List[str], graph: Dict[str, Waypoint],
+              engine_speed: int) -> '_LegTables':
+        tables = cls(len(symbols))
+        for i, origin in enumerate(symbols):
+            source = graph[origin]
+            tables.has_fuel[i] = source.has_fuel
+            for j, target in enumerate(symbols):
+                if i == j:
+                    continue
+                destination = graph[target]
+                distance = source.distance_to(destination)
+                if source.is_orbital_of(destination) or distance == 0.0:
+                    tables.orbital[i][j] = True
+                    continue
+                tables.burn_fuel[i][j] = FlightMode.BURN.fuel_cost(distance)
+                tables.cruise_fuel[i][j] = FlightMode.CRUISE.fuel_cost(distance)
+                tables.drift_fuel[i][j] = FlightMode.DRIFT.fuel_cost(distance)
+                tables.burn_time[i][j] = FlightMode.BURN.travel_time(distance, engine_speed)
+                tables.cruise_time[i][j] = FlightMode.CRUISE.travel_time(distance, engine_speed)
+                tables.drift_time[i][j] = (
+                    FlightMode.DRIFT.travel_time(distance, engine_speed) + DRIFT_TIME_PENALTY)
+        return tables
+
+    def direct_times(self, source: int) -> List[int]:
+        """One straight-line CRUISE hop to every waypoint — no fuel constraint."""
+        row = [_UNREACHABLE_ARC] * self.size
+        row[source] = 0
+        for target in range(self.size):
+            if target == source:
+                continue
+            row[target] = (ORBITAL_HOP_TIME if self.orbital[source][target]
+                           else self.cruise_time[source][target])
+        return row
+
+    def travel_times_from(self, source: int, fuel_capacity: int) -> List[int]:
+        """Optimal travel time from `source` to every waypoint, leaving on a full tank.
+
+        The same cost model as find_optimal_path — BURN/CRUISE/DRIFT with the fuel
+        safety margin, free refuelling wherever fuel is sold, DRIFT priced as a last
+        resort — solved once for all targets. Nodes are popped in travel-time order,
+        and a repeat arrival is worth exploring only if it carries strictly more fuel
+        than any earlier (and therefore faster) arrival there.
+        """
+        if fuel_capacity == 0:
+            return self.direct_times(source)
+
+        best = [_UNREACHABLE_ARC] * self.size
+        best[source] = 0
+        richest = [-1] * self.size
+        queue = [(0, source, fuel_capacity)]
+        while queue:
+            elapsed, current, fuel = heapq.heappop(queue)
+            if self.has_fuel[current]:
+                fuel = fuel_capacity
+            if fuel <= richest[current]:
+                continue
+            richest[current] = fuel
+
+            orbital = self.orbital[current]
+            burn_fuel, cruise_fuel, drift_fuel = (
+                self.burn_fuel[current], self.cruise_fuel[current], self.drift_fuel[current])
+            burn_time, cruise_time, drift_time = (
+                self.burn_time[current], self.cruise_time[current], self.drift_time[current])
+
+            for target in range(self.size):
+                if target == current:
+                    continue
+                if orbital[target]:
+                    arrival = elapsed + ORBITAL_HOP_TIME
+                    if arrival < best[target]:
+                        best[target] = arrival
+                    if fuel > richest[target]:
+                        heapq.heappush(queue, (arrival, target, fuel))
+                    continue
+
+                burn, cruise, drift = burn_fuel[target], cruise_fuel[target], drift_fuel[target]
+
+                # Arriving may spend the safety margin; travelling ON may not.
+                if fuel >= burn:
+                    arrival = elapsed + burn_time[target]
+                elif fuel >= cruise:
+                    arrival = elapsed + cruise_time[target]
+                elif fuel >= drift:
+                    arrival = elapsed + drift_time[target]
+                else:
+                    continue
+                if arrival < best[target]:
+                    best[target] = arrival
+
+                # BURN is faster, CRUISE keeps more fuel for the hops after: neither
+                # dominates, so both continuations stay in the search.
+                onward = False
+                if fuel >= burn + FUEL_SAFETY_MARGIN:
+                    onward = True
+                    if fuel - burn > richest[target]:
+                        heapq.heappush(queue, (elapsed + burn_time[target], target, fuel - burn))
+                if fuel >= cruise + FUEL_SAFETY_MARGIN:
+                    onward = True
+                    if fuel - cruise > richest[target]:
+                        heapq.heappush(queue, (elapsed + cruise_time[target], target, fuel - cruise))
+                if not onward and fuel >= drift and fuel - drift > richest[target]:
+                    heapq.heappush(queue, (elapsed + drift_time[target], target, fuel - drift))
+        return best
+
+
 class ORToolsRoutingEngine:
     """
     Routing engine using OR-Tools for optimization.
 
     Ported from Python bot's ortools_engine.py
     """
-
-    # Constants for orbital travel
-    ORBITAL_HOP_TIME = 1  # seconds for orbital transfer
-    ORBITAL_HOP_DISTANCE = 0.0  # no distance for orbital hops
 
     def __init__(self, tsp_timeout: int = 5, vrp_timeout: int = 30):
         """
@@ -82,13 +252,13 @@ class ORToolsRoutingEngine:
             tsp_timeout: Timeout in seconds for TSP (tour optimization) solver
             vrp_timeout: Timeout in seconds for VRP (fleet partitioning) solver
         """
-        self._pathfinding_cache: Dict[Tuple[str, str, int, int], Optional[Dict[str, Any]]] = {}
+        self._travel_time_cache: Dict[Tuple[str, int, int], Dict[str, int]] = {}
         self._tsp_timeout = tsp_timeout
         self._vrp_timeout = vrp_timeout
 
     def clear_cache(self):
         """Clear the pathfinding cache"""
-        self._pathfinding_cache.clear()
+        self._travel_time_cache.clear()
         logger.debug("Pathfinding cache cleared")
 
     def calculate_fuel_cost(self, distance: float, mode: FlightMode) -> int:
@@ -173,7 +343,6 @@ class ORToolsRoutingEngine:
             current_wp = graph[current]
 
             # Check if at start with insufficient fuel
-            SAFETY_MARGIN = 4
             at_start_with_low_fuel = (
                 current == start and
                 len(path) == 0 and
@@ -248,8 +417,8 @@ class ORToolsRoutingEngine:
                 is_orbital = current_wp.is_orbital_of(neighbor) or distance == 0.0
 
                 if is_orbital:
-                    distance = self.ORBITAL_HOP_DISTANCE
-                    travel_time = self.ORBITAL_HOP_TIME
+                    distance = ORBITAL_HOP_DISTANCE
+                    travel_time = ORBITAL_HOP_TIME
                     fuel_cost = 0
                     mode = FlightMode.CRUISE
 
@@ -281,7 +450,6 @@ class ORToolsRoutingEngine:
 
                 # Explore viable flight modes for this neighbor
                 # NEVER use DRIFT except as last resort for final destination
-                SAFETY_MARGIN = 4
                 is_goal = (neighbor_symbol == goal)
 
                 burn_cost = self.calculate_fuel_cost(distance, FlightMode.BURN)
@@ -292,13 +460,13 @@ class ORToolsRoutingEngine:
 
                 # Check BURN (skip if prefer_cruise is set)
                 if not prefer_cruise:
-                    if fuel_remaining >= burn_cost + SAFETY_MARGIN:
+                    if fuel_remaining >= burn_cost + FUEL_SAFETY_MARGIN:
                         viable_modes.append((FlightMode.BURN, burn_cost))
                     elif is_goal and fuel_remaining >= burn_cost:
                         viable_modes.append((FlightMode.BURN, burn_cost))
 
                 # Check CRUISE
-                if fuel_remaining >= cruise_cost + SAFETY_MARGIN:
+                if fuel_remaining >= cruise_cost + FUEL_SAFETY_MARGIN:
                     viable_modes.append((FlightMode.CRUISE, cruise_cost))
                 elif is_goal and fuel_remaining >= cruise_cost:
                     viable_modes.append((FlightMode.CRUISE, cruise_cost))
@@ -321,7 +489,7 @@ class ORToolsRoutingEngine:
                     # Add massive penalty to DRIFT so it's only chosen as last resort
                     # UNLESS fuel_efficient mode is enabled (for mining transports)
                     if mode == FlightMode.DRIFT and not fuel_efficient:
-                        travel_time += 100000  # 100k second penalty
+                        travel_time += DRIFT_TIME_PENALTY
 
                     # Create travel step
                     travel_step = {
@@ -369,8 +537,8 @@ class ORToolsRoutingEngine:
         is_orbital = start_wp.is_orbital_of(goal_wp) or distance == 0.0
 
         if is_orbital:
-            distance = self.ORBITAL_HOP_DISTANCE
-            time = self.ORBITAL_HOP_TIME
+            distance = ORBITAL_HOP_DISTANCE
+            time = ORBITAL_HOP_TIME
             mode = FlightMode.CRUISE
         else:
             mode = FlightMode.CRUISE
@@ -503,23 +671,22 @@ class ORToolsRoutingEngine:
                 is_orbital = from_wp.is_orbital_of(to_wp) or distance == 0.0
 
                 if is_orbital:
-                    distance = self.ORBITAL_HOP_DISTANCE
-                    time = self.ORBITAL_HOP_TIME
+                    distance = ORBITAL_HOP_DISTANCE
+                    time = ORBITAL_HOP_TIME
                     fuel_cost = 0
                     mode = FlightMode.CRUISE
                 else:
                     # Select flight mode: NEVER use DRIFT mode
                     # Ships should ALWAYS use BURN or CRUISE, inserting refuel stops as needed
-                    # Use fastest mode that maintains 4-unit safety margin
-                    SAFETY_MARGIN = 4
+                    # Use fastest mode that maintains the fuel safety margin
                     current_fuel = fuel_capacity
 
                     burn_cost = self.calculate_fuel_cost(distance, FlightMode.BURN)
                     cruise_cost = self.calculate_fuel_cost(distance, FlightMode.CRUISE)
 
-                    if current_fuel >= burn_cost + SAFETY_MARGIN:
+                    if current_fuel >= burn_cost + FUEL_SAFETY_MARGIN:
                         mode = FlightMode.BURN
-                    elif current_fuel >= cruise_cost + SAFETY_MARGIN:
+                    elif current_fuel >= cruise_cost + FUEL_SAFETY_MARGIN:
                         mode = FlightMode.CRUISE
                     else:
                         # If insufficient fuel even for CRUISE, use CRUISE anyway
@@ -820,15 +987,23 @@ class ORToolsRoutingEngine:
         markets: List[str],
         ship_locations: Dict[str, str],
         fuel_capacity: int,
-        engine_speed: int
-    ) -> Optional[Dict[str, List[str]]]:
+        engine_speed: int,
+        time_limit: Optional[float] = None,
+    ) -> FleetPartition:
         """
         Partition markets across multiple ships using multi-vehicle VRP.
 
-        Returns dict mapping ship_symbol -> List[assigned_markets]
+        Returns a FleetPartition: ship_symbol -> assigned markets, plus whether the
+        answer was solved or fallen back to. The whole call is bounded by
+        `time_limit` (default: the engine's VRP timeout) — matrix build included,
+        because the solver's own limit cannot reach a phase that runs before it.
         """
+        budget = float(self._vrp_timeout if time_limit is None else time_limit)
+        deadline = time.monotonic() + budget
+
         if not markets or not ship_locations:
-            return {ship: [] for ship in ship_locations.keys()}
+            return FleetPartition({ship: [] for ship in ship_locations.keys()},
+                                  False, PARTITION_TRIVIAL)
 
         ships = list(ship_locations.keys())
         nodes = list(markets)
@@ -846,9 +1021,17 @@ class ORToolsRoutingEngine:
             starts.append(index)
             ends.append(index)
 
+        # The deterministic round-robin partition, computed up front. It is both the
+        # solver's SEED (a first solution the search is guaranteed to have, see below)
+        # and the answer returned if everything after this point fails.
+        seed_routes, seed_assignments = self._round_robin_seed(
+            ships, markets, node_index, starts)
+
         # Build distance matrix
+        solve_reserve = max(_MIN_SOLVE_RESERVE_SECONDS, budget * _SOLVE_BUDGET_SHARE)
         distance_matrix = self._build_distance_matrix_for_vrp(
-            nodes, graph, fuel_capacity, engine_speed
+            nodes, graph, fuel_capacity, engine_speed,
+            deadline=deadline - solve_reserve,
         )
 
         # Calculate disjunction penalty
@@ -906,10 +1089,10 @@ class ORToolsRoutingEngine:
         # secondary arc-cost sum then packs markets onto fewer vehicles, so with N floored
         # scout slots only <N actually scout and the whole partition covers at (N-1)-probe
         # cadence (the live sp-cc2na symptom: "3 disjoint tours" logged, 2 probes moving).
-        # A non-empty route means Start does not go straight to End. When M<N only M probes
-        # can be non-empty (the rest have no market to take) — leave those free; the span
-        # cost still balances the forced assignment by time.
-        if len(markets) >= len(ships):
+        # A non-empty route means Start does not go straight to End, which needs a node
+        # that is not already some vehicle's start — so the guard counts SEEDABLE routes
+        # rather than markets, and a crew parked on its own market list is left free.
+        if sum(1 for route in seed_routes if route) == len(ships):
             solver = routing.solver()
             for vehicle in range(len(ships)):
                 solver.Add(routing.NextVar(routing.Start(vehicle)) != routing.End(vehicle))
@@ -922,23 +1105,42 @@ class ORToolsRoutingEngine:
         search_parameters.local_search_metaheuristic = (
             routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
         )
-        search_parameters.time_limit.seconds = self._vrp_timeout
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            logger.warning(
+                "fleet partition spent its whole %.1fs budget building the distance "
+                "matrix for %d ship(s) over %d market(s); returning the round-robin "
+                "partition unsolved", budget, len(ships), len(markets),
+            )
+            return FleetPartition(seed_assignments, True, PARTITION_FALLBACK_BUDGET_SPENT)
+        _set_time_limit(search_parameters.time_limit, remaining)
 
-        # Solve
-        solution = routing.SolveWithParameters(search_parameters)
+        # Solve FROM the round-robin seed. Every first-solution strategy OR-Tools
+        # offers fails on this model — the forced non-empty routes are not something
+        # a greedy insertion heuristic respects, so it burns the whole limit and
+        # returns nothing (sp-ev79y). Handing the search a feasible assignment makes
+        # the first solution exist by construction: the local search then only ever
+        # improves on the round-robin, and when the budget expires it returns the best
+        # it reached rather than throwing the work away.
+        initial = routing.ReadAssignmentFromRoutes(seed_routes, True)
+        if initial is None:
+            logger.warning("fleet partition seed rejected by the model for %d ship(s) "
+                           "over %d market(s)", len(ships), len(markets))
+            solution = routing.SolveWithParameters(search_parameters)
+        else:
+            solution = routing.SolveFromAssignmentWithParameters(initial, search_parameters)
+
         if not solution:
             # The VRP found no solution at all. A single-ship scout keeps ALL its
             # markets (it bypasses the VRP entirely); a 2+ ship partition must keep
             # parity rather than collapse to an empty partition of 0 tours (sp-t73c).
             # Degrade to a deterministic balanced partition instead of returning empty.
             logger.warning(
-                "VRP returned no solution for %d ship(s) over %d market(s); "
+                "VRP returned no solution (status %s) for %d ship(s) over %d market(s); "
                 "falling back to a balanced round-robin partition",
-                len(ships), len(markets),
+                routing.status(), len(ships), len(markets),
             )
-            fallback: Dict[str, List[str]] = {ship: [] for ship in ships}
-            self._distribute_evenly(list(markets), fallback)
-            return fallback
+            return FleetPartition(seed_assignments, True, PARTITION_FALLBACK_NO_SOLUTION)
 
         # Extract assignments
         assignments: Dict[str, List[str]] = {ship: [] for ship in ships}
@@ -994,7 +1196,43 @@ class ORToolsRoutingEngine:
             )
             self._distribute_evenly(unplaced_markets, assignments)
 
-        return assignments
+        status = PARTITION_SOLVED
+        if unplaced_markets:
+            status = "%s:unplaced=%d" % (PARTITION_SOLVED, len(unplaced_markets))
+        return FleetPartition(assignments, False, status)
+
+    def _round_robin_seed(
+        self,
+        ships: List[str],
+        markets: List[str],
+        node_index: Dict[str, int],
+        starts: List[int],
+    ) -> Tuple[List[List[int]], Dict[str, List[str]]]:
+        """The balanced round-robin partition, as OR-Tools routes and as assignments.
+
+        Both views describe the same cut. The routes seed the search; the assignments
+        are what the caller gets if the search cannot better them. A market a vehicle
+        is already parked on belongs to that vehicle and is left out of the routes,
+        because a vehicle's own start is not a node it can be told to visit.
+        """
+        start_nodes = set(starts)
+        assignments: Dict[str, List[str]] = {ship: [] for ship in ships}
+        claimed: set = set()
+        for vehicle, ship in enumerate(ships):
+            for market in markets:
+                if market not in claimed and node_index[market] == starts[vehicle]:
+                    assignments[ship].append(market)
+                    claimed.add(market)
+                    break
+
+        routes: List[List[int]] = [[] for _ in ships]
+        for market in markets:
+            if market in claimed or node_index[market] in start_nodes:
+                continue
+            vehicle = min(range(len(ships)), key=lambda v: len(assignments[ships[v]]))
+            assignments[ships[vehicle]].append(market)
+            routes[vehicle].append(node_index[market])
+        return routes, assignments
 
     def _distribute_evenly(
         self,
@@ -1020,44 +1258,63 @@ class ORToolsRoutingEngine:
         nodes: List[str],
         graph: Dict[str, Waypoint],
         fuel_capacity: int,
-        engine_speed: int
+        engine_speed: int,
+        deadline: Optional[float] = None,
     ) -> List[List[int]]:
-        """Build distance/time matrix for VRP with pathfinding cache"""
-        size = len(nodes)
-        matrix = [[1_000_000 for _ in range(size)] for _ in range(size)]
+        """Travel-time matrix over `nodes`, priced by the fuel-aware pathfinder.
 
-        cache_hits = 0
-        cache_misses = 0
+        ONE fuel-constrained sweep per ORIGIN rather than one search per ORDERED
+        PAIR. The per-pair form re-walked the whole graph for every target and was
+        the phase that ran the partition minutes past its own time limit — it runs
+        before the solver exists, so no OR-Tools limit can reach it (sp-ev79y). The
+        arc values are unchanged: a sweep pops nodes in travel-time order, so the
+        time it records for a target is the one the per-pair search returned.
+
+        `deadline` is a wall-clock cut-off. Origins still unpriced when it passes
+        fall back to straight-line CRUISE time, so the phase cannot overrun the
+        budget the caller gave the whole call however large the graph gets.
+        """
+        size = len(nodes)
+        matrix = [[_UNREACHABLE_ARC] * size for _ in range(size)]
+        for i in range(size):
+            matrix[i][i] = 0
+
+        symbols = list(graph)
+        if not symbols:
+            return matrix
+        index_of = {symbol: i for i, symbol in enumerate(symbols)}
+        legs = _LegTables.build(symbols, graph, engine_speed)
+
+        rows: Dict[str, List[int]] = {}
+        estimated = 0
+        for origin in nodes:
+            if origin in rows or origin not in index_of:
+                continue
+            key = (origin, fuel_capacity, engine_speed)
+            row = self._travel_time_cache.get(key)
+            if row is None:
+                if deadline is not None and time.monotonic() >= deadline:
+                    row = legs.direct_times(index_of[origin])
+                    estimated += 1
+                else:
+                    row = legs.travel_times_from(index_of[origin], fuel_capacity)
+                self._travel_time_cache[key] = row
+            rows[origin] = row
 
         for i, origin in enumerate(nodes):
+            row = rows.get(origin)
+            if row is None:
+                continue
             for j, target in enumerate(nodes):
-                if i == j:
-                    matrix[i][j] = 0
-                    continue
+                if i != j and target in index_of:
+                    matrix[i][j] = row[index_of[target]]
 
-                if origin not in graph or target not in graph:
-                    continue
-
-                # Check cache
-                cache_key = (origin, target, fuel_capacity, engine_speed)
-                if cache_key in self._pathfinding_cache:
-                    route = self._pathfinding_cache[cache_key]
-                    cache_hits += 1
-                else:
-                    # Compute pathfinding
-                    route = self.find_optimal_path(
-                        graph=graph,
-                        start=origin,
-                        goal=target,
-                        current_fuel=fuel_capacity,
-                        fuel_capacity=fuel_capacity,
-                        engine_speed=engine_speed
-                    )
-                    self._pathfinding_cache[cache_key] = route
-                    cache_misses += 1
-
-                if route and route.get('total_time'):
-                    matrix[i][j] = route['total_time']
-
-        logger.info(f"Distance matrix cache: {cache_hits} hits, {cache_misses} misses")
+        if estimated:
+            logger.warning(
+                "Distance matrix hit its deadline: %d of %d origin(s) priced by "
+                "straight-line estimate instead of the fuel-aware pathfinder",
+                estimated, len(rows),
+            )
+        logger.info("Distance matrix: %d origin sweep(s) over %d waypoint(s)",
+                    len(rows), len(symbols))
         return matrix

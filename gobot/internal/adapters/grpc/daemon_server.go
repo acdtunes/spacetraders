@@ -549,6 +549,14 @@ func (s *DaemonServer) registerMetricsCollectors(getContainers func() map[string
 	}
 	metrics.SetGlobalParkedSensingCollector(parkedSensingCollector)
 
+	// Whether the routing service SOLVED each fleet partition or fell back to its own
+	// round-robin. Unwired, a solver that stops solving passes for a working one.
+	fleetPartitionCollector, err := registerCollector(metrics.NewFleetPartitionMetricsCollector(), "fleet-partition metrics collector")
+	if err != nil {
+		return err
+	}
+	metrics.SetGlobalFleetPartitionCollector(fleetPartitionCollector)
+
 	// The market and shipyard scan allowances. Unpublished, both run armed while signalling
 	// nothing — which is how shipyard reads reached 3.2x their configured allowance unseen.
 	scanBudgetCollector, err := registerCollector(metrics.NewScanBudgetMetricsCollector(), "scan-budget metrics collector")

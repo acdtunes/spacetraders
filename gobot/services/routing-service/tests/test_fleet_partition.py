@@ -48,9 +48,9 @@ def _graph():
     }
 
 
-def _assigned(result):
+def _assigned(partition):
     seen = set()
-    for markets in result.values():
+    for markets in partition.assignments.values():
         seen.update(markets)
     return seen
 
@@ -67,12 +67,13 @@ def test_two_ships_sharing_start_keep_every_market_including_ungraphed_ones():
     )
 
     assert result is not None, "partition must never be None"
+    assert not result.fallback, f"a reachable 2-ship partition must be SOLVED: {result.status}"
     assigned = _assigned(result)
     dropped = set(_MARKETS) - assigned
     assert not dropped, f"no market may be silently dropped, but the VRP omitted: {sorted(dropped)}"
     assert len(assigned) == len(_MARKETS), f"all {len(_MARKETS)} markets must be assigned"
 
-    loads = [len(m) for m in result.values()]
+    loads = [len(m) for m in result.assignments.values()]
     assert min(loads) >= 1, f"no ship may be left empty (0 tours): loads={loads}"
     assert max(loads) <= min(loads) * 2 + 1, f"load must be reasonably balanced: loads={loads}"
 
@@ -97,7 +98,7 @@ def test_multi_slot_partition_materializes_every_slot():
     assert set(_MARKETS) == assigned, (
         f"every market must land on a slot; dropped={sorted(set(_MARKETS) - assigned)}"
     )
-    loads = [len(m) for m in result.values()]
+    loads = [len(m) for m in result.assignments.values()]
     assert min(loads) >= 1, f"every slot must be materialized (non-empty): loads={loads}"
 
 
@@ -186,11 +187,11 @@ def test_every_probe_used_and_partition_balanced_by_time_not_market_count():
     assert result is not None
     assert _assigned(result) == set(markets), "every market must be assigned"
 
-    loads = sorted(len(m) for m in result.values())
+    loads = sorted(len(m) for m in result.assignments.values())
     # (a) NO probe left idle — the load-bearing sp-cc2na guarantee (M >= N).
     assert loads[0] >= 1, f"every probe must get a non-empty tour: loads={loads}"
 
-    times = [_tour_time(engine, g, _DEPOT, m) for m in result.values()]
+    times = [_tour_time(engine, g, _DEPOT, m) for m in result.assignments.values()]
     # (b) balanced by TIME: circuit times within a generous 25% band...
     assert max(times) <= min(times) * 1.25, f"probe circuit times must be balanced: times={sorted(times)}"
     # ...but explicitly NOT by market count: a count-balanced split would be ~3/3/3, and
@@ -226,7 +227,7 @@ def test_no_probe_idle_on_tight_far_cluster():
 
     assert result is not None
     assert _assigned(result) == set(markets), "every market must be assigned"
-    loads = sorted(len(m) for m in result.values())
+    loads = sorted(len(m) for m in result.assignments.values())
     assert loads[0] >= 1, f"no probe may sit idle (all 3 must scout): loads={loads}"
 
 
@@ -245,6 +246,6 @@ def test_partition_is_deterministic_across_repeated_solves():
             graph=g, markets=list(markets), ship_locations=dict(locs),
             fuel_capacity=_FUEL_CAPACITY, engine_speed=_ENGINE_SPEED,
         )
-        signatures.add(tuple(sorted((ship, tuple(wps)) for ship, wps in result.items())))
+        signatures.add(tuple(sorted((ship, tuple(wps)) for ship, wps in result.assignments.items())))
 
     assert len(signatures) == 1, f"partition must be deterministic; got {len(signatures)} distinct results"

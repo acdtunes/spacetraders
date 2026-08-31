@@ -1020,8 +1020,17 @@ type PartitionFleetResponse struct {
 	// Statistics
 	TotalWaypointsAssigned int32 `protobuf:"varint,4,opt,name=total_waypoints_assigned,json=totalWaypointsAssigned,proto3" json:"total_waypoints_assigned,omitempty"`
 	ShipsUtilized          int32 `protobuf:"varint,5,opt,name=ships_utilized,json=shipsUtilized,proto3" json:"ships_utilized,omitempty"`
-	unknownFields          protoimpl.UnknownFields
-	sizeCache              protoimpl.SizeCache
+	// True when the assignment is the service's own deterministic round-robin
+	// rather than a solved partition. A fallback is still a usable partition, but
+	// it is NOT the solver's answer, and without this flag a permanently degraded
+	// solver is indistinguishable from a working one (sp-ev79y).
+	Fallback bool `protobuf:"varint,6,opt,name=fallback,proto3" json:"fallback,omitempty"`
+	// Why the service answered as it did: "solved", "solved:unplaced=N",
+	// "fallback:no-solution", "fallback:budget-spent". Log-facing detail; the
+	// machine-readable signal is `fallback`.
+	SolverStatus  *string `protobuf:"bytes,7,opt,name=solver_status,json=solverStatus,proto3,oneof" json:"solver_status,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *PartitionFleetResponse) Reset() {
@@ -1087,6 +1096,20 @@ func (x *PartitionFleetResponse) GetShipsUtilized() int32 {
 		return x.ShipsUtilized
 	}
 	return 0
+}
+
+func (x *PartitionFleetResponse) GetFallback() bool {
+	if x != nil {
+		return x.Fallback
+	}
+	return false
+}
+
+func (x *PartitionFleetResponse) GetSolverStatus() string {
+	if x != nil && x.SolverStatus != nil {
+		return *x.SolverStatus
+	}
+	return ""
 }
 
 type ShipTour struct {
@@ -2670,17 +2693,20 @@ const file_pkg_proto_routing_routing_proto_rawDesc = "" +
 	"\x10current_location\x18\x01 \x01(\tR\x0fcurrentLocation\x12#\n" +
 	"\rfuel_capacity\x18\x02 \x01(\x05R\ffuelCapacity\x12!\n" +
 	"\fengine_speed\x18\x03 \x01(\x05R\vengineSpeed\x12!\n" +
-	"\fcurrent_fuel\x18\x04 \x01(\x05R\vcurrentFuel\"\xf6\x02\n" +
+	"\fcurrent_fuel\x18\x04 \x01(\x05R\vcurrentFuel\"\xce\x03\n" +
 	"\x16PartitionFleetResponse\x12R\n" +
 	"\vassignments\x18\x01 \x03(\v20.routing.PartitionFleetResponse.AssignmentsEntryR\vassignments\x12\x18\n" +
 	"\asuccess\x18\x02 \x01(\bR\asuccess\x12(\n" +
 	"\rerror_message\x18\x03 \x01(\tH\x00R\ferrorMessage\x88\x01\x01\x128\n" +
 	"\x18total_waypoints_assigned\x18\x04 \x01(\x05R\x16totalWaypointsAssigned\x12%\n" +
-	"\x0eships_utilized\x18\x05 \x01(\x05R\rshipsUtilized\x1aQ\n" +
+	"\x0eships_utilized\x18\x05 \x01(\x05R\rshipsUtilized\x12\x1a\n" +
+	"\bfallback\x18\x06 \x01(\bR\bfallback\x12(\n" +
+	"\rsolver_status\x18\a \x01(\tH\x01R\fsolverStatus\x88\x01\x01\x1aQ\n" +
 	"\x10AssignmentsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12'\n" +
 	"\x05value\x18\x02 \x01(\v2\x11.routing.ShipTourR\x05value:\x028\x01B\x10\n" +
-	"\x0e_error_message\"\xb2\x01\n" +
+	"\x0e_error_messageB\x10\n" +
+	"\x0e_solver_status\"\xb2\x01\n" +
 	"\bShipTour\x12\x1c\n" +
 	"\twaypoints\x18\x01 \x03(\tR\twaypoints\x123\n" +
 	"\vroute_steps\x18\x02 \x03(\v2\x12.routing.RouteStepR\n" +

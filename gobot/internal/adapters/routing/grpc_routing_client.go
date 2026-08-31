@@ -3,12 +3,14 @@ package routing
 import (
 	"context"
 	"fmt"
+	"log"
 	"sort"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials/insecure"
 
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
 	domainRouting "github.com/andrescamacho/spacetraders-go/internal/domain/routing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 	pb "github.com/andrescamacho/spacetraders-go/pkg/proto/routing"
@@ -209,8 +211,19 @@ func (c *GRPCRoutingClient) PartitionFleet(ctx context.Context, req *domainRouti
 		}
 	}
 
+	// A fallback comes back a SUCCESS carrying a usable partition: used, but counted.
+	status := pbResp.GetSolverStatus()
+	metrics.RecordFleetPartitionAnswer(pbResp.GetFallback(), status)
+	if pbResp.GetFallback() {
+		log.Printf("routing: fleet partition for %s came back a FALLBACK (%s) — %d hull(s) "+
+			"over %d waypoint(s) were split by round-robin, not solved",
+			req.SystemSymbol, status, len(req.ShipSymbols), len(req.MarketWaypoints))
+	}
+
 	return &domainRouting.VRPResponse{
-		Assignments: assignments,
+		Assignments:  assignments,
+		Fallback:     pbResp.GetFallback(),
+		SolverStatus: status,
 	}, nil
 }
 

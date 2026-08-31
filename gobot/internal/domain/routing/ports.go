@@ -139,7 +139,9 @@ type ShipConfigData struct {
 }
 
 type VRPResponse struct {
-	Assignments map[string]*ShipTourData
+	Assignments  map[string]*ShipTourData
+	Fallback     bool
+	SolverStatus string
 }
 
 type ShipTourData struct {
