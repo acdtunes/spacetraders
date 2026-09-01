@@ -516,6 +516,7 @@ func (r *AbsorptionLedgerGORM) HoldersForKeys(ctx context.Context, playerID int,
 		}
 		breadth := r.sinkBreadthFor(r.db.WithContext(ctx), playerID, rows)
 		var holders []absorption.Holder
+		executed := make([]*MarketAbsorptionLedgerModel, 0, len(rows))
 		for i := range rows {
 			row := &rows[i]
 			switch row.State {
@@ -528,21 +529,25 @@ func (r *AbsorptionLedgerGORM) HoldersForKeys(ctx context.Context, playerID int,
 					TTLRemaining: row.ExpiresAt.Sub(now),
 				})
 			case absorptionStateExecuted:
-				// The SAME decay+floor arithmetic occupiedDepthTx uses for the cap
-				// check, so a holder reported here is exactly one Reserve would have
-				// counted — never a phantom "blocker" the real gate already ignores.
-				residual := r.blockingResidual(row, now, breadth[row.Waypoint])
-				if residual <= 0 {
-					continue
-				}
-				holders = append(holders, absorption.Holder{
-					ContainerID:  row.ContainerID,
-					Engine:       row.Engine,
-					State:        absorptionStateExecuted,
-					Units:        int(residual),
-					TTLRemaining: row.ExpiresAt.Sub(now),
-				})
+				executed = append(executed, row)
 			}
+		}
+		// The SAME pool arithmetic occupiedDepthTx uses for the cap check, so a holder
+		// reported here is exactly one Reserve would have counted — never a phantom
+		// "blocker" the real gate already ignores, and never an empty list for a pool
+		// that blocks only on its rows' accumulated depth.
+		shares, _ := r.executedPoolShares(k.Side, executed, now, breadth)
+		for i, row := range executed {
+			if shares[i] <= 0 {
+				continue
+			}
+			holders = append(holders, absorption.Holder{
+				ContainerID:  row.ContainerID,
+				Engine:       row.Engine,
+				State:        absorptionStateExecuted,
+				Units:        int(shares[i]),
+				TTLRemaining: row.ExpiresAt.Sub(now),
+			})
 		}
 		if len(holders) > 0 {
 			out[k] = holders
@@ -670,73 +675,56 @@ func (r *AbsorptionLedgerGORM) occupiedDepthTx(tx *gorm.DB, playerID int, key ab
 	return occupied + r.executedPoolResidual(key.Side, executed, now, breadth), nil
 }
 
-// executedPoolResidual is the depth one pool's EXECUTED shadows still occupy, and it is
-// where the two sides of a market part company. SELL folds PER ROW (blockingResidual): a
-// sink's damage is one dump's price move, judged against its own recovery floor. BUY folds
-// PER POOL, because source crowding is MANY ordinary purchases, each lawful alone and each
-// under the per-row floor — judged that way the pool reports zero occupied depth while the
-// ask climbs against the fleet. The pool total is floored ONCE, against the deepest tranche
-// its rows were written against, so a lone small buy still cannot block a source. It also
-// takes NO listing-breadth discount: that prior is fitted on sinks, and a purchase consumes
-// ONE good's supply, which breadth does not replenish (RULINGS #4's uniform prior).
+// executedPoolResidual is the depth one pool's EXECUTED shadows still occupy.
 func (r *AbsorptionLedgerGORM) executedPoolResidual(
 	side string, rows []*MarketAbsorptionLedgerModel, now time.Time, sinkListings map[string]int,
 ) float64 {
-	if len(rows) == 0 {
-		return 0
-	}
-	if side != absorption.SideBuy {
-		var total float64
-		for _, row := range rows {
-			total += r.blockingResidual(row, now, sinkListings[row.Waypoint])
-		}
-		return total
-	}
+	_, total := r.executedPoolShares(side, rows, now, sinkListings)
+	return total
+}
 
+// executedPoolShares decays every EXECUTED row in one pool to now and reports each row's
+// share of the occupied depth alongside the pool total.
+//
+// The pool is floored ONCE, against the deepest tranche its rows were written against,
+// rather than row by row. Crowding on EITHER side of a market is MANY ordinary legs, each
+// lawful alone and each under the per-row floor; judged row by row the pool reports zero
+// occupied depth while the fleet's own flow moves the price against it. Flooring once still
+// leaves a lone small leg unable to close a market.
+//
+// The sides differ only in the listing-breadth crush discount. A SALE's claim on a sink
+// scales with the sink's breadth, the prior being fitted there; a PURCHASE consumes ONE
+// good's supply, which breadth does not replenish, so it takes the uniform prior
+// (RULINGS #4). A row with no stored tranche size has no floor to fall under, so it blocks
+// on any positive residual and earns no discount either.
+//
+// A pool under its floor occupies nothing and every share is zero, so the attribution read
+// and the cap check can never disagree about who holds depth.
+func (r *AbsorptionLedgerGORM) executedPoolShares(
+	side string, rows []*MarketAbsorptionLedgerModel, now time.Time, sinkListings map[string]int,
+) ([]float64, float64) {
+	shares := make([]float64, len(rows))
 	var total float64
 	floorTranche, unfloorable := 0, false
-	for _, row := range rows {
+	for i, row := range rows {
 		if row.ExecutedAt == nil {
 			continue
 		}
-		total += r.recovery.decayedUnits(row.Units, row.TierAtWrite, now.Sub(*row.ExecutedAt))
-		// No depth to floor against: the pool blocks on any positive residual, the same
-		// fail-closed branch a sell row with no stored tranche size takes.
+		decayed := r.recovery.decayedUnits(row.Units, row.TierAtWrite, now.Sub(*row.ExecutedAt))
 		if row.TrancheSize <= 0 {
-			unfloorable = true
+			shares[i], total, unfloorable = decayed, total+decayed, true
 			continue
 		}
+		if side != absorption.SideBuy {
+			decayed *= r.depth.CrushScale(sinkListings[row.Waypoint])
+		}
+		shares[i], total = decayed, total+decayed
 		if row.TrancheSize > floorTranche {
 			floorTranche = row.TrancheSize
 		}
 	}
 	if !unfloorable && total < r.cfg.ShadowFloorFraction*float64(floorTranche) {
-		return 0
+		return make([]float64, len(rows)), 0
 	}
-	return total
-}
-
-// blockingResidual is an EXECUTED row's decayed occupied depth, but only while it is
-// still AT OR ABOVE its own recovery floor (ShadowFloorFraction × trade_volume). A
-// shadow that has recovered past the floor no longer blocks — it contributes 0, so a
-// new sell may take the recovered depth.
-//
-// sinkListings is the sink market's listing breadth, scaling the claim the sale makes on
-// that sink's depth: the same tranche costs a broad hub proportionally less than a
-// micro-market. Unknown breadth (0) is the uniform prior. A row with no stored tranche
-// size is already in the fail-closed branch — it blocks on any positive residual, having
-// no floor to fall under — so it earns no breadth discount either.
-func (r *AbsorptionLedgerGORM) blockingResidual(row *MarketAbsorptionLedgerModel, now time.Time, sinkListings int) float64 {
-	if row.ExecutedAt == nil {
-		return 0
-	}
-	decayed := r.recovery.decayedUnits(row.Units, row.TierAtWrite, now.Sub(*row.ExecutedAt))
-	if row.TrancheSize <= 0 {
-		return decayed
-	}
-	decayed *= r.depth.CrushScale(sinkListings)
-	if decayed < r.cfg.ShadowFloorFraction*float64(row.TrancheSize) {
-		return 0
-	}
-	return decayed
+	return shares, total
 }
