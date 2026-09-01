@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/absorption"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/routing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
@@ -182,14 +183,14 @@ func (h *RunTourCoordinatorHandler) resumeInFlightTourLeg(
 	// Accumulate the sale into this sink's recovery shadow exactly as a plan leg does, so the
 	// crush a resumed sale causes is visible to every other engine netting against this sink.
 	// Nil when no ledger is wired.
-	legSells := h.newLegSells()
+	legFlows := h.newLegFlows()
 	sold := false
 	for _, good := range goods {
 		sink, bids := sinks[good]
 		if !bids {
 			continue // this good's bid is gone; the re-plan finds it somewhere else
 		}
-		ok, serr := h.resumeSellGood(ctx, cmd, response, netBought, good, sink.waypoint, legSells)
+		ok, serr := h.resumeSellGood(ctx, cmd, response, netBought, good, sink.waypoint, legFlows)
 		if serr != nil {
 			// A partial discharge may already be booked; the persisted leg stays so the
 			// runner's retry resumes what is left.
@@ -197,7 +198,7 @@ func (h *RunTourCoordinatorHandler) resumeInFlightTourLeg(
 		}
 		sold = sold || ok
 	}
-	h.convertLegShadows(ctx, cmd, cmd.TourLegWaypoint, legSells)
+	h.convertLegShadows(ctx, cmd, cmd.TourLegWaypoint, legFlows)
 	// Cleared whether or not the market took anything: the hull has now stood at the sink and
 	// read it live, so a second restart must re-decide from there rather than re-fly this leg.
 	h.persistTourLeg(ctx, cmd, TourLegState{})
@@ -226,7 +227,7 @@ func (h *RunTourCoordinatorHandler) resumeSellGood(
 	netBought map[string]int,
 	good string,
 	waypoint string,
-	legSells map[string]*tourSinkSale,
+	legFlows map[tourFlowKey]*tourMarketFlow,
 ) (bool, error) {
 	logger := common.LoggerFromContext(ctx)
 
@@ -278,7 +279,7 @@ func (h *RunTourCoordinatorHandler) resumeSellGood(
 	response.TradesExecuted++
 	dischargePurchaseObligation(netBought, good, sellResp.UnitsSold)
 	h.noteRecentSell(cmd.ShipSymbol, waypoint, good)
-	h.noteSinkSale(legSells, good, sellResp.UnitsSold, live)
+	h.noteMarketFlow(legFlows, absorption.SideSell, good, sellResp.UnitsSold, live)
 	h.recordLeg(ctx, cmd,
 		trading.LegEngineResume,
 		routing.TourLeg{Waypoint: waypoint},

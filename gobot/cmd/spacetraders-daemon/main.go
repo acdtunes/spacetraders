@@ -854,6 +854,7 @@ func run(cfg *config.Config) error {
 		persistence.AbsorptionLedgerConfig{
 			ExecutedHardCap:     cfg.Absorption.ExecutedHardCap,
 			ShadowFloorFraction: cfg.Absorption.ShadowFloorFraction,
+			BuyShadowLife:       cfg.Absorption.BuyShadowLife,
 		},
 		persistence.NewContainerLiveness(db),
 	)

@@ -10,6 +10,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	gasCmd "github.com/andrescamacho/spacetraders-go/internal/application/gas/commands"
 	tradingsvc "github.com/andrescamacho/spacetraders-go/internal/application/trading/services"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/absorption"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/routing"
@@ -120,7 +121,7 @@ func (h *RunTourCoordinatorHandler) executeTrade(
 	leg routing.TourLeg,
 	legIdx int,
 	trade routing.TourTrade,
-	legSells map[string]*tourSinkSale,
+	legFlows map[tourFlowKey]*tourMarketFlow,
 	dedup scanDedupBracket,
 ) (bool, error) {
 	logger := common.LoggerFromContext(ctx)
@@ -160,9 +161,9 @@ func (h *RunTourCoordinatorHandler) executeTrade(
 	}
 
 	if trade.IsBuy {
-		return h.executeBuy(ctx, run.cmd, leg, legIdx, trade, run.shadowSinks, run.dispositions, live, run.response, run.netBought, run.cumulativeSpend, run.maxSpend, run.reserve, dedup)
+		return h.executeBuy(ctx, run.cmd, leg, legIdx, trade, run.shadowSinks, run.dispositions, live, run.response, run.netBought, run.cumulativeSpend, run.maxSpend, run.reserve, dedup, legFlows)
 	}
-	return h.executeSell(ctx, run, leg, legIdx, trade, live, legSells)
+	return h.executeSell(ctx, run, leg, legIdx, trade, live, legFlows)
 }
 
 func (h *RunTourCoordinatorHandler) executeBuy(
@@ -179,6 +180,7 @@ func (h *RunTourCoordinatorHandler) executeBuy(
 	cumulativeSpend *int64,
 	maxSpend, reserve int64,
 	dedup scanDedupBracket,
+	legFlows map[tourFlowKey]*tourMarketFlow,
 ) (bool, error) {
 	logger := common.LoggerFromContext(ctx)
 
@@ -310,6 +312,8 @@ func (h *RunTourCoordinatorHandler) executeBuy(
 	response.TotalSpent += int64(buyResp.TotalCost)
 	response.TradesExecuted++
 	netBought[trade.Good] += buyResp.UnitsAdded
+	// The buy-side mirror of the sink accumulation below: units taken OUT of this source.
+	h.noteMarketFlow(legFlows, absorption.SideBuy, trade.Good, buyResp.UnitsAdded, live)
 	h.recordLeg(ctx, cmd, trading.LegEngineSolver, leg, legIdx, trade, buyResp.UnitsAdded, realizedUnitPrice(buyResp.TotalCost, buyResp.UnitsAdded), plannedAt)
 	logger.Log("INFO", fmt.Sprintf("Tour leg %d: bought %d %s at %s (cost %d)", legIdx, buyResp.UnitsAdded, trade.Good, leg.Waypoint, buyResp.TotalCost), nil)
 	// A buy that LANDED on ground carrying an outstanding EXECUTED recovery shadow is
@@ -329,7 +333,7 @@ func (h *RunTourCoordinatorHandler) executeSell(
 	legIdx int,
 	trade routing.TourTrade,
 	live *market.TradeGood,
-	legSells map[string]*tourSinkSale,
+	legFlows map[tourFlowKey]*tourMarketFlow,
 ) (bool, error) {
 	logger := common.LoggerFromContext(ctx)
 	cmd, response, netBought := run.cmd, run.response, run.netBought
@@ -401,13 +405,13 @@ func (h *RunTourCoordinatorHandler) executeSell(
 	if sellResp.UnitsSold > 0 {
 		h.noteRecentSell(cmd.ShipSymbol, leg.Waypoint, trade.Good)
 	}
-	// Accumulate the realized units sold into this sink for the per-sink conversion
+	// Accumulate the realized units sold into this sink for the per-pool conversion
 	// at leg completion. The solver splits a sink's A-cap depth into SEPARATE
 	// price-tiered tranches (distinct trades), so a single sink can sell across several
 	// executeSell calls in one leg; converting per tranche would record only the first,
 	// under-stating the multi-tranche co-dump crush this ledger exists to shadow. The
 	// live re-verify tier + trade_volume (stable across a sink's tranches) size the shadow.
-	h.noteSinkSale(legSells, trade.Good, sellResp.UnitsSold, live)
+	h.noteMarketFlow(legFlows, absorption.SideSell, trade.Good, sellResp.UnitsSold, live)
 	h.recordLeg(ctx, cmd, trading.LegEngineSolver, leg, legIdx, trade, sellResp.UnitsSold, realizedUnitPrice(sellResp.TotalRevenue, sellResp.UnitsSold), plannedAt)
 	logger.Log("INFO", fmt.Sprintf("Tour leg %d: sold %d %s at %s (revenue %d)", legIdx, sellResp.UnitsSold, trade.Good, leg.Waypoint, sellResp.TotalRevenue), nil)
 	return true, nil

@@ -18,7 +18,7 @@ var _ absorption.Ledger = (*AbsorptionLedgerGORM)(nil)
 // AbsorptionLedgerGORM also implements the optional absorption.HolderLister capability.
 var _ absorption.HolderLister = (*AbsorptionLedgerGORM)(nil)
 
-// Absorption-ledger tuning. All three flow in as config (RULINGS #5) — the constants
+// Absorption-ledger tuning. All of them flow in as config (RULINGS #5) — the constants
 // are only the fail-safe defaults NewAbsorptionLedger applies when a caller passes the
 // zero value.
 const (
@@ -63,6 +63,12 @@ const (
 	// wall-clock), so it composes with the per-tier decay curve.
 	DefaultShadowFloorFraction = 0.5
 
+	// DefaultBuyShadowLife bounds how long the fleet's own purchases keep occupying a
+	// SOURCE's depth — separate from DefaultExecutedHardCap because the two sides recover on
+	// different clocks. 60 minutes is the horizon the ask-premium-per-already-taken-tranche
+	// fit is stated on, and at two tranches that premium is the whole realized trade margin.
+	DefaultBuyShadowLife = time.Hour
+
 	// absorptionReclaimGrace is the small margin before a PLANNED row whose container
 	// is absent from the live set is reclaimed as a dead-container leak. Liveness is
 	// the primary signal (design §1: age alone cannot distinguish dead, since a
@@ -94,6 +100,7 @@ var errAbsorptionBreach = errors.New("absorption reservation would breach a sink
 type AbsorptionLedgerConfig struct {
 	ExecutedHardCap     time.Duration
 	ShadowFloorFraction float64
+	BuyShadowLife       time.Duration
 }
 
 func (c AbsorptionLedgerConfig) withDefaults() AbsorptionLedgerConfig {
@@ -103,7 +110,18 @@ func (c AbsorptionLedgerConfig) withDefaults() AbsorptionLedgerConfig {
 	if c.ShadowFloorFraction <= 0 {
 		c.ShadowFloorFraction = DefaultShadowFloorFraction
 	}
+	if c.BuyShadowLife <= 0 {
+		c.BuyShadowLife = DefaultBuyShadowLife
+	}
 	return c
+}
+
+// executedLifeFor is how long a converted shadow blocks on each side of a market.
+func (c AbsorptionLedgerConfig) executedLifeFor(side string) time.Duration {
+	if side == absorption.SideBuy {
+		return c.BuyShadowLife
+	}
+	return c.ExecutedHardCap
 }
 
 // ContainerLivenessProvider reports which container IDs are currently live for a
@@ -305,16 +323,22 @@ func (r *AbsorptionLedgerGORM) Outstanding(ctx context.Context, playerID int) (m
 
 	breadth := r.sinkBreadthFor(r.db.WithContext(ctx), playerID, rows)
 	out := make(map[absorption.LaneKey]absorption.KeyOccupancy, len(rows))
+	executed := make(map[absorption.LaneKey][]*MarketAbsorptionLedgerModel, len(rows))
 	for i := range rows {
 		row := &rows[i]
 		k := absorption.LaneKey{Waypoint: row.Waypoint, Good: row.Good, Side: row.Side}
-		occ := out[k]
 		switch row.State {
 		case absorptionStatePlanned:
+			occ := out[k]
 			occ.PlannedUnits += row.Units
+			out[k] = occ
 		case absorptionStateExecuted:
-			occ.RecoveringResidual += r.blockingResidual(row, now, breadth[row.Waypoint])
+			executed[k] = append(executed[k], row)
 		}
+	}
+	for k, pool := range executed {
+		occ := out[k]
+		occ.RecoveringResidual = r.executedPoolResidual(k.Side, pool, now, breadth)
 		out[k] = occ
 	}
 	return out, nil
@@ -365,7 +389,7 @@ func (r *AbsorptionLedgerGORM) ConvertByContainer(
 			"tier_at_write": liveTier,
 			"tranche_size":  trancheSize,
 			"executed_at":   now,
-			"expires_at":    now.Add(r.cfg.ExecutedHardCap),
+			"expires_at":    now.Add(r.cfg.executedLifeFor(key.Side)),
 		})
 	if result.Error != nil {
 		return fmt.Errorf("convert absorption to executed shadow: %w", result.Error)
@@ -633,16 +657,63 @@ func (r *AbsorptionLedgerGORM) occupiedDepthTx(tx *gorm.DB, playerID int, key ab
 	}
 	breadth := r.sinkBreadthFor(tx, playerID, rows)
 	var occupied float64
+	executed := make([]*MarketAbsorptionLedgerModel, 0, len(rows))
 	for i := range rows {
 		row := &rows[i]
 		switch row.State {
 		case absorptionStatePlanned:
 			occupied += float64(row.Units)
 		case absorptionStateExecuted:
-			occupied += r.blockingResidual(row, now, breadth[row.Waypoint])
+			executed = append(executed, row)
 		}
 	}
-	return occupied, nil
+	return occupied + r.executedPoolResidual(key.Side, executed, now, breadth), nil
+}
+
+// executedPoolResidual is the depth one pool's EXECUTED shadows still occupy, and it is
+// where the two sides of a market part company. SELL folds PER ROW (blockingResidual): a
+// sink's damage is one dump's price move, judged against its own recovery floor. BUY folds
+// PER POOL, because source crowding is MANY ordinary purchases, each lawful alone and each
+// under the per-row floor — judged that way the pool reports zero occupied depth while the
+// ask climbs against the fleet. The pool total is floored ONCE, against the deepest tranche
+// its rows were written against, so a lone small buy still cannot block a source. It also
+// takes NO listing-breadth discount: that prior is fitted on sinks, and a purchase consumes
+// ONE good's supply, which breadth does not replenish (RULINGS #4's uniform prior).
+func (r *AbsorptionLedgerGORM) executedPoolResidual(
+	side string, rows []*MarketAbsorptionLedgerModel, now time.Time, sinkListings map[string]int,
+) float64 {
+	if len(rows) == 0 {
+		return 0
+	}
+	if side != absorption.SideBuy {
+		var total float64
+		for _, row := range rows {
+			total += r.blockingResidual(row, now, sinkListings[row.Waypoint])
+		}
+		return total
+	}
+
+	var total float64
+	floorTranche, unfloorable := 0, false
+	for _, row := range rows {
+		if row.ExecutedAt == nil {
+			continue
+		}
+		total += r.recovery.decayedUnits(row.Units, row.TierAtWrite, now.Sub(*row.ExecutedAt))
+		// No depth to floor against: the pool blocks on any positive residual, the same
+		// fail-closed branch a sell row with no stored tranche size takes.
+		if row.TrancheSize <= 0 {
+			unfloorable = true
+			continue
+		}
+		if row.TrancheSize > floorTranche {
+			floorTranche = row.TrancheSize
+		}
+	}
+	if !unfloorable && total < r.cfg.ShadowFloorFraction*float64(floorTranche) {
+		return 0
+	}
+	return total
 }
 
 // blockingResidual is an EXECUTED row's decayed occupied depth, but only while it is

@@ -13,15 +13,16 @@ import (
 // artifact from the existing routing.model_artifact_path, so no path lives here.
 type AbsorptionConfig struct {
 	// ExecutedHardCap bounds an EXECUTED recovery shadow's life regardless of decay.
-	// Trade-analyst Q2: 12h (NOT 24h — 24h is >half the remaining era). 0 → 12h default.
 	ExecutedHardCap time.Duration `mapstructure:"executed_hard_cap"`
 	// ShadowFloorFraction is the fraction of one tranche of still-occupied depth below
-	// which a recovering shadow stops blocking a new sell. Trade-analyst Q2: 0.5.
-	// 0 → 0.5 default.
+	// which a recovering shadow stops blocking a new sell. 0 → the package default.
 	ShadowFloorFraction float64 `mapstructure:"shadow_floor_fraction"`
 	// PlannedTTLSlack pads a PLANNED hold's projected round-trip TTL — the backstop to
 	// the dead-container reclaim, not the primary cleanup. 0 → 15m default.
 	PlannedTTLSlack time.Duration `mapstructure:"planned_ttl_slack"`
+	// BuyShadowLife bounds how long the fleet's own purchases keep occupying a SOURCE's
+	// depth — ExecutedHardCap's buy-side counterpart. 0 → the package default.
+	BuyShadowLife time.Duration `mapstructure:"buy_shadow_life"`
 	// SinkDepthScaling conditions the crush prior on the sink's listing breadth. An absent
 	// section runs the shipped fit.
 	SinkDepthScaling SinkDepthScalingConfig `mapstructure:"sink_depth_scaling"`

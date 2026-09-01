@@ -70,11 +70,10 @@ func arbPlan() *routing.TourPlan {
 	}}
 }
 
-// The core writer lifecycle: a plan RESERVES its tranches (buy-side at A, sell-side at B),
-// the executed sale CONVERTS the sink's reservation into an EXECUTED recovery shadow, and
-// on exit the container's remaining PLANNED rows (the buy-side hold) are RELEASED. The
-// single surviving row is the sink shadow — proof all three fired (no shadow without a
-// prior reservation to convert; no leaked PLANNED without the release).
+// The core writer lifecycle: a plan RESERVES its tranches (buy-side at A, sell-side at B)
+// and each executed trade CONVERTS its reservation into an EXECUTED recovery shadow, so
+// what the tour took OUT of the source and put INTO the sink both outlive the flight. Two
+// surviving shadows and no leaked PLANNED row is proof every step fired.
 func TestTourAbsorption_ReservesConvertsAndReleases(t *testing.T) {
 	fx := arbFixture(1000)
 	planner := &tourFakeRoutingClient{plans: []*routing.TourPlan{arbPlan()}}
@@ -89,12 +88,17 @@ func TestTourAbsorption_ReservesConvertsAndReleases(t *testing.T) {
 	require.True(t, tourResponse(t, resp).Completed)
 
 	rows := tourLedgerRows(t, db, "ctr-1")
-	require.Len(t, rows, 1, "only the sink recovery shadow survives; the buy-side hold was released")
-	require.Equal(t, "EXECUTED", rows[0].State)
-	require.Equal(t, "X1-S1-B", rows[0].Waypoint)
-	require.Equal(t, absorption.SideSell, rows[0].Side)
-	require.Equal(t, 40, rows[0].Units, "shadow carries the realized sold units")
-	require.Equal(t, "STRONG", rows[0].TierAtWrite, "converted with the live re-verify tier")
+	require.Len(t, rows, 2, "one shadow per side; nothing left PLANNED")
+	bySide := map[string]persistence.MarketAbsorptionLedgerModel{}
+	for _, row := range rows {
+		require.Equal(t, "EXECUTED", row.State)
+		require.Equal(t, "STRONG", row.TierAtWrite, "converted with the live re-verify tier")
+		require.Equal(t, 40, row.Units, "each shadow carries its realized units")
+		bySide[row.Side] = row
+	}
+	require.Equal(t, "X1-S1-B", bySide[absorption.SideSell].Waypoint)
+	require.Equal(t, "X1-S1-A", bySide[absorption.SideBuy].Waypoint,
+		"the source the fleet drained must stay visible to the next hull that ranks it (sp-feu9i)")
 }
 
 // The netting READ path: outstanding depth another container holds is assembled into the
@@ -286,15 +290,17 @@ func TestTourAbsorption_RestartDoesNotDoubleReserve(t *testing.T) {
 	require.NoError(t, err)
 
 	rows := tourLedgerRows(t, db, "ctr-1")
-	require.Len(t, rows, 1, "one shadow, not two — the stale row was released before re-reserving")
-	require.Equal(t, "EXECUTED", rows[0].State)
-	require.Equal(t, 40, rows[0].Units, "a single crush recorded, not a doubled one")
+	require.Len(t, rows, 2, "one shadow per side, not three — the stale row was released before re-reserving")
+	for _, row := range rows {
+		require.Equal(t, "EXECUTED", row.State)
+		require.Equal(t, 40, row.Units, "a single move per side recorded, not a doubled one")
+	}
 }
 
-// A sink sold across TWO price-tiered tranches (the solver emits them as separate trades)
-// converts to ONE shadow carrying the FULL realized crush (80u), not just the first
-// tranche (40u). This is the D39 multi-tranche co-dump the ledger exists to shadow — a
-// per-tranche convert would under-state exactly the case that matters most.
+// A pool worked across TWO price-tiered tranches (the solver emits them as separate
+// trades) converts to ONE shadow per side carrying the FULL realized 80u, not just the
+// first tranche's 40u. This is the D39 multi-tranche co-dump the ledger exists to shadow —
+// a per-tranche convert would under-state exactly the case that matters most.
 func TestTourAbsorption_MultiTrancheSinkShadowsFullCrush(t *testing.T) {
 	fx := &tourFixture{
 		cargo: map[string]int{}, location: "X1-S1-A", cargoCap: 100,
@@ -321,9 +327,12 @@ func TestTourAbsorption_MultiTrancheSinkShadowsFullCrush(t *testing.T) {
 	require.NoError(t, err)
 
 	rows := tourLedgerRows(t, db, "ctr-1")
-	require.Len(t, rows, 1)
-	require.Equal(t, "EXECUTED", rows[0].State)
-	require.Equal(t, 80, rows[0].Units, "the shadow records the FULL 80u crush across both tranches, not just the first 40u")
+	require.Len(t, rows, 2, "one shadow per side")
+	for _, row := range rows {
+		require.Equal(t, "EXECUTED", row.State)
+		require.Equal(t, 80, row.Units,
+			"the shadow records the FULL 80u across both tranches, not just the first 40u")
+	}
 }
 
 // Q3 (REPORT-ONLY): every accepted plan logs projected_recovery_burden — the sum over its

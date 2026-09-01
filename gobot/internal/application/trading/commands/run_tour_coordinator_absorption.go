@@ -610,37 +610,48 @@ func (h *RunTourCoordinatorHandler) ownPlannedUnits(ctx context.Context, contain
 	return own
 }
 
-// tourSinkSale accumulates one sink good's realized sale across a leg's price-tiered
-// tranches, plus the live tier + trade_volume the re-verify read (stable across the
-// sink's tranches), so the leg-end conversion sizes the shadow on the FULL crush.
-type tourSinkSale struct {
+// tourMarketFlow accumulates one good's realized units across a leg's price-tiered
+// tranches on ONE side of the market, plus the live tier + trade_volume the re-verify
+// read (stable across the good's tranches), so the leg-end conversion sizes the shadow
+// on the FULL move.
+type tourMarketFlow struct {
 	units       int
 	tier        string
 	tradeVolume int
 }
 
-// newLegSells allocates a per-leg sink accumulator, or nil when no ledger is wired (the
+// tourFlowKey is a leg's accumulator key. It carries the SIDE as well as the good because
+// one leg may both source and sink the same good, and the two occupy different pools.
+type tourFlowKey struct {
+	good string
+	side string
+}
+
+// newLegFlows allocates a per-leg accumulator, or nil when no ledger is wired (the
 // accumulation and conversion then no-op — the tour flies exactly as before). The
 // map is allocated whenever a ledger is present, regardless of the consult switch:
 // recording (and therefore converting) still runs in the escape-hatch mode.
-func (h *RunTourCoordinatorHandler) newLegSells() map[string]*tourSinkSale {
+func (h *RunTourCoordinatorHandler) newLegFlows() map[tourFlowKey]*tourMarketFlow {
 	if h.absorptionLedger == nil {
 		return nil
 	}
-	return map[string]*tourSinkSale{}
+	return map[tourFlowKey]*tourMarketFlow{}
 }
 
-// noteSinkSale folds one executed sell tranche into its sink's accumulator (units summed,
+// noteMarketFlow folds one executed tranche into its pool's accumulator (units summed,
 // tier/trade_volume captured from the live re-verify). No-op when the accumulator is nil
-// (no ledger) or nothing sold.
-func (h *RunTourCoordinatorHandler) noteSinkSale(legSells map[string]*tourSinkSale, good string, units int, live *market.TradeGood) {
-	if legSells == nil || units <= 0 {
+// (no ledger) or nothing moved.
+func (h *RunTourCoordinatorHandler) noteMarketFlow(
+	legFlows map[tourFlowKey]*tourMarketFlow, side, good string, units int, live *market.TradeGood,
+) {
+	if legFlows == nil || units <= 0 {
 		return
 	}
-	s := legSells[good]
+	k := tourFlowKey{good: good, side: side}
+	s := legFlows[k]
 	if s == nil {
-		s = &tourSinkSale{}
-		legSells[good] = s
+		s = &tourMarketFlow{}
+		legFlows[k] = s
 	}
 	s.units += units
 	if live != nil {
@@ -651,23 +662,29 @@ func (h *RunTourCoordinatorHandler) noteSinkSale(legSells map[string]*tourSinkSa
 	}
 }
 
-// convertLegShadows converts each sink good sold at this leg into an EXECUTED recovery
-// shadow — ONCE per sink with the full realized units (design §2: "per sink as legs
-// complete"), so followers (including this hull's own next plan) see the crush and stay
-// out until the fitted half-life says it regrew. Untagged sinks / zero-unit sales leave
-// none (the ledger's Q2 rule). Best-effort and fail-open: the sale is done, so a ledger
-// miss degrades coordination but never reports a failure (the sell floor + live-verify
-// are the hard guards). Mirrors the arb container's convert seam, batched per sink.
-func (h *RunTourCoordinatorHandler) convertLegShadows(ctx context.Context, cmd *RunTourCoordinatorCommand, waypoint string, legSells map[string]*tourSinkSale) {
-	if h.absorptionLedger == nil || cmd.ContainerID == "" || len(legSells) == 0 {
+// convertLegShadows converts each pool this leg moved through into an EXECUTED recovery
+// shadow — ONCE per pool with the full realized units (design §2: "per sink as legs
+// complete"), so followers (including this hull's own next plan) see the move and stay
+// out until the fitted curve says it regrew. Untagged markets / zero-unit trades leave
+// none (the ledger's Q2 rule). Best-effort and fail-open: the trade is done, so a ledger
+// miss degrades coordination but never reports a failure (the sell floor, the buy ceiling
+// and the live-verify are the hard guards). A failed convert leaves the row PLANNED, which
+// still occupies the pool's depth in full — the fail-closed direction.
+//
+// BOTH SIDES convert. Sell-only left the fleet's purchases no memory past the flight that
+// made them, so every hull's next plan read a just-drained source as untouched ground.
+func (h *RunTourCoordinatorHandler) convertLegShadows(
+	ctx context.Context, cmd *RunTourCoordinatorCommand, waypoint string, legFlows map[tourFlowKey]*tourMarketFlow,
+) {
+	if h.absorptionLedger == nil || cmd.ContainerID == "" || len(legFlows) == 0 {
 		return
 	}
-	for good, s := range legSells {
-		key := absorption.LaneKey{Waypoint: waypoint, Good: good, Side: absorption.SideSell}
+	for k, s := range legFlows {
+		key := absorption.LaneKey{Waypoint: waypoint, Good: k.good, Side: k.side}
 		if err := h.absorptionLedger.ConvertByContainer(ctx, cmd.ContainerID, cmd.PlayerID, key, s.units, s.tier, s.tradeVolume); err != nil {
 			common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf(
-				"Tour absorption convert failed for %s at %s/%s (sale completed; coordination degraded, guards intact): %v",
-				cmd.ContainerID, waypoint, good, err), nil)
+				"Tour absorption convert failed for %s at %s/%s %s (trade completed; coordination degraded, guards intact): %v",
+				cmd.ContainerID, waypoint, k.good, k.side, err), nil)
 		}
 	}
 }

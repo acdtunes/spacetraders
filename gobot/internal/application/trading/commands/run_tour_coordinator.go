@@ -1319,17 +1319,17 @@ func (h *RunTourCoordinatorHandler) executePlan(
 		legDedupBracket = h.legs.confirmScanDedupArrival(legDedupBracket)
 
 		legDegraded := false
-		// Accumulate realized units sold per good at THIS leg, so the sink's recovery
-		// shadow is converted ONCE with the full crush (across its price-tiered
+		// Accumulate realized units per (good, side) at THIS leg, so each pool's recovery
+		// shadow is converted ONCE with the full move (across its price-tiered
 		// tranches), not once per tranche. Nil when no ledger is wired.
-		legSells := h.newLegSells()
+		legFlows := h.newLegFlows()
 		// This leg's own sink depth, which arms the sell floor past the declared cap. Kept
-		// apart from legSells so an unwired absorption ledger cannot disarm a money guard.
+		// apart from legFlows so an unwired absorption ledger cannot disarm a money guard.
 		run.legSold = map[string]int{}
 		// Sells before buys (errata): a leg that fills the hold both ways must free
 		// space before spending it, and sell tranches are ordered price-ascending.
 		for _, trade := range legTradesToFly(leg.Trades, discharging || retiring) {
-			executed, terr := h.executeTrade(ctx, run, leg, legIdx, trade, legSells, legDedupBracket)
+			executed, terr := h.executeTrade(ctx, run, leg, legIdx, trade, legFlows, legDedupBracket)
 			if trade.IsBuy {
 				legDedupBracket = scanDedupBracket{} // exhausted once offered to one buy
 			}
@@ -1340,9 +1340,9 @@ func (h *RunTourCoordinatorHandler) executePlan(
 				legDegraded = true // a skipped trade degrades the leg but a still-good sibling trade may proceed
 			}
 		}
-		// Convert this leg's sinks to recovery shadows (per sink as legs complete, design
-		// §2) — even on a degraded leg, so the tranches that DID sell shadow their crush.
-		h.convertLegShadows(ctx, cmd, leg.Waypoint, legSells)
+		// Convert this leg's pools to recovery shadows (per pool as legs complete, design
+		// §2) — even on a degraded leg, so the tranches that DID trade shadow their move.
+		h.convertLegShadows(ctx, cmd, leg.Waypoint, legFlows)
 		run.response.LegsExecuted++
 		// A hull leaving service flies no leg that cannot discharge its hold: its buys are
 		// dropped, so a remaining buy-only leg is a wasted hop on a clock that is running out.
