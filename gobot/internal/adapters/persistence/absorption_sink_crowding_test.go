@@ -67,6 +67,22 @@ func countSinkAdmitted(t *testing.T, hulls, listings int) int {
 	return admitted
 }
 
+// countSinkAdmittedOneHull is countSinkAdmitted with every dump made by the SAME container —
+// one hull returning to a sink it already worked, rather than a queue of different hulls.
+func countSinkAdmittedOneHull(t *testing.T, dumps, listings int) int {
+	t.Helper()
+	ledger, db, playerID := setupDepthLedger(t)
+	key := crowdSink()
+	seedSinkListings(t, db, playerID, key.Waypoint, key.Good, listings)
+	admitted := 0
+	for i := 0; i < dumps; i++ {
+		if sinkOneHull(t, ledger, playerID, "tour-run-HULL-RETURNING", key, sinkHullLoad) {
+			admitted++
+		}
+	}
+	return admitted
+}
+
 // Hull after hull dumps into the same broad sink, each sale lawful on its own, and the pool
 // stops admitting them once the fleet's sales have taken its measured depth. Row by row this
 // hub never closed at all.
@@ -74,6 +90,46 @@ func TestSinkCrowding_HullsCannotAllDumpIntoOneHub(t *testing.T) {
 	admitted := countSinkAdmitted(t, 40, sinkHubListings)
 
 	require.Less(t, admitted, 40, "the fleet must not be able to queue every hull onto one sink")
+}
+
+// The pool counts the shadows the RESERVING container wrote itself, and that is load-bearing.
+// Reserve runs at plan-accept, so a container's own shadows on a sink were written by legs it
+// has already flown: this is one hull RE-ENTERING a sink it worked before, and the sink pays
+// for that re-entry what it pays for any other hull's tranche. Nothing else bounds it — the
+// solver's ladder cap is per SOLVE, and a container's own PLANNED rows are released before
+// every re-plan — so a pool that skipped its reserver's rows would let one hull dump into the
+// same sink every plan, forever.
+func TestSinkCrowding_HullReEnteringItsOwnSinkIsHeldOut(t *testing.T) {
+	returning := countSinkAdmittedOneHull(t, 40, sinkHubListings)
+
+	require.Less(t, returning, 40, "one hull must not re-enter its own worked sink without bound")
+	require.Equal(t, countSinkAdmitted(t, 40, sinkHubListings), returning,
+		"a hull's own shadows must hold it out exactly as another hull's would")
+}
+
+// A re-plan releases the container's in-flight holds, and it must not hand the hull back the
+// sink it just crushed: only the PLANNED rows drop, so the EXECUTED shadow of the hull's own
+// sale still holds the depth against its next plan.
+func TestSinkCrowding_ReplanDoesNotReturnAHullItsOwnCrowdedSink(t *testing.T) {
+	ledger, db, playerID := setupDepthLedger(t)
+	ctx := context.Background()
+	key := crowdSink()
+	seedSinkListings(t, db, playerID, key.Waypoint, key.Good, sinkHubListings)
+
+	hull := "tour-run-HULL-REPLANNING"
+	for i := 0; sinkOneHull(t, ledger, playerID, hull, key, sinkHullLoad); i++ {
+		require.Less(t, i, 40, "the hull's own sales must close the sink, not admit forever")
+	}
+
+	dropped, err := ledger.ReleaseByContainer(ctx, hull, playerID)
+	require.NoError(t, err)
+	require.Zero(t, dropped, "every hold this hull took is already an executed shadow")
+
+	_, ok, err := ledger.Reserve(ctx, playerID, hull, "tour",
+		[]absorption.ReserveEntry{sellEntry(key.Waypoint, key.Good, sinkHullLoad,
+			replayACapTranches*replayTrancheSize, time.Hour)})
+	require.NoError(t, err)
+	require.False(t, ok, "a re-plan must not free the depth the hull's own sales are still holding")
 }
 
 // The bound is measured DEPTH scaled by the sink's breadth, so a hub still absorbs
