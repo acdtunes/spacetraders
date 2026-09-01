@@ -3,15 +3,15 @@ package absorption
 // SinkDepthScaling is the depth-conditioned crush prior applied to an EXECUTED recovery shadow.
 //
 // A shadow is a QUANTITY-space claim on a sink's depth: the units a sale took out stay occupied
-// until the fitted curve says the sink regrew. Absorption is not uniform across markets, and the
-// sink's LISTING BREADTH (how many goods its market trades) is the readable signal of it — a
-// market listing one good gives up its bid to a single tranche, while a broad hub takes the same
-// tranche with a bid move too small to price against, and embargoing its depth for the shadow's
-// whole life strands a lane that is still clearing.
-//
-// The scale multiplies the shadow's occupied depth. It composes with the recovery curve and the
-// recovery floor rather than replacing either, so it sets the PRIOR a shadow starts from, never
-// the mechanism that decays or releases it.
+// until the fitted curve says the sink regrew. The scale multiplies that occupied depth, so what
+// it sets is how many tranches of the fleet's own prior dumping a sink takes before the cap
+// binds — about the reciprocal of the scale. LISTING BREADTH conditions that threshold but does
+// not explain it: the cross-hull bid impact this guard bounds shows no breadth attenuation of
+// either sign. The prior survives because that impact is CONVEX in tranches — a small scale
+// concentrates refusals on the tail; flattening drags every threshold into the range where prior
+// dumping costs nothing. It composes with the recovery curve and the recovery floor rather than
+// replacing either, so it sets the PRIOR a shadow starts from, never the mechanism that decays
+// or releases it.
 //
 // Every unconfirmed input resolves to the uniform prior of 1.0, the conservative direction: a
 // sink whose breadth we cannot read is charged the full claim. Nothing here can make a shadow
@@ -30,7 +30,7 @@ type SinkDepthScaling struct {
 	MinCrushScale float64
 }
 
-// The shipped fit. Both shape terms are refit per era and config overrides either.
+// The shipped shape. Both terms are retuned per era and config overrides either.
 const (
 	// DefaultThinListings keeps the full claim on markets narrow enough that one tranche
 	// plausibly clears their book.
