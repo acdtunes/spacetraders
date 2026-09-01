@@ -155,6 +155,28 @@ func (r *gateReach) canReach(ctx context.Context, origin, target string) (bool, 
 	return within, err
 }
 
+// seedHops is hops with the target's OWN system answered as ZERO crossings, and it
+// is the ONE definition every seed-target decision reads.
+//
+// A SECOND METHOD RATHER THAN A WIDENING OF hops, because one caller's correct answer
+// is the other's stall. hops answers "could a hull be FLOWN from here to there", where
+// origin==target is not a flight at all — sourcesWithinReach relies on that to keep a
+// foothold's carrier pool clear of the placement's own system. This answers "how much
+// crossing stands between here and where the seed is going", and a hull already
+// standing in the target faces none.
+func (r *gateReach) seedHops(ctx context.Context, origin, target string) (int, bool, error) {
+	if origin == target {
+		return 0, true, nil
+	}
+	return r.hops(ctx, origin, target)
+}
+
+// seedCanReach is seedHops asked as a yes or no.
+func (r *gateReach) seedCanReach(ctx context.Context, origin, target string) (bool, error) {
+	_, within, err := r.seedHops(ctx, origin, target)
+	return within, err
+}
+
 // beyondReach sorts after every reachable distance for THIS walker, so an
 // unreachable target keeps its place at the back of the queue rather than jumping
 // it. Derived from the walker's own bound for the same reason maxHops is.
@@ -279,6 +301,27 @@ func (r *gateReach) originsWithin(ctx context.Context, candidates []string, targ
 	out := make([]string, 0, len(found))
 	for _, c := range found {
 		out = append(out, c.system)
+	}
+	return out, nil
+}
+
+// seedStagingOrigins is originsWithin for a CHARTING SEED: the target's own system
+// heads the list at the zero crossings seedHops prices it at, and everything behind
+// it is byte-identical to originsWithin's answer. A target the caller does not offer
+// as a candidate — a system the ledger holds no row for — yields exactly that list.
+//
+// It is an ORDERING, never a permission: the yard, stock, staffing and free-waypoint
+// tests behind it are unchanged, so promoting the target cannot make a purchase
+// possible that was not possible before (RULINGS #4).
+func (r *gateReach) seedStagingOrigins(ctx context.Context, candidates []string, target string) ([]string, error) {
+	out, err := r.originsWithin(ctx, candidates, target)
+	if err != nil {
+		return nil, err
+	}
+	for _, candidate := range candidates {
+		if candidate == target {
+			return append([]string{target}, out...), nil
+		}
 	}
 	return out, nil
 }

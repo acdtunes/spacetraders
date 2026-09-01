@@ -28,6 +28,7 @@ package parkedsensing_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
@@ -275,6 +276,11 @@ func TestExpansion_ClaimingASpareLeavesTheMarketPlacementSharingItsWaypoint(t *t
 		PlayerID: testPlayerID, SystemSymbol: "X1-B", Verdict: appSensing.VerdictPending,
 		UnchartedCount: 3,
 	}))
+	// X1-B is the ONLY system with charting work: X1-A's waypoint list is swept, so
+	// it is not itself a target and cannot stage a seed on its own counter. Left
+	// unswept it is one, and the row this test counts would be joined by a legitimate
+	// second want — a different subject entirely.
+	require.NoError(t, repo.StampCatalogSynced(ctx, testPlayerID, "X1-A", time.Now().UTC()))
 	// One waypoint, two placements, two DIFFERENT hulls.
 	require.NoError(t, repo.UpsertSpareSlot(ctx, persistence.SensingSlotModel{
 		PlayerID: testPlayerID, WaypointSymbol: "X1-A-YARD", SystemSymbol: "X1-A",

@@ -15,7 +15,8 @@ import (
 // staging alone and a want written two hops out is not recognised as supply by this
 // test, so the next tick falls through to staging, finds the first yard taken and
 // stages at the NEXT one: a second probe for a target already served, every tick
-// until the yards run out. They share gateReach so there is no second reach to drift.
+// until the yards run out. They read seedHops for exactly that reason — including its
+// zero-crossing answer for the target's own system, which staging now stages into.
 //
 // The reach test is the whole point. A blanket count of every SPARE row suppresses
 // demand it cannot possibly serve: a spare parked five systems from the frontier is
@@ -44,7 +45,7 @@ import (
 // (RULINGS #4: the doubt resolves toward NOT spending).
 func (t *expandTick) takeSupplyFor(ctx context.Context, target string) (bool, error) {
 	for i, spare := range t.book.spares {
-		within, err := t.reach.canReach(ctx, spare.System, target)
+		within, err := t.reach.seedCanReach(ctx, spare.System, target)
 		if err != nil {
 			return false, err
 		}
@@ -223,10 +224,14 @@ func (t *expandTick) claimSpares(ctx context.Context) error {
 // those within gate reach of it. Nearest rather than first: both the flying time and
 // the risk of the walk being interrupted scale with the hop count. The ledger's own
 // order breaks a tie, so the choice stays reproducible tick to tick.
+//
+// A SPARE PARKED IN THE TARGET ITSELF IS THE NEAREST THERE IS, at the zero crossings
+// seedHops prices it at — read through the flight walk it is unreachable, and a probe
+// standing in the dark system cannot be put to work charting it.
 func (t *expandTick) takeReachableSpare(ctx context.Context, target string) (QueuedSlot, bool, error) {
 	best, nearest := -1, t.reach.beyondReach()
 	for i, spare := range t.book.parkedSpares {
-		hops, within, err := t.reach.hops(ctx, spare.System, target)
+		hops, within, err := t.reach.seedHops(ctx, spare.System, target)
 		if err != nil {
 			return QueuedSlot{}, false, err
 		}

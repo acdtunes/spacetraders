@@ -3,6 +3,7 @@ package parkedsensing
 import (
 	"context"
 	"fmt"
+	"sort"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/logging"
 )
@@ -123,6 +124,17 @@ func (t *expandTick) staffCounters(ctx context.Context) error {
 		if hull.InTransit && hull.Waypoint != "" {
 			inbound[hull.Waypoint] = true
 		}
+	}
+
+	// NEAREST THE TARGET FIRST, the same argument staging makes one layer up: the
+	// counter this pass unblocks is the counter a seed then gets BOUGHT at, so one in a
+	// target system buys a hull that charts on arrival where one two gates back buys a
+	// hull that spends its errand flying. Ordering on the seed's walk rather than on the
+	// sacrifice is what the borrow's own terms license — nothing is held, and the hull
+	// stays free to its coordinator throughout (see the file header).
+	hulls, err = t.orderByTargetWalk(ctx, hulls)
+	if err != nil {
+		return err
 	}
 
 	// EVIDENCE FIRST, the same two passes and the same admission rule stagingYardFor
@@ -264,41 +276,94 @@ func (t *expandTick) unstaffedCounterIn(ctx context.Context, system, standingOn 
 	return "", nil
 }
 
+// orderByTargetWalk puts the hulls standing nearest a seed target at the head of the
+// borrow list, through the same memo the eligibility test then reads — so it costs the
+// walks that pass was going to make anyway. STABLE, so LendableHulls' own
+// cheapest-sacrifice order still decides between two hulls the same distance out.
+//
+// It REORDERS AND NEVER FILTERS. A hull this pass cannot use keeps its place rather
+// than being dropped: the loop skips it on its own terms, and the `inbound` index
+// built from those hulls is what stops a second one being sent to the same counter.
+func (t *expandTick) orderByTargetWalk(ctx context.Context, hulls []LendableHull) ([]LendableHull, error) {
+	distance := make(map[string]int, len(hulls))
+	for _, hull := range hulls {
+		if hull.InTransit || hull.System == "" || hull.Waypoint == "" {
+			continue
+		}
+		walk, err := t.targetWalkFrom(ctx, hull.System)
+		if err != nil {
+			return nil, err
+		}
+		distance[hull.System] = walk.hops
+	}
+
+	ordered := append([]LendableHull(nil), hulls...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		return t.borrowRank(distance, ordered[i]) < t.borrowRank(distance, ordered[j])
+	})
+	return ordered, nil
+}
+
+// borrowRank is how far the seed bought through this hull would still have to fly. An
+// unresolved walk sorts LAST, never first, so an unusable position can only cost a
+// hull its place in the queue.
+func (t *expandTick) borrowRank(distance map[string]int, hull LendableHull) int {
+	if hops, resolved := distance[hull.System]; resolved {
+		return hops
+	}
+	return t.reach.beyondReach()
+}
+
 // originServesATarget reports whether staging would ever CHOOSE a yard in system —
 // the feasibility test that keeps a borrowed hull from being flown somewhere its
 // presence could not be used.
+func (t *expandTick) originServesATarget(ctx context.Context, system string) (bool, error) {
+	walk, err := t.targetWalkFrom(ctx, system)
+	return walk.serves, err
+}
+
+// targetWalkFrom is the crossings a seed bought in system would still have to fly
+// before it charts anything: the distance to the NEAREST target still needing a hull,
+// and whether any is routable from there at all.
 //
 // TWO CONDITIONS, BOTH stagingYardFor's OWN. The system must be one of the origins
 // staging walks (reach.origins(), the tick's neighbour map — a system carrying no
 // ledger row is never offered as a staging origin however many counters it holds),
-// and at least one target still needing a seed must be ROUTABLE from it. Asking the
-// tick's shared gateReach rather than a second walk is what stops this pass and
-// staging disagreeing about where a seed can be bought.
+// and at least one target still needing a seed must be ROUTABLE from it. Reading the
+// tick's shared seedHops rather than a second walk is what stops this pass and staging
+// disagreeing about where a seed can be bought — including the zero-crossing answer
+// for a hull standing IN a target, which this pass would otherwise call unserved.
 //
 // Memoised for the TICK: several lendable hulls share a system, and neither the
 // origin set nor the reach can change while the tick runs.
-func (t *expandTick) originServesATarget(ctx context.Context, system string) (bool, error) {
+func (t *expandTick) targetWalkFrom(ctx context.Context, system string) (targetWalk, error) {
 	if known, cached := t.serving[system]; cached {
 		return known, nil
 	}
-	serves := false
+	walk := targetWalk{hops: t.reach.beyondReach()}
 	if t.stagingOrigin(system) {
 		for _, target := range t.targets {
 			if t.covered[target.System] {
 				continue
 			}
-			within, err := t.reach.canReach(ctx, system, target.System)
+			hops, within, err := t.reach.seedHops(ctx, system, target.System)
 			if err != nil {
-				return false, err
+				return targetWalk{}, err
 			}
-			if within {
-				serves = true
-				break
+			if within && (!walk.serves || hops < walk.hops) {
+				walk = targetWalk{hops: hops, serves: true}
 			}
 		}
 	}
-	t.serving[system] = serves
-	return serves, nil
+	t.serving[system] = walk
+	return walk, nil
+}
+
+// targetWalk is one system's distance to the nearest seed target still wanting a
+// hull. serves=false means none is routable from it, and hops is then meaningless.
+type targetWalk struct {
+	hops   int
+	serves bool
 }
 
 // stagingOrigin reports whether system is one of the origins seed staging walks,

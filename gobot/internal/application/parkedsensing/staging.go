@@ -23,21 +23,21 @@ func (t *expandTick) probeYardsIn(ctx context.Context, system string) ([]string,
 }
 
 // stagingYardFor picks where a seed for target should be bought: a probe-selling
-// yard, in any of our own systems FROM WHICH THE TARGET IS ROUTABLE, that carries
-// no SPARE placement of its own.
+// yard, in the TARGET ITSELF or in any of our own systems FROM WHICH THE TARGET IS
+// ROUTABLE, that carries no SPARE placement of its own.
 //
 // WHERE WE CAN TRANSACT AND WHAT IS NEAR THE TARGET ARE TWO DIFFERENT QUESTIONS,
 // AND WELDING THEM IS A STRUCTURAL DEAD ZONE. Require a yard to be staffed AND to
-// sit within the placement walk's couple of rings OF THE TARGET, and a target
-// whose in-reach systems all lack a shipyard can never be seeded however many
-// staffed yards the fleet owns elsewhere; because a system with no shipyard can
-// never itself be staffed, the dead zone propagates outward.
-//
-// So eligibility is routability alone, bounded by SeedFlightUnbounded (the bound
-// the seed's own walk resolves under), with candidates ordered NEAREST FIRST
-// because a shorter flight is fewer ticks holding probe-cap headroom. The money
-// constraint is not dropped: staffedAt still applies on top, so a nearer yard we
-// do not hold is skipped for a further one we do.
+// sit within a couple of rings OF THE TARGET, and a target whose in-reach systems
+// all lack a shipyard can never be seeded however many staffed yards the fleet owns
+// elsewhere — and since a system with no shipyard can never itself be staffed, the
+// dead zone propagates outward. So eligibility is routability alone, bounded by
+// SeedFlightUnbounded, ordered NEAREST FIRST because a shorter flight is fewer ticks
+// holding probe-cap headroom — and the TARGET'S OWN counter is the nearest there is,
+// at the zero crossings seedHops prices it at, which is what puts the
+// counter-to-target walk into the buy queue's landed-cost ranking. The money
+// constraint is not dropped: staffedAt still applies on top, nothing is priced here,
+// and the walk-away ceiling still refuses a counter asking too much (RULINGS #4).
 //
 // "OUR OWN" IS ENFORCED, and nothing upstream supplies it: the origins this walks
 // are every system carrying a screening VERDICT, and a verdict says "screened and
@@ -45,12 +45,11 @@ func (t *expandTick) probeYardsIn(ctx context.Context, system string) ([]string,
 // at a yard in a system we have never visited, the buy queue refuses it on that
 // tick and every tick after, and the target never gets eyes.
 //
-// The enforcement belongs HERE rather than in the origin set. `neighbours` is
-// shared with frontier propagation, which needs every system whose gate adjacency
-// we have measured precisely BECAUSE it has no verdict yet; narrowing that map to
-// occupied systems would collapse the frontier back to one fully-charted ring at a
-// time. Occupancy is a requirement of STAGING A PURCHASE, not of believing a gate
-// edge, so it is applied at the yard and the map is left whole.
+// The enforcement belongs HERE rather than in the origin set. `neighbours` is shared
+// with frontier propagation, which needs every system whose gate adjacency we have
+// measured precisely BECAUSE it has no verdict yet; narrowing that map to occupied
+// systems would collapse the frontier back to one fully-charted ring at a time.
+// Occupancy is a requirement of STAGING A PURCHASE, not of believing a gate edge.
 //
 // Writing nothing beats writing an unfundable want: nothing retires a WANTED SPARE
 // row, and through takeSupplyFor a stale one goes on suppressing the correct
@@ -64,7 +63,7 @@ func (t *expandTick) probeYardsIn(ctx context.Context, system string) ([]string,
 // assigned_ship), so this is defence in depth; it still earns its place, because
 // picking a free yard is how two seed requests avoid the same waypoint.
 func (t *expandTick) stagingYardFor(ctx context.Context, target string) (string, string, error) {
-	origins, err := t.reach.originsWithin(ctx, t.reach.origins(), target)
+	origins, err := t.reach.seedStagingOrigins(ctx, t.reach.origins(), target)
 	if err != nil {
 		return "", "", err
 	}

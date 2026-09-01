@@ -565,10 +565,18 @@ type fakeExpandYards struct {
 	bySystem map[string][]string
 	err      error
 	calls    int
+	// perSystem counts the reads of ONE system, which is what the memo is about. A
+	// single total also moves whenever the tick legitimately asks about a system it
+	// did not before, and would then fail for a reason that is not a broken memo.
+	perSystem map[string]int
 }
 
 func (f *fakeExpandYards) ListProbeYards(_ context.Context, system string) ([]string, error) {
 	f.calls++
+	if f.perSystem == nil {
+		f.perSystem = map[string]int{}
+	}
+	f.perSystem[system]++
 	if f.err != nil {
 		return []string{system + "-YARD"}, f.err // adversarial: a spendable yard
 	}
@@ -1206,9 +1214,13 @@ func TestAdvanceExpansion_YardsAreResolvedOncePerOriginSystem(t *testing.T) {
 	if _, err := h.run(t, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if h.yards.calls != 1 {
-		t.Fatalf("listed yards %d times, want 1 — three targets bordering one system must not re-read it three times",
-			h.yards.calls)
+	if got := h.yards.perSystem["X1-A"]; got != 1 {
+		t.Fatalf("listed the yards of X1-A %d times, want 1 — three targets bordering one system must not re-read it three times", got)
+	}
+	for _, target := range []string{"X1-B", "X1-C", "X1-D"} {
+		if got := h.yards.perSystem[target]; got != 1 {
+			t.Fatalf("listed the yards of %s %d times, want 1 — a target's own counters are read once and memoised like any other origin's", target, got)
+		}
 	}
 }
 

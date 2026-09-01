@@ -546,7 +546,7 @@ func AdvanceExpansion(
 		probeYards: probeYards,
 		staffed:    map[string]bool{},
 		listings:   map[string]probeStock{},
-		serving:    map[string]bool{},
+		serving:    map[string]targetWalk{},
 		targets:    targets, covered: covered,
 		rep: &rep,
 	}
@@ -638,14 +638,14 @@ type expandTick struct {
 	// first crewed system, and re-solved only where the crew it was solved for no
 	// longer matches the roster above.
 	shares *shareBook
-	// None of the four can change while the tick runs. serving memoises whether
-	// staging would ever choose a yard in a system at all — see originServesATarget —
+	// None of the four can change while the tick runs. serving memoises how far a
+	// system is from the nearest target still wanting a hull — see targetWalkFrom —
 	// and origins is that test's own index, built lazily because most ticks never
 	// reach the pass that asks.
 	probeYards map[string][]string
 	staffed    map[string]bool
 	listings   map[string]probeStock
-	serving    map[string]bool
+	serving    map[string]targetWalk
 	origins    map[string]bool
 	// covered is struck off by every branch that answers a target, which keeps one
 	// system from being sent both a spare and a fresh probe.
