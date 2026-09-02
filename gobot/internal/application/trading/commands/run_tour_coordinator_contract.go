@@ -41,7 +41,10 @@ type RunTourCoordinatorCommand struct {
 	// lookbackSourceCallCreditsDefault (the armed price); negative is the operator's disarm,
 	// sourcing every waypoint that adds value.
 	LookbackSourceCallCredits int
-	ReplanLimit               int // 0 → tourMaxReplansDefault (PER TOUR)
+	// LookbackItemCallCredits: what ONE MORE GOOD must earn for its buy+sell request pair.
+	// 0 → lookbackItemCallCreditsDefault; negative is the operator's disarm.
+	LookbackItemCallCredits int
+	ReplanLimit             int // 0 → tourMaxReplansDefault (PER TOUR)
 	// Iterations is the tour count, unifying the container iteration semantics
 	// (registry invariant 3): -1 = CONTINUOUS (tour, re-plan from the new position,
 	// tour again — until margins die/starvation/stop), N>0 = exactly N tours, 0 =

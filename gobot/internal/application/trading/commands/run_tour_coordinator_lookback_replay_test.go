@@ -37,8 +37,11 @@ const (
 	// The solver's own calibration of a stop and a buy chunk, so this measurement and the
 	// plan's call model cannot disagree about what a stop is worth. A hull standing on a
 	// source still pays its dock; what it saves is the navigate and orbit.
-	replayCallsPerVisit         = 3.3
-	replayCallsPerTransaction   = 1.0
+	replayCallsPerVisit = 3.3
+	// A manifest good costs a request on BOTH sides: the buy here, and the sell the destination
+	// re-plan must make to liquidate it. Counting only the buy would credit the item charge
+	// with half the requests dropping a good actually frees.
+	replayCallsPerTransaction   = 2.0
 	replayCallsPerStandingVisit = 1.0
 	replayFieldSep              = "\x1f"
 )
@@ -99,10 +102,13 @@ func TestReplay_LookbackSourceCharge(t *testing.T) {
 	// Arm 0 is today's engine. Arm 1 changes only the flown ORDER — the same goods at the same
 	// prices, grouped so a source is docked once — and isolates what that costs nothing to get.
 	// The rest price a further source at rising charges.
+	// The ITEM arms hold the source charge at its armed price and sweep what one GOOD must
+	// earn, so what they give up and free is attributable to the transaction toll alone.
 	arms := []struct {
 		name    string
 		grouped bool
 		charge  int
+		item    int
 	}{
 		{name: "today", grouped: false},
 		{name: "grouped", grouped: true},
@@ -114,6 +120,14 @@ func TestReplay_LookbackSourceCharge(t *testing.T) {
 		{name: "charge 40k", grouped: true, charge: 40_000},
 		{name: "charge 60k", grouped: true, charge: 60_000},
 		{name: "charge 100k", grouped: true, charge: 100_000},
+		{name: "item 1k", grouped: true, charge: 20_000, item: 1_000},
+		{name: "item 2k", grouped: true, charge: 20_000, item: 2_000},
+		{name: "item 3k", grouped: true, charge: 20_000, item: 3_000},
+		{name: "item 5k", grouped: true, charge: 20_000, item: 5_000},
+		{name: "item 8k", grouped: true, charge: 20_000, item: 8_000},
+		{name: "item 12k", grouped: true, charge: 20_000, item: 12_000},
+		{name: "item 20k", grouped: true, charge: 20_000, item: 20_000},
+		{name: "item 40k", grouped: true, charge: 20_000, item: 40_000},
 	}
 	type row struct {
 		name    string
@@ -139,7 +153,11 @@ func TestReplay_LookbackSourceCharge(t *testing.T) {
 			sourcing := lookbackSourcing{}
 			free := ""
 			if arm.grouped {
-				sourcing = lookbackSourcing{StandWaypoint: seam.standWaypoint, VisitCharge: arm.charge}
+				sourcing = lookbackSourcing{
+					StandWaypoint: seam.standWaypoint,
+					VisitCharge:   arm.charge,
+					ItemCharge:    arm.item,
+				}
 				free = seam.standWaypoint
 			}
 			scored := replayScore(src, dst, sourcing, free, seam.standWaypoint, !arm.grouped)

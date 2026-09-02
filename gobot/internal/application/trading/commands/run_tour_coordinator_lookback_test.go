@@ -422,3 +422,64 @@ func TestTour_Lookback_CeilingBindsOnTheLookbackFloor(t *testing.T) {
 		t.Fatalf("a ceiling-aborted look-back buy spends nothing, got %d", resp.TotalSpent)
 	}
 }
+
+// The request toll drops the tail the capped-spread rank admits once hold space stops being
+// scarce: a rich lane and a bulk lane both clear the margin floor, and only the bulk one fails
+// to earn its buy-and-sell request pair.
+func TestBuildLookbackManifest_ItemChargeDropsTheLaneThatCannotPayForItsRequests(t *testing.T) {
+	src := []trading.GoodListing{
+		gl("CLOTHING", "D46", "EXPORT", 0, 3900, 60),
+		gl("FERTILIZERS", "D46", "EXPORT", 0, 162, 60),
+	}
+	dest := []trading.GoodListing{
+		gl("CLOTHING", "A1", "IMPORT", 4900, 0, 60),
+		gl("FERTILIZERS", "A1", "IMPORT", 220, 0, 60),
+	}
+	// Untolled, the hold has room for both: 60x1000 and 60x58 each clear the 33/unit floor.
+	if m := buildLookbackManifest(src, dest, 490, lookbackMinMarginDefault, lookbackSourcing{}); len(m) != 2 {
+		t.Fatalf("untolled manifest should carry both lanes, got %d: %+v", len(m), m)
+	}
+	// FERTILIZERS grosses 60*58 = 3,480 against a 2x3,000 toll and is refused; CLOTHING
+	// grosses 60*1,000 = 60,000 and pays for itself many times over. A DEEPER lane of the
+	// same good would survive — the toll prices requests, not the good.
+	toll := lookbackSourcing{ItemCharge: 3_000}
+	m := buildLookbackManifest(src, dest, 490, lookbackMinMarginDefault, toll)
+	if len(m) != 1 || m[0].Good != "CLOTHING" {
+		t.Fatalf("toll should keep only CLOTHING, got %+v", m)
+	}
+}
+
+// The toll may shorten a manifest but must never delete one: an empty manifest is the deadhead
+// jump look-back exists to close, and the jump's movement bundle is spent either way.
+func TestBuildLookbackManifest_ItemChargeNeverEmptiesTheManifest(t *testing.T) {
+	src := []trading.GoodListing{gl("FERTILIZERS", "D46", "EXPORT", 0, 162, 60)}
+	dest := []trading.GoodListing{gl("FERTILIZERS", "A1", "IMPORT", 220, 0, 60)}
+
+	// A toll far above anything this lane can gross still leaves the best lane standing.
+	m := buildLookbackManifest(src, dest, 490, lookbackMinMarginDefault,
+		lookbackSourcing{ItemCharge: 10_000_000})
+	if len(m) != 1 || m[0].Good != "FERTILIZERS" {
+		t.Fatalf("the best lane is exempt from the toll, got %+v", m)
+	}
+}
+
+// Saturation scales the toll and 0 disarms it, so a fleet with request headroom packs exactly
+// as it did before the charge existed — the same fail-open contract the visit charge carries.
+func TestLookbackItemCharge_ScalesWithSaturationAndFailsOpen(t *testing.T) {
+	cmd := &RunTourCoordinatorCommand{}
+	if got := lookbackItemCharge(cmd, 0); got != 0 {
+		t.Fatalf("headroom must price no request, got %d", got)
+	}
+	if got := lookbackItemCharge(cmd, 1000); got != lookbackItemCallCreditsDefault {
+		t.Fatalf("a fully bound budget charges the armed price, got %d", got)
+	}
+	if got := lookbackItemCharge(cmd, 500); got != lookbackItemCallCreditsDefault/2 {
+		t.Fatalf("half-bound charges half, got %d", got)
+	}
+	if got := lookbackItemCharge(cmd, 5000); got != lookbackItemCallCreditsDefault {
+		t.Fatalf("a reading past the ceiling clamps, got %d", got)
+	}
+	if got := lookbackItemCharge(&RunTourCoordinatorCommand{LookbackItemCallCredits: -1}, 1000); got != 0 {
+		t.Fatalf("a negative knob is the operator disarm, got %d", got)
+	}
+}
