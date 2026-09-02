@@ -30,6 +30,10 @@ type TourRunOverrides struct {
 	// longer. It only ever ARMS reach (never disarms), so it cannot fight a captain who
 	// globally enabled it.
 	RepositionReachEnabled bool
+
+	// MVTLoop selects the MVT trade loop for THIS launch, set by the fleet coordinator from
+	// the hull's trade-mvt tag; false is the legacy tour path, so rollback is one tag change.
+	MVTLoop bool
 }
 
 // applyTourRunOverrides layers a launch's per-launch overrides onto the freshly-built tour
@@ -44,6 +48,10 @@ func applyTourRunOverrides(config map[string]interface{}, overrides *TourRunOver
 	}
 	if overrides.RepositionReachEnabled {
 		config["reposition_reach_enabled"] = true
+	}
+	// Written only when selected: an absent key reads as false, the legacy tour path.
+	if overrides.MVTLoop {
+		config["mvt_loop"] = true
 	}
 }
 
@@ -181,6 +189,21 @@ func (s *DaemonServer) addTradeFleetTourKnobs(config map[string]interface{}) {
 
 	config["externality_weight"] = s.tradeFleetConfig.ExternalityWeight
 	config["tour_neighbors_durable_first"] = s.tradeFleetConfig.TourNeighborsDurableFirst
+
+	// MVT trade loop knobs, written only when set so an absent key defers to the coordinator's
+	// spec default rather than pinning a 0. The loop is armed per hull by mvt_loop, never by these.
+	if v := s.tradeFleetConfig.YieldWindowSells; v > 0 {
+		config["yield_window_sells"] = v
+	}
+	if v := s.tradeFleetConfig.YieldMinSells; v > 0 {
+		config["yield_min_sells"] = v
+	}
+	if v := s.tradeFleetConfig.ClaimReachHops; v > 0 {
+		config["claim_reach_hops"] = v
+	}
+	if v := s.tradeFleetConfig.SpecialistCadenceMinutes; v > 0 {
+		config["specialist_cadence_minutes"] = v
+	}
 }
 
 // TourRepositionConfigPersister backs the tour coordinator's

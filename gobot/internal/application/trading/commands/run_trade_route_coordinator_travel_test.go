@@ -654,14 +654,27 @@ func (f *fakeGateGraph) StoredRankingDistances(_ context.Context, from string, t
 	return f.storedDistances(from, targets, maxJumps, true)
 }
 
+// StoredSystemsWithinJumps mirrors the production discovery walk: the ranking traversal with no
+// target filter, the origin excluded. storedHopErr forces the unreadable-store branch here too.
+func (f *fakeGateGraph) StoredSystemsWithinJumps(_ context.Context, from string, maxJumps int) (map[string]int, error) {
+	return f.storedWalk(from, nil, maxJumps, true)
+}
+
 func (f *fakeGateGraph) storedDistances(from string, targets []string, maxJumps int, throughStale bool) (map[string]int, error) {
-	if f.storedHopErr != nil {
-		return nil, f.storedHopErr
-	}
 	wanted := map[string]bool{}
 	for _, t := range targets {
 		wanted[t] = true
 	}
+	return f.storedWalk(from, wanted, maxJumps, throughStale)
+}
+
+// storedWalk is the fixture's one traversal behind the three stored resolvers, as in production:
+// wanted narrows the result to the listed systems, nil keeps everything reached but the origin.
+func (f *fakeGateGraph) storedWalk(from string, wanted map[string]bool, maxJumps int, throughStale bool) (map[string]int, error) {
+	if f.storedHopErr != nil {
+		return nil, f.storedHopErr
+	}
+	keep := func(sys string) bool { return wanted == nil || wanted[sys] }
 	out := map[string]int{}
 	if wanted[from] {
 		out[from] = 0
@@ -680,7 +693,7 @@ func (f *fakeGateGraph) storedDistances(from string, targets []string, maxJumps 
 					continue
 				}
 				visited[e.ConnectedSystem] = true
-				if wanted[e.ConnectedSystem] {
+				if keep(e.ConnectedSystem) {
 					out[e.ConnectedSystem] = depth
 				}
 				next = append(next, e.ConnectedSystem)

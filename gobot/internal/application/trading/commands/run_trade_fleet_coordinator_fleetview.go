@@ -7,13 +7,18 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 )
 
-// partitionTradeFleet splits a fleet snapshot into the 'trade'-dedicated hulls that
+// partitionTradeFleet splits a fleet snapshot into the trade-dedicated hulls that
 // are parked and eligible for relaunch (idle, not in transit) and a count of those
 // currently running a tour — the reconcile predicate (sp-1278), the analog of the
 // scout reconciler detecting unmanned slots.
 //
+// Membership is isTradeFleetTag: "trade", "trade-mvt" and "trade-lane" are ALL this
+// coordinator's hulls (spec §8). The tag selects the tour path per hull downstream (it
+// rides the launch spec), never whether the hull is launched at all, so re-tagging a
+// hull between the three is a pure path switch with no relaunch gap.
+//
 // The two captain off-switches are honored here for free, with no extra guard:
-//   - Unpinned: a hull whose DedicatedFleet() != "trade" is simply not ours — skipped.
+//   - Unpinned: a hull carrying none of the trade tags is simply not ours — skipped.
 //   - Captain-reserved: a captain reservation is an ACTIVE assignment (owner=captain),
 //     so it is neither idle nor a container-owned tour; IsReservedByCaptain() drops it
 //     before either bucket, so a reserved hull is never relaunched AND never counted
@@ -27,7 +32,7 @@ import (
 // distort the cap.
 func partitionTradeFleet(ships []*navigation.Ship) (idle []*navigation.Ship, running []*navigation.Ship) {
 	for _, ship := range ships {
-		if ship.DedicatedFleet() != tradeFleet {
+		if !isTradeFleetTag(ship.DedicatedFleet()) {
 			continue // not a trade hull (or unpinned — the captain's per-hull opt-out)
 		}
 		if ship.IsReservedByCaptain() {

@@ -219,6 +219,15 @@ type RunTourCoordinatorCommand struct {
 	// ADDS on top of the always-present 1-hop floor. 0/absent → candidateShortlistTopNDefault (6).
 	CandidateShortlistTopN int
 
+	// MVT trade loop (spec docs/superpowers/specs/2026-09-02-mvt-trade-loop-design.md).
+	// MVTLoop is set from the hull's fleet tag (trade-mvt) at launch; the knobs below are
+	// resolved by the command builder from trade_fleet.* with the spec defaults.
+	MVTLoop                  bool
+	YieldWindowSells         int
+	YieldMinSells            int
+	ClaimReachHops           int
+	SpecialistCadenceMinutes int
+
 	// TourNeighborsDurableFirst serves the tour graph's 1-hop neighbor scan from the persisted
 	// gate adjacency. false/absent → the live jump-gate query, exactly as today.
 	TourNeighborsDurableFirst bool
@@ -261,6 +270,16 @@ type RunTourCoordinatorCommand struct {
 	TourLegWaypoint string
 	TourLegGoods    string
 }
+
+// MVT trade loop defaults (spec §5). Fitted from the replay before ship; none encodes fleet size.
+const (
+	DefaultYieldWindowSells         = 8
+	DefaultYieldMinSells            = 3
+	DefaultClaimReachHops           = 2
+	DefaultSpecialistFractionPct    = 10  // specialist_fraction 0.10
+	DefaultFatLaneMultiplePct       = 200 // fat_lane_multiple 2.0
+	DefaultSpecialistCadenceMinutes = 60  // specialist_cadence 1h
+)
 
 // RunTourCoordinatorResponse reports the realised tour economics and — via
 // CompletionOutcome — whether the run honestly completed. Three terminal shapes:

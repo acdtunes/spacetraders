@@ -65,6 +65,12 @@ func (g *fakeHopGraph) StoredRankingDistances(ctx context.Context, from string, 
 	return g.StoredHopDistances(ctx, from, targets, maxJumps)
 }
 
+// StoredSystemsWithinJumps is inert here — it exists only to satisfy the GateGraph interface
+// (sp-t5xe6); the stocker coordinator never discovers a neighbourhood.
+func (g *fakeHopGraph) StoredSystemsWithinJumps(context.Context, string, int) (map[string]int, error) {
+	return map[string]int{}, nil
+}
+
 func (g *fakeHopGraph) Routable(_ context.Context, from, to string, _ int) (bool, error) {
 	_, ok := g.hops[from+"->"+to]
 	return ok, nil

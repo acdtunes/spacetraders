@@ -76,6 +76,10 @@ func buildTradeFleetCoordinatorCommand(cfg *configReader, playerID int, containe
 		// sp-tgll8: the inventory-pressure governor is always ARMED — only the FULL-hull pause
 		// threshold is configurable. 0/absent ⇒ the coordinator's own 65% default.
 		FullHullPausePct: cfg.OptionalInt("trade_fleet_full_hull_pause_pct", 0),
+		// MVT specialist pool: an absent key resolves to the spec default, never 0.
+		SpecialistFractionPct:    cfg.OptionalInt("specialist_fraction_pct", tradingCmd.DefaultSpecialistFractionPct),
+		FatLaneMultiplePct:       cfg.OptionalInt("fat_lane_multiple_pct", tradingCmd.DefaultFatLaneMultiplePct),
+		SpecialistCadenceMinutes: cfg.OptionalInt("specialist_cadence_minutes", tradingCmd.DefaultSpecialistCadenceMinutes),
 	}
 }
 
@@ -650,6 +654,12 @@ func buildTourCoordinatorCommand(cfg *configReader, playerID int, containerID st
 		PlacementParkFloorPct:      cfg.OptionalInt("placement_park_floor_pct", 0),
 		PlacementShortlistTopN:     cfg.OptionalInt("placement_shortlist_top_n", 0),
 		PlacementHorizonMinutes:    cfg.OptionalInt("placement_horizon_minutes", 0),
+		// MVT trade loop: mvt_loop absent ⇒ false ⇒ legacy path; knobs default to spec values.
+		MVTLoop:                  cfg.OptionalBool("mvt_loop"),
+		YieldWindowSells:         cfg.OptionalInt("yield_window_sells", tradingCmd.DefaultYieldWindowSells),
+		YieldMinSells:            cfg.OptionalInt("yield_min_sells", tradingCmd.DefaultYieldMinSells),
+		ClaimReachHops:           cfg.OptionalInt("claim_reach_hops", tradingCmd.DefaultClaimReachHops),
+		SpecialistCadenceMinutes: cfg.OptionalInt("specialist_cadence_minutes", tradingCmd.DefaultSpecialistCadenceMinutes),
 		// sp-uf64 reposition reach (always-broaden discovery + deadhead-decay ranking + anti-herd).
 		// OptionalBool/OptionalInt yield zero values for absent keys — the exact default-OFF dormancy
 		// the Placement*/Reposition* knobs use: reposition_reach_enabled absent ⇒ false ⇒ the legacy

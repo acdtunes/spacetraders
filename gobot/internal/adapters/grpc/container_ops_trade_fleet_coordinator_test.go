@@ -112,3 +112,88 @@ func TestTradeFleetConfig_ResolveClearsStalePersistedKeys(t *testing.T) {
 	require.True(t, cmd.Enabled, "live enabled=true must win over the stale persisted disabled")
 	require.Equal(t, 0, cmd.CooldownSecs, "stale 999 cooldown must not shadow the live default")
 }
+
+// tradeFleetConfigKeys must stay in LOCKSTEP with injectTradeFleetConfig: any key the
+// injector can write but the list omits survives resolveTradeFleetConfig's clear, so a
+// value persisted at a prior boot shadows the current config.yaml forever (the sp-ts82
+// stale-shadow failure). Drive the injector with every knob set and assert the written
+// key set is covered.
+func TestTradeFleetConfig_EveryInjectedKeyIsCleared(t *testing.T) {
+	written := map[string]bool{}
+	for _, enabled := range []bool{true, false} { // trade_fleet_disabled is written only when OFF
+		s := &DaemonServer{tradeFleetConfig: config.TradeFleetConfig{
+			Enabled:                   boolPtr(enabled),
+			CooldownSeconds:           240,
+			MaxConcurrentTours:        8,
+			TickSeconds:               45,
+			MaxHops:                   4,
+			MaxSpend:                  300000,
+			MinMargin:                 3,
+			ReplanLimit:               2,
+			WorkingCapitalReserve:     50000,
+			RelaunchBackoffMaxMinutes: 20,
+			MassParkExemptDisabled:    true,
+			MassParkWindowSeconds:     180,
+			MassParkMinHulls:          5,
+			WatchdogStallSeconds:      900,
+			FullHullPausePct:          70,
+			SpecialistFractionPct:     25,
+			FatLaneMultiplePct:        300,
+			SpecialistCadenceMinutes:  90,
+		}}
+		cfgMap := map[string]interface{}{}
+		s.injectTradeFleetConfig(cfgMap)
+		for k := range cfgMap {
+			written[k] = true
+		}
+	}
+
+	listed := map[string]bool{}
+	for _, k := range tradeFleetConfigKeys {
+		listed[k] = true
+	}
+	for k := range written {
+		require.True(t, listed[k], "injectTradeFleetConfig writes %q but tradeFleetConfigKeys omits it: a stale persisted value would shadow config.yaml", k)
+	}
+}
+
+// The MVT specialist-pool knobs obey the same live-config discipline as their
+// trade_fleet_* siblings despite their unprefixed key names: dropping the knob from
+// config.yaml must fall back to the coordinator's spec default, not to the value
+// persisted at a prior boot.
+func TestTradeFleetConfig_ResolveClearsStaleSpecialistKnobs(t *testing.T) {
+	s := &DaemonServer{tradeFleetConfig: config.TradeFleetConfig{Enabled: boolPtr(true)}}
+	persisted := map[string]interface{}{
+		"container_id":               "trade-coord-1",
+		"agent_symbol":               "TORWIND",
+		"specialist_fraction_pct":    25,  // stale, live config no longer sets it
+		"fat_lane_multiple_pct":      400, // stale
+		"specialist_cadence_minutes": 15,  // stale
+	}
+
+	s.resolveTradeFleetConfig(persisted)
+
+	for _, key := range []string{"specialist_fraction_pct", "fat_lane_multiple_pct", "specialist_cadence_minutes"} {
+		_, present := persisted[key]
+		require.Falsef(t, present, "stale %s must be cleared so the spec default applies", key)
+	}
+
+	cmd, ok := buildTradeFleetCoordinatorCommand(newConfigReader(persisted), 1, "trade-coord-1").(*tradingCmd.RunTradeFleetCoordinatorCommand)
+	require.True(t, ok)
+	require.Equal(t, tradingCmd.DefaultSpecialistFractionPct, cmd.SpecialistFractionPct)
+	require.Equal(t, tradingCmd.DefaultFatLaneMultiplePct, cmd.FatLaneMultiplePct)
+	require.Equal(t, tradingCmd.DefaultSpecialistCadenceMinutes, cmd.SpecialistCadenceMinutes)
+}
+
+// And a knob the captain DOES set still rides through resolve → rebuild.
+func TestTradeFleetConfig_SpecialistKnobsRoundTrip(t *testing.T) {
+	cmd := buildTradeCmd(t, config.TradeFleetConfig{
+		Enabled:                  boolPtr(true),
+		SpecialistFractionPct:    25,
+		FatLaneMultiplePct:       300,
+		SpecialistCadenceMinutes: 90,
+	})
+	require.Equal(t, 25, cmd.SpecialistFractionPct)
+	require.Equal(t, 300, cmd.FatLaneMultiplePct)
+	require.Equal(t, 90, cmd.SpecialistCadenceMinutes)
+}

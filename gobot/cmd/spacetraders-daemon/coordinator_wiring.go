@@ -158,6 +158,7 @@ func (w circuitWiring) configureTourCoordinator(h *tradeRouteCmd.RunTourCoordina
 	// claim an idle hull before the tour re-anchors it locally; unwired, no offer is
 	// written and the fleet tours exactly as today.
 	h.SetRelocationOfferPersister(tourRepositionPersister)
+	h.SetMVTPorts(persistence.NewTradeClaimRegistry(w.db), w.absorption, persistence.NewMVTTransitionRecorder(w.db))
 	// Shared absorption ledger: the tour reserves its planned tranches, nets outstanding
 	// depth into each plan, and converts sold sinks into recovery shadows.
 	w.configureSinkDepthScaling()

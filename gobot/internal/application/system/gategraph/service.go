@@ -990,27 +990,46 @@ func (s *Service) StoredRankingDistances(ctx context.Context, fromSystem string,
 	return s.storedDistances(ctx, fromSystem, targets, maxJumps, true)
 }
 
-// storedDistances is the one breadth-first walk behind both distance resolvers. throughStale is
-// their ONLY difference, so the proof-grade verdict cannot drift from the ranking one by
-// accident — there is no second copy of the traversal to fall out of step.
+// StoredSystemsWithinJumps lists every system within maxJumps of fromSystem over the PERSISTED
+// adjacency, keyed by hop distance, fromSystem excluded: the discovery twin of
+// StoredRankingDistances for a caller with no target list (the MVT ranker's claim reach).
+// One Adjacency read, never a fetch-through, so it costs no API call; a store read failure
+// fails CLOSED.
+func (s *Service) StoredSystemsWithinJumps(ctx context.Context, fromSystem string, maxJumps int) (map[string]int, error) {
+	return s.storedWalk(ctx, fromSystem, nil, maxJumps, true)
+}
+
+// storedDistances narrows the one stored walk to the requested targets. No target means no
+// walk: an empty request answers empty without touching the store.
 func (s *Service) storedDistances(ctx context.Context, fromSystem string, targets []string, maxJumps int, throughStale bool) (map[string]int, error) {
-	if maxJumps <= 0 {
-		maxJumps = MaxJumpPath
-	}
 	wanted := make(map[string]bool, len(targets))
 	for _, t := range targets {
 		if t != "" {
 			wanted[t] = true
 		}
 	}
+	if len(wanted) == 0 {
+		return map[string]int{}, nil
+	}
+	return s.storedWalk(ctx, fromSystem, wanted, maxJumps, throughStale)
+}
+
+// storedWalk is the one breadth-first walk behind every stored-adjacency resolver, so the
+// proof-grade and ranking verdicts cannot drift apart. throughStale is their only difference;
+// wanted filters the result to the listed systems, nil keeps everything reached but the origin.
+func (s *Service) storedWalk(ctx context.Context, fromSystem string, wanted map[string]bool, maxJumps int, throughStale bool) (map[string]int, error) {
+	if maxJumps <= 0 {
+		maxJumps = MaxJumpPath
+	}
 	distances := make(map[string]int, len(wanted))
-	if len(wanted) == 0 || fromSystem == "" {
+	if fromSystem == "" {
 		return distances, nil
 	}
 	adjacency, err := s.store.Adjacency(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("stored distances from %s: failed to read stored gate adjacency: %w", fromSystem, err)
 	}
+	keep := func(sys string) bool { return wanted == nil || wanted[sys] }
 	if wanted[fromSystem] {
 		distances[fromSystem] = 0
 	}
@@ -1033,7 +1052,7 @@ func (s *Service) storedDistances(ctx context.Context, fromSystem string, target
 					continue
 				}
 				visited[e.ConnectedSystem] = true
-				if wanted[e.ConnectedSystem] {
+				if keep(e.ConnectedSystem) {
 					distances[e.ConnectedSystem] = depth
 				}
 				next = append(next, e.ConnectedSystem)

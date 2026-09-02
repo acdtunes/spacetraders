@@ -67,6 +67,12 @@ func (g *boundedRoutabilityGraph) StoredHopDistances(_ context.Context, from str
 func (g *boundedRoutabilityGraph) StoredRankingDistances(ctx context.Context, from string, targets []string, maxJumps int) (map[string]int, error) {
 	return g.StoredHopDistances(ctx, from, targets, maxJumps)
 }
+
+// StoredSystemsWithinJumps is inert here — it exists only to satisfy the GateGraph interface
+// (sp-t5xe6); the arb coordinator never discovers a neighbourhood.
+func (g *boundedRoutabilityGraph) StoredSystemsWithinJumps(context.Context, string, int) (map[string]int, error) {
+	return map[string]int{}, nil
+}
 func (g *boundedRoutabilityGraph) PathWithinJumpsStoredThenVerify(context.Context, string, string, int, int) ([]string, error) {
 	return nil, nil
 }

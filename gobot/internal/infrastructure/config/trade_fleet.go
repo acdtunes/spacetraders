@@ -265,6 +265,15 @@ type TradeFleetConfig struct {
 	// fleet is nowhere near 65% FULL, so byte-identical below saturation). A captain softens it
 	// by RAISING the threshold toward 100 (never reached, so effectively off), never disabling.
 	FullHullPausePct int `mapstructure:"full_hull_pause_pct"`
+
+	// --- MVT trade loop (spec docs/superpowers/specs/2026-09-02-mvt-trade-loop-design.md) ---
+	// MVT trade loop knobs (spec §5). Zero means "use the code default".
+	YieldWindowSells         int `mapstructure:"yield_window_sells"`
+	YieldMinSells            int `mapstructure:"yield_min_sells"`
+	ClaimReachHops           int `mapstructure:"claim_reach_hops"`
+	SpecialistFractionPct    int `mapstructure:"specialist_fraction_pct"`
+	FatLaneMultiplePct       int `mapstructure:"fat_lane_multiple_pct"`
+	SpecialistCadenceMinutes int `mapstructure:"specialist_cadence_minutes"`
 }
 
 // defaultSinkFreshnessMaxMinutes is the sink-freshness clause's boot floor, applied when

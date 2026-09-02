@@ -43,5 +43,7 @@ func AllModels() []any {
 		&SensingChartShareModel{},
 		&ScanDedupAllowlistModel{},
 		&UnreadableHullModel{},
+		&TradeClaimModel{},
+		&MVTTransitionModel{},
 	}
 }

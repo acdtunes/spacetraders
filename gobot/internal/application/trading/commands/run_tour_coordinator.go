@@ -252,6 +252,17 @@ type RunTourCoordinatorHandler struct {
 	// instead of being replaced by something that does not.
 	offerPollInterval time.Duration
 
+	// mvt holds the MVT trade-loop readers (claim registry, ledger depth reader, transition
+	// recorder) injected via SetMVTPorts; unwired (every existing test) the branch is inert and
+	// the shadow logger is silent. mvtHulls is the per-hull in-memory loop state, guarded by
+	// mvtMu because the handler is a SHARED singleton dispatched concurrently for every touring
+	// hull (the strandedStreak discipline); mvtFleet caches the fleet-wide stats on the
+	// specialist cadence.
+	mvt      mvtPorts
+	mvtMu    sync.Mutex
+	mvtHulls map[string]*mvtHullState
+	mvtFleet mvtFleetCache
+
 	// mediator dispatches the cargo TransferCargoCommand for haul-to-storage deposit
 	// legs. Same mediator the delegated legs use.
 	mediator common.Mediator
@@ -976,6 +987,9 @@ func (h *RunTourCoordinatorHandler) resumeInFlightReposition(ctx context.Context
 // afterProductiveTour returns the relocation-offer deadline the loop must honour before it
 // plans here again. Continuous runs only: a finite run flies exactly the tours it was asked for.
 func (h *RunTourCoordinatorHandler) afterProductiveTour(ctx context.Context, cmd *RunTourCoordinatorCommand, response *RunTourCoordinatorResponse, netBought map[string]int, budget tourPlanBudget) (time.Time, error) {
+	if !cmd.MVTLoop {
+		h.mvtShadow(ctx, cmd)
+	}
 	// Rate-floor early-reposition (DEFAULT-OFF): a hull that just flew a
 	// PRODUCTIVE-but-mediocre tour (well below the fleet-median realized rate) never
 	// margin-dies, so the margins-death reposition never rescues it. When armed, evaluate a

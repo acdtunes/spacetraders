@@ -454,6 +454,16 @@ type GateGraph interface {
 	// gained an edge over-estimates. Laxer about FRESHNESS and nothing else — an under-construction
 	// edge is still impassable and a never-cached system is still a dead end.
 	StoredRankingDistances(ctx context.Context, fromSystem string, targets []string, maxJumps int) (map[string]int, error)
+	// StoredSystemsWithinJumps lists every system within maxJumps of fromSystem over the SAME
+	// pure store read, keyed by hop distance and excluding fromSystem itself — the DISCOVERY
+	// twin of StoredRankingDistances (same zero-API guarantee, same through-stale ranking rule,
+	// same impassable-unbuilt-gate and never-cached-is-a-dead-end refusals) for a caller that
+	// has no target list yet and must build its candidate set from the graph. The MVT ranker's
+	// claim reach walks it (sp-t5xe6): the fetch-through walk the reposition scan uses
+	// (repositionNeighborsWithinJumps → Connections) would cost a live GetJumpGate and a
+	// gate_edges write per uncached or stale neighbour, after every productive tour of every
+	// trade hull. A store read failure is an error, never an empty neighbourhood.
+	StoredSystemsWithinJumps(ctx context.Context, fromSystem string, maxJumps int) (map[string]int, error)
 	Routable(ctx context.Context, fromSystem, toSystem string, playerID int) (bool, error)
 	// RoutableWithinJumps is Routable with a CALLER-SUPPLIED jump bound — the same
 	// (bool, error) verdict, where (false, nil) is a DEFINITIVE unroutable veto and (false, err)

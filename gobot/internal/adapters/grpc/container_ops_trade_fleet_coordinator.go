@@ -71,9 +71,14 @@ func (s *DaemonServer) LaunchTour(ctx context.Context, spec tradingCmd.TourLaunc
 	// consecutive fast-fail is relaunched with reposition-reach armed for THIS tour, so it
 	// moves to a fresh system instead of the coordinator sleeping longer on a dead lane.
 	// nil for a normal relaunch — byte-identical to today's config-only launch.
+	// A hull tagged "trade-mvt" rides the same seam onto the MVT path (spec §8).
 	var overrides *TourRunOverrides
-	if spec.RepositionReachEscalated {
-		overrides = &TourRunOverrides{RepositionReachEnabled: true}
+	mvtLoop := spec.Fleet == "trade-mvt"
+	if spec.RepositionReachEscalated || mvtLoop {
+		overrides = &TourRunOverrides{
+			RepositionReachEnabled: spec.RepositionReachEscalated,
+			MVTLoop:                mvtLoop,
+		}
 	}
 	result, err := s.StartTourRun(
 		ctx,
@@ -161,6 +166,10 @@ var tradeFleetConfigKeys = []string{
 	"trade_fleet_masspark_min_hulls",
 	"trade_fleet_watchdog_stall_secs",
 	"trade_fleet_full_hull_pause_pct",
+	// MVT specialist pool: [trade_fleet]-owned despite the unprefixed key names.
+	"specialist_fraction_pct",
+	"fat_lane_multiple_pct",
+	"specialist_cadence_minutes",
 }
 
 // resolveTradeFleetConfig makes config.yaml the single LIVE source of truth for the
@@ -243,5 +252,15 @@ func (s *DaemonServer) injectTradeFleetConfig(config map[string]interface{}) {
 	// default.
 	if tf.FullHullPausePct != 0 {
 		config["trade_fleet_full_hull_pause_pct"] = tf.FullHullPausePct
+	}
+	// MVT specialist pool: an absent key defers to the coordinator's spec default (RULINGS #5).
+	if tf.SpecialistFractionPct > 0 {
+		config["specialist_fraction_pct"] = tf.SpecialistFractionPct
+	}
+	if tf.FatLaneMultiplePct > 0 {
+		config["fat_lane_multiple_pct"] = tf.FatLaneMultiplePct
+	}
+	if tf.SpecialistCadenceMinutes > 0 {
+		config["specialist_cadence_minutes"] = tf.SpecialistCadenceMinutes
 	}
 }

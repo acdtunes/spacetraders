@@ -20,7 +20,7 @@ func (h *RunTradeFleetCoordinatorHandler) launchTourForHull(
 	reserve int64,
 	logger common.ContainerLogger,
 ) bool {
-	spec := buildTourLaunchSpec(cmd, ship.ShipSymbol(), reachEscalated, reserve)
+	spec := buildTourLaunchSpec(cmd, ship.ShipSymbol(), ship.DedicatedFleet(), reachEscalated, reserve)
 	containerID, lerr := h.launcher.LaunchTour(ctx, spec)
 	if lerr != nil {
 		// A single hull's launch failure (e.g. it was claimed between the snapshot
@@ -88,7 +88,18 @@ func (h *RunTradeFleetCoordinatorHandler) relaunchHungTours(
 		humanLabel: "Trade fleet",
 		action:     "trade_fleet",
 		relaunch: func(ctx context.Context, shipSymbol string) (string, error) {
-			return h.launcher.LaunchTour(ctx, buildTourLaunchSpec(cmd, shipSymbol, false, reserveFor()))
+			// The watchdog relaunch must keep the hull on its OWN tour path: it is
+			// handed only a symbol, so the fleet tag is resolved from the running
+			// snapshot it was built from. A symbol absent from that snapshot falls
+			// back to the legacy "trade" path (the conservative default).
+			fleet := tradeFleet
+			for _, s := range running {
+				if s.ShipSymbol() == shipSymbol {
+					fleet = s.DedicatedFleet()
+					break
+				}
+			}
+			return h.launcher.LaunchTour(ctx, buildTourLaunchSpec(cmd, shipSymbol, fleet, false, reserveFor()))
 		},
 	})
 }
@@ -121,9 +132,12 @@ func (h *RunTradeFleetCoordinatorHandler) reclaimDeadContainerAbsorption(ctx con
 // reposition-reach for this tour (sp-nxrt); the watchdog always passes false — a fresh tour on
 // a hung hull re-plans normally, it was not a margins-death fast-fail. reserve is this pass's
 // resolved working-capital reserve (sp-9bacx, resolveTourReserve) rather than cmd's raw knob.
-func buildTourLaunchSpec(cmd *RunTradeFleetCoordinatorCommand, shipSymbol string, reachEscalated bool, reserve int64) TourLaunchSpec {
+// fleet is the hull's dedicated_fleet tag, carried through so the daemon can select the
+// hull's tour path (trade / trade-mvt / trade-lane) at launch (spec §8).
+func buildTourLaunchSpec(cmd *RunTradeFleetCoordinatorCommand, shipSymbol, fleet string, reachEscalated bool, reserve int64) TourLaunchSpec {
 	return TourLaunchSpec{
 		ShipSymbol:               shipSymbol,
+		Fleet:                    fleet,
 		MaxHops:                  cmd.MaxHops,
 		MaxSpend:                 cmd.MaxSpend,
 		MinMargin:                cmd.MinMargin,
@@ -141,7 +155,15 @@ func buildTourLaunchSpec(cmd *RunTradeFleetCoordinatorCommand, shipSymbol string
 // persistence, and the operation="trade" stamp (StartTourRun), so the coordinator
 // stays a pure decision loop that claims nothing itself (RULINGS #3/#7).
 type TourLaunchSpec struct {
-	ShipSymbol            string
+	ShipSymbol string
+
+	// Fleet is the hull's dedicated_fleet tag at launch time — "trade" (the legacy tour
+	// path), "trade-mvt" (the MVT hull loop) or "trade-lane" (the cross-system specialist).
+	// The daemon reads it to select the tour path for THIS launch (mvt_loop), so re-tagging
+	// a hull switches its path on its next relaunch with no restart — the spec's rollback
+	// lever. Empty (an unset spec, e.g. the captain CLI path) is the legacy path.
+	Fleet string
+
 	MaxHops               int
 	MaxSpend              int64
 	MinMargin             int

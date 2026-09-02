@@ -22,6 +22,11 @@ const (
 	// is the poach guard, and here it doubles as the opt-out).
 	tradeFleet = "trade"
 
+	// MVT trade loop membership (spec §8). All three tags are trade hulls launched by this
+	// coordinator; the tag selects the tour path per hull and is the rollback lever.
+	tradeFleetMVT  = "trade-mvt"
+	tradeFleetLane = "trade-lane"
+
 	// defaultTradeFleetTickSeconds is the reconcile cadence when the launch config
 	// leaves it unset (RULINGS #5: parametrized, not hardcoded at the call site).
 	// Mirrors the scout-post coordinator's 30s default — a park is at most one tick
@@ -186,6 +191,16 @@ type RunTradeFleetCoordinatorCommand struct {
 	// <=0 uses defaultFullHullPausePct (65%). Ships ARMED (no on/off flag, RULINGS #5); a
 	// captain softens it by raising the threshold toward 100 (unreachable ⇒ effectively off).
 	FullHullPausePct int
+
+	// MVT specialist pool (spec §4).
+	SpecialistFractionPct    int
+	FatLaneMultiplePct       int
+	SpecialistCadenceMinutes int
+}
+
+// isTradeFleetTag reports whether a dedicated_fleet tag belongs to this coordinator.
+func isTradeFleetTag(tag string) bool {
+	return tag == tradeFleet || tag == tradeFleetMVT || tag == tradeFleetLane
 }
 
 // RunTradeFleetCoordinatorResponse reports reconcile progress. Because the loop is
