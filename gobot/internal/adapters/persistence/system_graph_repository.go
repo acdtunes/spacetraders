@@ -23,15 +23,20 @@ func NewGormSystemGraphRepository(db *gorm.DB) system.SystemGraphRepository {
 	}
 }
 
-// Get retrieves a system's cached graph, scoped to the open era. A closed era's graph reads as
-// a MISS and rebuilds: its waypoints no longer exist, and routing on them 4201s forever.
+// Get retrieves a system's cached graph, scoped STRICTLY to the open era. A closed era's graph
+// reads as a MISS and rebuilds: its waypoints no longer exist, and routing on them 4201s forever.
+// STRICT: eraScopePredicate also admits `era_id IS NULL`, which an unresolved era degrades to.
 func (r *GormSystemGraphRepository) Get(ctx context.Context, systemSymbol string) (*system.NavigationGraph, error) {
 	var model SystemGraphModel
 
-	predicate, args := eraScopePredicate(r.openEraID(ctx))
+	openEra := r.openEraID(ctx)
+	if openEra == nil {
+		return nil, nil
+	}
+
 	err := r.db.WithContext(ctx).
 		Where("system_symbol = ?", systemSymbol).
-		Where(predicate, args...).
+		Where("era_id = ?", *openEra).
 		First(&model).Error
 
 	if err != nil {

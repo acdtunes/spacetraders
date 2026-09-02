@@ -63,6 +63,46 @@ func TestSystemGraph_OpenEraGraphStillServes(t *testing.T) {
 	}
 }
 
+func TestSystemGraph_UnstampedGraphReadsAsMiss(t *testing.T) {
+	db, err := database.NewTestConnection()
+	require.NoError(t, err)
+	require.NoError(t, db.Create(&persistence.EraModel{Name: "now", AgentSymbol: "NOW", PlayerID: 1}).Error)
+	repo := persistence.NewGormSystemGraphRepository(db)
+	ctx := context.Background()
+
+	// Staged raw: Add always stamps, so a pre-stamping row cannot be written through the repo.
+	require.NoError(t, db.Create(&persistence.SystemGraphModel{
+		SystemSymbol: "X1-KF69",
+		GraphData:    `{"system_symbol":"X1-KF69","waypoints":{"X1-KF69-A21F":{"symbol":"X1-KF69-A21F","type":"JUMP_GATE"}}}`,
+		EraID:        nil,
+	}).Error)
+
+	got, err := repo.Get(ctx, "X1-KF69")
+	require.NoError(t, err)
+	if got != nil {
+		t.Fatalf("an UNSTAMPED graph must read as a cache miss, got %+v", got.Waypoints)
+	}
+}
+
+func TestSystemGraph_UnresolvedEraReadsAsMiss(t *testing.T) {
+	db, err := database.NewTestConnection()
+	require.NoError(t, err)
+	repo := persistence.NewGormSystemGraphRepository(db)
+	ctx := context.Background()
+
+	require.NoError(t, db.Create(&persistence.SystemGraphModel{
+		SystemSymbol: "X1-KF69",
+		GraphData:    `{"system_symbol":"X1-KF69","waypoints":{"X1-KF69-A21F":{"symbol":"X1-KF69-A21F","type":"JUMP_GATE"}}}`,
+		EraID:        nil,
+	}).Error)
+
+	got, err := repo.Get(ctx, "X1-KF69")
+	require.NoError(t, err)
+	if got != nil {
+		t.Fatalf("an unresolved era must read as a cache miss, got %+v", got.Waypoints)
+	}
+}
+
 // A row the previous era left behind is RE-STAMPED by this era's first write, so a system does
 // not stay a permanent miss once its graph has been rebuilt.
 func TestSystemGraph_RewriteRestampsTheEra(t *testing.T) {
