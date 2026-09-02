@@ -197,3 +197,28 @@ func TestTradeFleetConfig_SpecialistKnobsRoundTrip(t *testing.T) {
 	require.Equal(t, 300, cmd.FatLaneMultiplePct)
 	require.Equal(t, 90, cmd.SpecialistCadenceMinutes)
 }
+
+// The trade-mvt tag → overrides link LaunchTour rides: the hull's fleet tag alone selects
+// the MVT loop for its launch, a plain "trade" hull gets no override at all, and the reach
+// escalation composes with either tag.
+func TestTourOverridesFor_TradeMVTTagSelectsTheLoop(t *testing.T) {
+	mvt := tourOverridesFor(tradingCmd.TourLaunchSpec{ShipSymbol: "HULL-1", Fleet: "trade-mvt"})
+	require.NotNil(t, mvt, "a trade-mvt hull must carry overrides")
+	require.True(t, mvt.MVTLoop, "a trade-mvt hull selects the MVT loop")
+	require.False(t, mvt.RepositionReachEnabled, "the tag alone never arms reach")
+
+	require.Nil(t, tourOverridesFor(tradingCmd.TourLaunchSpec{ShipSymbol: "HULL-1", Fleet: "trade"}),
+		"a trade hull is a config-only launch")
+	require.Nil(t, tourOverridesFor(tradingCmd.TourLaunchSpec{ShipSymbol: "HULL-1"}),
+		"an untagged spec (the captain CLI path) is a config-only launch")
+
+	escalated := tourOverridesFor(tradingCmd.TourLaunchSpec{ShipSymbol: "HULL-1", Fleet: "trade", RepositionReachEscalated: true})
+	require.NotNil(t, escalated)
+	require.True(t, escalated.RepositionReachEnabled)
+	require.False(t, escalated.MVTLoop, "escalating a trade hull must not switch its path")
+
+	both := tourOverridesFor(tradingCmd.TourLaunchSpec{ShipSymbol: "HULL-1", Fleet: "trade-mvt", RepositionReachEscalated: true})
+	require.NotNil(t, both)
+	require.True(t, both.MVTLoop)
+	require.True(t, both.RepositionReachEnabled)
+}

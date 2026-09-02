@@ -22,6 +22,14 @@ const (
 	mvtReasonTravelFailed     = "travel_failed"
 	mvtReasonRankerUnreadable = "ranker_unreadable"
 	mvtReasonHold             = "hold"
+	mvtReasonClaimWriteFailed = "claim_write_failed"
+	// Refusals of a CLAIM that had somewhere better to go; each is a stay.
+	mvtReasonRepositionDisabled = "reposition_disabled"
+	mvtReasonBudgetDenied       = "budget_denied"
+	mvtReasonEpisodeSpent       = "episode_spent"
+	mvtReasonLaden              = "laden"
+	// The hull was moved by a path that does not own the claim (disposal, offload, retirement, a tag flip).
+	mvtReasonRelocated = "relocated_externally"
 
 	mvtFleetStatsWindow = 24 * time.Hour
 	mvtTravelFailureCap = 3
@@ -39,14 +47,24 @@ func (h *RunTourCoordinatorHandler) SetMVTPorts(claims mvt.ClaimRegistry, depth 
 	h.mvt = mvtPorts{claims: claims, depth: depth, transitions: transitions}
 }
 
+type mvtLot struct{ units, price int }
+
 // mvtHullState is the loop's in-memory view of one hull. Nothing here is persisted: the
-// claim registry holds the durable part, and the yield resets on restart by design. Step 1
-// carries only the yield the shadow reads; the CLAIM/TRAVEL loop (Task 10) adds the claimed
-// system, the per-good cost basis and the travel-failure hold when it starts using them —
-// declared before then they are dead fields the linter's unused check rejects.
+// claim registry holds the durable part, and the yield resets on restart by design.
 type mvtHullState struct {
-	mu    sync.Mutex
-	yield *mvt.YieldTracker
+	mu             sync.Mutex
+	claimed        string
+	yield          *mvt.YieldTracker
+	basis          map[string][]mvtLot
+	travelFailures int
+	holdSells      int
+	holdUntil      time.Time
+}
+
+// holding is the post-failure hold, bounded in both sells and time so a dead system with
+// no sells cannot hold forever. The caller holds st.mu.
+func (st *mvtHullState) holding(now time.Time) bool {
+	return st.holdSells > 0 && now.Before(st.holdUntil)
 }
 
 type mvtFleetCache struct {
@@ -63,7 +81,7 @@ func (h *RunTourCoordinatorHandler) mvtState(cmd *RunTourCoordinatorCommand) *mv
 	}
 	st := h.mvtHulls[cmd.ShipSymbol]
 	if st == nil {
-		st = &mvtHullState{yield: mvt.NewYieldTracker(cmd.YieldWindowSells, cmd.YieldMinSells)}
+		st = &mvtHullState{yield: mvt.NewYieldTracker(cmd.YieldWindowSells, cmd.YieldMinSells), basis: map[string][]mvtLot{}}
 		h.mvtHulls[cmd.ShipSymbol] = st
 	}
 	return st
@@ -76,25 +94,42 @@ func (h *RunTourCoordinatorHandler) mvtCadence(cmd *RunTourCoordinatorCommand) t
 	return time.Duration(cmd.SpecialistCadenceMinutes) * time.Minute
 }
 
-// mvtFleetStats is the fleet-wide draw and rate, recomputed on the specialist cadence.
+// mvtFleetFor is the player's stats entry, created on first use; its own mu serialises the
+// recompute so two hulls of one player never both read telemetry.
+func (h *RunTourCoordinatorHandler) mvtFleetFor(playerID int) *mvtFleetCache {
+	h.mvtMu.Lock()
+	defer h.mvtMu.Unlock()
+	if h.mvtFleet == nil {
+		h.mvtFleet = map[int]*mvtFleetCache{}
+	}
+	fc := h.mvtFleet[playerID]
+	if fc == nil {
+		fc = &mvtFleetCache{}
+		h.mvtFleet[playerID] = fc
+	}
+	return fc
+}
+
+// mvtFleetStats is the player's fleet-wide draw and rate, recomputed on the specialist cadence.
 func (h *RunTourCoordinatorHandler) mvtFleetStats(ctx context.Context, cmd *RunTourCoordinatorCommand) mvt.FleetStats {
 	now := h.clock.Now()
-	h.mvtFleet.mu.Lock()
-	defer h.mvtFleet.mu.Unlock()
-	if !h.mvtFleet.computedAt.IsZero() && now.Sub(h.mvtFleet.computedAt) < h.mvtCadence(cmd) {
-		return h.mvtFleet.stats
+	fc := h.mvtFleetFor(cmd.PlayerID)
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+	if !fc.computedAt.IsZero() && now.Sub(fc.computedAt) < h.mvtCadence(cmd) {
+		return fc.stats
 	}
 	if h.telemetry == nil {
-		return h.mvtFleet.stats
+		return fc.stats
 	}
 	legs, err := h.telemetry.ListByPlayer(ctx, cmd.PlayerID, now.Add(-mvtFleetStatsWindow))
 	if err != nil {
 		common.LoggerFromContext(ctx).Log("WARNING", "MVT fleet stats unreadable; keeping previous", map[string]interface{}{"error": err.Error()})
-		return h.mvtFleet.stats
+		return fc.stats
 	}
-	h.mvtFleet.stats = mvt.ComputeFleetStats(legs, mvtFleetStatsWindow)
-	h.mvtFleet.computedAt = now
-	return h.mvtFleet.stats
+	fc.stats = mvt.ComputeFleetStats(legs, mvtFleetStatsWindow)
+	fc.computedAt = now
+	return fc.stats
 }
 
 // mvtReach lists the hull's current system and every system within ClaimReachHops of it, read

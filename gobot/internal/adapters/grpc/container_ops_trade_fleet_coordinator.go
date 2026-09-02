@@ -67,19 +67,6 @@ func (s *DaemonServer) TradeFleetCoordinator(ctx context.Context, playerID int, 
 // the single-writer recovery-safe container row, and release-on-death — so the
 // coordinator stays a pure decision loop that claims nothing itself (RULINGS #3/#7).
 func (s *DaemonServer) LaunchTour(ctx context.Context, spec tradingCmd.TourLaunchSpec) (string, error) {
-	// sp-nxrt escalate-to-movement: a hull the coordinator flagged after its 2nd
-	// consecutive fast-fail is relaunched with reposition-reach armed for THIS tour, so it
-	// moves to a fresh system instead of the coordinator sleeping longer on a dead lane.
-	// nil for a normal relaunch — byte-identical to today's config-only launch.
-	// A hull tagged "trade-mvt" rides the same seam onto the MVT path (spec §8).
-	var overrides *TourRunOverrides
-	mvtLoop := spec.Fleet == "trade-mvt"
-	if spec.RepositionReachEscalated || mvtLoop {
-		overrides = &TourRunOverrides{
-			RepositionReachEnabled: spec.RepositionReachEscalated,
-			MVTLoop:                mvtLoop,
-		}
-	}
 	result, err := s.StartTourRun(
 		ctx,
 		spec.ShipSymbol,
@@ -91,12 +78,26 @@ func (s *DaemonServer) LaunchTour(ctx context.Context, spec tradingCmd.TourLaunc
 		spec.AgentSymbol,
 		spec.Iterations,
 		spec.PlayerID,
-		overrides,
+		tourOverridesFor(spec),
 	)
 	if err != nil {
 		return "", err
 	}
 	return result.ContainerID, nil
+}
+
+// tourOverridesFor is the per-launch override selection LaunchTour rides: nil for a normal
+// relaunch (byte-identical to a config-only launch); otherwise the sp-nxrt reach escalation
+// of a twice-fast-failed hull and/or the MVT path a "trade-mvt" tag selects.
+func tourOverridesFor(spec tradingCmd.TourLaunchSpec) *TourRunOverrides {
+	mvtLoop := spec.Fleet == "trade-mvt"
+	if !spec.RepositionReachEscalated && !mvtLoop {
+		return nil
+	}
+	return &TourRunOverrides{
+		RepositionReachEnabled: spec.RepositionReachEscalated,
+		MVTLoop:                mvtLoop,
+	}
 }
 
 // LastTourProgress implements tradingCmd.TourLivenessPort (sp-m3122): for each running trade

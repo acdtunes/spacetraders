@@ -15,15 +15,21 @@ import (
 )
 
 type mvtFakeClaims struct {
-	mu   sync.Mutex
-	rows map[string]mvt.Claim
-	fail bool
+	mu         sync.Mutex
+	rows       map[string]mvt.Claim
+	fail       bool
+	failUpsert bool
+	// released counts Release calls, so a test can tell a release-then-restamp from an overwrite.
+	released int
 }
 
 func newMVTFakeClaims() *mvtFakeClaims { return &mvtFakeClaims{rows: map[string]mvt.Claim{}} }
 func (c *mvtFakeClaims) Upsert(_ context.Context, _ int, hull, system string, at time.Time) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.failUpsert {
+		return context.DeadlineExceeded
+	}
 	c.rows[hull] = mvt.Claim{Hull: hull, System: system, ClaimedAt: at}
 	return nil
 }
@@ -38,6 +44,7 @@ func (c *mvtFakeClaims) MarkArrived(_ context.Context, _ int, hull string, at ti
 func (c *mvtFakeClaims) Release(_ context.Context, _ int, hull string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.released++
 	delete(c.rows, hull)
 	return nil
 }
@@ -305,5 +312,21 @@ func TestMVTShadow_UnreadableGateStoreRecordsStay(t *testing.T) {
 	got := trans.last(t)
 	if got.Reason != mvtReasonRankerUnreadable || got.To != mvt.StateTrade {
 		t.Fatalf("unreadable gate store must record a stay: %+v", got)
+	}
+}
+
+func TestMVTFleetStats_KeyedByPlayer(t *testing.T) {
+	fx := repositionFixture()
+	// Player 1's telemetry: one hull earning; player 2 has none.
+	h := newTourHandler(t, fx, rateFloorPlanner(feasiblePlan(600000, 600000)), &seededTelemetry{rows: rfSeed("TOUR-P1", 100000)})
+	h.SetMVTPorts(newMVTFakeClaims(), &mvtFakeDepth{}, &mvtFakeTransitions{})
+	ctx := context.Background()
+	p1 := h.mvtFleetStats(ctx, &RunTourCoordinatorCommand{ShipSymbol: "TOUR-P1", PlayerID: 1, SpecialistCadenceMinutes: 60})
+	p2 := h.mvtFleetStats(ctx, &RunTourCoordinatorCommand{ShipSymbol: "TOUR-P2", PlayerID: 2, SpecialistCadenceMinutes: 60})
+	if p1.Hulls == 0 {
+		t.Fatal("player 1 has seeded legs and must have stats")
+	}
+	if p2.Hulls != 0 {
+		t.Fatalf("player 2 has no legs but got player 1's stats: %+v", p2)
 	}
 }

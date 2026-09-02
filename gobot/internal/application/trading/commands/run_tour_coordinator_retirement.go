@@ -52,7 +52,8 @@ func (h *RunTourCoordinatorHandler) retirementState(ctx context.Context, cmd *Ru
 // standDownRetiring ends the run through the ordinary completion path — the runner releases
 // the claim and publishes completion — naming the retirement once so an operator can see the
 // mark actually took.
-func (h *RunTourCoordinatorHandler) standDownRetiring(cmd *RunTourCoordinatorCommand, response *RunTourCoordinatorResponse, logger common.ContainerLogger) {
+func (h *RunTourCoordinatorHandler) standDownRetiring(ctx context.Context, cmd *RunTourCoordinatorCommand, response *RunTourCoordinatorResponse, logger common.ContainerLogger) {
+	h.mvtRetire(ctx, cmd)
 	response.RetirementStandDown = true
 	response.ExitReason = tourExitRetired
 	response.ExitDetail = fmt.Sprintf("retiring hull stands down drained after %d productive tour(s)", response.ToursCompleted)
@@ -74,6 +75,7 @@ func (h *RunTourCoordinatorHandler) standDownRetiringHolding(
 	response *RunTourCoordinatorResponse,
 	logger common.ContainerLogger,
 ) {
+	h.mvtRetire(ctx, cmd)
 	held, waypoint := h.retirementHold(ctx, cmd)
 	units := 0
 	parts := make([]string, 0, len(held))

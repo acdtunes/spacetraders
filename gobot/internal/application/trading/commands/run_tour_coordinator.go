@@ -256,12 +256,12 @@ type RunTourCoordinatorHandler struct {
 	// recorder) injected via SetMVTPorts; unwired (every existing test) the branch is inert and
 	// the shadow logger is silent. mvtHulls is the per-hull in-memory loop state, guarded by
 	// mvtMu because the handler is a SHARED singleton dispatched concurrently for every touring
-	// hull (the strandedStreak discipline); mvtFleet caches the fleet-wide stats on the
-	// specialist cadence.
+	// hull (the strandedStreak discipline); mvtFleet caches each player's fleet-wide stats on
+	// the specialist cadence.
 	mvt      mvtPorts
 	mvtMu    sync.Mutex
 	mvtHulls map[string]*mvtHullState
-	mvtFleet mvtFleetCache
+	mvtFleet map[int]*mvtFleetCache
 
 	// mediator dispatches the cargo TransferCargoCommand for haul-to-storage deposit
 	// legs. Same mediator the delegated legs use.
@@ -643,6 +643,11 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 		// longer stuck-laden, and promoting the offload rung for it would rank fresh grounds
 		// against a hold that no longer exists.
 		launchedLaden = h.launchedStuckLaden(ctx, cmd)
+		if cmd.MVTLoop {
+			if err := h.mvtRecover(ctx, cmd, response, &episode, h.mvtBootBudget(ctx, cmd, budget)); err != nil {
+				return err
+			}
+		}
 	}
 
 	// budgetMon makes a continuous run that can never re-resolve its dynamic budget
@@ -678,7 +683,7 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 		// and cannot ping-pong between systems on a load it keeps failing to clear.
 		if retiring, drained := h.retirementState(ctx, cmd); retiring {
 			if drained {
-				h.standDownRetiring(cmd, response, logger)
+				h.standDownRetiring(ctx, cmd, response, logger)
 				break
 			}
 			sales, derr := h.disposalPass(ctx, cmd, response, netBought, retirementDisposalKind)
@@ -744,7 +749,7 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 			if feasible && response.TradesExecuted > tradesBefore {
 				response.ToursCompleted++
 			}
-			h.standDownRetiring(cmd, response, logger)
+			h.standDownRetiring(ctx, cmd, response, logger)
 			break
 		}
 
@@ -876,12 +881,14 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 			// skip straight to the rescue rather than re-price what the stack has drained. A
 			// rescue that declines leaves the streak running, so an uncrowded ground — and a
 			// crowded one with nowhere better to be — behaves exactly as before.
-			dispersed, derr := h.maybeDisperseFromCrowdedGround(ctx, cmd, response, &episode, netBought, tourBudget, continuous, feasible)
-			if derr != nil {
-				return derr
-			}
-			if dispersed {
-				noProgressStreak = 0
+			if !cmd.MVTLoop {
+				dispersed, derr := h.maybeDisperseFromCrowdedGround(ctx, cmd, response, &episode, netBought, tourBudget, continuous, feasible)
+				if derr != nil {
+					return derr
+				}
+				if dispersed {
+					noProgressStreak = 0
+				}
 			}
 			continue
 		}
@@ -990,6 +997,9 @@ func (h *RunTourCoordinatorHandler) afterProductiveTour(ctx context.Context, cmd
 	if !cmd.MVTLoop {
 		h.mvtShadow(ctx, cmd)
 	}
+	if cmd.MVTLoop {
+		return time.Time{}, h.mvtAfterTour(ctx, cmd, response, budget)
+	}
 	// Rate-floor early-reposition (DEFAULT-OFF): a hull that just flew a
 	// PRODUCTIVE-but-mediocre tour (well below the fleet-median realized rate) never
 	// margin-dies, so the margins-death reposition never rescues it. When armed, evaluate a
@@ -1043,6 +1053,9 @@ func (h *RunTourCoordinatorHandler) rescueStarvedGround(ctx context.Context, cmd
 	// This also fires at ToursCompleted==0, so a recovered continuous engine that
 	// re-entered with a lost productive count and 3-struck on iteration-1 infeasibility
 	// rotates off the drained ground instead of dying on it.
+	if cmd.MVTLoop {
+		return h.mvtClaimAndTravel(ctx, cmd, response, episode, mvtReasonEmpty, budget)
+	}
 	repositioned, rerr := h.maybeReposition(ctx, cmd, response, episode, netBought, budget)
 	if rerr != nil {
 		return false, rerr

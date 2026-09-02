@@ -623,10 +623,7 @@ func (h *RunTourCoordinatorHandler) recordLeg(
 	// 0.000% over 1423 production rows against the solver's 0.518%. Averaged together
 	// they read as one number that describes neither.
 	metrics.ObserveTourLegPriceDrift(tradeSide(trade), legPlanBasis(engine), float64(trade.ExpectedUnitPrice), float64(realizedUnitPrice))
-	if h.telemetry == nil {
-		return
-	}
-	err := h.telemetry.RecordLeg(ctx, trading.TourLegTelemetry{
+	row := trading.TourLegTelemetry{
 		TourID:            cmd.ContainerID,
 		ShipSymbol:        cmd.ShipSymbol,
 		Engine:            engine,
@@ -641,7 +638,13 @@ func (h *RunTourCoordinatorHandler) recordLeg(
 		PlannedAt:         plannedAt,
 		RealizedAt:        h.clock.Now(),
 		PlayerID:          cmd.PlayerID,
-	})
+	}
+	// The yield tracker reads the realised leg whether or not a telemetry sink is wired.
+	h.mvtObserveLeg(cmd, row)
+	if h.telemetry == nil {
+		return
+	}
+	err := h.telemetry.RecordLeg(ctx, row)
 	if err != nil {
 		common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf("Failed to record tour leg telemetry: %v", err), map[string]interface{}{
 			"tour": cmd.ContainerID, "leg": legIdx, "good": trade.Good, "error": err.Error(),

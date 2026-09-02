@@ -61,8 +61,8 @@ func placementPlan(systemSymbol string, cph float64, profit int64) *routing.Tour
 	}}
 }
 
-// seededTelemetry is a READ-ONLY β stub: ListByPlayer returns the pre-seeded rows and RecordLeg is a
-// no-op. The no-op matters — the coordinator records the RUNNING tour's legs during the productive
+// seededTelemetry is a READ-ONLY β stub: ListByPlayer returns the player's pre-seeded rows and
+// RecordLeg is a no-op. The no-op matters — the coordinator records the RUNNING tour's legs during the productive
 // tour, and the fake executes tours instantly (near-zero wall-clock span ⇒ an astronomical rate),
 // which would pollute β. Isolating the β READ from that write artifact lets each test control β
 // exactly (recording is exercised by the telemetry tests elsewhere, not here).
@@ -71,8 +71,14 @@ type seededTelemetry struct {
 }
 
 func (s *seededTelemetry) RecordLeg(_ context.Context, _ trading.TourLegTelemetry) error { return nil }
-func (s *seededTelemetry) ListByPlayer(_ context.Context, _ int, _ time.Time) ([]trading.TourLegTelemetry, error) {
-	return s.rows, nil
+func (s *seededTelemetry) ListByPlayer(_ context.Context, playerID int, _ time.Time) ([]trading.TourLegTelemetry, error) {
+	var rows []trading.TourLegTelemetry
+	for _, r := range s.rows {
+		if r.PlayerID == playerID {
+			rows = append(rows, r)
+		}
+	}
+	return rows, nil
 }
 
 // windowedTelemetry honours the ListByPlayer since bound (realized_at >= since), like the real
@@ -177,7 +183,7 @@ func TestTour_PlacementArmed_KillSwitchStillWins(t *testing.T) {
 	resp, err := h.Handle(ctx, &RunTourCoordinatorCommand{
 		ShipSymbol: "TOUR-KILL", PlayerID: 1, ContainerID: "ctr-kill", Iterations: -1,
 		RepositionDisabled: true, // armed by default but killed
-		ModelArtifactPath: writeTourArtifact(t),
+		ModelArtifactPath:  writeTourArtifact(t),
 	})
 	if err != nil {
 		t.Fatalf("kill-switch run returned error: %v", err)

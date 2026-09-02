@@ -104,6 +104,8 @@ type tourFixture struct {
 	// its sell leg: the hull loads, the hop to the sink fails, the iteration exits resumable and
 	// the container restarts laden. Absent (nil) → every navigate succeeds, as before.
 	navFail map[string]bool
+	// navHook, when set, runs before each navigate; a non-nil error fails that navigate with it.
+	navHook func(dest string) error
 	// departureHopNavStall, when true, models the arrival-wait false-positive that caused the
 	// live leg-1 crash (sp-trnp): a departure-hop navigate to a jump gate reports completion
 	// (route "arrived") while the persisted position still lags at the origin (the nav-cache
@@ -267,6 +269,12 @@ func (m *tourFakeMediator) Send(ctx context.Context, request common.Request) (co
 	case *navCmd.NavigateRouteCommand:
 		m.fx.mu.Lock()
 		m.fx.navDests = append(m.fx.navDests, cmd.Destination)
+		if m.fx.navHook != nil {
+			if err := m.fx.navHook(cmd.Destination); err != nil {
+				m.fx.mu.Unlock()
+				return nil, err
+			}
+		}
 		if m.fx.navFail[cmd.Destination] {
 			m.fx.mu.Unlock()
 			return nil, fmt.Errorf("navigate to %s failed", cmd.Destination)

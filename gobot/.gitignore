@@ -32,6 +32,7 @@ go.work
 /dist/
 /bin/spacetraders
 /bin/spacetraders-daemon
+/mvt-replay
 
 # Generated man pages (make man) — packaging/install-time output, not
 # reviewable diffs. The markdown CLI reference (make cli-docs) is committed

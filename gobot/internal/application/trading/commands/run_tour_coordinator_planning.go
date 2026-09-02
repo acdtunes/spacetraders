@@ -397,6 +397,9 @@ func (h *RunTourCoordinatorHandler) tourSystems(ctx context.Context, ship *navig
 // solver clamp lifted) does it widen, and the widened set is floored to the 1-hop set so
 // it can never go narrower.
 func (h *RunTourCoordinatorHandler) tourSystemsFrom(ctx context.Context, home string, cmd *RunTourCoordinatorCommand) []string {
+	if cmd.MVTLoop {
+		return []string{h.mvtReconcileScope(ctx, cmd, home)}
+	}
 	oneHop := h.oneHopTourSystems(ctx, home, cmd)
 	if h.effectiveCandidateHopDepth(cmd) <= 1 {
 		return oneHop // DEFAULT PATH — the 1-hop set
