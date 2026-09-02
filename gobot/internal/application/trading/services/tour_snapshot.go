@@ -32,6 +32,12 @@ import (
 // the caller's, so tour and lane ranker share one definition; a zero ObservedAt is "unknown
 // age" — neither dropped nor discounted.
 //
+// RawAsk/RawBid carry the SAME quote undiscounted. They are what the execution money
+// guards are ultimately anchored on (routing.TourTrade.RawUnitPrice), so a ranking
+// haircut can no longer raise a buy ceiling or lower a sell floor. They are recorded
+// after the crossed-quote refusal and after the EXPORT bid zeroing, so raw and
+// discounted describe the same admitted row.
+//
 // Failure posture: a market that cannot be read simply contributes no rows (an
 // unreadable market is not a lane); a per-system waypoint-repo error degrades that
 // system's coordinates to empty (the planner falls back to flat travel with a logged
@@ -112,6 +118,7 @@ func BuildTourSnapshot(
 				}
 				// After the crossed-quote refusal, so that guard keeps reading the raw quote,
 				// and after the EXPORT zeroing, so a zeroed bid stays exactly zero.
+				rawAsk, rawBid := ask, bid
 				if observedKnown {
 					ask = discount.AdjustedAsk(ask, activity, age)
 					bid = discount.AdjustedBid(bid, activity, age)
@@ -124,6 +131,8 @@ func BuildTourSnapshot(
 					Activity:    activity,
 					Ask:         ask,
 					Bid:         bid,
+					RawAsk:      rawAsk,
+					RawBid:      rawBid,
 					TradeVolume: g.TradeVolume(),
 					ObservedAt:  observed,
 				})

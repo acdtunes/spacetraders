@@ -44,6 +44,7 @@ type tourPlanRun struct {
 // unevaluable predicate — no trade_volume — does not arm). BUDGET: one refusal per good
 // per tour, so a hold is withheld at most once and its exit stays reachable, every later
 // sell of that good dispatching unarmed. Both fall back to the plain sell, never cheaper.
+// planned is the caller's GuardBasis: a marked-DOWN bid would drop this floor by the haircut.
 func (r tourPlanRun) sellFloorPerUnit(good string, planned, tradeVolume int) int {
 	if planned <= 0 || r.sellFloorSpent == nil || r.sellFloorSpent[good] {
 		return 0
@@ -151,11 +152,19 @@ func (h *RunTourCoordinatorHandler) executeTrade(
 	if trade.IsBuy {
 		livePrice = live.PurchasePrice() // buy: what we pay
 	}
-	degradationPct := math.Abs(float64(livePrice-planned)) / float64(planned) * 100
+	// Two-sided band, one basis per direction, neither ever the kinder of the two. A move
+	// AGAINST us is a money question and bands the UNDISCOUNTED projection; a move in our
+	// FAVOUR asks whether the data that SELECTED the tour was wrong, and bands what did.
+	degradationBasis := planned
+	if (trade.IsBuy && livePrice > planned) || (!trade.IsBuy && livePrice < planned) {
+		degradationBasis = trade.GuardBasis()
+	}
+	degradationPct := math.Abs(float64(livePrice-degradationBasis)) / float64(degradationBasis) * 100
 	if degradationPct > tourPriceTolerancePct {
-		logger.Log("WARNING", fmt.Sprintf("Leg %d %s %s: live %d vs planned %d = %.1f%% moved (> %d%%) - skipping, will re-plan",
-			legIdx, tradeSide(trade), trade.Good, livePrice, planned, degradationPct, tourPriceTolerancePct), map[string]interface{}{
-			"leg": legIdx, "good": trade.Good, "live": livePrice, "planned": planned, "degradation_pct": degradationPct,
+		logger.Log("WARNING", fmt.Sprintf("Leg %d %s %s: live %d vs planned %d (basis %d) = %.1f%% moved (> %d%%) - skipping, will re-plan",
+			legIdx, tradeSide(trade), trade.Good, livePrice, planned, degradationBasis, degradationPct, tourPriceTolerancePct), map[string]interface{}{
+			"leg": legIdx, "good": trade.Good, "live": livePrice, "planned": planned,
+			"basis": degradationBasis, "degradation_pct": degradationPct,
 		})
 		return false, nil
 	}
@@ -294,8 +303,9 @@ func (h *RunTourCoordinatorHandler) executeBuy(
 	// plus the same tourPriceTolerancePct the leg-level gate above applied. That gate
 	// checked only the first live read; this bounds the intra-buy ladder a
 	// multi-tranche purchase walks up itself, aborting the remainder once a
-	// sub-tranche prices past the plan's tolerance.
-	planned := trade.ExpectedUnitPrice
+	// sub-tranche prices past the plan's tolerance, over the UNDISCOUNTED basis (a
+	// marked-UP ask would raise this ceiling by exactly the haircut).
+	planned := trade.GuardBasis()
 	maxAskPerUnit := planned + planned*tourPriceTolerancePct/100
 	buyResp, err := h.legs.purchaseWithCeiling(ctx, cmd.ShipSymbol, trade.Good, units, cmd.PlayerID, maxAskPerUnit, dedup)
 	if err != nil {
@@ -382,7 +392,7 @@ func (h *RunTourCoordinatorHandler) executeSell(
 	// LIVE before every tranche and holds the remainder aboard once one prices below
 	// tolerance. sellFloorPerUnit decides whether this tranche is deep enough to be worth
 	// that read.
-	minBidPerUnit := run.sellFloorPerUnit(trade.Good, trade.ExpectedUnitPrice, live.TradeVolume())
+	minBidPerUnit := run.sellFloorPerUnit(trade.Good, trade.GuardBasis(), live.TradeVolume())
 	sellResp, err := h.legs.sellWithFloor(ctx, cmd.ShipSymbol, trade.Good, units, cmd.PlayerID, minBidPerUnit)
 	if err != nil {
 		return false, fmt.Errorf("sell of %d %s at %s failed: %w", units, trade.Good, leg.Waypoint, err)

@@ -217,13 +217,19 @@ func (h *RunTourCoordinatorHandler) buildTourPlanRequest(
 // solveTourPlan calls the depth-aware planner with the assembled request and the netted
 // absorption the solver plans AROUND. absorptionView is empty when the ledger is unwired /
 // the consult is killed / the read failed (fail-OPEN — the conditional Reserve is the hard
-// backstop), which plans against full depth.
+// backstop), which plans against full depth. Annotating the undiscounted per-tranche basis
+// at this ONE seam is what stops a plan reaching a money guard without one (RULINGS #4).
 func (h *RunTourCoordinatorHandler) solveTourPlan(
 	ctx context.Context,
 	req *tourPlanRequest,
 	absorptionView []routing.TourMarketAbsorption,
 ) (*routing.TourPlan, error) {
-	return h.planner.OptimizeTradeTour(ctx, req.snapshot, req.waypoints, req.shipState, req.cons, req.deposits, absorptionView)
+	plan, err := h.planner.OptimizeTradeTour(ctx, req.snapshot, req.waypoints, req.shipState, req.cons, req.deposits, absorptionView)
+	if err != nil {
+		return nil, err
+	}
+	tradingsvc.AnnotateRawPlanBasis(plan, req.snapshot)
+	return plan, nil
 }
 
 // filterBlocklistedCargo drops every snapshot row whose good is in the blocklist,

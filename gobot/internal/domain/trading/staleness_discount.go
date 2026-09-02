@@ -62,9 +62,9 @@ const (
 // zero at age zero, monotone, and clamped at the fitted maximum from
 // StalenessDiscountHorizon on.
 //
-// RANKING ONLY. The discount adjusts scores. It never edits a lane's real economics and
-// never reaches the execution money guards, which take their own live scan before
-// committing capital (RULINGS #4).
+// RANKING ONLY — WHICH BINDS CALLERS AND IS NOT A PROPERTY OF THIS TYPE. A marked-UP ask
+// or marked-DOWN bid LOOSENS any bound built on it, so a caller computing a money guard
+// must band it around the quote it passed IN, never the one returned here (RULINGS #4).
 type StalenessDiscount struct {
 	// ScalePct scales the whole fitted table. 100 charges the fit as measured; a
 	// zero/absent value resolves to that default, so the ZERO VALUE

@@ -14,7 +14,8 @@ import "time"
 // snapshot. Ask is what the hull PAYS to buy (the market SELL column /
 // SellPrice); Bid is what the hull RECEIVES selling to it (the market BUY column
 // / PurchasePrice) — the same orientation GoodListing uses. ObservedAt stamps the
-// freshness of the cached market row so the planner can exclude stale prices.
+// freshness of the cached market row so the planner can exclude stale prices. Ask/Bid carry
+// the RANKER's staleness discount; RawAsk/RawBid are that quote UNDISCOUNTED and stay Go-side.
 type TourGoodSnapshot struct {
 	Waypoint    string
 	System      string
@@ -23,6 +24,8 @@ type TourGoodSnapshot struct {
 	Activity    string
 	Ask         int
 	Bid         int
+	RawAsk      int
+	RawBid      int
 	TradeVolume int
 	ObservedAt  time.Time
 }
@@ -134,7 +137,8 @@ type InterSystemHopDistance struct {
 
 // TourTrade is one buy or sell tranche at a leg. ExpectedUnitPrice is the
 // curve-adjusted price the planner projected for this tranche; the executor
-// re-verifies it live before trading.
+// re-verifies it live before trading. RawUnitPrice is that projection UNDISCOUNTED, filled
+// Go-side and never on the wire.
 //
 // IsDeposit marks a SELL-side tranche that is a haul-to-storage DEPOSIT into the
 // home warehouse, not a market sale: ExpectedUnitPrice is the
@@ -146,8 +150,17 @@ type TourTrade struct {
 	Good              string
 	Units             int
 	ExpectedUnitPrice int
+	RawUnitPrice      int
 	IsBuy             bool
 	IsDeposit         bool
+}
+
+// GuardBasis is what a money guard bands: undiscounted where known, else today's basis.
+func (t TourTrade) GuardBasis() int {
+	if t.RawUnitPrice > 0 {
+		return t.RawUnitPrice
+	}
+	return t.ExpectedUnitPrice
 }
 
 // TourDepositCandidate is one home-warehouse pre-positioning offer the daemon
