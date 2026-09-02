@@ -76,6 +76,20 @@ func countAdmitted(t *testing.T, hulls, trancheSize int) int {
 	return admitted
 }
 
+// countAdmittedOneHull is countAdmitted with every load taken by the SAME container — one
+// hull returning to a source it already drained, rather than a queue of different hulls.
+func countAdmittedOneHull(t *testing.T, loads, trancheSize int) int {
+	t.Helper()
+	ledger, _, playerID := setupDepthLedger(t)
+	admitted := 0
+	for i := 0; i < loads; i++ {
+		if sourceOneHull(t, ledger, playerID, "tour-run-HULL-RETURNING", crowdSource(), crowdHullLoad, trancheSize) {
+			admitted++
+		}
+	}
+	return admitted
+}
+
 // Hull after hull sources the same (market, good), each load lawful on its own, and the
 // pool stops admitting them once the fleet's purchases have taken its measured depth.
 func TestSourceCrowding_HullsCannotAllQueueOntoOneSource(t *testing.T) {
@@ -90,6 +104,49 @@ func TestSourceCrowding_HullsCannotAllQueueOntoOneSource(t *testing.T) {
 func TestSourceCrowding_HealthySmallFleetIsUnaffected(t *testing.T) {
 	require.Equal(t, 4, countAdmitted(t, 4, crowdTrancheSize),
 		"a small fleet's ordinary rotation through a source must never be refused")
+}
+
+// The pool counts the shadows the RESERVING container wrote itself, and on the source side
+// that is load-bearing for the same reason it is on the sink side and one more. Reserve runs
+// at plan-accept, so a container's own shadows on a source were written by legs it has already
+// flown: this is one hull RETURNING to a market it already drained. Nothing else bounds that
+// return — the solver's ladder cap is per SOLVE, the per-hull rebuy window withdraws only the
+// hull's own next SOURCE choice for a fixed clock rather than the market's depth, and a
+// container's own PLANNED rows are released before every re-plan. And the ask a returning hull
+// pays for its own prior tranches is no smaller than what it pays for a stranger's, so the
+// weight on its own rows is the same weight (RULINGS #4).
+func TestSourceCrowding_HullReEnteringItsOwnSourceIsHeldOut(t *testing.T) {
+	returning := countAdmittedOneHull(t, 12, crowdTrancheSize)
+
+	require.Less(t, returning, 12, "one hull must not re-drain its own worked source without bound")
+	require.Equal(t, countAdmitted(t, 12, crowdTrancheSize), returning,
+		"a hull's own purchase shadows must hold it out exactly as another hull's would")
+}
+
+// A re-plan releases the container's in-flight holds, and it must not hand the hull back the
+// source it just drained: only the PLANNED rows drop, so the EXECUTED shadow of the hull's own
+// purchase still holds the depth against its next plan. This is the seam that decides whether
+// a hull's own rows are stale intent (released) or realized damage (kept) — they are both, and
+// the release scope already tells them apart.
+func TestSourceCrowding_ReplanDoesNotReturnAHullItsOwnDrainedSource(t *testing.T) {
+	ledger, _, playerID := setupDepthLedger(t)
+	ctx := context.Background()
+	key := crowdSource()
+
+	hull := "tour-run-HULL-REPLANNING"
+	for i := 0; sourceOneHull(t, ledger, playerID, hull, key, crowdHullLoad, crowdTrancheSize); i++ {
+		require.Less(t, i, 12, "the hull's own purchases must close the source, not admit forever")
+	}
+
+	dropped, err := ledger.ReleaseByContainer(ctx, hull, playerID)
+	require.NoError(t, err)
+	require.Zero(t, dropped, "every hold this hull took is already an executed shadow")
+
+	_, ok, err := ledger.Reserve(ctx, playerID, hull, "tour",
+		[]absorption.ReserveEntry{buyEntry(key.Waypoint, key.Good, crowdHullLoad,
+			crowdACapTranches*crowdTrancheSize, time.Hour)})
+	require.NoError(t, err)
+	require.False(t, ok, "a re-plan must not free the depth the hull's own purchases are still holding")
 }
 
 // The displaced hull is not stalled: only the crowded pool is withdrawn, and the SAME hull
