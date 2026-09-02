@@ -121,7 +121,7 @@ func (r *ShipRepository) ClaimShip(ctx context.Context, shipSymbol string, conta
 		// captain-reservation guard above, and atomic with the assignment
 		// write below: the discovery-time exclude filter alone has a TOCTOU
 		// window between a coordinator's read and this write.
-		if model.DedicatedFleet != "" && model.DedicatedFleet != operation {
+		if !navigation.FleetDedicationPermits(model.DedicatedFleet, operation) {
 			return shared.NewShipDedicatedToOtherFleetError(shipSymbol, model.DedicatedFleet, operation)
 		}
 

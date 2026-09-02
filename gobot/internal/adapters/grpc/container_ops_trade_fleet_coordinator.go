@@ -8,6 +8,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	tradingCmd "github.com/andrescamacho/spacetraders-go/internal/application/trading/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/pkg/utils"
 )
@@ -90,7 +91,7 @@ func (s *DaemonServer) LaunchTour(ctx context.Context, spec tradingCmd.TourLaunc
 // relaunch (byte-identical to a config-only launch); otherwise the sp-nxrt reach escalation
 // of a twice-fast-failed hull and/or the MVT path a "trade-mvt" tag selects.
 func tourOverridesFor(spec tradingCmd.TourLaunchSpec) *TourRunOverrides {
-	mvtLoop := spec.Fleet == "trade-mvt"
+	mvtLoop := spec.Fleet == navigation.TradeFleetMVT
 	if !spec.RepositionReachEscalated && !mvtLoop {
 		return nil
 	}

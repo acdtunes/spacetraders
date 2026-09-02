@@ -369,7 +369,7 @@ func observeFleetShape(ships []*navigation.Ship, obs *bootstrapCmd.Observation) 
 			obs.CommandFrigatePurchasing = s.DedicatedFleet() == navigation.PurchasingFleet
 			// Idle-and-not-flying is the honest free tick the re-dedication and the first-hauler pivot
 			// both wait for (same expression as the gate-worker release below).
-			obs.CommandFrigateOnTrade = s.DedicatedFleet() == tradeFleetTag
+			obs.CommandFrigateOnTrade = navigation.IsTradeFleet(s.DedicatedFleet())
 			obs.CommandFrigateIdle = s.IsIdle() && !s.IsInTransit()
 			// Last run off the persisted assignment — the two fields the trade coordinator scores "unproductive" on.
 			if a := s.Assignment(); a != nil && a.ReleasedAt() != nil {
@@ -378,7 +378,7 @@ func observeFleetShape(ships []*navigation.Ship, obs *bootstrapCmd.Observation) 
 			}
 		} else if s.DedicatedFleet() == contractFleetTag {
 			obs.Haulers = append(obs.Haulers, bootstrapCmd.HaulerSnapshot{Symbol: s.ShipSymbol(), Waypoint: wp})
-		} else if s.DedicatedFleet() == tradeFleetTag {
+		} else if navigation.IsTradeFleet(s.DedicatedFleet()) {
 			obs.TradeHullCount++
 		} else if gate.IsGateFleetTag(s.DedicatedFleet()) {
 			// EVERY gate tag — the delivery role, the factory role, and the legacy one — is a

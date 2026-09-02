@@ -28,6 +28,7 @@ Copied from the spec and the standing books; every task inherits them.
   `Claude-Session: https://claude.ai/code/session_01PpeatLrgRdGdnYMZkZw8Ew`.
 - Beads: epic `sp-htzl1`. File one child `sp-` bead per migration step (step 1 = Tasks 1–9, step 2 = Tasks 10–12, step 3 = Task 13, step 4 = Task 15) from the repo root before starting the step; `<bead>` in the commit messages below stands for that step's id.
 - Ship gate before step 2 goes live: replay shows jumps down **and** margin per hull not down. Before step 3: the five-hull cohort passes on lot-matched figures over two complete hours.
+- **Step 3's own live gate is the cohort at TEN hulls, not five** (decision 10). The pool size is `floor(N × 0.10)` over the migrated cohort, so below ten hulls it is 0 by construction: arming at five would prove nothing. The code merges at any cohort size — it is inert until armed — but `specialist_pool_enabled` is set only once the cohort passes ten, which per §8 is during step 4's roll-out.
 
 ## Decisions this plan makes (refinements of the spec)
 
@@ -42,6 +43,8 @@ Copied from the spec and the standing books; every task inherits them.
 | 7 | Lane `jump_cost` is measured: mean realised transit seconds of the lane's tranches × fleet credits/sec + departure gate fee | needs no gate graph in the fleet coordinator |
 | 8 | Specialist promotion picks the idle `trade-mvt` hull whose system equals the lane's source, else its sink, else the lowest symbol | the fleet coordinator has no hop graph; "closest" approximated at system grain |
 | 9 | Float knobs are stored as percent ints; the cadence as minutes | codebase convention (`RepositionReachHopDecayPct`, `PlacementParkFloorPct`) |
+| 10 | Step 3 keeps the derived `floor(N × fraction)` pool (no `max(1, …)` floor) and moves its LIVE gate to a ten-hull cohort, armed by `[trade_fleet].specialist_pool_enabled` | a floor would hardcode a fleet size (RULINGS #5) and make the first specialist a 20% pool on a five-hull cohort. The alternative — a step that provably no-ops at its own gate — is not a gate at all |
+| 11 | The claim guard permits the trade tag FAMILY (`trade` / `trade-mvt` / `trade-lane`), via `navigation.FleetDedicationPermits` shared by `adapters/api` and `adapters/grpc` | every tour claims under `operation="trade"`, so string equality parks every re-tagged hull permanently — it bricks step 2's tag as much as step 3's |
 
 ## File map
 
@@ -3653,26 +3656,29 @@ git commit -m "feat(mvt): replay harness over tour legs with the jumps-down/marg
 - Create: `internal/application/trading/commands/run_trade_fleet_coordinator_specialists.go`
 - Modify: `internal/application/trading/commands/run_trade_fleet_coordinator.go` — struct fields (near `treasury TreasuryReader`), `reconcileOnce` (line 342; after `idle, running := partitionTradeFleet(ships)` at 364)
 - Modify: `cmd/spacetraders-daemon/main.go` (near line 971, next to `tradeFleetCoordinatorHandler.SetTourLauncher(daemonServer)`)
-- Test: `internal/application/trading/commands/run_trade_fleet_coordinator_specialists_test.go`
+- Create: `internal/domain/navigation/fleet_dedication.go` — the trade tag family + `FleetDedicationPermits`, the one predicate both claim guards call (decision 11)
+- Modify: `internal/adapters/api/ship_repository_claims.go`, `internal/adapters/grpc/container_runner_claims.go` — the two dedication guards, now family-aware
+- Modify: `internal/infrastructure/config/trade_fleet.go`, `internal/adapters/grpc/container_ops_trade_fleet_coordinator.go`, `internal/adapters/grpc/command_factory_builders.go` — the `specialist_pool_enabled` arm knob (decision 10)
+- Test: `internal/application/trading/commands/run_trade_fleet_coordinator_specialists_test.go`, `internal/domain/navigation/fleet_dedication_test.go`, `internal/adapters/api/ship_repository_claim_dedication_test.go`, `internal/adapters/grpc/container_ops_tour_test.go`
 
 **Interfaces:**
-- Consumes: `mvt.ComputeFleetStats/FleetStats/LaneStat` (Task 3), `mvt.PoolSize/IsFatLane` (Task 4), `mvt.ClaimRegistry` (Task 5), tags `tradeFleetMVT`/`tradeFleetLane`/`isTradeFleetTag` and command fields `SpecialistFractionPct, FatLaneMultiplePct, SpecialistCadenceMinutes` (Task 8); `trading.TourTelemetryRepository.ListByPlayer`; `GateFeeReader` (same package, `gate_fees.go:44`); `ship.SetDedicatedFleet(fleet string)`, `h.shipRepo.Save(ctx, ship)`, `ship.CurrentLocation().SystemSymbol`; `common.ContainerLogger` as `reconcileOnce` already holds it.
+- Consumes: `mvt.ComputeFleetStats/FleetStats/LaneStat` (Task 3), `mvt.PoolSize/IsFatLane` (Task 4), `mvt.ClaimRegistry` (Task 5), tags `tradeFleetMVT`/`tradeFleetLane`/`isTradeFleetTag` and command fields `SpecialistFractionPct, FatLaneMultiplePct, SpecialistCadenceMinutes` (Task 8); `trading.TourTelemetryRepository.ListByPlayer`; `GateFeeReader` (same package, `gate_fees.go:44`); `ship.SetDedicatedFleet(fleet string)`, `h.shipRepo.AssignFleet(ctx, shipSymbol, fleet, playerID)` (`navigation/ports.go:135` — the ONLY writer of `dedicated_fleet`; `ShipRepository.Save` re-reads the persisted tag and discards the outgoing one, sp-90a3), `ship.CargoUnits()`, `ship.CurrentLocation().SystemSymbol`; `common.ContainerLogger` as `reconcileOnce` already holds it.
 - Produces:
   - `func (h *RunTradeFleetCoordinatorHandler) SetSpecialistPorts(claims mvt.ClaimRegistry, telemetry trading.TourTelemetryRepository, fees GateFeeReader)`
   - `func (h *RunTradeFleetCoordinatorHandler) reconcileSpecialists(ctx, cmd, all, idle []*navigation.Ship, now time.Time, logger common.ContainerLogger) (promoted, demoted int)`
   - pure helper `func planSpecialists(all, idle []*navigation.Ship, fat []mvt.LaneStat, pool int, perHullMargin map[string]float64) (promote, demote []*navigation.Ship)`.
 
 Behaviour (exact):
-- Runs only when `h.specialistPorts` is wired and `now − h.specialistsAt ≥ cadence` (`cmd.SpecialistCadenceMinutes`, default `DefaultSpecialistCadenceMinutes`); stamps `h.specialistsAt = now` afterwards even when nothing changes.
-- `legs := telemetry.ListByPlayer(ctx, int(cmd.PlayerID), now−24h)` → `stats := mvt.ComputeFleetStats(legs, 24h)`; on error log WARNING and return (0, 0).
+- Runs only when `cmd.SpecialistPoolEnabled` is set (the arm seam; default OFF, so a merge changes nothing), `h.specialistPorts` is wired, and `now − h.specialistsAt ≥ cadence` (`cmd.SpecialistCadenceMinutes`, default `DefaultSpecialistCadenceMinutes`); stamps `h.specialistsAt = now` afterwards even when nothing changes.
+- `legs := telemetry.ListByPlayer(ctx, int(cmd.PlayerID), now−24h)` → `stats := mvt.ComputeFleetStats(legs, 24h)`; on error log WARNING and return (0, 0). An EMPTY or all-cross-system read is treated the same way — `len(legs) == 0 || stats.IntraMarginPerTranche <= 0` logs INFO and returns (0, 0). Without that guard `IsFatLane` rejects every lane, `fat` is empty and every idle specialist self-demotes on absence of evidence.
 - `fees := fees.GateFees(ctx, int(cmd.PlayerID))`; `fat` = lanes where `mvt.IsFatLane(l.MarginPerTranche, l.MeanTransitSeconds, stats.CreditsPerHullSec, fees[l.Source], stats.IntraMarginPerTranche, pct)` with `pct = cmd.FatLaneMultiplePct` (default `DefaultFatLaneMultiplePct` when 0).
-- `N` = count of `all` with `isTradeFleetTag`; `pool := mvt.PoolSize(len(fat), N, fractionPct)` (`DefaultSpecialistFractionPct` when 0).
-- `planSpecialists`: `current` = hulls tagged `trade-lane` in `all`; `idleLane`, `idleMVT` = idle hulls by tag.
+- `N` = count of `all` tagged `trade-mvt` or `trade-lane` — the MIGRATED COHORT, not `isTradeFleetTag`. A seat can only ever be drawn from an idle `trade-mvt` hull, so sizing off the legacy `trade` fleet during migration would promote most of the cohort off the MVT loop and destroy the measurement step 3 is gated on. `pool := mvt.PoolSize(len(fat), N, fractionPct)` (`DefaultSpecialistFractionPct` when 0), so during migration the pool grows only as the cohort does.
+- `planSpecialists`: `current` = hulls tagged `trade-lane` in `all`; `idleLane`, `idleMVT` = idle hulls by tag, EXCLUDING any hull with `CargoUnits() > 0` — spec §4's "never a hull mid-load". `partitionTradeFleet` calls a parked hull idle regardless of cargo, and a laden `trade-lane` hull demoted to `trade-mvt` has its next tour scope-pinned to one system and cannot reach the sink its cargo was bought for. A laden hull is caught on the next cadence once it drains.
   - Self-demotion first: every `idleLane` hull whose current system is neither `Source` nor `Sink` of any fat lane → demote.
-  - If `len(current) − len(selfDemoted) > pool`: demote the excess from the remaining `idleLane`, lowest `perHullMargin` first (ties: symbol asc).
+  - The remaining excess `len(surviving) − pool` is ranked by `perHullMargin` over EVERY surviving specialist, running ones included (ties: symbol asc), and only the idle AND EMPTY members of that worst slice demote (the idle set is built from the cargo-filtered buckets, so a laden hull holds its tag through this door too) — spec §4's "excess specialists demote at leg end". The tag count can therefore legitimately sit above the ceiling for up to one cadence while a low-ranked hull finishes its tour.
   - If `len(current) − demoted < pool`: promote `pool − (len(current) − demoted)` hulls from `idleMVT`: walk `fat` in order; for each lane pick the unpromoted idle hull whose system == `Source`, else == `Sink`, else the lowest symbol; stop when filled.
-  - Running (non-idle) hulls are never touched.
-- Apply: promote → `ship.SetDedicatedFleet(tradeFleetLane)`, `shipRepo.Save`, `claims.Release(hull)`; demote → `SetDedicatedFleet(tradeFleetMVT)`, `Save`. Log one INFO line per change with `hull, from_tag, to_tag, pool, fat_lanes`. A `Save` error logs WARNING and skips that hull.
+  - Running (non-idle) and laden hulls are never touched.
+- Apply: promote → `shipRepo.AssignFleet(ctx, hull, tradeFleetLane, cmd.PlayerID)`, then `ship.SetDedicatedFleet(tradeFleetLane)` so this tick's launch reads the new tag, then `claims.Release(hull)`; demote → the same through `tradeFleetMVT`. Log one INFO line per change with `hull, from_tag, to_tag, pool, fat_lanes`. An `AssignFleet` error logs WARNING and skips that hull, leaving the in-memory tag as it was.
 - `reconcileOnce` calls `h.reconcileSpecialists(ctx, cmd, ships, idle, now, logger)` right after `partitionTradeFleet` and before the idle launch loop, so a re-tagged idle hull launches with the right override in the same tick.
 
 - [ ] **Step 1: Write the failing tests**
@@ -3750,6 +3756,14 @@ func TestPlanSpecialists_PoolZeroTouchesNothing(t *testing.T) {
 }
 ```
 
+Pure `planSpecialists` tests are not sufficient on their own. Add, over `reconcileSpecialists` with a fake `ShipRepository` that records `AssignFleet` and counts `Save`:
+
+- `TestPlanSpecialists_NeverTagsAHullMidLoad` — a laden orphan specialist and a laden hull at a fat lane's source are both left alone; the same two, drained, move.
+- `TestReconcileSpecialists_PersistsThePromotionThroughAssignFleet` — asserts the PERSISTED tag (what the repository was asked to write) and that `Save` was never called. An in-memory assertion passes against a `Save`-based pool that never moves the row.
+- `TestReconcileSpecialists_AFailedWriteLeavesTheTagAsItWas` — no counter, no `claims.Release`, tag unchanged.
+- `TestReconcileSpecialists_NoIntraBaselineLeavesEverySpecialistAlone` — empty window and all-cross-system window, an orphan specialist that would otherwise demote.
+- `TestReconcileSpecialists_SizesThePoolOffTheMigratedCohortOnly` — ten legacy `trade` hulls plus a one-hull cohort: `floor(11 × 0.10) = 1` would eat the cohort, `floor(1 × 0.10) = 0` moves nothing.
+
 - [ ] **Step 2: Run the tests to verify they fail**
 
 Run: `go test ./internal/application/trading/commands/ -run TestPlanSpecialists -v`
@@ -3779,7 +3793,7 @@ type specialistPorts struct {
 	fees      GateFeeReader
 }
 
-// SetSpecialistPorts wires the MVT specialist pool (spec §4). Unwired, the pool is inert.
+// SetSpecialistPorts wires the MVT specialist pool. Unwired, the pool is inert.
 func (h *RunTradeFleetCoordinatorHandler) SetSpecialistPorts(claims mvt.ClaimRegistry, telemetry trading.TourTelemetryRepository, fees GateFeeReader) {
 	h.specialists = &specialistPorts{claims: claims, telemetry: telemetry, fees: fees}
 }
@@ -3791,9 +3805,20 @@ func shipSystem(s *navigation.Ship) string {
 	return s.CurrentLocation().SystemSymbol
 }
 
-// planSpecialists decides tag changes over IDLE hulls only: orphaned specialists self-demote,
-// excess specialists demote lowest-margin first, and open seats promote the idle trade-mvt
-// hull standing at a fat lane's source (else sink, else lowest symbol).
+// sortByMarginAsc orders worst-earning specialist first, symbol breaking ties.
+func sortByMarginAsc(ships []*navigation.Ship, perHullMargin map[string]float64) {
+	sort.Slice(ships, func(i, j int) bool {
+		mi, mj := perHullMargin[ships[i].ShipSymbol()], perHullMargin[ships[j].ShipSymbol()]
+		if mi != mj {
+			return mi < mj
+		}
+		return ships[i].ShipSymbol() < ships[j].ShipSymbol()
+	})
+}
+
+// planSpecialists decides tag changes over IDLE, EMPTY hulls only: orphaned specialists
+// self-demote, excess specialists demote lowest-margin first, and open seats promote the idle
+// trade-mvt hull standing at a fat lane's source (else sink, else lowest symbol).
 func planSpecialists(all, idle []*navigation.Ship, fat []mvt.LaneStat, pool int, perHullMargin map[string]float64) (promote, demote []*navigation.Ship) {
 	touches := map[string]bool{}
 	for _, l := range fat {
@@ -3807,6 +3832,11 @@ func planSpecialists(all, idle []*navigation.Ship, fat []mvt.LaneStat, pool int,
 	}
 	var idleLane, idleMVT []*navigation.Ship
 	for _, s := range idle {
+		// A parked hull can still be holding cargo bought for the tour path it is
+		// tagged for; switching the tag would strand that load. Caught next cadence.
+		if s.CargoUnits() > 0 {
+			continue
+		}
 		switch s.DedicatedFleet() {
 		case tradeFleetLane:
 			idleLane = append(idleLane, s)
@@ -3814,13 +3844,7 @@ func planSpecialists(all, idle []*navigation.Ship, fat []mvt.LaneStat, pool int,
 			idleMVT = append(idleMVT, s)
 		}
 	}
-	sort.Slice(idleLane, func(i, j int) bool {
-		mi, mj := perHullMargin[idleLane[i].ShipSymbol()], perHullMargin[idleLane[j].ShipSymbol()]
-		if mi != mj {
-			return mi < mj
-		}
-		return idleLane[i].ShipSymbol() < idleLane[j].ShipSymbol()
-	})
+	sortByMarginAsc(idleLane, perHullMargin)
 	sort.Slice(idleMVT, func(i, j int) bool { return idleMVT[i].ShipSymbol() < idleMVT[j].ShipSymbol() })
 
 	demoted := map[string]bool{}
@@ -3830,11 +3854,23 @@ func planSpecialists(all, idle []*navigation.Ship, fat []mvt.LaneStat, pool int,
 			demoted[s.ShipSymbol()] = true
 		}
 	}
-	for _, s := range idleLane {
-		if current-len(demote) <= pool {
-			break
+	// The excess is ranked over every surviving specialist, running ones included, so a
+	// hull sheds its tag for being among the worst rather than merely for being parked.
+	// A low-ranked running hull keeps it until it parks and the next cadence catches it.
+	idleSet := map[string]bool{}
+	for _, s := range idle {
+		idleSet[s.ShipSymbol()] = true
+	}
+	var surviving []*navigation.Ship
+	for _, s := range all {
+		if s.DedicatedFleet() == tradeFleetLane && !demoted[s.ShipSymbol()] {
+			surviving = append(surviving, s)
 		}
-		if !demoted[s.ShipSymbol()] {
+	}
+	sortByMarginAsc(surviving, perHullMargin)
+	excess := len(surviving) - pool
+	for i := 0; i < excess && i < len(surviving); i++ {
+		if s := surviving[i]; idleSet[s.ShipSymbol()] {
 			demote = append(demote, s)
 			demoted[s.ShipSymbol()] = true
 		}
@@ -3888,13 +3924,19 @@ func (h *RunTradeFleetCoordinatorHandler) reconcileSpecialists(ctx context.Conte
 		return 0, 0
 	}
 	h.specialistsAt = now
-	playerID := int(cmd.PlayerID)
+	playerID := cmd.PlayerID.Value()
 	legs, err := h.specialists.telemetry.ListByPlayer(ctx, playerID, now.Add(-specialistStatsWindow))
 	if err != nil {
 		logger.Log("WARNING", "Specialist pool: telemetry unreadable; pool unchanged", map[string]interface{}{"error": err.Error()})
 		return 0, 0
 	}
 	stats := mvt.ComputeFleetStats(legs, specialistStatsWindow)
+	// No baseline is absence of evidence, not evidence of no fat lane: without it every
+	// lane fails IsFatLane and the whole pool would demote on a pruned or empty window.
+	if len(legs) == 0 || stats.IntraMarginPerTranche <= 0 {
+		logger.Log("INFO", "Specialist pool: no intra-system baseline yet; pool unchanged", nil)
+		return 0, 0
+	}
 	fees := h.specialists.fees.GateFees(ctx, playerID)
 	multiple := cmd.FatLaneMultiplePct
 	if multiple <= 0 {
@@ -3910,9 +3952,12 @@ func (h *RunTradeFleetCoordinatorHandler) reconcileSpecialists(ctx context.Conte
 			fat = append(fat, l)
 		}
 	}
+	// N is the migrated cohort, not the whole trade fleet: a seat can only ever be drawn
+	// from a trade-mvt hull, so counting legacy 'trade' hulls would size a pool that eats
+	// the cohort. During migration the pool grows only as the cohort does.
 	n := 0
 	for _, s := range all {
-		if isTradeFleetTag(s.DedicatedFleet()) {
+		if t := s.DedicatedFleet(); t == tradeFleetMVT || t == tradeFleetLane {
 			n++
 		}
 	}
@@ -3920,12 +3965,13 @@ func (h *RunTradeFleetCoordinatorHandler) reconcileSpecialists(ctx context.Conte
 	promote, demote := planSpecialists(all, idle, fat, pool, stats.PerHullMargin)
 	apply := func(s *navigation.Ship, to string) bool {
 		from := s.DedicatedFleet()
-		s.SetDedicatedFleet(to)
-		if err := h.shipRepo.Save(ctx, s); err != nil {
-			s.SetDedicatedFleet(from)
+		// AssignFleet is the ONLY writer of dedicated_fleet — a general Save re-reads the
+		// persisted tag and discards the outgoing one (sp-90a3), so the row would never move.
+		if err := h.shipRepo.AssignFleet(ctx, s.ShipSymbol(), to, cmd.PlayerID); err != nil {
 			logger.Log("WARNING", "Specialist pool: re-tag failed", map[string]interface{}{"hull": s.ShipSymbol(), "to": to, "error": err.Error()})
 			return false
 		}
+		s.SetDedicatedFleet(to) // only after it commits, so this tick's launch reads the new tag
 		logger.Log("INFO", "Specialist pool: hull re-tagged", map[string]interface{}{"hull": s.ShipSymbol(), "from_tag": from, "to_tag": to, "pool": pool, "fat_lanes": len(fat)})
 		return true
 	}
@@ -3980,7 +4026,9 @@ git add internal/application/trading/commands/run_trade_fleet_coordinator_specia
 git commit -m "feat(mvt): derived specialist pool — fat-lane qualifier, idle-only promotion/demotion (<bead>)"
 ```
 
-**Step 3 ships here.** With `trade-lane` hulls launched on the old path (`max_tour_systems` 2), confirm in `SELECT ship_symbol, dedicated_fleet FROM ships WHERE player_id = <pid>` that the pool never exceeds `floor(N × 0.10)` and that promotions match the daemon's `Specialist pool: hull re-tagged` lines.
+**Step 3 ships here.** With `trade-lane` hulls launched on the old path (`max_tour_systems` 2), confirm in `SELECT ship_symbol, dedicated_fleet FROM ships WHERE player_id = <pid>` that promotions match the daemon's `Specialist pool: hull re-tagged` lines — the row is the check, because the INFO line alone proved nothing before the write moved to `AssignFleet`.
+
+**Arming is a separate act** (PLAYBOOK §10, decision 10): the merge is inert — `[trade_fleet].specialist_pool_enabled` is absent, so `reconcileSpecialists` returns before it reads anything and the legacy fleet is byte-identical. Set the key (plus a daemon restart) only once the cohort passes TEN hulls, because `N` in the `floor(N × 0.10)` ceiling is the MIGRATED COHORT — `COUNT(*) WHERE dedicated_fleet IN ('trade-mvt','trade-lane')` — not the whole trade fleet, so Task 14's five-hull cohort yields `floor(0.5) = 0`. Rollback is removing the key, not re-tagging hulls. Once armed, each cadence logs one `Specialist pool: sized` line carrying `cohort/pool/fat_lanes/promote/demote`, so a zero pool is visibly a decision rather than a broken pass. The count may sit ABOVE the ceiling between cadences by the number of low-ranked specialists still running a tour — excess demotes at leg end — so the check is that every idle `trade-lane` hull above the ceiling is gone by the cadence after it parks, not that the count is never exceeded.
 
 ### Task 14: Live cohort — arm five hulls, measure two complete hours (Wave D; no code)
 

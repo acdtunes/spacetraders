@@ -196,3 +196,18 @@ func TestUnservedLaneCount_ScansTheSystemsTheFleetOccupies(t *testing.T) {
 		t.Fatalf("expected the two DISTINCT systems, got %v", lanes.lastSystem)
 	}
 }
+
+// The trade pool the count subtracts is the WHOLE trade fleet, all three of its dedication tags.
+func TestUnservedLaneCount_SubtractsEveryTradeFamilyTag(t *testing.T) {
+	for _, tag := range []string{navigation.TradeFleet, navigation.TradeFleetMVT, navigation.TradeFleetLane} {
+		t.Run(tag, func(t *testing.T) {
+			repo := fakeShipRepoWith(t, hullsTagged(2, tag), hullsTagged(3, "contract"))
+			r := NewUnservedLaneReader(repo, countingLanes(7))
+
+			got, readable, err := r.UnservedLaneCount(context.Background(), 1)
+			require.NoError(t, err)
+			require.True(t, readable)
+			require.Equal(t, 5, got, "7 profitable − 2 trade-fleet hulls")
+		})
+	}
+}

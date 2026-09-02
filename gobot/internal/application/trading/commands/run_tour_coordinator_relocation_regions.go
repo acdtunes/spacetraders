@@ -386,7 +386,9 @@ func (h *RunTourCoordinatorHandler) relocationOriginHull(ctx context.Context, pl
 		return nil, fmt.Errorf("relocator regions unobservable: reading the fleet to resolve a hull at %s: %w", originSystem, err)
 	}
 	for _, ship := range ships {
-		if ship == nil || ship.DedicatedFleet() != tradeFleet {
+		// Any of the three trade tags: this is a hull-CLASS projection, and a migrated hull
+		// carries the same hold, engine and fuel facts the candidate tours are priced on.
+		if ship == nil || !navigation.IsTradeFleet(ship.DedicatedFleet()) {
 			continue
 		}
 		location := ship.CurrentLocation()

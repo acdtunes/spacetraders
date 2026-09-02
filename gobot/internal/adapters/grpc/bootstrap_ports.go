@@ -31,7 +31,7 @@ const (
 	// trading package's tradeFleet and the autosizer's trade count). obs.TradeHullCount counts hulls carrying
 	// it — the observable "trade-seeded" signal that drives the trade-seed + the scaler
 	// delay-launch. The bootstrap trade-seed (BuyAndDedicate) is what stamps a bought hull with this tag.
-	tradeFleetTag = "trade"
+	tradeFleetTag = navigation.TradeFleet
 	// warehouseFleetTag / stockerFleetTag are the dedicated-fleet tags the contract auto-scaler stamps on the
 	// DEPOT half of the contract fleet — the central far-source warehouse hulls and the stocker
 	// (container_ops_depot_launch.go). obs.ContractDepotHullCount counts hulls carrying either, mirroring how

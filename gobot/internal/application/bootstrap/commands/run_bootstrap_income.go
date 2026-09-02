@@ -8,13 +8,14 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	domainContract "github.com/andrescamacho/spacetraders-go/internal/domain/contract"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 )
 
 // tradeFleetTag is the dedicated-fleet tag the standing trade-fleet coordinator selects on (matches the
 // trading package's tradeFleet). The cold-start hull-routing trade-seed buys ONE hull and dedicates
 // it to this fleet so acquisition #2 becomes a trade hull, decoupled from the contract op — the trade
 // coordinator, contract coordinator, and contract scaler stay phase-BLIND (all the phase logic lives here).
-const tradeFleetTag = "trade"
+const tradeFleetTag = navigation.TradeFleet
 
 // The STARVED-TRADE CONTRACT FALLBACK's three bounds (sp-bvf20). A cold-start economy exhausts its few
 // profitable lanes fast and pre-gate the hull cannot reposition out, so a starved frigate would otherwise

@@ -144,12 +144,9 @@ type growthTradeHullCounter struct {
 
 func (c *growthTradeHullCounter) TradeHulls(ctx context.Context, playerID int) (int, error) {
 	return countShips(ctx, c.shipRepo, playerID, func(sh *navigation.Ship) bool {
-		return sh.DedicatedFleet() == growthTradeFleetTag
+		return navigation.IsTradeFleet(sh.DedicatedFleet())
 	})
 }
-
-// growthTradeFleetTag is the dedication a hull carries when it belongs to the trade-tour pool.
-const growthTradeFleetTag = "trade"
 
 // growthMetricsSink adapts the coordinator's MetricsSink to the global collector's Record funcs.
 type growthMetricsSink struct{}

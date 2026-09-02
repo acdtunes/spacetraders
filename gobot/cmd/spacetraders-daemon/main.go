@@ -976,6 +976,12 @@ func run(cfg *config.Config) error {
 	tradeFleetCoordinatorHandler.SetTourLiveness(daemonServer)
 	tradeFleetCoordinatorHandler.SetTourStopper(daemonServer)
 	tradeFleetCoordinatorHandler.SetAbsorptionReclaimer(absorptionReclaimer)
+	// Fat lanes size the trade-lane pool; it is 0 by construction below ten migrated hulls.
+	tradeFleetCoordinatorHandler.SetSpecialistPorts(
+		persistence.NewTradeClaimRegistry(db),
+		persistence.NewTourTelemetryRepository(db),
+		tradeRouteCmd.NewLedgerGateFeeReader(transactionRepo, nil), // nil clock = RealClock
+	)
 	if err := mediator.RegisterHandler[*tradeRouteCmd.RunTradeFleetCoordinatorCommand](med, tradeFleetCoordinatorHandler); err != nil {
 		return fmt.Errorf("failed to register TradeFleetCoordinator handler: %w", err)
 	}

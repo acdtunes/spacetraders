@@ -180,7 +180,7 @@ func (r *ContainerRunner) attemptClaimShip(shipSymbol, operation string, captain
 // enforceFleetDedication applies the SAME guard atomic ClaimShip enforces, so a foreign-fleet
 // hull can never be claimed through this side door — operation is empty, so any pin rejects.
 func (r *ContainerRunner) enforceFleetDedication(ship *navigation.Ship, shipSymbol, operation string, captainAuthority bool) error {
-	if ship.DedicatedFleet() == "" || ship.DedicatedFleet() == operation {
+	if navigation.FleetDedicationPermits(ship.DedicatedFleet(), operation) {
 		return nil
 	}
 

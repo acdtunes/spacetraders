@@ -88,7 +88,8 @@ func NewRelocatorFleetObserver(ships relocatorShipLister, containers relocatorCo
 // ObserveTradeHulls reports every TRADE-dedicated hull with the three facts RULINGS #7 and the
 // honest-release rule are enforced on.
 //
-// SCOPE: DedicatedFleet()=="trade" only. That single filter is the DEDICATION half of RULINGS #7 —
+// SCOPE: DedicatedFleet()=="trade" only — DELIBERATELY narrow: a "trade-mvt" hull places itself and a
+// "trade-lane" one is lane-pinned, so relocating either puts two engines on one hull. Also the DEDICATION half of RULINGS #7 —
 // "Pinned/dedicated hulls are never poached" — enforced by construction: a hull dedicated to
 // contract / manufacturing / explorer / purchasing is never even observed, so no scoring path can
 // reach it and there is nothing for a later guard to get wrong.

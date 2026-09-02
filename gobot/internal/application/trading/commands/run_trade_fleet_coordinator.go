@@ -20,12 +20,13 @@ const (
 	// (DedicatedFleet() != "trade") removes it from this coordinator's view for
 	// free — the captain's no-restart, per-hull off-switch (RULINGS #7 dedication
 	// is the poach guard, and here it doubles as the opt-out).
-	tradeFleet = "trade"
+	tradeFleet = navigation.TradeFleet
 
 	// MVT trade loop membership (spec §8). All three tags are trade hulls launched by this
-	// coordinator; the tag selects the tour path per hull and is the rollback lever.
-	tradeFleetMVT  = "trade-mvt"
-	tradeFleetLane = "trade-lane"
+	// coordinator; the tag selects the tour path per hull and is the rollback lever. Aliased
+	// from the domain so the claim guards accept exactly the family this coordinator writes.
+	tradeFleetMVT  = navigation.TradeFleetMVT
+	tradeFleetLane = navigation.TradeFleetLane
 
 	// defaultTradeFleetTickSeconds is the reconcile cadence when the launch config
 	// leaves it unset (RULINGS #5: parametrized, not hardcoded at the call site).
@@ -192,7 +193,9 @@ type RunTradeFleetCoordinatorCommand struct {
 	// captain softens it by raising the threshold toward 100 (unreachable ⇒ effectively off).
 	FullHullPausePct int
 
-	// MVT specialist pool (spec §4).
+	// MVT specialist pool (spec §4). Ships ARMED with no on/off flag (RULINGS #22): the pool
+	// is min(fat lanes, floor(N_migrated × fraction)), 0 by construction below ten
+	// trade-mvt/trade-lane hulls, and it only ever re-tags an idle, empty hull.
 	SpecialistFractionPct    int
 	FatLaneMultiplePct       int
 	SpecialistCadenceMinutes int
@@ -200,7 +203,7 @@ type RunTradeFleetCoordinatorCommand struct {
 
 // isTradeFleetTag reports whether a dedicated_fleet tag belongs to this coordinator.
 func isTradeFleetTag(tag string) bool {
-	return tag == tradeFleet || tag == tradeFleetMVT || tag == tradeFleetLane
+	return navigation.IsTradeFleet(tag)
 }
 
 // RunTradeFleetCoordinatorResponse reports reconcile progress. Because the loop is
@@ -263,6 +266,12 @@ type RunTradeFleetCoordinatorHandler struct {
 	// (sp-9bacx, see resolveTourReserve). Optional-injection via SetTreasuryReader: nil
 	// leaves every launch on the tour's own default, byte-identical to before.
 	treasury TreasuryReader
+
+	// specialists are the MVT specialist pool's ports and specialistsAt the last pass's
+	// clock stamp (the cadence anchor). Optional-injection via SetSpecialistPorts: nil
+	// leaves the pool inert and every tag as the captain set it.
+	specialists   *specialistPorts
+	specialistsAt time.Time
 
 	// startupReclaimDone gates the one-shot restart absorption reclaim to the FIRST reconcile
 	// pass of this handler (a fresh handler per daemon process — so it re-runs on every daemon
@@ -378,6 +387,14 @@ func (h *RunTradeFleetCoordinatorHandler) reconcileOnce(ctx context.Context, cmd
 
 	idle, running := partitionTradeFleet(ships)
 
+	// Re-tag before the launch loop, so a hull that changed pool this tick launches with
+	// the tag's own override rather than one tick late. The new tags come back as a map
+	// rather than written into the ship entities, which are shared daemon-wide.
+	p, d, specialistRetags := h.reconcileSpecialists(ctx, cmd, ships, idle, now, logger)
+	if p+d > 0 {
+		logger.Log("INFO", "Specialist pool reconciled", map[string]interface{}{"promoted": p, "demoted": d})
+	}
+
 	// The reserve every tour launched THIS pass carries, re-derived from live treasury and
 	// resolved lazily on first launch (sp-9bacx, resolveTourReserve).
 	reserveFor := h.tourReserveResolver(ctx, cmd, logger)
@@ -471,7 +488,7 @@ func (h *RunTradeFleetCoordinatorHandler) reconcileOnce(ctx context.Context, cmd
 			continue
 		}
 
-		if !h.launchTourForHull(ctx, cmd, ship, cooldown, reachEscalated, reserveFor(), logger) {
+		if !h.launchTourForHull(ctx, cmd, ship, effectiveFleetTag(ship, specialistRetags), cooldown, reachEscalated, reserveFor(), logger) {
 			continue
 		}
 		runningTours++

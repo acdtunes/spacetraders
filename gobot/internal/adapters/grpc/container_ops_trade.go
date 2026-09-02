@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/pkg/utils"
 )
 
@@ -22,7 +23,7 @@ type TradeRouteOperationResult struct {
 // bulk-circuit heavy freighter), so a trade-pinned hull is claimable by its
 // own circuits and by nothing else, and a hull pinned to any other fleet is
 // rejected inside ClaimShip's locked transaction.
-const operationTrade = "trade"
+const operationTrade = navigation.TradeFleet
 
 // StartTradeRoute launches a single-hull pure-arbitrage circuit as a recovery-safe
 // daemon container. Templated on the gas/factory coordinator start path:

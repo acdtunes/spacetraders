@@ -9,6 +9,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
 )
@@ -183,4 +184,56 @@ func TestClaimShip_ReleasedHullHonorsNewDedication(t *testing.T) {
 
 	require.NoError(t, repo.ClaimShip(context.Background(), "TORWIND-4", "bulk-worker-1", playerID, "bulk_circuit"),
 		"the newly-dedicated fleet takes over on the next acquisition")
+}
+
+// The MVT migration re-tags a trade hull between "trade", "trade-mvt" and "trade-lane" to
+// switch its tour path, but every tour container claims under operation="trade"
+// (StartTourRun's stamp). String equality would therefore reject a tour claiming its OWN
+// hull the moment the fleet coordinator re-tagged it, parking the hull for good.
+func TestClaimShip_TradeOperationClaimsEveryTradeFamilyTag(t *testing.T) {
+	for _, tag := range []string{navigation.TradeFleet, navigation.TradeFleetMVT, navigation.TradeFleetLane} {
+		t.Run(tag, func(t *testing.T) {
+			repo, db, playerID := newDedicationTestRepo(t)
+
+			require.NoError(t, db.Create(&persistence.ShipModel{
+				ShipSymbol:       "TORWIND-19",
+				PlayerID:         playerID.Value(),
+				AssignmentStatus: "idle",
+				DedicatedFleet:   tag,
+			}).Error)
+			seedContainerParent(t, db, "tour-run-1", playerID.Value())
+
+			require.NoError(t, repo.ClaimShip(context.Background(), "TORWIND-19", "tour-run-1", playerID, navigation.TradeFleet))
+
+			var model persistence.ShipModel
+			require.NoError(t, db.Where("ship_symbol = ?", "TORWIND-19").First(&model).Error)
+			require.Equal(t, "active", model.AssignmentStatus)
+			require.Equal(t, tag, model.DedicatedFleet, "the claim must not rewrite the hull's tag")
+		})
+	}
+}
+
+// The family is not a skeleton key: a foreign fleet is still rejected in both directions.
+func TestClaimShip_TradeFamilyStillRejectsForeignFleets(t *testing.T) {
+	repo, db, playerID := newDedicationTestRepo(t)
+
+	require.NoError(t, db.Create(&persistence.ShipModel{
+		ShipSymbol:       "TORWIND-4",
+		PlayerID:         playerID.Value(),
+		AssignmentStatus: "idle",
+		DedicatedFleet:   "contract",
+	}).Error)
+	require.NoError(t, db.Create(&persistence.ShipModel{
+		ShipSymbol:       "TORWIND-19",
+		PlayerID:         playerID.Value(),
+		AssignmentStatus: "idle",
+		DedicatedFleet:   navigation.TradeFleetLane,
+	}).Error)
+
+	var dedicated *shared.ShipDedicatedToOtherFleetError
+	err := repo.ClaimShip(context.Background(), "TORWIND-4", "tour-run-1", playerID, navigation.TradeFleetLane)
+	require.ErrorAs(t, err, &dedicated, "a trade-family operation must not take a contract hull")
+
+	err = repo.ClaimShip(context.Background(), "TORWIND-19", "contract-worker-1", playerID, "contract")
+	require.ErrorAs(t, err, &dedicated, "a foreign operation must not take a trade-family hull")
 }

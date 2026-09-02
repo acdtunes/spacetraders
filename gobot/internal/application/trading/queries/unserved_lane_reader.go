@@ -13,7 +13,7 @@ import (
 )
 
 // tradeFleetTag is the dedication a hull carries when it belongs to the trade-tour pool.
-const tradeFleetTag = "trade"
+const tradeFleetTag = navigation.TradeFleet
 
 // ProfitableLaneCounter counts the profitable, feasible lanes ranked across the given systems,
 // read-only, off the persisted market cache. Satisfied by ProfitableLaneReader.
@@ -126,7 +126,7 @@ func (r *UnservedLaneReader) LaneDemand(ctx context.Context, playerID int) (flee
 	// lanes, so counting its hold would declare a surface saturated on capacity no lane can reach.
 	pool, hold := 0, 0
 	for _, sh := range ships {
-		if sh.DedicatedFleet() != tradeFleetTag {
+		if !navigation.IsTradeFleet(sh.DedicatedFleet()) {
 			continue
 		}
 		pool++

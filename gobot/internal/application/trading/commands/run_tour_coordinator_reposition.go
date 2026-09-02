@@ -825,8 +825,8 @@ func (h *RunTourCoordinatorHandler) activeTradeHullsBySystem(ctx context.Context
 
 // tradeHullsBySystem is the shared per-system trade-hull tally, optionally excluding one hull
 // by symbol so a caller can ask how many OTHERS share a ground without a second fleet read.
-// Only DedicatedFleet()=="trade" hulls count: a scout/contract hull passing through a system is
-// not part of the trade herd that would re-drain it.
+// Only trade-fleet hulls count — any of the three tags, since a migrated peer drains the same
+// system: a scout/contract hull passing through is not part of the herd that would re-drain it.
 func (h *RunTourCoordinatorHandler) tradeHullsBySystem(ctx context.Context, playerID int, exclude string) (map[string]int, bool) {
 	if h.legs == nil || h.legs.shipRepo == nil {
 		return nil, false
@@ -837,7 +837,7 @@ func (h *RunTourCoordinatorHandler) tradeHullsBySystem(ctx context.Context, play
 	}
 	counts := make(map[string]int, len(ships))
 	for _, ship := range ships {
-		if ship == nil || ship.DedicatedFleet() != tradeFleet {
+		if ship == nil || !navigation.IsTradeFleet(ship.DedicatedFleet()) {
 			continue
 		}
 		if exclude != "" && ship.ShipSymbol() == exclude {

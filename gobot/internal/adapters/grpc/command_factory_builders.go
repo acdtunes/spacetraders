@@ -76,7 +76,7 @@ func buildTradeFleetCoordinatorCommand(cfg *configReader, playerID int, containe
 		// sp-tgll8: the inventory-pressure governor is always ARMED — only the FULL-hull pause
 		// threshold is configurable. 0/absent ⇒ the coordinator's own 65% default.
 		FullHullPausePct: cfg.OptionalInt("trade_fleet_full_hull_pause_pct", 0),
-		// MVT specialist pool: an absent key resolves to the spec default, never 0.
+		// MVT specialist pool: always ARMED (no arm key); an absent tuning is the spec default.
 		SpecialistFractionPct:    cfg.OptionalInt("specialist_fraction_pct", tradingCmd.DefaultSpecialistFractionPct),
 		FatLaneMultiplePct:       cfg.OptionalInt("fat_lane_multiple_pct", tradingCmd.DefaultFatLaneMultiplePct),
 		SpecialistCadenceMinutes: cfg.OptionalInt("specialist_cadence_minutes", tradingCmd.DefaultSpecialistCadenceMinutes),

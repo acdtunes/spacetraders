@@ -30,7 +30,8 @@ func (r *dedicationGuardShipRepo) FindBySymbol(_ context.Context, _ string, _ sh
 }
 
 func (r *dedicationGuardShipRepo) ClaimShip(_ context.Context, symbol, containerID string, _ shared.PlayerID, operation string) error {
-	if r.ship.DedicatedFleet() != "" && r.ship.DedicatedFleet() != operation {
+	// The real guard's predicate, not a copy of it, so this fake cannot drift from the DB.
+	if !navigation.FleetDedicationPermits(r.ship.DedicatedFleet(), operation) {
 		return shared.NewShipDedicatedToOtherFleetError(symbol, r.ship.DedicatedFleet(), operation)
 	}
 	return r.ship.AssignToContainer(containerID, shared.NewRealClock())
@@ -674,4 +675,33 @@ func TestStartTourRun_TourNeighborsDurableFirstDefaultsWhenUnset(t *testing.T) {
 	require.NoError(t, err)
 	cmd := rebuilt.(*tradingCmd.RunTourCoordinatorCommand)
 	require.False(t, cmd.TourNeighborsDurableFirst, "an unset tour_neighbors_durable_first must rebuild to false — the live neighbour scan, byte-identical to today")
+}
+
+// The MVT migration pin. StartTourRun stamps operation="trade" for every trade hull, so a
+// hull the specialist pool re-tagged "trade-mvt" or "trade-lane" must still be claimable by
+// its own tour — otherwise each re-tag parks the hull permanently (one WARNING per tick) and
+// the migration silently drains the fleet.
+func TestTourClaimPermittedOnMigrationTradeTags(t *testing.T) {
+	for _, tag := range []string{navigation.TradeFleetMVT, navigation.TradeFleetLane} {
+		t.Run(tag, func(t *testing.T) {
+			s, db, playerID := newRecoveryTestServer(t)
+
+			hull := newIdleTradeShip(t, "TORWIND-19", playerID)
+			hull.SetDedicatedFleet(tag)
+			s.shipRepo = &dedicationGuardShipRepo{ship: hull}
+
+			containerID := "tour-run-TORWIND-19-" + tag
+			entity := container.NewContainer(containerID, container.ContainerTypeTrading, playerID, 1, nil,
+				map[string]interface{}{"ship_symbol": "TORWIND-19", "operation": operationTrade}, nil)
+			require.NoError(t, s.containerRepo.Add(context.Background(), entity, "tour_run"))
+
+			runner := NewContainerRunner(entity, s.mediator, nil, s.logRepo, s.containerRepo, s.shipRepo, s.clock)
+			defer runner.cancelFunc()
+
+			require.NoError(t, runner.Start(), "a tour must claim its own %s hull under the stamped operation=trade", tag)
+			requireContainerState(t, db, containerID, "RUNNING", "")
+			require.True(t, hull.IsAssigned())
+			require.Equal(t, tag, hull.DedicatedFleet(), "the claim must not rewrite the hull's tag")
+		})
+	}
 }

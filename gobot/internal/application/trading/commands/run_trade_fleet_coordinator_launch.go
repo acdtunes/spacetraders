@@ -15,12 +15,13 @@ func (h *RunTradeFleetCoordinatorHandler) launchTourForHull(
 	ctx context.Context,
 	cmd *RunTradeFleetCoordinatorCommand,
 	ship *navigation.Ship,
+	fleet string,
 	cooldown time.Duration,
 	reachEscalated bool,
 	reserve int64,
 	logger common.ContainerLogger,
 ) bool {
-	spec := buildTourLaunchSpec(cmd, ship.ShipSymbol(), ship.DedicatedFleet(), reachEscalated, reserve)
+	spec := buildTourLaunchSpec(cmd, ship.ShipSymbol(), fleet, reachEscalated, reserve)
 	containerID, lerr := h.launcher.LaunchTour(ctx, spec)
 	if lerr != nil {
 		// A single hull's launch failure (e.g. it was claimed between the snapshot
