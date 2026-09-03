@@ -546,7 +546,7 @@
       "type": "stat",
       "id": 107,
       "title": "Trade Hulls",
-      "description": "Ships whose dedicated_fleet is 'trade' right now.",
+      "description": "Ships on the trade coordinator right now: tags trade (legacy path), trade-mvt (MVT loop) and trade-lane (specialists).",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
@@ -605,7 +605,7 @@
           },
           "format": "table",
           "rawQuery": true,
-          "rawSql": "WITH me AS (SELECT MAX(id) AS pid FROM players)\nSELECT COUNT(*)::bigint AS \"trade hulls\"\n  FROM ships s CROSS JOIN me\n WHERE s.player_id = me.pid AND s.dedicated_fleet = 'trade';",
+          "rawSql": "WITH me AS (SELECT MAX(id) AS pid FROM players)\nSELECT COUNT(*)::bigint AS \"trade hulls\"\n  FROM ships s CROSS JOIN me\n WHERE s.player_id = me.pid AND s.dedicated_fleet IN ('trade','trade-mvt','trade-lane');",
           "editorMode": "code",
           "sql": {
             "columns": [
@@ -1524,7 +1524,7 @@
           },
           "format": "table",
           "rawQuery": true,
-          "rawSql": "WITH RECURSIVE me AS (SELECT MAX(id) AS pid FROM players),\n-- MOVING WEIGHTED-AVERAGE COST (sp-7kfof).  Walks every cargo event for each\n-- (hull, good) in chronological order: a purchase adds its spend and units and so\n-- re-averages the holding, a sale releases units at the THEN-CURRENT average.  The\n-- value left standing at any instant is therefore what was actually paid for the\n-- units still held.\n--\n-- IT REPLACES A LIFETIME AVERAGE, which is the defect this fixes.  The previous\n-- valuation multiplied net units held by total spend / total units over ALL history\n-- - two different populations.  The units held come from specific recent lots; the\n-- average came from every lot ever bought.  On TORWIND-2F5 that valued 60 EQUIPMENT\n-- bought at 1,983/u at 2,633.9/u and 105 URANITE bought at 3,394/u at 3,277.5/u; the\n-- errors did not cancel, closing came out 641,517 against 602,850 actually paid, and\n-- the 38,667 gap ate the COGS denominator until the row read 1212.7% on a 31.7% run.\n--\n-- sp-d767k IS HONOURED AND STRENGTHENED.  That rule says held cargo is per-(hull,\n-- good) NET units - bought minus sold - and must NEVER be derived from a last-sell\n-- timestamp, because hulls interleave lots and a hull that sold an OLDER lot after\n-- buying a NEWER one had its whole inventory erased.  Walking every event in order\n-- is strictly stronger than the net-units subtraction it replaces: it cannot be\n-- fooled by interleaving because it never looks at an aggregate at all.\nev AS (\n  SELECT t.metadata->>'ship_symbol' AS hull, t.metadata->>'good_symbol' AS good,\n         t.created_at, (t.transaction_type = 'PURCHASE_CARGO') AS is_buy,\n         (t.metadata->>'units')::numeric AS units, (-t.amount)::numeric AS spend,\n         row_number() OVER (PARTITION BY t.metadata->>'ship_symbol', t.metadata->>'good_symbol'\n                            ORDER BY t.created_at, t.id) AS rn\n    FROM transactions t CROSS JOIN me\n   WHERE t.player_id = me.pid AND t.operation_type = 'tour'\n     AND t.transaction_type IN ('PURCHASE_CARGO','SELL_CARGO')\n     AND COALESCE(t.metadata->>'ship_symbol','') <> ''\n     AND COALESCE(t.metadata->>'good_symbol','') <> ''\n     AND t.created_at <= $__timeTo()::timestamptz),\nwalk AS (\n  SELECT hull, good, rn, created_at,\n         CASE WHEN is_buy THEN units ELSE 0 END AS units,\n         CASE WHEN is_buy THEN spend ELSE 0 END AS value\n    FROM ev WHERE rn = 1\n  UNION ALL\n  SELECT e.hull, e.good, e.rn, e.created_at,\n         CASE WHEN e.is_buy THEN w.units + e.units ELSE GREATEST(w.units - e.units, 0) END,\n         -- A sale releases units at the running average.  Clamped at zero so a sale\n         -- of cargo this ledger never saw bought (or a partial history) can only ever\n         -- empty the holding, never drive its value negative into the COGS below.\n         CASE WHEN e.is_buy THEN w.value + e.spend\n              WHEN w.units > 0 THEN GREATEST(w.value - e.units * (w.value / w.units), 0)\n              ELSE 0 END\n    FROM walk w JOIN ev e ON e.hull = w.hull AND e.good = w.good AND e.rn = w.rn + 1),\ninv AS (\n  -- Inventory value per hull at each window boundary, from the walk above.\n  SELECT b.asof, x.hull, SUM(x.value)::bigint AS value\n    FROM (VALUES ($__timeFrom()::timestamptz), ($__timeTo()::timestamptz)) AS b(asof)\n    CROSS JOIN LATERAL (\n      SELECT DISTINCT ON (w.hull, w.good) w.hull, w.value\n        FROM walk w WHERE w.created_at < b.asof\n       ORDER BY w.hull, w.good, w.rn DESC) x\n   GROUP BY 1, 2),\ntx AS (\n  SELECT t.metadata->>'ship_symbol' AS hull,\n         COUNT(*) FILTER (WHERE t.transaction_type = 'PURCHASE_CARGO')            AS buys,\n         COALESCE(SUM(-t.amount) FILTER (WHERE t.transaction_type = 'PURCHASE_CARGO'), 0) AS spent,\n         COUNT(*) FILTER (WHERE t.transaction_type = 'SELL_CARGO')                AS sells,\n         COALESCE(SUM(t.amount) FILTER (WHERE t.transaction_type = 'SELL_CARGO'), 0)      AS earned,\n         COALESCE(SUM(t.amount), 0)                                               AS net\n    FROM transactions t CROSS JOIN me\n   WHERE t.player_id = me.pid AND t.operation_type = 'tour'\n       AND t.transaction_type IN ('PURCHASE_CARGO','SELL_CARGO')\n       AND COALESCE(t.metadata->>'ship_symbol','') <> ''\n     AND $__timeFilter(t.created_at)\n   GROUP BY 1),\ncogs AS (\n  -- opening inventory + purchases in window - closing inventory.  A hull flat at\n  -- BOTH boundaries has opening = closing = 0, so this collapses to the window's own\n  -- spend and the margin below reduces to (earned - spent)/spent exactly - the\n  -- healthy case is preserved by construction, re-proved against the new valuation\n  -- rule rather than inherited from sp-4gcts.\n  SELECT tx.hull, COALESCE(io.value, 0) + COALESCE(tx.spent, 0) - COALESCE(ic.value, 0) AS cogs\n    FROM tx\n    LEFT JOIN inv io ON io.hull = tx.hull AND io.asof = $__timeFrom()::timestamptz\n    LEFT JOIN inv ic ON ic.hull = tx.hull AND ic.asof = $__timeTo()::timestamptz),\nfleet AS (SELECT s.* FROM ships s CROSS JOIN me\n           WHERE s.player_id = me.pid AND s.dedicated_fleet = 'trade')\nSELECT COALESCE(f.ship_symbol, tx.hull)                              AS \"Hull\",\n       CASE WHEN f.ship_symbol IS NULL              THEN 'RELEASED'\n            WHEN COALESCE(tx.sells,0) > 0           THEN 'TRADING'\n            WHEN COALESCE(f.cargo_units,0) > 0      THEN 'MID-RUN'\n            WHEN COALESCE(tx.buys,0)  > 0           THEN 'MID-RUN'\n            WHEN COALESCE(f.assignment_status,'') = 'active'\n             AND COALESCE(f.container_id,'') LIKE 'tour-run-%'\n                                                    THEN 'ON TOUR'\n            ELSE 'IDLE' END                                          AS \"State\",\n       COALESCE(tx.buys, 0)                                          AS \"Buys\",\n       COALESCE(tx.sells, 0)                                         AS \"Sells\",\n       COALESCE(tx.spent, 0)                                         AS \"Spent\",\n       COALESCE(tx.earned, 0)                                        AS \"Earned\",\n       COALESCE(tx.net, 0)                                           AS \"Realised Net\",\n       -- Cargo held at the window's END, valued by the SAME walk the COGS uses\n       -- (sp-7kfof).  It used to be a separate window-clipped average that could\n       -- disagree with the closing inventory on the very same row - 602,850 against\n       -- 641,517 on TORWIND-2F5 - which is indefensible for two readings of one\n       -- quantity, so they are now one number by construction.\n       COALESCE(ic.value, 0)                                         AS \"In Cargo\",\n       COALESCE(tx.net, 0) + COALESCE(ic.value, 0)                   AS \"Net @ Cost\",\n       CASE WHEN COALESCE(tx.sells,0) > 0 AND COALESCE(cg.cogs,0) > 0\n            THEN ROUND(100.0 * (COALESCE(tx.earned,0) - cg.cogs) / cg.cogs, 1)\n            END                                                      AS \"Margin %\",\n       COALESCE(f.cargo_units, 0)                                    AS \"Hold\",\n       COALESCE(f.cargo_capacity, 0)                                 AS \"Cap\",\n       COALESCE(f.system_symbol, '-')                                AS \"System\",\n       COALESCE(f.nav_status, '-')                                   AS \"Nav\",\n       COALESCE(substring(f.container_id from '[0-9a-f]{8}$'), '-') AS \"Tour\"\n  FROM tx\n  FULL OUTER JOIN fleet f ON f.ship_symbol = tx.hull\n  LEFT JOIN cogs cg ON cg.hull = COALESCE(f.ship_symbol, tx.hull)\n  LEFT JOIN inv  ic ON ic.hull = COALESCE(f.ship_symbol, tx.hull) AND ic.asof = $__timeTo()::timestamptz\n ORDER BY COALESCE(tx.net, 0) DESC;",
+          "rawSql": "WITH RECURSIVE me AS (SELECT MAX(id) AS pid FROM players),\n-- MOVING WEIGHTED-AVERAGE COST (sp-7kfof).  Walks every cargo event for each\n-- (hull, good) in chronological order: a purchase adds its spend and units and so\n-- re-averages the holding, a sale releases units at the THEN-CURRENT average.  The\n-- value left standing at any instant is therefore what was actually paid for the\n-- units still held.\n--\n-- IT REPLACES A LIFETIME AVERAGE, which is the defect this fixes.  The previous\n-- valuation multiplied net units held by total spend / total units over ALL history\n-- - two different populations.  The units held come from specific recent lots; the\n-- average came from every lot ever bought.  On TORWIND-2F5 that valued 60 EQUIPMENT\n-- bought at 1,983/u at 2,633.9/u and 105 URANITE bought at 3,394/u at 3,277.5/u; the\n-- errors did not cancel, closing came out 641,517 against 602,850 actually paid, and\n-- the 38,667 gap ate the COGS denominator until the row read 1212.7% on a 31.7% run.\n--\n-- sp-d767k IS HONOURED AND STRENGTHENED.  That rule says held cargo is per-(hull,\n-- good) NET units - bought minus sold - and must NEVER be derived from a last-sell\n-- timestamp, because hulls interleave lots and a hull that sold an OLDER lot after\n-- buying a NEWER one had its whole inventory erased.  Walking every event in order\n-- is strictly stronger than the net-units subtraction it replaces: it cannot be\n-- fooled by interleaving because it never looks at an aggregate at all.\nev AS (\n  SELECT t.metadata->>'ship_symbol' AS hull, t.metadata->>'good_symbol' AS good,\n         t.created_at, (t.transaction_type = 'PURCHASE_CARGO') AS is_buy,\n         (t.metadata->>'units')::numeric AS units, (-t.amount)::numeric AS spend,\n         row_number() OVER (PARTITION BY t.metadata->>'ship_symbol', t.metadata->>'good_symbol'\n                            ORDER BY t.created_at, t.id) AS rn\n    FROM transactions t CROSS JOIN me\n   WHERE t.player_id = me.pid AND t.operation_type = 'tour'\n     AND t.transaction_type IN ('PURCHASE_CARGO','SELL_CARGO')\n     AND COALESCE(t.metadata->>'ship_symbol','') <> ''\n     AND COALESCE(t.metadata->>'good_symbol','') <> ''\n     AND t.created_at <= $__timeTo()::timestamptz),\nwalk AS (\n  SELECT hull, good, rn, created_at,\n         CASE WHEN is_buy THEN units ELSE 0 END AS units,\n         CASE WHEN is_buy THEN spend ELSE 0 END AS value\n    FROM ev WHERE rn = 1\n  UNION ALL\n  SELECT e.hull, e.good, e.rn, e.created_at,\n         CASE WHEN e.is_buy THEN w.units + e.units ELSE GREATEST(w.units - e.units, 0) END,\n         -- A sale releases units at the running average.  Clamped at zero so a sale\n         -- of cargo this ledger never saw bought (or a partial history) can only ever\n         -- empty the holding, never drive its value negative into the COGS below.\n         CASE WHEN e.is_buy THEN w.value + e.spend\n              WHEN w.units > 0 THEN GREATEST(w.value - e.units * (w.value / w.units), 0)\n              ELSE 0 END\n    FROM walk w JOIN ev e ON e.hull = w.hull AND e.good = w.good AND e.rn = w.rn + 1),\ninv AS (\n  -- Inventory value per hull at each window boundary, from the walk above.\n  SELECT b.asof, x.hull, SUM(x.value)::bigint AS value\n    FROM (VALUES ($__timeFrom()::timestamptz), ($__timeTo()::timestamptz)) AS b(asof)\n    CROSS JOIN LATERAL (\n      SELECT DISTINCT ON (w.hull, w.good) w.hull, w.value\n        FROM walk w WHERE w.created_at < b.asof\n       ORDER BY w.hull, w.good, w.rn DESC) x\n   GROUP BY 1, 2),\ntx AS (\n  SELECT t.metadata->>'ship_symbol' AS hull,\n         COUNT(*) FILTER (WHERE t.transaction_type = 'PURCHASE_CARGO')            AS buys,\n         COALESCE(SUM(-t.amount) FILTER (WHERE t.transaction_type = 'PURCHASE_CARGO'), 0) AS spent,\n         COUNT(*) FILTER (WHERE t.transaction_type = 'SELL_CARGO')                AS sells,\n         COALESCE(SUM(t.amount) FILTER (WHERE t.transaction_type = 'SELL_CARGO'), 0)      AS earned,\n         COALESCE(SUM(t.amount), 0)                                               AS net\n    FROM transactions t CROSS JOIN me\n   WHERE t.player_id = me.pid AND t.operation_type = 'tour'\n       AND t.transaction_type IN ('PURCHASE_CARGO','SELL_CARGO')\n       AND COALESCE(t.metadata->>'ship_symbol','') <> ''\n     AND $__timeFilter(t.created_at)\n   GROUP BY 1),\ncogs AS (\n  -- opening inventory + purchases in window - closing inventory.  A hull flat at\n  -- BOTH boundaries has opening = closing = 0, so this collapses to the window's own\n  -- spend and the margin below reduces to (earned - spent)/spent exactly - the\n  -- healthy case is preserved by construction, re-proved against the new valuation\n  -- rule rather than inherited from sp-4gcts.\n  SELECT tx.hull, COALESCE(io.value, 0) + COALESCE(tx.spent, 0) - COALESCE(ic.value, 0) AS cogs\n    FROM tx\n    LEFT JOIN inv io ON io.hull = tx.hull AND io.asof = $__timeFrom()::timestamptz\n    LEFT JOIN inv ic ON ic.hull = tx.hull AND ic.asof = $__timeTo()::timestamptz),\nfleet AS (SELECT s.* FROM ships s CROSS JOIN me\n           WHERE s.player_id = me.pid AND s.dedicated_fleet IN ('trade','trade-mvt','trade-lane'))\nSELECT COALESCE(f.ship_symbol, tx.hull)                              AS \"Hull\",\n       CASE WHEN f.ship_symbol IS NULL              THEN 'RELEASED'\n            WHEN COALESCE(tx.sells,0) > 0           THEN 'TRADING'\n            WHEN COALESCE(f.cargo_units,0) > 0      THEN 'MID-RUN'\n            WHEN COALESCE(tx.buys,0)  > 0           THEN 'MID-RUN'\n            WHEN COALESCE(f.assignment_status,'') = 'active'\n             AND COALESCE(f.container_id,'') LIKE 'tour-run-%'\n                                                    THEN 'ON TOUR'\n            ELSE 'IDLE' END                                          AS \"State\",\n       COALESCE(tx.buys, 0)                                          AS \"Buys\",\n       COALESCE(tx.sells, 0)                                         AS \"Sells\",\n       COALESCE(tx.spent, 0)                                         AS \"Spent\",\n       COALESCE(tx.earned, 0)                                        AS \"Earned\",\n       COALESCE(tx.net, 0)                                           AS \"Realised Net\",\n       -- Cargo held at the window's END, valued by the SAME walk the COGS uses\n       -- (sp-7kfof).  It used to be a separate window-clipped average that could\n       -- disagree with the closing inventory on the very same row - 602,850 against\n       -- 641,517 on TORWIND-2F5 - which is indefensible for two readings of one\n       -- quantity, so they are now one number by construction.\n       COALESCE(ic.value, 0)                                         AS \"In Cargo\",\n       COALESCE(tx.net, 0) + COALESCE(ic.value, 0)                   AS \"Net @ Cost\",\n       CASE WHEN COALESCE(tx.sells,0) > 0 AND COALESCE(cg.cogs,0) > 0\n            THEN ROUND(100.0 * (COALESCE(tx.earned,0) - cg.cogs) / cg.cogs, 1)\n            END                                                      AS \"Margin %\",\n       COALESCE(f.cargo_units, 0)                                    AS \"Hold\",\n       COALESCE(f.cargo_capacity, 0)                                 AS \"Cap\",\n       COALESCE(f.system_symbol, '-')                                AS \"System\",\n       COALESCE(f.nav_status, '-')                                   AS \"Nav\",\n       COALESCE(substring(f.container_id from '[0-9a-f]{8}$'), '-') AS \"Tour\"\n  FROM tx\n  FULL OUTER JOIN fleet f ON f.ship_symbol = tx.hull\n  LEFT JOIN cogs cg ON cg.hull = COALESCE(f.ship_symbol, tx.hull)\n  LEFT JOIN inv  ic ON ic.hull = COALESCE(f.ship_symbol, tx.hull) AND ic.asof = $__timeTo()::timestamptz\n ORDER BY COALESCE(tx.net, 0) DESC;",
           "editorMode": "code",
           "sql": {
             "columns": [
@@ -1795,6 +1795,618 @@
     },
     {
       "type": "row",
+      "id": 140,
+      "title": "MVT loop  (trade-mvt hulls: claim -> travel -> trade until exhausted)",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 32
+      },
+      "panels": []
+    },
+    {
+      "type": "stat",
+      "id": 141,
+      "title": "Hulls by tag",
+      "description": "trade-mvt runs the loop, trade-lane the specialist cross-system tours, trade the legacy path.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 33
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "noValue": "0",
+          "unit": "short",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "none",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "value_and_name",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "pluginVersion": "13.1.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COUNT(*) FILTER (WHERE dedicated_fleet = 'trade-mvt')::bigint AS \"mvt\",\n       COUNT(*) FILTER (WHERE dedicated_fleet = 'trade-lane')::bigint AS \"specialist\",\n       COUNT(*) FILTER (WHERE dedicated_fleet IN ('trade','trade-mvt','trade-lane'))::bigint AS \"legacy\"\n  FROM ships WHERE player_id = $player;",
+          "editorMode": "code"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "id": 142,
+      "title": "Loop movement rate (window)",
+      "description": "arrived = a completed jump to a claimed system; empty = the solver found no intra-system plan; yield = the departure rule fired.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 8,
+        "x": 6,
+        "y": 33
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "noValue": "0",
+          "unit": "short",
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "none",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "value_and_name",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "pluginVersion": "13.1.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH w AS (SELECT EXTRACT(epoch FROM ($__timeTo()::timestamptz - $__timeFrom()::timestamptz)) / 3600.0 AS hours)\nSELECT ROUND((COUNT(*) FILTER (WHERE reason = 'arrived'))::numeric\n             / NULLIF(COUNT(DISTINCT hull), 0) / NULLIF((SELECT hours FROM w), 0), 2) AS \"jumps / hull-hour\",\n       ROUND((COUNT(*) FILTER (WHERE reason = 'empty'))::numeric\n             / NULLIF(COUNT(DISTINCT hull), 0) / NULLIF((SELECT hours FROM w), 0), 2) AS \"exhaustion exits / hull-hour\",\n       ROUND((COUNT(*) FILTER (WHERE reason = 'yield_below_alternative'))::numeric\n             / NULLIF(COUNT(DISTINCT hull), 0) / NULLIF((SELECT hours FROM w), 0), 2) AS \"yield departures / hull-hour\"\n  FROM mvt_transitions\n WHERE player_id = $player AND reason <> 'shadow' AND $__timeFilter(at);",
+          "editorMode": "code"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "id": 143,
+      "title": "Claims now",
+      "description": "From trade_claims: hulls flying to their claim vs trading in it, and how many distinct systems the fleet holds.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 5,
+        "x": 14,
+        "y": 33
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "noValue": "0",
+          "unit": "short",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "none",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "value_and_name",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "pluginVersion": "13.1.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COUNT(*) FILTER (WHERE c.arrived_at IS NULL)::bigint AS \"in transit\",\n       COUNT(*) FILTER (WHERE c.arrived_at IS NOT NULL)::bigint AS \"trading\",\n       COUNT(DISTINCT c.system)::bigint AS \"systems claimed\"\n  FROM trade_claims c JOIN ships s ON s.player_id = c.player_id AND s.ship_symbol = c.hull\n WHERE c.player_id = $player AND s.dedicated_fleet = 'trade-mvt';",
+          "editorMode": "code"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "id": 144,
+      "title": "Loop trouble (window)",
+      "description": "Failure-mode transitions: fail toward staying put, so these should stay near zero.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 5,
+        "x": 19,
+        "y": 33
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "noValue": "0",
+          "unit": "short",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "none",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "value_and_name",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "pluginVersion": "13.1.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COUNT(*) FILTER (WHERE reason = 'travel_failed')::bigint AS \"travel failed\",\n       COUNT(*) FILTER (WHERE reason = 'hold')::bigint AS \"held\",\n       COUNT(*) FILTER (WHERE reason = 'no_alternative')::bigint AS \"no alternative\",\n       COUNT(*) FILTER (WHERE reason = 'ranker_unreadable')::bigint AS \"ranker unreadable\"\n  FROM mvt_transitions\n WHERE player_id = $player AND $__timeFilter(at);",
+          "editorMode": "code"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 145,
+      "title": "Loop transitions by reason",
+      "description": "One row per hull state change. arrived and empty dominate when hulls drain small systems in one pass; yield_below_alternative is the MVT departure rule proper.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 37
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "bars",
+            "lineWidth": 1,
+            "fillOpacity": 70,
+            "gradientMode": "none",
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "short",
+          "decimals": 0,
+          "noValue": "no loop transitions in this window"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "sum"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "13.1.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT $__timeGroupAlias(at, $__interval), reason AS metric, COUNT(*)::bigint AS v\n  FROM mvt_transitions\n WHERE player_id = $player AND reason <> 'shadow' AND $__timeFilter(at)\n GROUP BY 1, 2 ORDER BY 1;",
+          "editorMode": "code"
+        }
+      ]
+    },
+    {
+      "type": "barchart",
+      "id": 146,
+      "title": "Claims per system (now)",
+      "description": "The claim is a penalty, not a lock: two hulls on one system is allowed, a pile-up is the ranker's in-transit penalty failing.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 37
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 80,
+            "gradientMode": "none",
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#5794f2",
+                "value": null
+              },
+              {
+                "color": "#ff9830",
+                "value": 2
+              },
+              {
+                "color": "#d03b3b",
+                "value": 3
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "unit": "short",
+          "decimals": 0,
+          "noValue": "no claims"
+        },
+        "overrides": []
+      },
+      "options": {
+        "orientation": "horizontal",
+        "xField": "System",
+        "showValue": "always",
+        "stacking": "none",
+        "groupWidth": 0.7,
+        "barWidth": 0.8,
+        "legend": {
+          "displayMode": "hidden",
+          "placement": "bottom",
+          "showLegend": false
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "13.1.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT c.system AS \"System\", COUNT(*)::bigint AS \"Hulls\"\n  FROM trade_claims c JOIN ships s ON s.player_id = c.player_id AND s.ship_symbol = c.hull\n WHERE c.player_id = $player AND s.dedicated_fleet = 'trade-mvt'\n GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 20;",
+          "editorMode": "code"
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "id": 147,
+      "title": "Hull state - where each loop hull is and what it did in the window",
+      "description": "State from trade_claims (TRAVEL until arrived_at is stamped), last transition from mvt_transitions, jumps/exhaustions in the window, realised tour net in the window (naive sum; see ledger positions for lot-matched).",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "h": 13,
+        "w": 24,
+        "x": 0,
+        "y": 46
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false,
+            "filterable": true
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "noValue": "no trade-mvt hulls"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Realised net"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "locale"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "#d03b3b",
+                      "value": null
+                    },
+                    {
+                      "color": "#0ca30c",
+                      "value": 0
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Exhausted"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "text",
+                      "value": null
+                    },
+                    {
+                      "color": "#ff9830",
+                      "value": 3
+                    },
+                    {
+                      "color": "#d03b3b",
+                      "value": 6
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false,
+          "reducer": [
+            "sum"
+          ],
+          "countRows": false,
+          "fields": ""
+        },
+        "sortBy": [
+          {
+            "displayName": "Realised net",
+            "desc": true
+          }
+        ]
+      },
+      "pluginVersion": "13.1.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH hulls AS (\n  SELECT s.ship_symbol, s.dedicated_fleet, s.system_symbol, s.nav_status, s.cargo_units, s.cargo_capacity\n    FROM ships s WHERE s.player_id = $player AND s.dedicated_fleet IN ('trade-mvt','trade-lane')),\nnet AS (\n  SELECT t.metadata->>'ship_symbol' AS hull, COALESCE(SUM(t.amount), 0) AS v,\n         COUNT(*) FILTER (WHERE t.transaction_type = 'SELL_CARGO') AS sells\n    FROM transactions t\n   WHERE t.player_id = $player AND t.operation_type = 'tour'\n     AND t.transaction_type IN ('PURCHASE_CARGO','SELL_CARGO') AND $__timeFilter(t.created_at)\n   GROUP BY 1),\nmoves AS (\n  SELECT hull, COUNT(*) FILTER (WHERE reason = 'arrived') AS jumps, COUNT(*) FILTER (WHERE reason = 'empty') AS exhausted\n    FROM mvt_transitions WHERE player_id = $player AND $__timeFilter(at) GROUP BY 1)\nSELECT h.ship_symbol AS \"Hull\", h.dedicated_fleet AS \"Tag\",\n       CASE WHEN h.dedicated_fleet = 'trade-lane' THEN 'LANE (old path)'\n            WHEN c.hull IS NULL THEN 'no claim'\n            WHEN c.arrived_at IS NULL THEN 'TRAVEL -> ' || c.system\n            ELSE 'TRADE @ ' || c.system END AS \"State\",\n       h.system_symbol AS \"Now in\", h.nav_status AS \"Nav\",\n       h.cargo_units || '/' || h.cargo_capacity AS \"Cargo\",\n       ROUND(EXTRACT(epoch FROM (NOW() - COALESCE(c.arrived_at, c.claimed_at))) / 60)::bigint AS \"Min in state\",\n       lt.reason AS \"Last reason\", ROUND(EXTRACT(epoch FROM (NOW() - lt.at)) / 60)::bigint AS \"Min ago\",\n       COALESCE(m.jumps, 0)::bigint AS \"Jumps\", COALESCE(m.exhausted, 0)::bigint AS \"Exhausted\",\n       COALESCE(n.sells, 0)::bigint AS \"Sells\", COALESCE(n.v, 0)::bigint AS \"Realised net\"\n  FROM hulls h\n  LEFT JOIN trade_claims c ON c.player_id = $player AND c.hull = h.ship_symbol\n  LEFT JOIN LATERAL (SELECT reason, at FROM mvt_transitions t\n                      WHERE t.player_id = $player AND t.hull = h.ship_symbol AND t.reason <> 'shadow'\n                      ORDER BY t.at DESC LIMIT 1) lt ON TRUE\n  LEFT JOIN net n ON n.hull = h.ship_symbol\n  LEFT JOIN moves m ON m.hull = h.ship_symbol\n ORDER BY \"Realised net\" DESC;",
+          "editorMode": "code"
+        }
+      ]
+    },
+    {
+      "type": "row",
       "id": 129,
       "title": "Hull payback  (LIFETIME - this whole section ignores the time picker)",
       "collapsed": false,
@@ -1807,14 +2419,14 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 41
+        "y": 68
       }
     },
     {
       "type": "stat",
       "id": 130,
       "title": "Trade-Hull Capex (actual)",
-      "description": "Every credit spent on PURCHASE_SHIP for a trade-capable hull type this era.",
+      "description": "Every credit spent on PURCHASE_SHIP for a trade-capable hull type this era (heavy, light, bulk).",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
@@ -1823,7 +2435,7 @@
         "h": 4,
         "w": 6,
         "x": 0,
-        "y": 42
+        "y": 69
       },
       "fieldConfig": {
         "defaults": {
@@ -1873,7 +2485,7 @@
           },
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT COALESCE(SUM(-t.amount), 0) AS \"trade-hull capex\"\n  FROM transactions t\n WHERE t.player_id = $player AND t.transaction_type = 'PURCHASE_SHIP'\n   AND t.metadata->>'ship_type' IN ('SHIP_HEAVY_FREIGHTER','SHIP_LIGHT_HAULER');",
+          "rawSql": "SELECT COALESCE(SUM(-t.amount), 0) AS \"trade-hull capex\"\n  FROM transactions t\n WHERE t.player_id = $player AND t.transaction_type = 'PURCHASE_SHIP'\n   AND t.metadata->>'ship_type' IN ('SHIP_HEAVY_FREIGHTER','SHIP_LIGHT_HAULER','SHIP_BULK_FREIGHTER');",
           "editorMode": "code",
           "sql": {
             "columns": [
@@ -1908,7 +2520,7 @@
         "h": 4,
         "w": 6,
         "x": 6,
-        "y": 42
+        "y": 69
       },
       "fieldConfig": {
         "defaults": {
@@ -1997,7 +2609,7 @@
         "h": 4,
         "w": 6,
         "x": 12,
-        "y": 42
+        "y": 69
       },
       "fieldConfig": {
         "defaults": {
@@ -2055,7 +2667,7 @@
           },
           "format": "table",
           "rawQuery": true,
-          "rawSql": "WITH cap AS (\n  SELECT COALESCE(SUM(-t.amount), 0) AS v\n    FROM transactions t\n   WHERE t.player_id = $player AND t.transaction_type = 'PURCHASE_SHIP'\n     AND t.metadata->>'ship_type' IN ('SHIP_HEAVY_FREIGHTER','SHIP_LIGHT_HAULER')),\nnet AS (\n  SELECT COALESCE(SUM(t.amount), 0) AS v\n    FROM transactions t\n   WHERE t.player_id = $player AND t.operation_type = 'tour'\n     AND t.transaction_type IN ('PURCHASE_CARGO','SELL_CARGO')\n     AND COALESCE(t.metadata->>'ship_symbol','') <> '')\nSELECT ROUND(100.0 * net.v / NULLIF(cap.v, 0), 1) AS \"fleet payback\"\n  FROM cap, net;",
+          "rawSql": "WITH cap AS (\n  SELECT COALESCE(SUM(-t.amount), 0) AS v\n    FROM transactions t\n   WHERE t.player_id = $player AND t.transaction_type = 'PURCHASE_SHIP'\n     AND t.metadata->>'ship_type' IN ('SHIP_HEAVY_FREIGHTER','SHIP_LIGHT_HAULER','SHIP_BULK_FREIGHTER')),\nnet AS (\n  SELECT COALESCE(SUM(t.amount), 0) AS v\n    FROM transactions t\n   WHERE t.player_id = $player AND t.operation_type = 'tour'\n     AND t.transaction_type IN ('PURCHASE_CARGO','SELL_CARGO')\n     AND COALESCE(t.metadata->>'ship_symbol','') <> '')\nSELECT ROUND(100.0 * net.v / NULLIF(cap.v, 0), 1) AS \"fleet payback\"\n  FROM cap, net;",
           "editorMode": "code",
           "sql": {
             "columns": [
@@ -2090,7 +2702,7 @@
         "h": 4,
         "w": 6,
         "x": 18,
-        "y": 42
+        "y": 69
       },
       "fieldConfig": {
         "defaults": {
@@ -2138,7 +2750,7 @@
           },
           "format": "table",
           "rawQuery": true,
-          "rawSql": "WITH hull_capex AS (\n  -- Exact per-hull capex, available for every hull bought after sp-mjmqf: the\n  -- purchase stamps the hull it produced on related_entity_type/id (indexed) and\n  -- the server's purchase instant in metadata.  DISTINCT ON keeps one receipt per\n  -- hull should a symbol ever be reissued across eras.\n  SELECT DISTINCT ON (t.related_entity_id)\n         t.related_entity_id                                               AS hull,\n         (-t.amount)::bigint                                               AS price,\n         COALESCE((t.metadata->>'purchased_at')::timestamptz, t.created_at) AS purchased_at\n    FROM transactions t\n   WHERE t.player_id = $player AND t.transaction_type = 'PURCHASE_SHIP'\n     AND t.related_entity_type = 'ship' AND COALESCE(t.related_entity_id, '') <> ''\n   ORDER BY t.related_entity_id, t.created_at DESC),\ncapex AS (\n  -- Frame-class average: the documented fallback for hulls bought BEFORE that\n  -- change, whose rows recorded the ship type where the hull belonged and can\n  -- never be attributed.  Deliberately retained, not superseded.\n  SELECT CASE t.metadata->>'ship_type'\n           WHEN 'SHIP_HEAVY_FREIGHTER' THEN 'FRAME_HEAVY_FREIGHTER'\n           WHEN 'SHIP_LIGHT_HAULER'    THEN 'FRAME_LIGHT_FREIGHTER'\n           WHEN 'SHIP_PROBE'           THEN 'FRAME_PROBE'\n           WHEN 'SHIP_EXPLORER'        THEN 'FRAME_EXPLORER'\n           WHEN 'SHIP_COMMAND_FRIGATE' THEN 'FRAME_FRIGATE'\n         END                                                          AS frame,\n         ROUND(AVG(-t.amount))::bigint                                AS avg_price\n    FROM transactions t\n   WHERE t.player_id = $player AND t.transaction_type = 'PURCHASE_SHIP'\n   GROUP BY 1),\ntx AS (\n  SELECT t.metadata->>'ship_symbol'                                       AS hull,\n         MIN(t.created_at)                                                AS first_trade,\n         COALESCE(SUM(t.amount), 0)                                       AS net,\n         COUNT(*) FILTER (WHERE t.transaction_type = 'SELL_CARGO')        AS sells\n    FROM transactions t\n   WHERE t.player_id = $player AND t.operation_type = 'tour'\n     AND t.transaction_type IN ('PURCHASE_CARGO','SELL_CARGO')\n     AND COALESCE(t.metadata->>'ship_symbol','') <> ''\n   GROUP BY 1),\nopen_cargo AS (\n  -- Held cargo is per-(hull, good) NET units - bought minus sold - valued at that\n  -- hull's average purchase cost for the good.  Deliberately NOT derived from a\n  -- last-sell timestamp: hulls interleave lots, so a hull that sold an OLDER lot\n  -- after buying a NEWER one had its entire held inventory erased (sp-d767k).\n  -- units/good_symbol come from transactions.metadata, which carries both\n  -- structurally on every cargo row - no description parsing.\n  SELECT g.hull, COALESCE(SUM(g.net_units * g.avg_unit_cost), 0)::bigint AS open_cost\n    FROM (\n      SELECT t.metadata->>'ship_symbol' AS hull,\n             t.metadata->>'good_symbol' AS good,\n             COALESCE(SUM((t.metadata->>'units')::numeric)\n                        FILTER (WHERE t.transaction_type = 'PURCHASE_CARGO'), 0)\n           - COALESCE(SUM((t.metadata->>'units')::numeric)\n                        FILTER (WHERE t.transaction_type = 'SELL_CARGO'), 0)     AS net_units,\n             COALESCE(SUM(-t.amount)\n                        FILTER (WHERE t.transaction_type = 'PURCHASE_CARGO'), 0)\n           / NULLIF(SUM((t.metadata->>'units')::numeric)\n                        FILTER (WHERE t.transaction_type = 'PURCHASE_CARGO'), 0) AS avg_unit_cost\n        FROM transactions t\n       WHERE t.player_id = $player AND t.operation_type = 'tour'\n         AND t.transaction_type IN ('PURCHASE_CARGO','SELL_CARGO')\n         AND COALESCE(t.metadata->>'ship_symbol','') <> ''\n         AND COALESCE(t.metadata->>'good_symbol','') <> ''\n       GROUP BY 1, 2) g\n   WHERE g.net_units > 0 AND g.avg_unit_cost IS NOT NULL\n   GROUP BY 1),\nbase AS (\n  -- Prefer the hull's own receipt; fall back to its frame's class average, and\n  -- carry the basis so every consumer can say which it used.  Age anchors on the\n  -- recorded purchase where there is one, otherwise on the hull's first trade.\n  SELECT s.ship_symbol                                                 AS hull,\n         s.frame_symbol,\n         COALESCE(hc.price, c.avg_price)                               AS capex,\n         CASE WHEN hc.price IS NOT NULL THEN 'exact'\n              WHEN c.avg_price IS NOT NULL THEN 'frame avg' END        AS capex_basis,\n         COALESCE(hc.purchased_at, tx.first_trade)                     AS age_from,\n         CASE WHEN hc.purchased_at IS NOT NULL THEN 'purchase'\n              WHEN tx.first_trade  IS NOT NULL THEN 'first trade' END  AS age_basis,\n         tx.first_trade,\n         COALESCE(tx.sells, 0)                                         AS sells,\n         COALESCE(tx.net, 0)                                           AS realised,\n         COALESCE(oc.open_cost, 0)                                     AS in_cargo,\n         COALESCE(tx.net, 0) + COALESCE(oc.open_cost, 0)               AS at_cost,\n         (EXTRACT(EPOCH FROM (now() - COALESCE(hc.purchased_at, tx.first_trade)))\n           / 3600.0)::numeric                                          AS tenure_h\n    FROM ships s\n    LEFT JOIN hull_capex hc ON hc.hull = s.ship_symbol\n    LEFT JOIN capex c       ON c.frame = s.frame_symbol\n    LEFT JOIN tx            ON tx.hull = s.ship_symbol\n    LEFT JOIN open_cargo oc ON oc.hull = s.ship_symbol\n   WHERE s.player_id = $player AND s.dedicated_fleet = 'trade'),\nrunning AS (\n  SELECT t.metadata->>'ship_symbol' AS hull, t.created_at,\n         SUM(t.amount) OVER (PARTITION BY t.metadata->>'ship_symbol'\n                             ORDER BY t.created_at, t.id) AS cum\n    FROM transactions t\n   WHERE t.player_id = $player AND t.operation_type = 'tour'\n     AND t.transaction_type IN ('PURCHASE_CARGO','SELL_CARGO')\n     AND COALESCE(t.metadata->>'ship_symbol','') <> ''),\npaid AS (\n  SELECT r.hull, MIN(r.created_at) AS paid_at\n    FROM running r JOIN base b ON b.hull = r.hull\n   WHERE b.capex IS NOT NULL AND r.cum >= b.capex\n   GROUP BY 1),\nh AS (\n  SELECT b.*, p.paid_at,\n         (EXTRACT(EPOCH FROM (p.paid_at - b.age_from)) / 3600.0)::numeric AS paid_h,\n         b.at_cost / NULLIF(b.tenure_h, 0)                                AS rate\n    FROM base b LEFT JOIN paid p ON p.hull = b.hull)\nSELECT COUNT(*) FILTER (WHERE paid_at IS NOT NULL)::text\n       || ' / ' || COUNT(*)::text || ' hulls' AS \"paid back\"\n  FROM h;",
+          "rawSql": "WITH hull_capex AS (\n  -- Exact per-hull capex, available for every hull bought after sp-mjmqf: the\n  -- purchase stamps the hull it produced on related_entity_type/id (indexed) and\n  -- the server's purchase instant in metadata.  DISTINCT ON keeps one receipt per\n  -- hull should a symbol ever be reissued across eras.\n  SELECT DISTINCT ON (t.related_entity_id)\n         t.related_entity_id                                               AS hull,\n         (-t.amount)::bigint                                               AS price,\n         COALESCE((t.metadata->>'purchased_at')::timestamptz, t.created_at) AS purchased_at\n    FROM transactions t\n   WHERE t.player_id = $player AND t.transaction_type = 'PURCHASE_SHIP'\n     AND t.related_entity_type = 'ship' AND COALESCE(t.related_entity_id, '') <> ''\n   ORDER BY t.related_entity_id, t.created_at DESC),\ncapex AS (\n  -- Frame-class average: the documented fallback for hulls bought BEFORE that\n  -- change, whose rows recorded the ship type where the hull belonged and can\n  -- never be attributed.  Deliberately retained, not superseded.\n  SELECT CASE t.metadata->>'ship_type'\n           WHEN 'SHIP_HEAVY_FREIGHTER' THEN 'FRAME_HEAVY_FREIGHTER'\n           WHEN 'SHIP_LIGHT_HAULER'    THEN 'FRAME_LIGHT_FREIGHTER'\n            WHEN 'SHIP_BULK_FREIGHTER'   THEN 'FRAME_BULK_FREIGHTER'\n           WHEN 'SHIP_PROBE'           THEN 'FRAME_PROBE'\n           WHEN 'SHIP_EXPLORER'        THEN 'FRAME_EXPLORER'\n           WHEN 'SHIP_COMMAND_FRIGATE' THEN 'FRAME_FRIGATE'\n         END                                                          AS frame,\n         ROUND(AVG(-t.amount))::bigint                                AS avg_price\n    FROM transactions t\n   WHERE t.player_id = $player AND t.transaction_type = 'PURCHASE_SHIP'\n   GROUP BY 1),\ntx AS (\n  SELECT t.metadata->>'ship_symbol'                                       AS hull,\n         MIN(t.created_at)                                                AS first_trade,\n         COALESCE(SUM(t.amount), 0)                                       AS net,\n         COUNT(*) FILTER (WHERE t.transaction_type = 'SELL_CARGO')        AS sells\n    FROM transactions t\n   WHERE t.player_id = $player AND t.operation_type = 'tour'\n     AND t.transaction_type IN ('PURCHASE_CARGO','SELL_CARGO')\n     AND COALESCE(t.metadata->>'ship_symbol','') <> ''\n   GROUP BY 1),\nopen_cargo AS (\n  -- Held cargo is per-(hull, good) NET units - bought minus sold - valued at that\n  -- hull's average purchase cost for the good.  Deliberately NOT derived from a\n  -- last-sell timestamp: hulls interleave lots, so a hull that sold an OLDER lot\n  -- after buying a NEWER one had its entire held inventory erased (sp-d767k).\n  -- units/good_symbol come from transactions.metadata, which carries both\n  -- structurally on every cargo row - no description parsing.\n  SELECT g.hull, COALESCE(SUM(g.net_units * g.avg_unit_cost), 0)::bigint AS open_cost\n    FROM (\n      SELECT t.metadata->>'ship_symbol' AS hull,\n             t.metadata->>'good_symbol' AS good,\n             COALESCE(SUM((t.metadata->>'units')::numeric)\n                        FILTER (WHERE t.transaction_type = 'PURCHASE_CARGO'), 0)\n           - COALESCE(SUM((t.metadata->>'units')::numeric)\n                        FILTER (WHERE t.transaction_type = 'SELL_CARGO'), 0)     AS net_units,\n             COALESCE(SUM(-t.amount)\n                        FILTER (WHERE t.transaction_type = 'PURCHASE_CARGO'), 0)\n           / NULLIF(SUM((t.metadata->>'units')::numeric)\n                        FILTER (WHERE t.transaction_type = 'PURCHASE_CARGO'), 0) AS avg_unit_cost\n        FROM transactions t\n       WHERE t.player_id = $player AND t.operation_type = 'tour'\n         AND t.transaction_type IN ('PURCHASE_CARGO','SELL_CARGO')\n         AND COALESCE(t.metadata->>'ship_symbol','') <> ''\n         AND COALESCE(t.metadata->>'good_symbol','') <> ''\n       GROUP BY 1, 2) g\n   WHERE g.net_units > 0 AND g.avg_unit_cost IS NOT NULL\n   GROUP BY 1),\nbase AS (\n  -- Prefer the hull's own receipt; fall back to its frame's class average, and\n  -- carry the basis so every consumer can say which it used.  Age anchors on the\n  -- recorded purchase where there is one, otherwise on the hull's first trade.\n  SELECT s.ship_symbol                                                 AS hull,\n         s.frame_symbol,\n         COALESCE(hc.price, c.avg_price)                               AS capex,\n         CASE WHEN hc.price IS NOT NULL THEN 'exact'\n              WHEN c.avg_price IS NOT NULL THEN 'frame avg' END        AS capex_basis,\n         COALESCE(hc.purchased_at, tx.first_trade)                     AS age_from,\n         CASE WHEN hc.purchased_at IS NOT NULL THEN 'purchase'\n              WHEN tx.first_trade  IS NOT NULL THEN 'first trade' END  AS age_basis,\n         tx.first_trade,\n         COALESCE(tx.sells, 0)                                         AS sells,\n         COALESCE(tx.net, 0)                                           AS realised,\n         COALESCE(oc.open_cost, 0)                                     AS in_cargo,\n         COALESCE(tx.net, 0) + COALESCE(oc.open_cost, 0)               AS at_cost,\n         (EXTRACT(EPOCH FROM (now() - COALESCE(hc.purchased_at, tx.first_trade)))\n           / 3600.0)::numeric                                          AS tenure_h\n    FROM ships s\n    LEFT JOIN hull_capex hc ON hc.hull = s.ship_symbol\n    LEFT JOIN capex c       ON c.frame = s.frame_symbol\n    LEFT JOIN tx            ON tx.hull = s.ship_symbol\n    LEFT JOIN open_cargo oc ON oc.hull = s.ship_symbol\n   WHERE s.player_id = $player AND s.dedicated_fleet IN ('trade','trade-mvt','trade-lane')),\nrunning AS (\n  SELECT t.metadata->>'ship_symbol' AS hull, t.created_at,\n         SUM(t.amount) OVER (PARTITION BY t.metadata->>'ship_symbol'\n                             ORDER BY t.created_at, t.id) AS cum\n    FROM transactions t\n   WHERE t.player_id = $player AND t.operation_type = 'tour'\n     AND t.transaction_type IN ('PURCHASE_CARGO','SELL_CARGO')\n     AND COALESCE(t.metadata->>'ship_symbol','') <> ''),\npaid AS (\n  SELECT r.hull, MIN(r.created_at) AS paid_at\n    FROM running r JOIN base b ON b.hull = r.hull\n   WHERE b.capex IS NOT NULL AND r.cum >= b.capex\n   GROUP BY 1),\nh AS (\n  SELECT b.*, p.paid_at,\n         (EXTRACT(EPOCH FROM (p.paid_at - b.age_from)) / 3600.0)::numeric AS paid_h,\n         b.at_cost / NULLIF(b.tenure_h, 0)                                AS rate\n    FROM base b LEFT JOIN paid p ON p.hull = b.hull)\nSELECT COUNT(*) FILTER (WHERE paid_at IS NOT NULL)::text\n       || ' / ' || COUNT(*)::text || ' hulls' AS \"paid back\"\n  FROM h;",
           "editorMode": "code",
           "sql": {
             "columns": [
@@ -2173,7 +2785,7 @@
         "h": 4,
         "w": 8,
         "x": 0,
-        "y": 46
+        "y": 73
       },
       "fieldConfig": {
         "defaults": {
@@ -2223,7 +2835,7 @@
           },
           "format": "table",
           "rawQuery": true,
-          "rawSql": "WITH hull_capex AS (\n  -- Exact per-hull capex, available for every hull bought after sp-mjmqf: the\n  -- purchase stamps the hull it produced on related_entity_type/id (indexed) and\n  -- the server's purchase instant in metadata.  DISTINCT ON keeps one receipt per\n  -- hull should a symbol ever be reissued across eras.\n  SELECT DISTINCT ON (t.related_entity_id)\n         t.related_entity_id                                               AS hull,\n         (-t.amount)::bigint                                               AS price,\n         COALESCE((t.metadata->>'purchased_at')::timestamptz, t.created_at) AS purchased_at\n    FROM transactions t\n   WHERE t.player_id = $player AND t.transaction_type = 'PURCHASE_SHIP'\n     AND t.related_entity_type = 'ship' AND COALESCE(t.related_entity_id, '') <> ''\n   ORDER BY t.related_entity_id, t.created_at DESC),\ncapex AS (\n  -- Frame-class average: the documented fallback for hulls bought BEFORE that\n  -- change, whose rows recorded the ship type where the hull belonged and can\n  -- never be attributed.  Deliberately retained, not superseded.\n  SELECT CASE t.metadata->>'ship_type'\n           WHEN 'SHIP_HEAVY_FREIGHTER' THEN 'FRAME_HEAVY_FREIGHTER'\n           WHEN 'SHIP_LIGHT_HAULER'    THEN 'FRAME_LIGHT_FREIGHTER'\n           WHEN 'SHIP_PROBE'           THEN 'FRAME_PROBE'\n           WHEN 'SHIP_EXPLORER'        THEN 'FRAME_EXPLORER'\n           WHEN 'SHIP_COMMAND_FRIGATE' THEN 'FRAME_FRIGATE'\n         END                                                          AS frame,\n         ROUND(AVG(-t.amount))::bigint                                AS avg_price\n    FROM transactions t\n   WHERE t.player_id = $player AND t.transaction_type = 'PURCHASE_SHIP'\n   GROUP BY 1),\ntx AS (\n  SELECT t.metadata->>'ship_symbol'                                       AS hull,\n         MIN(t.created_at)                                                AS first_trade,\n         COALESCE(SUM(t.amount), 0)                                       AS net,\n         COUNT(*) FILTER (WHERE t.transaction_type = 'SELL_CARGO')        AS sells\n    FROM transactions t\n   WHERE t.player_id = $player AND t.operation_type = 'tour'\n     AND t.transaction_type IN ('PURCHASE_CARGO','SELL_CARGO')\n     AND COALESCE(t.metadata->>'ship_symbol','') <> ''\n   GROUP BY 1),\nopen_cargo AS (\n  -- Held cargo is per-(hull, good) NET units - bought minus sold - valued at that\n  -- hull's average purchase cost for the good.  Deliberately NOT derived from a\n  -- last-sell timestamp: hulls interleave lots, so a hull that sold an OLDER lot\n  -- after buying a NEWER one had its entire held inventory erased (sp-d767k).\n  -- units/good_symbol come from transactions.metadata, which carries both\n  -- structurally on every cargo row - no description parsing.\n  SELECT g.hull, COALESCE(SUM(g.net_units * g.avg_unit_cost), 0)::bigint AS open_cost\n    FROM (\n      SELECT t.metadata->>'ship_symbol' AS hull,\n             t.metadata->>'good_symbol' AS good,\n             COALESCE(SUM((t.metadata->>'units')::numeric)\n                        FILTER (WHERE t.transaction_type = 'PURCHASE_CARGO'), 0)\n           - COALESCE(SUM((t.metadata->>'units')::numeric)\n                        FILTER (WHERE t.transaction_type = 'SELL_CARGO'), 0)     AS net_units,\n             COALESCE(SUM(-t.amount)\n                        FILTER (WHERE t.transaction_type = 'PURCHASE_CARGO'), 0)\n           / NULLIF(SUM((t.metadata->>'units')::numeric)\n                        FILTER (WHERE t.transaction_type = 'PURCHASE_CARGO'), 0) AS avg_unit_cost\n        FROM transactions t\n       WHERE t.player_id = $player AND t.operation_type = 'tour'\n         AND t.transaction_type IN ('PURCHASE_CARGO','SELL_CARGO')\n         AND COALESCE(t.metadata->>'ship_symbol','') <> ''\n         AND COALESCE(t.metadata->>'good_symbol','') <> ''\n       GROUP BY 1, 2) g\n   WHERE g.net_units > 0 AND g.avg_unit_cost IS NOT NULL\n   GROUP BY 1),\nbase AS (\n  -- Prefer the hull's own receipt; fall back to its frame's class average, and\n  -- carry the basis so every consumer can say which it used.  Age anchors on the\n  -- recorded purchase where there is one, otherwise on the hull's first trade.\n  SELECT s.ship_symbol                                                 AS hull,\n         s.frame_symbol,\n         COALESCE(hc.price, c.avg_price)                               AS capex,\n         CASE WHEN hc.price IS NOT NULL THEN 'exact'\n              WHEN c.avg_price IS NOT NULL THEN 'frame avg' END        AS capex_basis,\n         COALESCE(hc.purchased_at, tx.first_trade)                     AS age_from,\n         CASE WHEN hc.purchased_at IS NOT NULL THEN 'purchase'\n              WHEN tx.first_trade  IS NOT NULL THEN 'first trade' END  AS age_basis,\n         tx.first_trade,\n         COALESCE(tx.sells, 0)                                         AS sells,\n         COALESCE(tx.net, 0)                                           AS realised,\n         COALESCE(oc.open_cost, 0)                                     AS in_cargo,\n         COALESCE(tx.net, 0) + COALESCE(oc.open_cost, 0)               AS at_cost,\n         (EXTRACT(EPOCH FROM (now() - COALESCE(hc.purchased_at, tx.first_trade)))\n           / 3600.0)::numeric                                          AS tenure_h\n    FROM ships s\n    LEFT JOIN hull_capex hc ON hc.hull = s.ship_symbol\n    LEFT JOIN capex c       ON c.frame = s.frame_symbol\n    LEFT JOIN tx            ON tx.hull = s.ship_symbol\n    LEFT JOIN open_cargo oc ON oc.hull = s.ship_symbol\n   WHERE s.player_id = $player AND s.dedicated_fleet = 'trade'),\nrunning AS (\n  SELECT t.metadata->>'ship_symbol' AS hull, t.created_at,\n         SUM(t.amount) OVER (PARTITION BY t.metadata->>'ship_symbol'\n                             ORDER BY t.created_at, t.id) AS cum\n    FROM transactions t\n   WHERE t.player_id = $player AND t.operation_type = 'tour'\n     AND t.transaction_type IN ('PURCHASE_CARGO','SELL_CARGO')\n     AND COALESCE(t.metadata->>'ship_symbol','') <> ''),\npaid AS (\n  SELECT r.hull, MIN(r.created_at) AS paid_at\n    FROM running r JOIN base b ON b.hull = r.hull\n   WHERE b.capex IS NOT NULL AND r.cum >= b.capex\n   GROUP BY 1),\nh AS (\n  SELECT b.*, p.paid_at,\n         (EXTRACT(EPOCH FROM (p.paid_at - b.age_from)) / 3600.0)::numeric AS paid_h,\n         b.at_cost / NULLIF(b.tenure_h, 0)                                AS rate\n    FROM base b LEFT JOIN paid p ON p.hull = b.hull)\nSELECT ROUND(percentile_cont(0.5) WITHIN GROUP (ORDER BY paid_h)::numeric, 2)\n         AS \"median h to payback\"\n  FROM h WHERE paid_h IS NOT NULL;",
+          "rawSql": "WITH hull_capex AS (\n  -- Exact per-hull capex, available for every hull bought after sp-mjmqf: the\n  -- purchase stamps the hull it produced on related_entity_type/id (indexed) and\n  -- the server's purchase instant in metadata.  DISTINCT ON keeps one receipt per\n  -- hull should a symbol ever be reissued across eras.\n  SELECT DISTINCT ON (t.related_entity_id)\n         t.related_entity_id                                               AS hull,\n         (-t.amount)::bigint                                               AS price,\n         COALESCE((t.metadata->>'purchased_at')::timestamptz, t.created_at) AS purchased_at\n    FROM transactions t\n   WHERE t.player_id = $player AND t.transaction_type = 'PURCHASE_SHIP'\n     AND t.related_entity_type = 'ship' AND COALESCE(t.related_entity_id, '') <> ''\n   ORDER BY t.related_entity_id, t.created_at DESC),\ncapex AS (\n  -- Frame-class average: the documented fallback for hulls bought BEFORE that\n  -- change, whose rows recorded the ship type where the hull belonged and can\n  -- never be attributed.  Deliberately retained, not superseded.\n  SELECT CASE t.metadata->>'ship_type'\n           WHEN 'SHIP_HEAVY_FREIGHTER' THEN 'FRAME_HEAVY_FREIGHTER'\n           WHEN 'SHIP_LIGHT_HAULER'    THEN 'FRAME_LIGHT_FREIGHTER'\n            WHEN 'SHIP_BULK_FREIGHTER'   THEN 'FRAME_BULK_FREIGHTER'\n           WHEN 'SHIP_PROBE'           THEN 'FRAME_PROBE'\n           WHEN 'SHIP_EXPLORER'        THEN 'FRAME_EXPLORER'\n           WHEN 'SHIP_COMMAND_FRIGATE' THEN 'FRAME_FRIGATE'\n         END                                                          AS frame,\n         ROUND(AVG(-t.amount))::bigint                                AS avg_price\n    FROM transactions t\n   WHERE t.player_id = $player AND t.transaction_type = 'PURCHASE_SHIP'\n   GROUP BY 1),\ntx AS (\n  SELECT t.metadata->>'ship_symbol'                                       AS hull,\n         MIN(t.created_at)                                                AS first_trade,\n         COALESCE(SUM(t.amount), 0)                                       AS net,\n         COUNT(*) FILTER (WHERE t.transaction_type = 'SELL_CARGO')        AS sells\n    FROM transactions t\n   WHERE t.player_id = $player AND t.operation_type = 'tour'\n     AND t.transaction_type IN ('PURCHASE_CARGO','SELL_CARGO')\n     AND COALESCE(t.metadata->>'ship_symbol','') <> ''\n   GROUP BY 1),\nopen_cargo AS (\n  -- Held cargo is per-(hull, good) NET units - bought minus sold - valued at that\n  -- hull's average purchase cost for the good.  Deliberately NOT derived from a\n  -- last-sell timestamp: hulls interleave lots, so a hull that sold an OLDER lot\n  -- after buying a NEWER one had its entire held inventory erased (sp-d767k).\n  -- units/good_symbol come from transactions.metadata, which carries both\n  -- structurally on every cargo row - no description parsing.\n  SELECT g.hull, COALESCE(SUM(g.net_units * g.avg_unit_cost), 0)::bigint AS open_cost\n    FROM (\n      SELECT t.metadata->>'ship_symbol' AS hull,\n             t.metadata->>'good_symbol' AS good,\n             COALESCE(SUM((t.metadata->>'units')::numeric)\n                        FILTER (WHERE t.transaction_type = 'PURCHASE_CARGO'), 0)\n           - COALESCE(SUM((t.metadata->>'units')::numeric)\n                        FILTER (WHERE t.transaction_type = 'SELL_CARGO'), 0)     AS net_units,\n             COALESCE(SUM(-t.amount)\n                        FILTER (WHERE t.transaction_type = 'PURCHASE_CARGO'), 0)\n           / NULLIF(SUM((t.metadata->>'units')::numeric)\n                        FILTER (WHERE t.transaction_type = 'PURCHASE_CARGO'), 0) AS avg_unit_cost\n        FROM transactions t\n       WHERE t.player_id = $player AND t.operation_type = 'tour'\n         AND t.transaction_type IN ('PURCHASE_CARGO','SELL_CARGO')\n         AND COALESCE(t.metadata->>'ship_symbol','') <> ''\n         AND COALESCE(t.metadata->>'good_symbol','') <> ''\n       GROUP BY 1, 2) g\n   WHERE g.net_units > 0 AND g.avg_unit_cost IS NOT NULL\n   GROUP BY 1),\nbase AS (\n  -- Prefer the hull's own receipt; fall back to its frame's class average, and\n  -- carry the basis so every consumer can say which it used.  Age anchors on the\n  -- recorded purchase where there is one, otherwise on the hull's first trade.\n  SELECT s.ship_symbol                                                 AS hull,\n         s.frame_symbol,\n         COALESCE(hc.price, c.avg_price)                               AS capex,\n         CASE WHEN hc.price IS NOT NULL THEN 'exact'\n              WHEN c.avg_price IS NOT NULL THEN 'frame avg' END        AS capex_basis,\n         COALESCE(hc.purchased_at, tx.first_trade)                     AS age_from,\n         CASE WHEN hc.purchased_at IS NOT NULL THEN 'purchase'\n              WHEN tx.first_trade  IS NOT NULL THEN 'first trade' END  AS age_basis,\n         tx.first_trade,\n         COALESCE(tx.sells, 0)                                         AS sells,\n         COALESCE(tx.net, 0)                                           AS realised,\n         COALESCE(oc.open_cost, 0)                                     AS in_cargo,\n         COALESCE(tx.net, 0) + COALESCE(oc.open_cost, 0)               AS at_cost,\n         (EXTRACT(EPOCH FROM (now() - COALESCE(hc.purchased_at, tx.first_trade)))\n           / 3600.0)::numeric                                          AS tenure_h\n    FROM ships s\n    LEFT JOIN hull_capex hc ON hc.hull = s.ship_symbol\n    LEFT JOIN capex c       ON c.frame = s.frame_symbol\n    LEFT JOIN tx            ON tx.hull = s.ship_symbol\n    LEFT JOIN open_cargo oc ON oc.hull = s.ship_symbol\n   WHERE s.player_id = $player AND s.dedicated_fleet IN ('trade','trade-mvt','trade-lane')),\nrunning AS (\n  SELECT t.metadata->>'ship_symbol' AS hull, t.created_at,\n         SUM(t.amount) OVER (PARTITION BY t.metadata->>'ship_symbol'\n                             ORDER BY t.created_at, t.id) AS cum\n    FROM transactions t\n   WHERE t.player_id = $player AND t.operation_type = 'tour'\n     AND t.transaction_type IN ('PURCHASE_CARGO','SELL_CARGO')\n     AND COALESCE(t.metadata->>'ship_symbol','') <> ''),\npaid AS (\n  SELECT r.hull, MIN(r.created_at) AS paid_at\n    FROM running r JOIN base b ON b.hull = r.hull\n   WHERE b.capex IS NOT NULL AND r.cum >= b.capex\n   GROUP BY 1),\nh AS (\n  SELECT b.*, p.paid_at,\n         (EXTRACT(EPOCH FROM (p.paid_at - b.age_from)) / 3600.0)::numeric AS paid_h,\n         b.at_cost / NULLIF(b.tenure_h, 0)                                AS rate\n    FROM base b LEFT JOIN paid p ON p.hull = b.hull)\nSELECT ROUND(percentile_cont(0.5) WITHIN GROUP (ORDER BY paid_h)::numeric, 2)\n         AS \"median h to payback\"\n  FROM h WHERE paid_h IS NOT NULL;",
           "editorMode": "code",
           "sql": {
             "columns": [
@@ -2258,7 +2870,7 @@
         "h": 4,
         "w": 8,
         "x": 8,
-        "y": 46
+        "y": 73
       },
       "fieldConfig": {
         "defaults": {
@@ -2308,7 +2920,7 @@
           },
           "format": "table",
           "rawQuery": true,
-          "rawSql": "WITH hull_capex AS (\n  -- Exact per-hull capex, available for every hull bought after sp-mjmqf: the\n  -- purchase stamps the hull it produced on related_entity_type/id (indexed) and\n  -- the server's purchase instant in metadata.  DISTINCT ON keeps one receipt per\n  -- hull should a symbol ever be reissued across eras.\n  SELECT DISTINCT ON (t.related_entity_id)\n         t.related_entity_id                                               AS hull,\n         (-t.amount)::bigint                                               AS price,\n         COALESCE((t.metadata->>'purchased_at')::timestamptz, t.created_at) AS purchased_at\n    FROM transactions t\n   WHERE t.player_id = $player AND t.transaction_type = 'PURCHASE_SHIP'\n     AND t.related_entity_type = 'ship' AND COALESCE(t.related_entity_id, '') <> ''\n   ORDER BY t.related_entity_id, t.created_at DESC),\ncapex AS (\n  -- Frame-class average: the documented fallback for hulls bought BEFORE that\n  -- change, whose rows recorded the ship type where the hull belonged and can\n  -- never be attributed.  Deliberately retained, not superseded.\n  SELECT CASE t.metadata->>'ship_type'\n           WHEN 'SHIP_HEAVY_FREIGHTER' THEN 'FRAME_HEAVY_FREIGHTER'\n           WHEN 'SHIP_LIGHT_HAULER'    THEN 'FRAME_LIGHT_FREIGHTER'\n           WHEN 'SHIP_PROBE'           THEN 'FRAME_PROBE'\n           WHEN 'SHIP_EXPLORER'        THEN 'FRAME_EXPLORER'\n           WHEN 'SHIP_COMMAND_FRIGATE' THEN 'FRAME_FRIGATE'\n         END                                                          AS frame,\n         ROUND(AVG(-t.amount))::bigint                                AS avg_price\n    FROM transactions t\n   WHERE t.player_id = $player AND t.transaction_type = 'PURCHASE_SHIP'\n   GROUP BY 1),\ntx AS (\n  SELECT t.metadata->>'ship_symbol'                                       AS hull,\n         MIN(t.created_at)                                                AS first_trade,\n         COALESCE(SUM(t.amount), 0)                                       AS net,\n         COUNT(*) FILTER (WHERE t.transaction_type = 'SELL_CARGO')        AS sells\n    FROM transactions t\n   WHERE t.player_id = $player AND t.operation_type = 'tour'\n     AND t.transaction_type IN ('PURCHASE_CARGO','SELL_CARGO')\n     AND COALESCE(t.metadata->>'ship_symbol','') <> ''\n   GROUP BY 1),\nopen_cargo AS (\n  -- Held cargo is per-(hull, good) NET units - bought minus sold - valued at that\n  -- hull's average purchase cost for the good.  Deliberately NOT derived from a\n  -- last-sell timestamp: hulls interleave lots, so a hull that sold an OLDER lot\n  -- after buying a NEWER one had its entire held inventory erased (sp-d767k).\n  -- units/good_symbol come from transactions.metadata, which carries both\n  -- structurally on every cargo row - no description parsing.\n  SELECT g.hull, COALESCE(SUM(g.net_units * g.avg_unit_cost), 0)::bigint AS open_cost\n    FROM (\n      SELECT t.metadata->>'ship_symbol' AS hull,\n             t.metadata->>'good_symbol' AS good,\n             COALESCE(SUM((t.metadata->>'units')::numeric)\n                        FILTER (WHERE t.transaction_type = 'PURCHASE_CARGO'), 0)\n           - COALESCE(SUM((t.metadata->>'units')::numeric)\n                        FILTER (WHERE t.transaction_type = 'SELL_CARGO'), 0)     AS net_units,\n             COALESCE(SUM(-t.amount)\n                        FILTER (WHERE t.transaction_type = 'PURCHASE_CARGO'), 0)\n           / NULLIF(SUM((t.metadata->>'units')::numeric)\n                        FILTER (WHERE t.transaction_type = 'PURCHASE_CARGO'), 0) AS avg_unit_cost\n        FROM transactions t\n       WHERE t.player_id = $player AND t.operation_type = 'tour'\n         AND t.transaction_type IN ('PURCHASE_CARGO','SELL_CARGO')\n         AND COALESCE(t.metadata->>'ship_symbol','') <> ''\n         AND COALESCE(t.metadata->>'good_symbol','') <> ''\n       GROUP BY 1, 2) g\n   WHERE g.net_units > 0 AND g.avg_unit_cost IS NOT NULL\n   GROUP BY 1),\nbase AS (\n  -- Prefer the hull's own receipt; fall back to its frame's class average, and\n  -- carry the basis so every consumer can say which it used.  Age anchors on the\n  -- recorded purchase where there is one, otherwise on the hull's first trade.\n  SELECT s.ship_symbol                                                 AS hull,\n         s.frame_symbol,\n         COALESCE(hc.price, c.avg_price)                               AS capex,\n         CASE WHEN hc.price IS NOT NULL THEN 'exact'\n              WHEN c.avg_price IS NOT NULL THEN 'frame avg' END        AS capex_basis,\n         COALESCE(hc.purchased_at, tx.first_trade)                     AS age_from,\n         CASE WHEN hc.purchased_at IS NOT NULL THEN 'purchase'\n              WHEN tx.first_trade  IS NOT NULL THEN 'first trade' END  AS age_basis,\n         tx.first_trade,\n         COALESCE(tx.sells, 0)                                         AS sells,\n         COALESCE(tx.net, 0)                                           AS realised,\n         COALESCE(oc.open_cost, 0)                                     AS in_cargo,\n         COALESCE(tx.net, 0) + COALESCE(oc.open_cost, 0)               AS at_cost,\n         (EXTRACT(EPOCH FROM (now() - COALESCE(hc.purchased_at, tx.first_trade)))\n           / 3600.0)::numeric                                          AS tenure_h\n    FROM ships s\n    LEFT JOIN hull_capex hc ON hc.hull = s.ship_symbol\n    LEFT JOIN capex c       ON c.frame = s.frame_symbol\n    LEFT JOIN tx            ON tx.hull = s.ship_symbol\n    LEFT JOIN open_cargo oc ON oc.hull = s.ship_symbol\n   WHERE s.player_id = $player AND s.dedicated_fleet = 'trade'),\nrunning AS (\n  SELECT t.metadata->>'ship_symbol' AS hull, t.created_at,\n         SUM(t.amount) OVER (PARTITION BY t.metadata->>'ship_symbol'\n                             ORDER BY t.created_at, t.id) AS cum\n    FROM transactions t\n   WHERE t.player_id = $player AND t.operation_type = 'tour'\n     AND t.transaction_type IN ('PURCHASE_CARGO','SELL_CARGO')\n     AND COALESCE(t.metadata->>'ship_symbol','') <> ''),\npaid AS (\n  SELECT r.hull, MIN(r.created_at) AS paid_at\n    FROM running r JOIN base b ON b.hull = r.hull\n   WHERE b.capex IS NOT NULL AND r.cum >= b.capex\n   GROUP BY 1),\nh AS (\n  SELECT b.*, p.paid_at,\n         (EXTRACT(EPOCH FROM (p.paid_at - b.age_from)) / 3600.0)::numeric AS paid_h,\n         b.at_cost / NULLIF(b.tenure_h, 0)                                AS rate\n    FROM base b LEFT JOIN paid p ON p.hull = b.hull)\nSELECT ROUND(percentile_cont(0.9) WITHIN GROUP (ORDER BY paid_h)::numeric, 2)\n         AS \"p90 h to payback\"\n  FROM h WHERE paid_h IS NOT NULL;",
+          "rawSql": "WITH hull_capex AS (\n  -- Exact per-hull capex, available for every hull bought after sp-mjmqf: the\n  -- purchase stamps the hull it produced on related_entity_type/id (indexed) and\n  -- the server's purchase instant in metadata.  DISTINCT ON keeps one receipt per\n  -- hull should a symbol ever be reissued across eras.\n  SELECT DISTINCT ON (t.related_entity_id)\n         t.related_entity_id                                               AS hull,\n         (-t.amount)::bigint                                               AS price,\n         COALESCE((t.metadata->>'purchased_at')::timestamptz, t.created_at) AS purchased_at\n    FROM transactions t\n   WHERE t.player_id = $player AND t.transaction_type = 'PURCHASE_SHIP'\n     AND t.related_entity_type = 'ship' AND COALESCE(t.related_entity_id, '') <> ''\n   ORDER BY t.related_entity_id, t.created_at DESC),\ncapex AS (\n  -- Frame-class average: the documented fallback for hulls bought BEFORE that\n  -- change, whose rows recorded the ship type where the hull belonged and can\n  -- never be attributed.  Deliberately retained, not superseded.\n  SELECT CASE t.metadata->>'ship_type'\n           WHEN 'SHIP_HEAVY_FREIGHTER' THEN 'FRAME_HEAVY_FREIGHTER'\n           WHEN 'SHIP_LIGHT_HAULER'    THEN 'FRAME_LIGHT_FREIGHTER'\n            WHEN 'SHIP_BULK_FREIGHTER'   THEN 'FRAME_BULK_FREIGHTER'\n           WHEN 'SHIP_PROBE'           THEN 'FRAME_PROBE'\n           WHEN 'SHIP_EXPLORER'        THEN 'FRAME_EXPLORER'\n           WHEN 'SHIP_COMMAND_FRIGATE' THEN 'FRAME_FRIGATE'\n         END                                                          AS frame,\n         ROUND(AVG(-t.amount))::bigint                                AS avg_price\n    FROM transactions t\n   WHERE t.player_id = $player AND t.transaction_type = 'PURCHASE_SHIP'\n   GROUP BY 1),\ntx AS (\n  SELECT t.metadata->>'ship_symbol'                                       AS hull,\n         MIN(t.created_at)                                                AS first_trade,\n         COALESCE(SUM(t.amount), 0)                                       AS net,\n         COUNT(*) FILTER (WHERE t.transaction_type = 'SELL_CARGO')        AS sells\n    FROM transactions t\n   WHERE t.player_id = $player AND t.operation_type = 'tour'\n     AND t.transaction_type IN ('PURCHASE_CARGO','SELL_CARGO')\n     AND COALESCE(t.metadata->>'ship_symbol','') <> ''\n   GROUP BY 1),\nopen_cargo AS (\n  -- Held cargo is per-(hull, good) NET units - bought minus sold - valued at that\n  -- hull's average purchase cost for the good.  Deliberately NOT derived from a\n  -- last-sell timestamp: hulls interleave lots, so a hull that sold an OLDER lot\n  -- after buying a NEWER one had its entire held inventory erased (sp-d767k).\n  -- units/good_symbol come from transactions.metadata, which carries both\n  -- structurally on every cargo row - no description parsing.\n  SELECT g.hull, COALESCE(SUM(g.net_units * g.avg_unit_cost), 0)::bigint AS open_cost\n    FROM (\n      SELECT t.metadata->>'ship_symbol' AS hull,\n             t.metadata->>'good_symbol' AS good,\n             COALESCE(SUM((t.metadata->>'units')::numeric)\n                        FILTER (WHERE t.transaction_type = 'PURCHASE_CARGO'), 0)\n           - COALESCE(SUM((t.metadata->>'units')::numeric)\n                        FILTER (WHERE t.transaction_type = 'SELL_CARGO'), 0)     AS net_units,\n             COALESCE(SUM(-t.amount)\n                        FILTER (WHERE t.transaction_type = 'PURCHASE_CARGO'), 0)\n           / NULLIF(SUM((t.metadata->>'units')::numeric)\n                        FILTER (WHERE t.transaction_type = 'PURCHASE_CARGO'), 0) AS avg_unit_cost\n        FROM transactions t\n       WHERE t.player_id = $player AND t.operation_type = 'tour'\n         AND t.transaction_type IN ('PURCHASE_CARGO','SELL_CARGO')\n         AND COALESCE(t.metadata->>'ship_symbol','') <> ''\n         AND COALESCE(t.metadata->>'good_symbol','') <> ''\n       GROUP BY 1, 2) g\n   WHERE g.net_units > 0 AND g.avg_unit_cost IS NOT NULL\n   GROUP BY 1),\nbase AS (\n  -- Prefer the hull's own receipt; fall back to its frame's class average, and\n  -- carry the basis so every consumer can say which it used.  Age anchors on the\n  -- recorded purchase where there is one, otherwise on the hull's first trade.\n  SELECT s.ship_symbol                                                 AS hull,\n         s.frame_symbol,\n         COALESCE(hc.price, c.avg_price)                               AS capex,\n         CASE WHEN hc.price IS NOT NULL THEN 'exact'\n              WHEN c.avg_price IS NOT NULL THEN 'frame avg' END        AS capex_basis,\n         COALESCE(hc.purchased_at, tx.first_trade)                     AS age_from,\n         CASE WHEN hc.purchased_at IS NOT NULL THEN 'purchase'\n              WHEN tx.first_trade  IS NOT NULL THEN 'first trade' END  AS age_basis,\n         tx.first_trade,\n         COALESCE(tx.sells, 0)                                         AS sells,\n         COALESCE(tx.net, 0)                                           AS realised,\n         COALESCE(oc.open_cost, 0)                                     AS in_cargo,\n         COALESCE(tx.net, 0) + COALESCE(oc.open_cost, 0)               AS at_cost,\n         (EXTRACT(EPOCH FROM (now() - COALESCE(hc.purchased_at, tx.first_trade)))\n           / 3600.0)::numeric                                          AS tenure_h\n    FROM ships s\n    LEFT JOIN hull_capex hc ON hc.hull = s.ship_symbol\n    LEFT JOIN capex c       ON c.frame = s.frame_symbol\n    LEFT JOIN tx            ON tx.hull = s.ship_symbol\n    LEFT JOIN open_cargo oc ON oc.hull = s.ship_symbol\n   WHERE s.player_id = $player AND s.dedicated_fleet IN ('trade','trade-mvt','trade-lane')),\nrunning AS (\n  SELECT t.metadata->>'ship_symbol' AS hull, t.created_at,\n         SUM(t.amount) OVER (PARTITION BY t.metadata->>'ship_symbol'\n                             ORDER BY t.created_at, t.id) AS cum\n    FROM transactions t\n   WHERE t.player_id = $player AND t.operation_type = 'tour'\n     AND t.transaction_type IN ('PURCHASE_CARGO','SELL_CARGO')\n     AND COALESCE(t.metadata->>'ship_symbol','') <> ''),\npaid AS (\n  SELECT r.hull, MIN(r.created_at) AS paid_at\n    FROM running r JOIN base b ON b.hull = r.hull\n   WHERE b.capex IS NOT NULL AND r.cum >= b.capex\n   GROUP BY 1),\nh AS (\n  SELECT b.*, p.paid_at,\n         (EXTRACT(EPOCH FROM (p.paid_at - b.age_from)) / 3600.0)::numeric AS paid_h,\n         b.at_cost / NULLIF(b.tenure_h, 0)                                AS rate\n    FROM base b LEFT JOIN paid p ON p.hull = b.hull)\nSELECT ROUND(percentile_cont(0.9) WITHIN GROUP (ORDER BY paid_h)::numeric, 2)\n         AS \"p90 h to payback\"\n  FROM h WHERE paid_h IS NOT NULL;",
           "editorMode": "code",
           "sql": {
             "columns": [
@@ -2343,7 +2955,7 @@
         "h": 4,
         "w": 8,
         "x": 16,
-        "y": 46
+        "y": 73
       },
       "fieldConfig": {
         "defaults": {
@@ -2388,7 +3000,7 @@
           "refId": "A",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "WITH hull_capex AS (\n  -- Exact per-hull capex, available for every hull bought after sp-mjmqf: the\n  -- purchase stamps the hull it produced on related_entity_type/id (indexed) and\n  -- the server's purchase instant in metadata.  DISTINCT ON keeps one receipt per\n  -- hull should a symbol ever be reissued across eras.\n  SELECT DISTINCT ON (t.related_entity_id)\n         t.related_entity_id                                               AS hull,\n         (-t.amount)::bigint                                               AS price,\n         COALESCE((t.metadata->>'purchased_at')::timestamptz, t.created_at) AS purchased_at\n    FROM transactions t\n   WHERE t.player_id = $player AND t.transaction_type = 'PURCHASE_SHIP'\n     AND t.related_entity_type = 'ship' AND COALESCE(t.related_entity_id, '') <> ''\n   ORDER BY t.related_entity_id, t.created_at DESC),\ncapex AS (\n  -- Frame-class average: the documented fallback for hulls bought BEFORE that\n  -- change, whose rows recorded the ship type where the hull belonged and can\n  -- never be attributed.  Deliberately retained, not superseded.\n  SELECT CASE t.metadata->>'ship_type'\n           WHEN 'SHIP_HEAVY_FREIGHTER' THEN 'FRAME_HEAVY_FREIGHTER'\n           WHEN 'SHIP_LIGHT_HAULER'    THEN 'FRAME_LIGHT_FREIGHTER'\n           WHEN 'SHIP_PROBE'           THEN 'FRAME_PROBE'\n           WHEN 'SHIP_EXPLORER'        THEN 'FRAME_EXPLORER'\n           WHEN 'SHIP_COMMAND_FRIGATE' THEN 'FRAME_FRIGATE'\n         END                                                          AS frame,\n         ROUND(AVG(-t.amount))::bigint                                AS avg_price\n    FROM transactions t\n   WHERE t.player_id = $player AND t.transaction_type = 'PURCHASE_SHIP'\n   GROUP BY 1),\ntx AS (\n  SELECT t.metadata->>'ship_symbol'                                       AS hull,\n         MIN(t.created_at)                                                AS first_trade,\n         COALESCE(SUM(t.amount), 0)                                       AS net,\n         COUNT(*) FILTER (WHERE t.transaction_type = 'SELL_CARGO')        AS sells\n    FROM transactions t\n   WHERE t.player_id = $player AND t.operation_type = 'tour'\n     AND t.transaction_type IN ('PURCHASE_CARGO','SELL_CARGO')\n     AND COALESCE(t.metadata->>'ship_symbol','') <> ''\n   GROUP BY 1),\nopen_cargo AS (\n  -- Held cargo is per-(hull, good) NET units - bought minus sold - valued at that\n  -- hull's average purchase cost for the good.  Deliberately NOT derived from a\n  -- last-sell timestamp: hulls interleave lots, so a hull that sold an OLDER lot\n  -- after buying a NEWER one had its entire held inventory erased (sp-d767k).\n  -- units/good_symbol come from transactions.metadata, which carries both\n  -- structurally on every cargo row - no description parsing.\n  SELECT g.hull, COALESCE(SUM(g.net_units * g.avg_unit_cost), 0)::bigint AS open_cost\n    FROM (\n      SELECT t.metadata->>'ship_symbol' AS hull,\n             t.metadata->>'good_symbol' AS good,\n             COALESCE(SUM((t.metadata->>'units')::numeric)\n                        FILTER (WHERE t.transaction_type = 'PURCHASE_CARGO'), 0)\n           - COALESCE(SUM((t.metadata->>'units')::numeric)\n                        FILTER (WHERE t.transaction_type = 'SELL_CARGO'), 0)     AS net_units,\n             COALESCE(SUM(-t.amount)\n                        FILTER (WHERE t.transaction_type = 'PURCHASE_CARGO'), 0)\n           / NULLIF(SUM((t.metadata->>'units')::numeric)\n                        FILTER (WHERE t.transaction_type = 'PURCHASE_CARGO'), 0) AS avg_unit_cost\n        FROM transactions t\n       WHERE t.player_id = $player AND t.operation_type = 'tour'\n         AND t.transaction_type IN ('PURCHASE_CARGO','SELL_CARGO')\n         AND COALESCE(t.metadata->>'ship_symbol','') <> ''\n         AND COALESCE(t.metadata->>'good_symbol','') <> ''\n       GROUP BY 1, 2) g\n   WHERE g.net_units > 0 AND g.avg_unit_cost IS NOT NULL\n   GROUP BY 1),\nbase AS (\n  -- Prefer the hull's own receipt; fall back to its frame's class average, and\n  -- carry the basis so every consumer can say which it used.  Age anchors on the\n  -- recorded purchase where there is one, otherwise on the hull's first trade.\n  SELECT s.ship_symbol                                                 AS hull,\n         s.frame_symbol,\n         COALESCE(hc.price, c.avg_price)                               AS capex,\n         CASE WHEN hc.price IS NOT NULL THEN 'exact'\n              WHEN c.avg_price IS NOT NULL THEN 'frame avg' END        AS capex_basis,\n         COALESCE(hc.purchased_at, tx.first_trade)                     AS age_from,\n         CASE WHEN hc.purchased_at IS NOT NULL THEN 'purchase'\n              WHEN tx.first_trade  IS NOT NULL THEN 'first trade' END  AS age_basis,\n         tx.first_trade,\n         COALESCE(tx.sells, 0)                                         AS sells,\n         COALESCE(tx.net, 0)                                           AS realised,\n         COALESCE(oc.open_cost, 0)                                     AS in_cargo,\n         COALESCE(tx.net, 0) + COALESCE(oc.open_cost, 0)               AS at_cost,\n         (EXTRACT(EPOCH FROM (now() - COALESCE(hc.purchased_at, tx.first_trade)))\n           / 3600.0)::numeric                                          AS tenure_h\n    FROM ships s\n    LEFT JOIN hull_capex hc ON hc.hull = s.ship_symbol\n    LEFT JOIN capex c       ON c.frame = s.frame_symbol\n    LEFT JOIN tx            ON tx.hull = s.ship_symbol\n    LEFT JOIN open_cargo oc ON oc.hull = s.ship_symbol\n   WHERE s.player_id = $player AND s.dedicated_fleet = 'trade'),\nrunning AS (\n  SELECT t.metadata->>'ship_symbol' AS hull, t.created_at,\n         SUM(t.amount) OVER (PARTITION BY t.metadata->>'ship_symbol'\n                             ORDER BY t.created_at, t.id) AS cum\n    FROM transactions t\n   WHERE t.player_id = $player AND t.operation_type = 'tour'\n     AND t.transaction_type IN ('PURCHASE_CARGO','SELL_CARGO')\n     AND COALESCE(t.metadata->>'ship_symbol','') <> ''),\npaid AS (\n  SELECT r.hull, MIN(r.created_at) AS paid_at\n    FROM running r JOIN base b ON b.hull = r.hull\n   WHERE b.capex IS NOT NULL AND r.cum >= b.capex\n   GROUP BY 1),\nh AS (\n  SELECT b.*, p.paid_at,\n         (EXTRACT(EPOCH FROM (p.paid_at - b.age_from)) / 3600.0)::numeric AS paid_h,\n         b.at_cost / NULLIF(b.tenure_h, 0)                                AS rate\n    FROM base b LEFT JOIN paid p ON p.hull = b.hull)\n-- The unpaid cohort's own median AGE, the companion to Median Payback Time.  The\n-- realised median is right-censored (paid-back hulls only); on its own it cannot\n-- say whether the hulls missing from it are young or slow.  This number decides\n-- it.  Age runs from the recorded purchase where there is one - the whole point\n-- of stamping it - and from first trade otherwise.\nSELECT ROUND(percentile_cont(0.5) WITHIN GROUP (ORDER BY tenure_h)::numeric, 2)\n         AS \"median age, not yet paid back\"\n  FROM h\n WHERE paid_at IS NULL AND capex IS NOT NULL;",
+          "rawSql": "WITH hull_capex AS (\n  -- Exact per-hull capex, available for every hull bought after sp-mjmqf: the\n  -- purchase stamps the hull it produced on related_entity_type/id (indexed) and\n  -- the server's purchase instant in metadata.  DISTINCT ON keeps one receipt per\n  -- hull should a symbol ever be reissued across eras.\n  SELECT DISTINCT ON (t.related_entity_id)\n         t.related_entity_id                                               AS hull,\n         (-t.amount)::bigint                                               AS price,\n         COALESCE((t.metadata->>'purchased_at')::timestamptz, t.created_at) AS purchased_at\n    FROM transactions t\n   WHERE t.player_id = $player AND t.transaction_type = 'PURCHASE_SHIP'\n     AND t.related_entity_type = 'ship' AND COALESCE(t.related_entity_id, '') <> ''\n   ORDER BY t.related_entity_id, t.created_at DESC),\ncapex AS (\n  -- Frame-class average: the documented fallback for hulls bought BEFORE that\n  -- change, whose rows recorded the ship type where the hull belonged and can\n  -- never be attributed.  Deliberately retained, not superseded.\n  SELECT CASE t.metadata->>'ship_type'\n           WHEN 'SHIP_HEAVY_FREIGHTER' THEN 'FRAME_HEAVY_FREIGHTER'\n           WHEN 'SHIP_LIGHT_HAULER'    THEN 'FRAME_LIGHT_FREIGHTER'\n            WHEN 'SHIP_BULK_FREIGHTER'   THEN 'FRAME_BULK_FREIGHTER'\n           WHEN 'SHIP_PROBE'           THEN 'FRAME_PROBE'\n           WHEN 'SHIP_EXPLORER'        THEN 'FRAME_EXPLORER'\n           WHEN 'SHIP_COMMAND_FRIGATE' THEN 'FRAME_FRIGATE'\n         END                                                          AS frame,\n         ROUND(AVG(-t.amount))::bigint                                AS avg_price\n    FROM transactions t\n   WHERE t.player_id = $player AND t.transaction_type = 'PURCHASE_SHIP'\n   GROUP BY 1),\ntx AS (\n  SELECT t.metadata->>'ship_symbol'                                       AS hull,\n         MIN(t.created_at)                                                AS first_trade,\n         COALESCE(SUM(t.amount), 0)                                       AS net,\n         COUNT(*) FILTER (WHERE t.transaction_type = 'SELL_CARGO')        AS sells\n    FROM transactions t\n   WHERE t.player_id = $player AND t.operation_type = 'tour'\n     AND t.transaction_type IN ('PURCHASE_CARGO','SELL_CARGO')\n     AND COALESCE(t.metadata->>'ship_symbol','') <> ''\n   GROUP BY 1),\nopen_cargo AS (\n  -- Held cargo is per-(hull, good) NET units - bought minus sold - valued at that\n  -- hull's average purchase cost for the good.  Deliberately NOT derived from a\n  -- last-sell timestamp: hulls interleave lots, so a hull that sold an OLDER lot\n  -- after buying a NEWER one had its entire held inventory erased (sp-d767k).\n  -- units/good_symbol come from transactions.metadata, which carries both\n  -- structurally on every cargo row - no description parsing.\n  SELECT g.hull, COALESCE(SUM(g.net_units * g.avg_unit_cost), 0)::bigint AS open_cost\n    FROM (\n      SELECT t.metadata->>'ship_symbol' AS hull,\n             t.metadata->>'good_symbol' AS good,\n             COALESCE(SUM((t.metadata->>'units')::numeric)\n                        FILTER (WHERE t.transaction_type = 'PURCHASE_CARGO'), 0)\n           - COALESCE(SUM((t.metadata->>'units')::numeric)\n                        FILTER (WHERE t.transaction_type = 'SELL_CARGO'), 0)     AS net_units,\n             COALESCE(SUM(-t.amount)\n                        FILTER (WHERE t.transaction_type = 'PURCHASE_CARGO'), 0)\n           / NULLIF(SUM((t.metadata->>'units')::numeric)\n                        FILTER (WHERE t.transaction_type = 'PURCHASE_CARGO'), 0) AS avg_unit_cost\n        FROM transactions t\n       WHERE t.player_id = $player AND t.operation_type = 'tour'\n         AND t.transaction_type IN ('PURCHASE_CARGO','SELL_CARGO')\n         AND COALESCE(t.metadata->>'ship_symbol','') <> ''\n         AND COALESCE(t.metadata->>'good_symbol','') <> ''\n       GROUP BY 1, 2) g\n   WHERE g.net_units > 0 AND g.avg_unit_cost IS NOT NULL\n   GROUP BY 1),\nbase AS (\n  -- Prefer the hull's own receipt; fall back to its frame's class average, and\n  -- carry the basis so every consumer can say which it used.  Age anchors on the\n  -- recorded purchase where there is one, otherwise on the hull's first trade.\n  SELECT s.ship_symbol                                                 AS hull,\n         s.frame_symbol,\n         COALESCE(hc.price, c.avg_price)                               AS capex,\n         CASE WHEN hc.price IS NOT NULL THEN 'exact'\n              WHEN c.avg_price IS NOT NULL THEN 'frame avg' END        AS capex_basis,\n         COALESCE(hc.purchased_at, tx.first_trade)                     AS age_from,\n         CASE WHEN hc.purchased_at IS NOT NULL THEN 'purchase'\n              WHEN tx.first_trade  IS NOT NULL THEN 'first trade' END  AS age_basis,\n         tx.first_trade,\n         COALESCE(tx.sells, 0)                                         AS sells,\n         COALESCE(tx.net, 0)                                           AS realised,\n         COALESCE(oc.open_cost, 0)                                     AS in_cargo,\n         COALESCE(tx.net, 0) + COALESCE(oc.open_cost, 0)               AS at_cost,\n         (EXTRACT(EPOCH FROM (now() - COALESCE(hc.purchased_at, tx.first_trade)))\n           / 3600.0)::numeric                                          AS tenure_h\n    FROM ships s\n    LEFT JOIN hull_capex hc ON hc.hull = s.ship_symbol\n    LEFT JOIN capex c       ON c.frame = s.frame_symbol\n    LEFT JOIN tx            ON tx.hull = s.ship_symbol\n    LEFT JOIN open_cargo oc ON oc.hull = s.ship_symbol\n   WHERE s.player_id = $player AND s.dedicated_fleet IN ('trade','trade-mvt','trade-lane')),\nrunning AS (\n  SELECT t.metadata->>'ship_symbol' AS hull, t.created_at,\n         SUM(t.amount) OVER (PARTITION BY t.metadata->>'ship_symbol'\n                             ORDER BY t.created_at, t.id) AS cum\n    FROM transactions t\n   WHERE t.player_id = $player AND t.operation_type = 'tour'\n     AND t.transaction_type IN ('PURCHASE_CARGO','SELL_CARGO')\n     AND COALESCE(t.metadata->>'ship_symbol','') <> ''),\npaid AS (\n  SELECT r.hull, MIN(r.created_at) AS paid_at\n    FROM running r JOIN base b ON b.hull = r.hull\n   WHERE b.capex IS NOT NULL AND r.cum >= b.capex\n   GROUP BY 1),\nh AS (\n  SELECT b.*, p.paid_at,\n         (EXTRACT(EPOCH FROM (p.paid_at - b.age_from)) / 3600.0)::numeric AS paid_h,\n         b.at_cost / NULLIF(b.tenure_h, 0)                                AS rate\n    FROM base b LEFT JOIN paid p ON p.hull = b.hull)\n-- The unpaid cohort's own median AGE, the companion to Median Payback Time.  The\n-- realised median is right-censored (paid-back hulls only); on its own it cannot\n-- say whether the hulls missing from it are young or slow.  This number decides\n-- it.  Age runs from the recorded purchase where there is one - the whole point\n-- of stamping it - and from first trade otherwise.\nSELECT ROUND(percentile_cont(0.5) WITHIN GROUP (ORDER BY tenure_h)::numeric, 2)\n         AS \"median age, not yet paid back\"\n  FROM h\n WHERE paid_at IS NULL AND capex IS NOT NULL;",
           "datasource": {
             "type": "grafana-postgresql-datasource",
             "uid": "postgresql"
@@ -2409,7 +3021,7 @@
         "h": 13,
         "w": 24,
         "x": 0,
-        "y": 50
+        "y": 77
       },
       "fieldConfig": {
         "defaults": {
@@ -2958,7 +3570,7 @@
           },
           "format": "table",
           "rawQuery": true,
-          "rawSql": "WITH hull_capex AS (\n  -- Exact per-hull capex, available for every hull bought after sp-mjmqf: the\n  -- purchase stamps the hull it produced on related_entity_type/id (indexed) and\n  -- the server's purchase instant in metadata.  DISTINCT ON keeps one receipt per\n  -- hull should a symbol ever be reissued across eras.\n  SELECT DISTINCT ON (t.related_entity_id)\n         t.related_entity_id                                               AS hull,\n         (-t.amount)::bigint                                               AS price,\n         COALESCE((t.metadata->>'purchased_at')::timestamptz, t.created_at) AS purchased_at\n    FROM transactions t\n   WHERE t.player_id = $player AND t.transaction_type = 'PURCHASE_SHIP'\n     AND t.related_entity_type = 'ship' AND COALESCE(t.related_entity_id, '') <> ''\n   ORDER BY t.related_entity_id, t.created_at DESC),\ncapex AS (\n  -- Frame-class average: the documented fallback for hulls bought BEFORE that\n  -- change, whose rows recorded the ship type where the hull belonged and can\n  -- never be attributed.  Deliberately retained, not superseded.\n  SELECT CASE t.metadata->>'ship_type'\n           WHEN 'SHIP_HEAVY_FREIGHTER' THEN 'FRAME_HEAVY_FREIGHTER'\n           WHEN 'SHIP_LIGHT_HAULER'    THEN 'FRAME_LIGHT_FREIGHTER'\n           WHEN 'SHIP_PROBE'           THEN 'FRAME_PROBE'\n           WHEN 'SHIP_EXPLORER'        THEN 'FRAME_EXPLORER'\n           WHEN 'SHIP_COMMAND_FRIGATE' THEN 'FRAME_FRIGATE'\n         END                                                          AS frame,\n         ROUND(AVG(-t.amount))::bigint                                AS avg_price\n    FROM transactions t\n   WHERE t.player_id = $player AND t.transaction_type = 'PURCHASE_SHIP'\n   GROUP BY 1),\ntx AS (\n  SELECT t.metadata->>'ship_symbol'                                       AS hull,\n         MIN(t.created_at)                                                AS first_trade,\n         COALESCE(SUM(t.amount), 0)                                       AS net,\n         COUNT(*) FILTER (WHERE t.transaction_type = 'SELL_CARGO')        AS sells\n    FROM transactions t\n   WHERE t.player_id = $player AND t.operation_type = 'tour'\n     AND t.transaction_type IN ('PURCHASE_CARGO','SELL_CARGO')\n     AND COALESCE(t.metadata->>'ship_symbol','') <> ''\n   GROUP BY 1),\nopen_cargo AS (\n  -- Held cargo is per-(hull, good) NET units - bought minus sold - valued at that\n  -- hull's average purchase cost for the good.  Deliberately NOT derived from a\n  -- last-sell timestamp: hulls interleave lots, so a hull that sold an OLDER lot\n  -- after buying a NEWER one had its entire held inventory erased (sp-d767k).\n  -- units/good_symbol come from transactions.metadata, which carries both\n  -- structurally on every cargo row - no description parsing.\n  SELECT g.hull, COALESCE(SUM(g.net_units * g.avg_unit_cost), 0)::bigint AS open_cost\n    FROM (\n      SELECT t.metadata->>'ship_symbol' AS hull,\n             t.metadata->>'good_symbol' AS good,\n             COALESCE(SUM((t.metadata->>'units')::numeric)\n                        FILTER (WHERE t.transaction_type = 'PURCHASE_CARGO'), 0)\n           - COALESCE(SUM((t.metadata->>'units')::numeric)\n                        FILTER (WHERE t.transaction_type = 'SELL_CARGO'), 0)     AS net_units,\n             COALESCE(SUM(-t.amount)\n                        FILTER (WHERE t.transaction_type = 'PURCHASE_CARGO'), 0)\n           / NULLIF(SUM((t.metadata->>'units')::numeric)\n                        FILTER (WHERE t.transaction_type = 'PURCHASE_CARGO'), 0) AS avg_unit_cost\n        FROM transactions t\n       WHERE t.player_id = $player AND t.operation_type = 'tour'\n         AND t.transaction_type IN ('PURCHASE_CARGO','SELL_CARGO')\n         AND COALESCE(t.metadata->>'ship_symbol','') <> ''\n         AND COALESCE(t.metadata->>'good_symbol','') <> ''\n       GROUP BY 1, 2) g\n   WHERE g.net_units > 0 AND g.avg_unit_cost IS NOT NULL\n   GROUP BY 1),\nbase AS (\n  -- Prefer the hull's own receipt; fall back to its frame's class average, and\n  -- carry the basis so every consumer can say which it used.  Age anchors on the\n  -- recorded purchase where there is one, otherwise on the hull's first trade.\n  SELECT s.ship_symbol                                                 AS hull,\n         s.frame_symbol,\n         COALESCE(hc.price, c.avg_price)                               AS capex,\n         CASE WHEN hc.price IS NOT NULL THEN 'exact'\n              WHEN c.avg_price IS NOT NULL THEN 'frame avg' END        AS capex_basis,\n         COALESCE(hc.purchased_at, tx.first_trade)                     AS age_from,\n         CASE WHEN hc.purchased_at IS NOT NULL THEN 'purchase'\n              WHEN tx.first_trade  IS NOT NULL THEN 'first trade' END  AS age_basis,\n         tx.first_trade,\n         COALESCE(tx.sells, 0)                                         AS sells,\n         COALESCE(tx.net, 0)                                           AS realised,\n         COALESCE(oc.open_cost, 0)                                     AS in_cargo,\n         COALESCE(tx.net, 0) + COALESCE(oc.open_cost, 0)               AS at_cost,\n         (EXTRACT(EPOCH FROM (now() - COALESCE(hc.purchased_at, tx.first_trade)))\n           / 3600.0)::numeric                                          AS tenure_h\n    FROM ships s\n    LEFT JOIN hull_capex hc ON hc.hull = s.ship_symbol\n    LEFT JOIN capex c       ON c.frame = s.frame_symbol\n    LEFT JOIN tx            ON tx.hull = s.ship_symbol\n    LEFT JOIN open_cargo oc ON oc.hull = s.ship_symbol\n   WHERE s.player_id = $player AND s.dedicated_fleet = 'trade'),\nrunning AS (\n  SELECT t.metadata->>'ship_symbol' AS hull, t.created_at,\n         SUM(t.amount) OVER (PARTITION BY t.metadata->>'ship_symbol'\n                             ORDER BY t.created_at, t.id) AS cum\n    FROM transactions t\n   WHERE t.player_id = $player AND t.operation_type = 'tour'\n     AND t.transaction_type IN ('PURCHASE_CARGO','SELL_CARGO')\n     AND COALESCE(t.metadata->>'ship_symbol','') <> ''),\npaid AS (\n  SELECT r.hull, MIN(r.created_at) AS paid_at\n    FROM running r JOIN base b ON b.hull = r.hull\n   WHERE b.capex IS NOT NULL AND r.cum >= b.capex\n   GROUP BY 1),\nh AS (\n  SELECT b.*, p.paid_at,\n         (EXTRACT(EPOCH FROM (p.paid_at - b.age_from)) / 3600.0)::numeric AS paid_h,\n         b.at_cost / NULLIF(b.tenure_h, 0)                                AS rate\n    FROM base b LEFT JOIN paid p ON p.hull = b.hull)\nSELECT h.hull                                            AS \"Hull\",\n       replace(h.frame_symbol, 'FRAME_', '')             AS \"Frame\",\n       ROUND(h.tenure_h, 2)                              AS \"Tenure\",\n       COALESCE(h.age_basis, '-')                        AS \"Tenure from\",\n       h.capex                                           AS \"Capex\",\n       COALESCE(h.capex_basis, '-')                      AS \"Capex basis\",\n       h.realised                                        AS \"Realised Net\",\n       h.in_cargo                                        AS \"In Cargo\",\n       h.at_cost                                         AS \"Net @ Cost\",\n       ROUND(h.rate)                                     AS \"Net @ Cost / h\",\n       CASE WHEN h.capex > 0\n            THEN ROUND(100.0 * h.at_cost / h.capex, 1) END AS \"Payback %\",\n       ROUND(h.paid_h, 2)                                AS \"Paid back in\",\n       CASE WHEN h.paid_at IS NULL AND h.capex IS NOT NULL AND h.rate > 0\n            THEN ROUND((h.capex - h.at_cost) / h.rate, 2) END AS \"ETA\",\n       CASE WHEN h.paid_at IS NOT NULL THEN 0\n            ELSE GREATEST(COALESCE(h.capex, 0) - h.at_cost, 0) END AS \"Remaining CR\",\n       CASE WHEN h.capex IS NULL              THEN 'NO CAPEX'\n            WHEN h.paid_at IS NOT NULL         THEN 'PAID'\n            WHEN h.at_cost >= h.capex          THEN 'PAID @ COST'\n            WHEN h.first_trade IS NULL         THEN 'NO TRADES'\n            WHEN h.sells = 0                   THEN 'NO SALES YET'\n            WHEN h.rate > 0                    THEN 'EARNING'\n            ELSE 'STALLED' END                            AS \"Status\"\n  FROM h\n ORDER BY CASE WHEN h.paid_at IS NOT NULL THEN 0\n               ELSE GREATEST(COALESCE(h.capex, 0) - h.at_cost, 0) END DESC,\n          h.at_cost ASC;",
+          "rawSql": "WITH hull_capex AS (\n  -- Exact per-hull capex, available for every hull bought after sp-mjmqf: the\n  -- purchase stamps the hull it produced on related_entity_type/id (indexed) and\n  -- the server's purchase instant in metadata.  DISTINCT ON keeps one receipt per\n  -- hull should a symbol ever be reissued across eras.\n  SELECT DISTINCT ON (t.related_entity_id)\n         t.related_entity_id                                               AS hull,\n         (-t.amount)::bigint                                               AS price,\n         COALESCE((t.metadata->>'purchased_at')::timestamptz, t.created_at) AS purchased_at\n    FROM transactions t\n   WHERE t.player_id = $player AND t.transaction_type = 'PURCHASE_SHIP'\n     AND t.related_entity_type = 'ship' AND COALESCE(t.related_entity_id, '') <> ''\n   ORDER BY t.related_entity_id, t.created_at DESC),\ncapex AS (\n  -- Frame-class average: the documented fallback for hulls bought BEFORE that\n  -- change, whose rows recorded the ship type where the hull belonged and can\n  -- never be attributed.  Deliberately retained, not superseded.\n  SELECT CASE t.metadata->>'ship_type'\n           WHEN 'SHIP_HEAVY_FREIGHTER' THEN 'FRAME_HEAVY_FREIGHTER'\n           WHEN 'SHIP_LIGHT_HAULER'    THEN 'FRAME_LIGHT_FREIGHTER'\n            WHEN 'SHIP_BULK_FREIGHTER'   THEN 'FRAME_BULK_FREIGHTER'\n           WHEN 'SHIP_PROBE'           THEN 'FRAME_PROBE'\n           WHEN 'SHIP_EXPLORER'        THEN 'FRAME_EXPLORER'\n           WHEN 'SHIP_COMMAND_FRIGATE' THEN 'FRAME_FRIGATE'\n         END                                                          AS frame,\n         ROUND(AVG(-t.amount))::bigint                                AS avg_price\n    FROM transactions t\n   WHERE t.player_id = $player AND t.transaction_type = 'PURCHASE_SHIP'\n   GROUP BY 1),\ntx AS (\n  SELECT t.metadata->>'ship_symbol'                                       AS hull,\n         MIN(t.created_at)                                                AS first_trade,\n         COALESCE(SUM(t.amount), 0)                                       AS net,\n         COUNT(*) FILTER (WHERE t.transaction_type = 'SELL_CARGO')        AS sells\n    FROM transactions t\n   WHERE t.player_id = $player AND t.operation_type = 'tour'\n     AND t.transaction_type IN ('PURCHASE_CARGO','SELL_CARGO')\n     AND COALESCE(t.metadata->>'ship_symbol','') <> ''\n   GROUP BY 1),\nopen_cargo AS (\n  -- Held cargo is per-(hull, good) NET units - bought minus sold - valued at that\n  -- hull's average purchase cost for the good.  Deliberately NOT derived from a\n  -- last-sell timestamp: hulls interleave lots, so a hull that sold an OLDER lot\n  -- after buying a NEWER one had its entire held inventory erased (sp-d767k).\n  -- units/good_symbol come from transactions.metadata, which carries both\n  -- structurally on every cargo row - no description parsing.\n  SELECT g.hull, COALESCE(SUM(g.net_units * g.avg_unit_cost), 0)::bigint AS open_cost\n    FROM (\n      SELECT t.metadata->>'ship_symbol' AS hull,\n             t.metadata->>'good_symbol' AS good,\n             COALESCE(SUM((t.metadata->>'units')::numeric)\n                        FILTER (WHERE t.transaction_type = 'PURCHASE_CARGO'), 0)\n           - COALESCE(SUM((t.metadata->>'units')::numeric)\n                        FILTER (WHERE t.transaction_type = 'SELL_CARGO'), 0)     AS net_units,\n             COALESCE(SUM(-t.amount)\n                        FILTER (WHERE t.transaction_type = 'PURCHASE_CARGO'), 0)\n           / NULLIF(SUM((t.metadata->>'units')::numeric)\n                        FILTER (WHERE t.transaction_type = 'PURCHASE_CARGO'), 0) AS avg_unit_cost\n        FROM transactions t\n       WHERE t.player_id = $player AND t.operation_type = 'tour'\n         AND t.transaction_type IN ('PURCHASE_CARGO','SELL_CARGO')\n         AND COALESCE(t.metadata->>'ship_symbol','') <> ''\n         AND COALESCE(t.metadata->>'good_symbol','') <> ''\n       GROUP BY 1, 2) g\n   WHERE g.net_units > 0 AND g.avg_unit_cost IS NOT NULL\n   GROUP BY 1),\nbase AS (\n  -- Prefer the hull's own receipt; fall back to its frame's class average, and\n  -- carry the basis so every consumer can say which it used.  Age anchors on the\n  -- recorded purchase where there is one, otherwise on the hull's first trade.\n  SELECT s.ship_symbol                                                 AS hull,\n         s.frame_symbol,\n         COALESCE(hc.price, c.avg_price)                               AS capex,\n         CASE WHEN hc.price IS NOT NULL THEN 'exact'\n              WHEN c.avg_price IS NOT NULL THEN 'frame avg' END        AS capex_basis,\n         COALESCE(hc.purchased_at, tx.first_trade)                     AS age_from,\n         CASE WHEN hc.purchased_at IS NOT NULL THEN 'purchase'\n              WHEN tx.first_trade  IS NOT NULL THEN 'first trade' END  AS age_basis,\n         tx.first_trade,\n         COALESCE(tx.sells, 0)                                         AS sells,\n         COALESCE(tx.net, 0)                                           AS realised,\n         COALESCE(oc.open_cost, 0)                                     AS in_cargo,\n         COALESCE(tx.net, 0) + COALESCE(oc.open_cost, 0)               AS at_cost,\n         (EXTRACT(EPOCH FROM (now() - COALESCE(hc.purchased_at, tx.first_trade)))\n           / 3600.0)::numeric                                          AS tenure_h\n    FROM ships s\n    LEFT JOIN hull_capex hc ON hc.hull = s.ship_symbol\n    LEFT JOIN capex c       ON c.frame = s.frame_symbol\n    LEFT JOIN tx            ON tx.hull = s.ship_symbol\n    LEFT JOIN open_cargo oc ON oc.hull = s.ship_symbol\n   WHERE s.player_id = $player AND s.dedicated_fleet IN ('trade','trade-mvt','trade-lane')),\nrunning AS (\n  SELECT t.metadata->>'ship_symbol' AS hull, t.created_at,\n         SUM(t.amount) OVER (PARTITION BY t.metadata->>'ship_symbol'\n                             ORDER BY t.created_at, t.id) AS cum\n    FROM transactions t\n   WHERE t.player_id = $player AND t.operation_type = 'tour'\n     AND t.transaction_type IN ('PURCHASE_CARGO','SELL_CARGO')\n     AND COALESCE(t.metadata->>'ship_symbol','') <> ''),\npaid AS (\n  SELECT r.hull, MIN(r.created_at) AS paid_at\n    FROM running r JOIN base b ON b.hull = r.hull\n   WHERE b.capex IS NOT NULL AND r.cum >= b.capex\n   GROUP BY 1),\nh AS (\n  SELECT b.*, p.paid_at,\n         (EXTRACT(EPOCH FROM (p.paid_at - b.age_from)) / 3600.0)::numeric AS paid_h,\n         b.at_cost / NULLIF(b.tenure_h, 0)                                AS rate\n    FROM base b LEFT JOIN paid p ON p.hull = b.hull)\nSELECT h.hull                                            AS \"Hull\",\n       replace(h.frame_symbol, 'FRAME_', '')             AS \"Frame\",\n       ROUND(h.tenure_h, 2)                              AS \"Tenure\",\n       COALESCE(h.age_basis, '-')                        AS \"Tenure from\",\n       h.capex                                           AS \"Capex\",\n       COALESCE(h.capex_basis, '-')                      AS \"Capex basis\",\n       h.realised                                        AS \"Realised Net\",\n       h.in_cargo                                        AS \"In Cargo\",\n       h.at_cost                                         AS \"Net @ Cost\",\n       ROUND(h.rate)                                     AS \"Net @ Cost / h\",\n       CASE WHEN h.capex > 0\n            THEN ROUND(100.0 * h.at_cost / h.capex, 1) END AS \"Payback %\",\n       ROUND(h.paid_h, 2)                                AS \"Paid back in\",\n       CASE WHEN h.paid_at IS NULL AND h.capex IS NOT NULL AND h.rate > 0\n            THEN ROUND((h.capex - h.at_cost) / h.rate, 2) END AS \"ETA\",\n       CASE WHEN h.paid_at IS NOT NULL THEN 0\n            ELSE GREATEST(COALESCE(h.capex, 0) - h.at_cost, 0) END AS \"Remaining CR\",\n       CASE WHEN h.capex IS NULL              THEN 'NO CAPEX'\n            WHEN h.paid_at IS NOT NULL         THEN 'PAID'\n            WHEN h.at_cost >= h.capex          THEN 'PAID @ COST'\n            WHEN h.first_trade IS NULL         THEN 'NO TRADES'\n            WHEN h.sells = 0                   THEN 'NO SALES YET'\n            WHEN h.rate > 0                    THEN 'EARNING'\n            ELSE 'STALLED' END                            AS \"Status\"\n  FROM h\n ORDER BY CASE WHEN h.paid_at IS NOT NULL THEN 0\n               ELSE GREATEST(COALESCE(h.capex, 0) - h.at_cost, 0) END DESC,\n          h.at_cost ASC;",
           "editorMode": "code",
           "sql": {
             "columns": [
@@ -2993,7 +3605,7 @@
         "h": 9,
         "w": 12,
         "x": 0,
-        "y": 63
+        "y": 90
       },
       "fieldConfig": {
         "defaults": {
@@ -3078,7 +3690,7 @@
           },
           "format": "table",
           "rawQuery": true,
-          "rawSql": "WITH hull_capex AS (\n  -- Exact per-hull capex, available for every hull bought after sp-mjmqf: the\n  -- purchase stamps the hull it produced on related_entity_type/id (indexed) and\n  -- the server's purchase instant in metadata.  DISTINCT ON keeps one receipt per\n  -- hull should a symbol ever be reissued across eras.\n  SELECT DISTINCT ON (t.related_entity_id)\n         t.related_entity_id                                               AS hull,\n         (-t.amount)::bigint                                               AS price,\n         COALESCE((t.metadata->>'purchased_at')::timestamptz, t.created_at) AS purchased_at\n    FROM transactions t\n   WHERE t.player_id = $player AND t.transaction_type = 'PURCHASE_SHIP'\n     AND t.related_entity_type = 'ship' AND COALESCE(t.related_entity_id, '') <> ''\n   ORDER BY t.related_entity_id, t.created_at DESC),\ncapex AS (\n  -- Frame-class average: the documented fallback for hulls bought BEFORE that\n  -- change, whose rows recorded the ship type where the hull belonged and can\n  -- never be attributed.  Deliberately retained, not superseded.\n  SELECT CASE t.metadata->>'ship_type'\n           WHEN 'SHIP_HEAVY_FREIGHTER' THEN 'FRAME_HEAVY_FREIGHTER'\n           WHEN 'SHIP_LIGHT_HAULER'    THEN 'FRAME_LIGHT_FREIGHTER'\n           WHEN 'SHIP_PROBE'           THEN 'FRAME_PROBE'\n           WHEN 'SHIP_EXPLORER'        THEN 'FRAME_EXPLORER'\n           WHEN 'SHIP_COMMAND_FRIGATE' THEN 'FRAME_FRIGATE'\n         END                                                          AS frame,\n         ROUND(AVG(-t.amount))::bigint                                AS avg_price\n    FROM transactions t\n   WHERE t.player_id = $player AND t.transaction_type = 'PURCHASE_SHIP'\n   GROUP BY 1),\ntx AS (\n  SELECT t.metadata->>'ship_symbol'                                       AS hull,\n         MIN(t.created_at)                                                AS first_trade,\n         COALESCE(SUM(t.amount), 0)                                       AS net,\n         COUNT(*) FILTER (WHERE t.transaction_type = 'SELL_CARGO')        AS sells\n    FROM transactions t\n   WHERE t.player_id = $player AND t.operation_type = 'tour'\n     AND t.transaction_type IN ('PURCHASE_CARGO','SELL_CARGO')\n     AND COALESCE(t.metadata->>'ship_symbol','') <> ''\n   GROUP BY 1),\nopen_cargo AS (\n  -- Held cargo is per-(hull, good) NET units - bought minus sold - valued at that\n  -- hull's average purchase cost for the good.  Deliberately NOT derived from a\n  -- last-sell timestamp: hulls interleave lots, so a hull that sold an OLDER lot\n  -- after buying a NEWER one had its entire held inventory erased (sp-d767k).\n  -- units/good_symbol come from transactions.metadata, which carries both\n  -- structurally on every cargo row - no description parsing.\n  SELECT g.hull, COALESCE(SUM(g.net_units * g.avg_unit_cost), 0)::bigint AS open_cost\n    FROM (\n      SELECT t.metadata->>'ship_symbol' AS hull,\n             t.metadata->>'good_symbol' AS good,\n             COALESCE(SUM((t.metadata->>'units')::numeric)\n                        FILTER (WHERE t.transaction_type = 'PURCHASE_CARGO'), 0)\n           - COALESCE(SUM((t.metadata->>'units')::numeric)\n                        FILTER (WHERE t.transaction_type = 'SELL_CARGO'), 0)     AS net_units,\n             COALESCE(SUM(-t.amount)\n                        FILTER (WHERE t.transaction_type = 'PURCHASE_CARGO'), 0)\n           / NULLIF(SUM((t.metadata->>'units')::numeric)\n                        FILTER (WHERE t.transaction_type = 'PURCHASE_CARGO'), 0) AS avg_unit_cost\n        FROM transactions t\n       WHERE t.player_id = $player AND t.operation_type = 'tour'\n         AND t.transaction_type IN ('PURCHASE_CARGO','SELL_CARGO')\n         AND COALESCE(t.metadata->>'ship_symbol','') <> ''\n         AND COALESCE(t.metadata->>'good_symbol','') <> ''\n       GROUP BY 1, 2) g\n   WHERE g.net_units > 0 AND g.avg_unit_cost IS NOT NULL\n   GROUP BY 1),\nbase AS (\n  -- Prefer the hull's own receipt; fall back to its frame's class average, and\n  -- carry the basis so every consumer can say which it used.  Age anchors on the\n  -- recorded purchase where there is one, otherwise on the hull's first trade.\n  SELECT s.ship_symbol                                                 AS hull,\n         s.frame_symbol,\n         COALESCE(hc.price, c.avg_price)                               AS capex,\n         CASE WHEN hc.price IS NOT NULL THEN 'exact'\n              WHEN c.avg_price IS NOT NULL THEN 'frame avg' END        AS capex_basis,\n         COALESCE(hc.purchased_at, tx.first_trade)                     AS age_from,\n         CASE WHEN hc.purchased_at IS NOT NULL THEN 'purchase'\n              WHEN tx.first_trade  IS NOT NULL THEN 'first trade' END  AS age_basis,\n         tx.first_trade,\n         COALESCE(tx.sells, 0)                                         AS sells,\n         COALESCE(tx.net, 0)                                           AS realised,\n         COALESCE(oc.open_cost, 0)                                     AS in_cargo,\n         COALESCE(tx.net, 0) + COALESCE(oc.open_cost, 0)               AS at_cost,\n         (EXTRACT(EPOCH FROM (now() - COALESCE(hc.purchased_at, tx.first_trade)))\n           / 3600.0)::numeric                                          AS tenure_h\n    FROM ships s\n    LEFT JOIN hull_capex hc ON hc.hull = s.ship_symbol\n    LEFT JOIN capex c       ON c.frame = s.frame_symbol\n    LEFT JOIN tx            ON tx.hull = s.ship_symbol\n    LEFT JOIN open_cargo oc ON oc.hull = s.ship_symbol\n   WHERE s.player_id = $player AND s.dedicated_fleet = 'trade'),\nrunning AS (\n  SELECT t.metadata->>'ship_symbol' AS hull, t.created_at,\n         SUM(t.amount) OVER (PARTITION BY t.metadata->>'ship_symbol'\n                             ORDER BY t.created_at, t.id) AS cum\n    FROM transactions t\n   WHERE t.player_id = $player AND t.operation_type = 'tour'\n     AND t.transaction_type IN ('PURCHASE_CARGO','SELL_CARGO')\n     AND COALESCE(t.metadata->>'ship_symbol','') <> ''),\npaid AS (\n  SELECT r.hull, MIN(r.created_at) AS paid_at\n    FROM running r JOIN base b ON b.hull = r.hull\n   WHERE b.capex IS NOT NULL AND r.cum >= b.capex\n   GROUP BY 1),\nh AS (\n  SELECT b.*, p.paid_at,\n         (EXTRACT(EPOCH FROM (p.paid_at - b.age_from)) / 3600.0)::numeric AS paid_h,\n         b.at_cost / NULLIF(b.tenure_h, 0)                                AS rate\n    FROM base b LEFT JOIN paid p ON p.hull = b.hull)\nSELECT h.hull AS \"Hull\",\n       ROUND(100.0 * h.at_cost / h.capex, 1) AS \"Payback %\"\n  FROM h\n WHERE h.capex IS NOT NULL\n ORDER BY 2 ASC;",
+          "rawSql": "WITH hull_capex AS (\n  -- Exact per-hull capex, available for every hull bought after sp-mjmqf: the\n  -- purchase stamps the hull it produced on related_entity_type/id (indexed) and\n  -- the server's purchase instant in metadata.  DISTINCT ON keeps one receipt per\n  -- hull should a symbol ever be reissued across eras.\n  SELECT DISTINCT ON (t.related_entity_id)\n         t.related_entity_id                                               AS hull,\n         (-t.amount)::bigint                                               AS price,\n         COALESCE((t.metadata->>'purchased_at')::timestamptz, t.created_at) AS purchased_at\n    FROM transactions t\n   WHERE t.player_id = $player AND t.transaction_type = 'PURCHASE_SHIP'\n     AND t.related_entity_type = 'ship' AND COALESCE(t.related_entity_id, '') <> ''\n   ORDER BY t.related_entity_id, t.created_at DESC),\ncapex AS (\n  -- Frame-class average: the documented fallback for hulls bought BEFORE that\n  -- change, whose rows recorded the ship type where the hull belonged and can\n  -- never be attributed.  Deliberately retained, not superseded.\n  SELECT CASE t.metadata->>'ship_type'\n           WHEN 'SHIP_HEAVY_FREIGHTER' THEN 'FRAME_HEAVY_FREIGHTER'\n           WHEN 'SHIP_LIGHT_HAULER'    THEN 'FRAME_LIGHT_FREIGHTER'\n            WHEN 'SHIP_BULK_FREIGHTER'   THEN 'FRAME_BULK_FREIGHTER'\n           WHEN 'SHIP_PROBE'           THEN 'FRAME_PROBE'\n           WHEN 'SHIP_EXPLORER'        THEN 'FRAME_EXPLORER'\n           WHEN 'SHIP_COMMAND_FRIGATE' THEN 'FRAME_FRIGATE'\n         END                                                          AS frame,\n         ROUND(AVG(-t.amount))::bigint                                AS avg_price\n    FROM transactions t\n   WHERE t.player_id = $player AND t.transaction_type = 'PURCHASE_SHIP'\n   GROUP BY 1),\ntx AS (\n  SELECT t.metadata->>'ship_symbol'                                       AS hull,\n         MIN(t.created_at)                                                AS first_trade,\n         COALESCE(SUM(t.amount), 0)                                       AS net,\n         COUNT(*) FILTER (WHERE t.transaction_type = 'SELL_CARGO')        AS sells\n    FROM transactions t\n   WHERE t.player_id = $player AND t.operation_type = 'tour'\n     AND t.transaction_type IN ('PURCHASE_CARGO','SELL_CARGO')\n     AND COALESCE(t.metadata->>'ship_symbol','') <> ''\n   GROUP BY 1),\nopen_cargo AS (\n  -- Held cargo is per-(hull, good) NET units - bought minus sold - valued at that\n  -- hull's average purchase cost for the good.  Deliberately NOT derived from a\n  -- last-sell timestamp: hulls interleave lots, so a hull that sold an OLDER lot\n  -- after buying a NEWER one had its entire held inventory erased (sp-d767k).\n  -- units/good_symbol come from transactions.metadata, which carries both\n  -- structurally on every cargo row - no description parsing.\n  SELECT g.hull, COALESCE(SUM(g.net_units * g.avg_unit_cost), 0)::bigint AS open_cost\n    FROM (\n      SELECT t.metadata->>'ship_symbol' AS hull,\n             t.metadata->>'good_symbol' AS good,\n             COALESCE(SUM((t.metadata->>'units')::numeric)\n                        FILTER (WHERE t.transaction_type = 'PURCHASE_CARGO'), 0)\n           - COALESCE(SUM((t.metadata->>'units')::numeric)\n                        FILTER (WHERE t.transaction_type = 'SELL_CARGO'), 0)     AS net_units,\n             COALESCE(SUM(-t.amount)\n                        FILTER (WHERE t.transaction_type = 'PURCHASE_CARGO'), 0)\n           / NULLIF(SUM((t.metadata->>'units')::numeric)\n                        FILTER (WHERE t.transaction_type = 'PURCHASE_CARGO'), 0) AS avg_unit_cost\n        FROM transactions t\n       WHERE t.player_id = $player AND t.operation_type = 'tour'\n         AND t.transaction_type IN ('PURCHASE_CARGO','SELL_CARGO')\n         AND COALESCE(t.metadata->>'ship_symbol','') <> ''\n         AND COALESCE(t.metadata->>'good_symbol','') <> ''\n       GROUP BY 1, 2) g\n   WHERE g.net_units > 0 AND g.avg_unit_cost IS NOT NULL\n   GROUP BY 1),\nbase AS (\n  -- Prefer the hull's own receipt; fall back to its frame's class average, and\n  -- carry the basis so every consumer can say which it used.  Age anchors on the\n  -- recorded purchase where there is one, otherwise on the hull's first trade.\n  SELECT s.ship_symbol                                                 AS hull,\n         s.frame_symbol,\n         COALESCE(hc.price, c.avg_price)                               AS capex,\n         CASE WHEN hc.price IS NOT NULL THEN 'exact'\n              WHEN c.avg_price IS NOT NULL THEN 'frame avg' END        AS capex_basis,\n         COALESCE(hc.purchased_at, tx.first_trade)                     AS age_from,\n         CASE WHEN hc.purchased_at IS NOT NULL THEN 'purchase'\n              WHEN tx.first_trade  IS NOT NULL THEN 'first trade' END  AS age_basis,\n         tx.first_trade,\n         COALESCE(tx.sells, 0)                                         AS sells,\n         COALESCE(tx.net, 0)                                           AS realised,\n         COALESCE(oc.open_cost, 0)                                     AS in_cargo,\n         COALESCE(tx.net, 0) + COALESCE(oc.open_cost, 0)               AS at_cost,\n         (EXTRACT(EPOCH FROM (now() - COALESCE(hc.purchased_at, tx.first_trade)))\n           / 3600.0)::numeric                                          AS tenure_h\n    FROM ships s\n    LEFT JOIN hull_capex hc ON hc.hull = s.ship_symbol\n    LEFT JOIN capex c       ON c.frame = s.frame_symbol\n    LEFT JOIN tx            ON tx.hull = s.ship_symbol\n    LEFT JOIN open_cargo oc ON oc.hull = s.ship_symbol\n   WHERE s.player_id = $player AND s.dedicated_fleet IN ('trade','trade-mvt','trade-lane')),\nrunning AS (\n  SELECT t.metadata->>'ship_symbol' AS hull, t.created_at,\n         SUM(t.amount) OVER (PARTITION BY t.metadata->>'ship_symbol'\n                             ORDER BY t.created_at, t.id) AS cum\n    FROM transactions t\n   WHERE t.player_id = $player AND t.operation_type = 'tour'\n     AND t.transaction_type IN ('PURCHASE_CARGO','SELL_CARGO')\n     AND COALESCE(t.metadata->>'ship_symbol','') <> ''),\npaid AS (\n  SELECT r.hull, MIN(r.created_at) AS paid_at\n    FROM running r JOIN base b ON b.hull = r.hull\n   WHERE b.capex IS NOT NULL AND r.cum >= b.capex\n   GROUP BY 1),\nh AS (\n  SELECT b.*, p.paid_at,\n         (EXTRACT(EPOCH FROM (p.paid_at - b.age_from)) / 3600.0)::numeric AS paid_h,\n         b.at_cost / NULLIF(b.tenure_h, 0)                                AS rate\n    FROM base b LEFT JOIN paid p ON p.hull = b.hull)\nSELECT h.hull AS \"Hull\",\n       ROUND(100.0 * h.at_cost / h.capex, 1) AS \"Payback %\"\n  FROM h\n WHERE h.capex IS NOT NULL\n ORDER BY 2 ASC;",
           "editorMode": "code",
           "sql": {
             "columns": [
@@ -3113,7 +3725,7 @@
         "h": 9,
         "w": 12,
         "x": 12,
-        "y": 63
+        "y": 90
       },
       "timeFrom": "7d",
       "hideTimeOverride": false,
@@ -3237,7 +3849,7 @@
           },
           "format": "table",
           "rawQuery": true,
-          "rawSql": "WITH ev AS (\n  SELECT t.created_at,\n         CASE WHEN t.operation_type = 'tour'\n               AND t.transaction_type IN ('PURCHASE_CARGO','SELL_CARGO')\n               AND COALESCE(t.metadata->>'ship_symbol','') <> ''\n              THEN t.amount ELSE 0 END AS trade_v,\n         CASE WHEN t.transaction_type = 'PURCHASE_SHIP'\n               AND t.metadata->>'ship_type' IN ('SHIP_HEAVY_FREIGHTER','SHIP_LIGHT_HAULER')\n              THEN -t.amount ELSE 0 END AS capex_v\n    FROM transactions t\n   WHERE t.player_id = $player),\nb AS (\n  SELECT $__timeGroupAlias(created_at, $__interval),\n         COALESCE(SUM(trade_v), 0) AS trade_v,\n         COALESCE(SUM(capex_v), 0) AS capex_v\n    FROM ev\n   GROUP BY 1),\nc AS (\n  SELECT time,\n         SUM(trade_v) OVER (ORDER BY time) AS net,\n         SUM(capex_v) OVER (ORDER BY time) AS capex\n    FROM b)\n-- Deliberately unfiltered by time.  Both series must carry their true cumulative\n-- level at the left edge of whatever window is shown, so the running sums span the\n-- whole era and the panel axis does the clipping.  A time macro on the grouped\n-- column would not work here anyway: it is an epoch number, not a timestamptz.\nSELECT time,\n       net   AS \"Cumulative Trade Net\",\n       capex AS \"Cumulative Trade-Hull Capex\"\n  FROM c\n ORDER BY 1;",
+          "rawSql": "WITH ev AS (\n  SELECT t.created_at,\n         CASE WHEN t.operation_type = 'tour'\n               AND t.transaction_type IN ('PURCHASE_CARGO','SELL_CARGO')\n               AND COALESCE(t.metadata->>'ship_symbol','') <> ''\n              THEN t.amount ELSE 0 END AS trade_v,\n         CASE WHEN t.transaction_type = 'PURCHASE_SHIP'\n               AND t.metadata->>'ship_type' IN ('SHIP_HEAVY_FREIGHTER','SHIP_LIGHT_HAULER','SHIP_BULK_FREIGHTER')\n              THEN -t.amount ELSE 0 END AS capex_v\n    FROM transactions t\n   WHERE t.player_id = $player),\nb AS (\n  SELECT $__timeGroupAlias(created_at, $__interval),\n         COALESCE(SUM(trade_v), 0) AS trade_v,\n         COALESCE(SUM(capex_v), 0) AS capex_v\n    FROM ev\n   GROUP BY 1),\nc AS (\n  SELECT time,\n         SUM(trade_v) OVER (ORDER BY time) AS net,\n         SUM(capex_v) OVER (ORDER BY time) AS capex\n    FROM b)\n-- Deliberately unfiltered by time.  Both series must carry their true cumulative\n-- level at the left edge of whatever window is shown, so the running sums span the\n-- whole era and the panel axis does the clipping.  A time macro on the grouped\n-- column would not work here anyway: it is an epoch number, not a timestamptz.\nSELECT time,\n       net   AS \"Cumulative Trade Net\",\n       capex AS \"Cumulative Trade-Hull Capex\"\n  FROM c\n ORDER BY 1;",
           "editorMode": "code",
           "sql": {
             "columns": [
@@ -3302,7 +3914,7 @@
   "timezone": "browser",
   "title": "SpaceTraders - Trading P&L by Hull",
   "uid": "spacetraders-trading-hulls",
-  "description": "Per-hull trading profit and loss with fleet aggregations. Realised net, capital deployed in cargo, and the operation split that explains treasury movement. Complements 'SpaceTraders - Heavy Trading' (tour lifecycle and guard diagnostics). AUTO-REFRESH IS DELIBERATELY OFF (sp-7djkm): one full load of this dashboard costs 53.8 seconds of database time and 5.6 GB of temp-file writes against the live trading instance, 93% of it in the two recursive-walk panels (Gross Margin, Per-Hull P&L). At the former 30s refresh each cycle could not finish before the next began, so an unattended browser tab held the planner's database in permanent overload. Refresh by hand when you want current numbers; do not re-arm the timer until those two panels are bounded.",
-  "version": 1,
+  "description": "Per-hull trading profit and loss with fleet aggregations. Realised net, capital deployed in cargo, and the operation split that explains treasury movement. Complements 'SpaceTraders - Heavy Trading' (tour lifecycle and guard diagnostics). AUTO-REFRESH IS DELIBERATELY OFF (sp-7djkm): one full load of this dashboard costs 53.8 seconds of database time and 5.6 GB of temp-file writes against the live trading instance, 93% of it in the two recursive-walk panels (Gross Margin, Per-Hull P&L). At the former 30s refresh each cycle could not finish before the next began, so an unattended browser tab held the planner's database in permanent overload. Refresh by hand when you want current numbers; do not re-arm the timer until those two panels are bounded. MVT loop row added 2026-09-03: per-hull claim state, movement rates, transitions by reason.",
+  "version": 2,
   "weekStart": ""
 }
