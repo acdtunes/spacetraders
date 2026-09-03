@@ -46,6 +46,9 @@ type TradeFleetConfig struct {
 	ReplanLimit           int   `mapstructure:"replan_limit"`
 	WorkingCapitalReserve int64 `mapstructure:"working_capital_reserve"`
 
+	// ACapTranches is the FLEET-WIDE sink cap in trade_volume tranches; 0 → defaultTourACapTranches, which says why it moves in step with the solver's own cap.
+	ACapTranches int `mapstructure:"acap_tranches"`
+
 	// RelaunchBackoffMaxMinutes caps the per-hull ADAPTIVE relaunch backoff (sp-1pli): when a
 	// hull's continuous tour exits unproductive (fast-fail — no plausible trade leg flown), the
 	// coordinator doubles THAT hull's relaunch cooldown from CooldownSeconds, up to this

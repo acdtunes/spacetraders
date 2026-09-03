@@ -160,6 +160,11 @@ type RunTradeFleetCoordinatorCommand struct {
 	ReplanLimit           int
 	WorkingCapitalReserve int64
 
+	// ACapTranches is the fleet-wide absorption sink cap in trade_volume tranches, injected
+	// verbatim into every tour this coordinator launches. 0 => the tour's own default (2).
+	// Raise it only in step with the solver's MAX_PLANNED_TRANCHES_PER_MARKET_GOOD_SIDE.
+	ACapTranches int
+
 	// RelaunchBackoffMaxSecs caps the per-hull ADAPTIVE relaunch backoff (sp-1pli);
 	// <=0 uses defaultRelaunchBackoffMaxSeconds. See relaunchBackoffMaxDuration and the
 	// handler's hullBackoff/cooldownFor for the escalation mechanism itself.
@@ -309,14 +314,17 @@ func (h *RunTradeFleetCoordinatorHandler) Handle(ctx context.Context, request co
 	}
 
 	result := &RunTradeFleetCoordinatorResponse{Errors: []string{}}
-	logger.Log("INFO", fmt.Sprintf("Trade fleet coordinator starting (tick %s, cooldown %s, backoff_max %s, max_concurrent %s, enabled %t)",
-		tick, cmd.cooldownDuration(), cmd.relaunchBackoffMaxDuration(), maxConcurrentLabel(cmd.MaxConcurrentTours), cmd.Enabled), map[string]interface{}{
+	logger.Log("INFO", fmt.Sprintf("Trade fleet coordinator starting (tick %s, cooldown %s, backoff_max %s, max_concurrent %s, enabled %t, min_margin %d, acap_tranches %d)",
+		tick, cmd.cooldownDuration(), cmd.relaunchBackoffMaxDuration(), maxConcurrentLabel(cmd.MaxConcurrentTours), cmd.Enabled,
+		cmd.MinMargin, resolveACapTranches(cmd.ACapTranches)), map[string]interface{}{
 		"action":           "trade_fleet_coordinator_start",
 		"container_id":     cmd.ContainerID,
 		"enabled":          cmd.Enabled,
 		"cooldown_secs":    int(cmd.cooldownDuration().Seconds()),
 		"backoff_max_secs": int(cmd.relaunchBackoffMaxDuration().Seconds()),
 		"max_concurrent":   cmd.MaxConcurrentTours,
+		"min_margin":       cmd.MinMargin,
+		"acap_tranches":    resolveACapTranches(cmd.ACapTranches),
 	})
 
 	// errMon makes a reconcile pass that fails with the identical error every tick

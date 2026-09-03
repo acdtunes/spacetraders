@@ -13,7 +13,7 @@ import (
 //
 // The tour buy arms a ceiling at planned×(1+tourPriceTolerancePct/100); these pin the
 // mirror on the bid plus the two bounds that make it affordable and safe — it arms only
-// past tourACapTranches of visit depth, and refuses a hold at most once per tour.
+// past defaultTourACapTranches of visit depth, and refuses a hold at most once per tour.
 
 const (
 	sfGood    = "IRON_ORE"
@@ -118,7 +118,7 @@ func TestTourSellFloor_RefusesADeepTrancheWhoseLiveBidCollapsedBelowTolerance(t 
 	_, logger := sfRun(t, fx, sfPlanner(3, sfSink))
 
 	if want := []int{0, 0, sfFloor}; !sfEqual(sfFloors(fx), want) {
-		t.Fatalf("only the tranche past %d×trade_volume may arm the floor: want %v, got %v", tourACapTranches, want, sfFloors(fx))
+		t.Fatalf("only the tranche past %d×trade_volume may arm the floor: want %v, got %v", defaultTourACapTranches, want, sfFloors(fx))
 	}
 	if fx.sells != 2 {
 		t.Fatalf("the two shallow tranches sell and the deep one is refused, got %d sales", fx.sells)
@@ -188,15 +188,15 @@ func TestTourSellFloor_WithinTolerance_LeavesTheSaleUnchanged(t *testing.T) {
 func TestTourSellFloor_ShallowTranchesDispatchUnarmedSoTheyCostNoLiveScan(t *testing.T) {
 	fx := sfFixture(map[string]map[string]int{sfSink: {sfGood: sfCrushed}}, sfSink)
 
-	_, logger := sfRun(t, fx, sfPlanner(tourACapTranches, sfSink))
+	_, logger := sfRun(t, fx, sfPlanner(defaultTourACapTranches, sfSink))
 
 	if want := []int{0, 0}; !sfEqual(sfFloors(fx), want) {
-		t.Fatalf("a visit under %d×trade_volume must never arm the floor: want %v, got %v", tourACapTranches, want, sfFloors(fx))
+		t.Fatalf("a visit under %d×trade_volume must never arm the floor: want %v, got %v", defaultTourACapTranches, want, sfFloors(fx))
 	}
 	if sfAbortLine(logger) != nil {
 		t.Fatalf("an unarmed tranche cannot trip the floor, got %+v", logger.entries)
 	}
-	if fx.sells != tourACapTranches {
+	if fx.sells != defaultTourACapTranches {
 		t.Fatalf("the shallow tranches sell exactly as before the floor existed, got %d sales", fx.sells)
 	}
 }

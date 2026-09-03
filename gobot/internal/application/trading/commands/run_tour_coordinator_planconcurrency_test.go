@@ -145,7 +145,7 @@ func (p *domainPlanner) OptimizeTradeTour(
 
 	for _, wp := range p.sinksFor(ship.CurrentSystem) {
 		occupied := int(math.Ceil(float64(planned[wp]) / float64(dispersalSinkTV)))
-		if (tourACapTranches-occupied)*dispersalSinkTV >= dispersalUnits {
+		if (defaultTourACapTranches-occupied)*dispersalSinkTV >= dispersalUnits {
 			return domainPlan(ship.CurrentSystem, wp), nil
 		}
 	}

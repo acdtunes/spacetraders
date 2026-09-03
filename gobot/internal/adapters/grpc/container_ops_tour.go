@@ -34,6 +34,9 @@ type TourRunOverrides struct {
 	// MVTLoop selects the MVT trade loop for THIS launch, set by the fleet coordinator from
 	// the hull's trade-mvt tag; false is the legacy tour path, so rollback is one tag change.
 	MVTLoop bool
+
+	// ACapTranches is [trade_fleet].acap_tranches; 0 writes no key, so the tour keeps its own default.
+	ACapTranches int
 }
 
 // applyTourRunOverrides layers a launch's per-launch overrides onto the freshly-built tour
@@ -52,6 +55,10 @@ func applyTourRunOverrides(config map[string]interface{}, overrides *TourRunOver
 	// Written only when selected: an absent key reads as false, the legacy tour path.
 	if overrides.MVTLoop {
 		config["mvt_loop"] = true
+	}
+	// The per-launch echo of addTradeFleetTourKnobs' global stamp (the reposition_reach shape).
+	if overrides.ACapTranches > 0 {
+		config["acap_tranches"] = overrides.ACapTranches
 	}
 }
 
@@ -189,6 +196,12 @@ func (s *DaemonServer) addTradeFleetTourKnobs(config map[string]interface{}) {
 
 	config["externality_weight"] = s.tradeFleetConfig.ExternalityWeight
 	config["tour_neighbors_durable_first"] = s.tradeFleetConfig.TourNeighborsDurableFirst
+
+	// EVERY tour needs the fleet-wide sink cap, CLI/gRPC launches included: one hull left at
+	// the default while the solver plans to a raised cap breaches its reservation every plan.
+	if v := s.resolvedACapTranches(); v > 0 {
+		config["acap_tranches"] = v
+	}
 
 	// MVT trade loop knobs, written only when set so an absent key defers to the coordinator's
 	// spec default rather than pinning a 0. The loop is armed per hull by mvt_loop, never by these.

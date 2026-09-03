@@ -142,6 +142,7 @@ func buildTourLaunchSpec(cmd *RunTradeFleetCoordinatorCommand, shipSymbol, fleet
 		MaxHops:                  cmd.MaxHops,
 		MaxSpend:                 cmd.MaxSpend,
 		MinMargin:                cmd.MinMargin,
+		ACapTranches:             cmd.ACapTranches,
 		ReplanLimit:              cmd.ReplanLimit,
 		WorkingCapitalReserve:    reserve,
 		AgentSymbol:              cmd.AgentSymbol,
@@ -173,6 +174,11 @@ type TourLaunchSpec struct {
 	AgentSymbol           string
 	Iterations            int
 	PlayerID              int
+
+	// ACapTranches carries [trade_fleet].acap_tranches into THIS launch's tour container
+	// config. 0 leaves the key unwritten, so the tour falls back to its own default (2) and
+	// the launch config is byte-identical to today.
+	ACapTranches int
 
 	// RepositionReachEscalated arms reposition-reach for THIS launch (sp-nxrt part a),
 	// overriding the daemon-global reposition_reach_enabled. The fleet coordinator sets it

@@ -3,6 +3,7 @@ package grpc
 import (
 	"context"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
@@ -92,12 +93,13 @@ func (s *DaemonServer) LaunchTour(ctx context.Context, spec tradingCmd.TourLaunc
 // of a twice-fast-failed hull and/or the MVT path a "trade-mvt" tag selects.
 func tourOverridesFor(spec tradingCmd.TourLaunchSpec) *TourRunOverrides {
 	mvtLoop := spec.Fleet == navigation.TradeFleetMVT
-	if !spec.RepositionReachEscalated && !mvtLoop {
+	if !spec.RepositionReachEscalated && !mvtLoop && spec.ACapTranches <= 0 {
 		return nil
 	}
 	return &TourRunOverrides{
 		RepositionReachEnabled: spec.RepositionReachEscalated,
 		MVTLoop:                mvtLoop,
+		ACapTranches:           spec.ACapTranches,
 	}
 }
 
@@ -145,6 +147,29 @@ func (a *deadContainerAbsorptionReclaimer) ReclaimDeadContainerAbsorption(ctx co
 	return a.ledger.Sweep(ctx, playerID.Value())
 }
 
+// maxACapTranches ceilings [trade_fleet].acap_tranches: the cap is what DISPERSES the fleet
+// across sinks, so a fat-fingered 44 must not read as "no cap" (RULINGS #4).
+const maxACapTranches = 6
+
+// acapClampLogf is the clamp's log sink (test seam).
+var acapClampLogf = log.Printf
+
+// resolvedACapTranches is the daemon's ONE read of the sink-cap knob, shared by the
+// coordinator's launch config and every tour's: non-positive is "unset" (nothing is written,
+// the tour resolves its own default), past maxACapTranches is CLAMPED with a WARNING.
+func (s *DaemonServer) resolvedACapTranches() int {
+	knob := s.tradeFleetConfig.ACapTranches
+	if knob <= 0 {
+		return 0
+	}
+	if knob > maxACapTranches {
+		acapClampLogf("WARNING: [trade_fleet].acap_tranches %d exceeds the maximum %d - clamping to %d (a sink cap past that stops dispersing the fleet across sinks)",
+			knob, maxACapTranches, maxACapTranches)
+		return maxACapTranches
+	}
+	return knob
+}
+
 // tradeFleetConfigKeys enumerates every launch-config key the [trade_fleet] knobs
 // occupy. resolveTradeFleetConfig clears these before re-injecting the live values, so
 // a stale persisted copy from a prior boot can never shadow the current config.yaml
@@ -160,6 +185,7 @@ var tradeFleetConfigKeys = []string{
 	"trade_fleet_max_hops",
 	"trade_fleet_max_spend",
 	"trade_fleet_min_margin",
+	"trade_fleet_acap_tranches",
 	"trade_fleet_replan_limit",
 	"trade_fleet_reserve",
 	"trade_fleet_relaunch_backoff_max_minutes",
@@ -223,6 +249,10 @@ func (s *DaemonServer) injectTradeFleetConfig(config map[string]interface{}) {
 	}
 	if tf.MinMargin != 0 {
 		config["trade_fleet_min_margin"] = tf.MinMargin
+	}
+	// Unset defers to the tour's own default (2 tranches), which is also the revert.
+	if v := s.resolvedACapTranches(); v > 0 {
+		config["trade_fleet_acap_tranches"] = v
 	}
 	if tf.ReplanLimit != 0 {
 		config["trade_fleet_replan_limit"] = tf.ReplanLimit

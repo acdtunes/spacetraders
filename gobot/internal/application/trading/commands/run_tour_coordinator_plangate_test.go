@@ -24,10 +24,10 @@ import (
 
 const (
 	// dispersalSinkTV sizes each sink so ONE hull's tranche pair exactly fills the
-	// fleet-wide cap (tourACapTranches × trade_volume): a second hull on the same sink
+	// fleet-wide cap (defaultTourACapTranches × trade_volume): a second hull on the same sink
 	// breaches. That makes "did they disperse?" a binary, unambiguous outcome.
 	dispersalSinkTV    = 20
-	dispersalUnits     = dispersalSinkTV * tourACapTranches
+	dispersalUnits     = dispersalSinkTV * defaultTourACapTranches
 	dispersalSourceTV  = 1000 // the buy side is deep, so only sink contention is ever tested
 	dispersalBatchWait = 60 * time.Millisecond
 	dispersalHold      = 100 * time.Millisecond
@@ -158,7 +158,7 @@ func (p *dispersalPlanner) OptimizeTradeTour(
 	for i := 1; i <= p.sinks; i++ {
 		wp := dispersalSink(i)
 		occupied := int(math.Ceil(float64(planned[wp]) / float64(dispersalSinkTV)))
-		if (tourACapTranches-occupied)*dispersalSinkTV >= dispersalUnits {
+		if (defaultTourACapTranches-occupied)*dispersalSinkTV >= dispersalUnits {
 			return dispersalPlan(wp), nil
 		}
 	}

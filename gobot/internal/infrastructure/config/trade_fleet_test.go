@@ -542,3 +542,34 @@ func TestLoadConfig_RankerMinSpreadPerUnit_AbsentIsZeroSentinel(t *testing.T) {
 	require.Equal(t, 0, cfg.TradeFleet.RankerMinSpreadPerUnit,
 		"absent must stay the sentinel 0 so the coordinator's own default resolves it")
 }
+
+// acap_tranches round-trip pin: the fleet-wide sink cap must reach the config struct.
+func TestLoadConfig_ACapTranches_RoundTrips(t *testing.T) {
+	t.Setenv("SPACETRADERS_CONFIG", "")
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(
+		"trade_fleet:\n"+
+			"  enabled: true\n"+
+			"  acap_tranches: 4\n"), 0o644))
+	t.Chdir(dir)
+
+	cfg, err := LoadConfig("")
+
+	require.NoError(t, err)
+	require.Equal(t, 4, cfg.TradeFleet.ACapTranches)
+}
+
+func TestLoadConfig_ACapTranches_AbsentIsZeroSentinel(t *testing.T) {
+	t.Setenv("SPACETRADERS_CONFIG", "")
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(
+		"trade_fleet:\n"+
+			"  enabled: true\n"), 0o644))
+	t.Chdir(dir)
+
+	cfg, err := LoadConfig("")
+
+	require.NoError(t, err)
+	require.Equal(t, 0, cfg.TradeFleet.ACapTranches,
+		"absent must stay the sentinel 0 so the tour's own default (2 tranches) resolves it")
+}

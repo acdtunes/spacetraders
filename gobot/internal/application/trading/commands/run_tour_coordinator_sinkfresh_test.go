@@ -48,7 +48,7 @@ func TestTourSinkFresh_StaleSink_RefusesBuy(t *testing.T) {
 }
 
 // SHRUNK LIVE DEPTH → shrink the buy. The sink is FRESH but its live trade_volume dropped
-// since planning, so the depth it can now absorb (tourACapTranches × live tradeVolume) is
+// since planning, so the depth it can now absorb (defaultTourACapTranches × live tradeVolume) is
 // below the firm reservation: the buy is bound to the live depth, not the stale reservation
 // (mirrors sp-pcxju's shrink-to-firm-depth, re-checked against the live market).
 func TestTourSinkFresh_ShrunkLiveDepth_ShrinksBuy(t *testing.T) {

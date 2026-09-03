@@ -59,6 +59,7 @@ func buildTradeFleetCoordinatorCommand(cfg *configReader, playerID int, containe
 		MaxHops:               cfg.OptionalInt("trade_fleet_max_hops", 0),
 		MaxSpend:              int64(cfg.OptionalInt("trade_fleet_max_spend", 0)),
 		MinMargin:             cfg.OptionalInt("trade_fleet_min_margin", 0),
+		ACapTranches:          cfg.OptionalInt("trade_fleet_acap_tranches", 0),
 		ReplanLimit:           cfg.OptionalInt("trade_fleet_replan_limit", 0),
 		WorkingCapitalReserve: int64(cfg.OptionalInt("trade_fleet_reserve", 0)),
 		// sp-1pli: minutes on config, seconds on the command (matches CooldownSecs) — converted
@@ -711,6 +712,8 @@ func buildTourCoordinatorCommand(cfg *configReader, playerID int, containerID st
 		// arming (and every recovery rebuild of one) stays unarmed.
 		ExternalityWeight:         cfg.OptionalFloat("externality_weight", 0),
 		TourNeighborsDurableFirst: cfg.OptionalBool("tour_neighbors_durable_first"),
+		// The fleet-wide sink cap the launching coordinator stamped; absent → the tour's own default.
+		ACapTranches: cfg.OptionalInt("acap_tranches", 0),
 	}
 }
 

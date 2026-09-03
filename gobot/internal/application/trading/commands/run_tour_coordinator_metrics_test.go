@@ -35,7 +35,7 @@ func cbAbsorbed(wp, good, side string, planned int, recovering float64) routing.
 }
 
 func TestClassifyCapBinding(t *testing.T) {
-	// tourACapTranches == 2, so the fleet-wide cap is 2 x trade_volume; the netted
+	// defaultTourACapTranches == 2, so the fleet-wide cap is 2 x trade_volume; the netted
 	// availability ceiling is that cap less the outstanding depth at the lane.
 	tests := []struct {
 		name       string
@@ -113,7 +113,7 @@ func TestClassifyCapBinding(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := classifyCapBinding(tt.plan, tt.snapshot, tt.absorption)
+			got := classifyCapBinding(tt.plan, tt.snapshot, tt.absorption, 0)
 			if len(got) == 0 && len(tt.want) == 0 {
 				return
 			}

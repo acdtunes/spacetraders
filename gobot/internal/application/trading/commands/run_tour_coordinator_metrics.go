@@ -35,7 +35,7 @@ type capBindingSample struct {
 // decision "what fraction of profitable plans does the cap actually bind": a lane is
 // scored only when it carries outstanding cross-container absorption (PLANNED + the
 // decayed EXECUTED residual the netting fed the solver); it is bound when the plan's units
-// there reached the netted availability ceiling (cap = tourACapTranches x trade_volume,
+// there reached the netted availability ceiling (cap = capTranches x trade_volume,
 // less the outstanding depth), unbound when it stayed below. Lanes with no absorption are
 // not scored — the cap could not have constrained them. DEPOSIT tranches are skipped
 // (synthetic warehouse sink, no market depth), mirroring buildTourReserveEntries. This is
@@ -44,10 +44,12 @@ func classifyCapBinding(
 	plan *routing.TourPlan,
 	snapshot []routing.TourGoodSnapshot,
 	absorptionView []routing.TourMarketAbsorption,
+	capTranches int,
 ) []capBindingSample {
 	if plan == nil {
 		return nil
 	}
+	capTranches = resolveACapTranches(capTranches)
 
 	tradeVolume := make(map[shadowSinkKey]int, len(snapshot))
 	for _, s := range snapshot {
@@ -95,7 +97,7 @@ func classifyCapBinding(
 		// (this container's own PLANNED rows were released before netting). A missing
 		// snapshot row leaves trade_volume 0 -> ceiling 0 -> any units read as bound, the
 		// defensive worst case for a lane we know carries real absorption.
-		ceiling := tourACapTranches*tradeVolume[shadowSinkKey{k.wp, k.good}] - depth
+		ceiling := capTranches*tradeVolume[shadowSinkKey{k.wp, k.good}] - depth
 		if ceiling < 0 {
 			ceiling = 0
 		}
@@ -137,7 +139,7 @@ func (h *RunTourCoordinatorHandler) recordCapBinding(
 	snapshot []routing.TourGoodSnapshot,
 	absorptionView []routing.TourMarketAbsorption,
 ) {
-	for _, s := range classifyCapBinding(plan, snapshot, absorptionView) {
+	for _, s := range classifyCapBinding(plan, snapshot, absorptionView, cmd.aCapTranches()) {
 		metrics.RecordAbsorptionCapBinding(cmd.PlayerID, s.side, s.outcome)
 	}
 }

@@ -575,6 +575,13 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 	maxHops, replanLimit := resolveTourHopBudget(cmd)
 	budget := tourPlanBudget{maxHops: maxHops, reserve: reserve, modelVersion: modelVersion}
 
+	// One line per container naming the resolved fleet-wide sink cap: the knob must move with
+	// the solver's tranche cap, and a mismatch nothing prints is one nobody can read back.
+	logger.Log("INFO", fmt.Sprintf("Tour absorption sink cap: acap_tranches=%d tranches of trade_volume", cmd.aCapTranches()), map[string]interface{}{
+		"action": "tour_acap_tranches", "ship_symbol": cmd.ShipSymbol,
+		"container_id": cmd.ContainerID, "acap_tranches": cmd.aCapTranches(),
+	})
+
 	// Iteration budget: 0 → the one-tour default (the original one-shot); -1 →
 	// continuous until margins die; N>0 → exactly N tours.
 	iterations := cmd.Iterations
@@ -1187,6 +1194,7 @@ func (h *RunTourCoordinatorHandler) runOneTour(
 		cmd: cmd, response: response, netBought: netBought,
 		cumulativeSpend: &cumulativeSpend, maxSpend: budget.maxSpend, reserve: budget.reserve,
 		sellFloorSpent: map[string]bool{}, // one refusal per good, spanning this tour's re-plans
+		acapTranches:   cmd.aCapTranches(),
 	}
 	for {
 		degraded, execErr := h.executePlan(ctx, run, plan, shadowSinks)

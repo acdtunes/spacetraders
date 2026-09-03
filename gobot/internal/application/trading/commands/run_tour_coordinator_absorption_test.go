@@ -348,13 +348,13 @@ func TestBuildTourReserveEntries_CapIsTwoTranchesRegardlessOfPlanSize(t *testing
 		{Waypoint: "X1-S1-B", Good: "G2", TradeVolume: 70, Bid: 150},
 	}
 
-	entries := h.buildTourReserveEntries(plan, snapshot)
+	entries := h.buildTourReserveEntries(&RunTourCoordinatorCommand{}, plan, snapshot)
 
 	require.Len(t, entries, 2)
 	require.Equal(t, 490, entries[0].Units)
 	require.Equal(t, 60, entries[1].Units)
 	for _, e := range entries {
-		require.Equalf(t, tourACapTranches*70, e.CapUnits,
+		require.Equalf(t, defaultTourACapTranches*70, e.CapUnits,
 			"%s: the cap is two tranches of trade_volume, never the plan's own %d units", e.Good, e.Units)
 	}
 }

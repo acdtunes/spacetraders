@@ -35,12 +35,15 @@ type tourPlanRun struct {
 	sellFloorSpent  map[string]bool
 	legSold         map[string]int // units realized into THIS leg's sink per good; executePlan hands each leg a fresh map
 	legScanDeferred bool           // this leg's arrival scan was deferred, so its cached ask is unrefreshed — see tourBuySizingAsk
+	// acapTranches is the run's resolved trade_fleet.acap_tranches, carried here so the
+	// sell floor's DEPTH rule measures against the SAME cap the reservation was sized on.
+	acapTranches int
 }
 
 // sellFloorPerUnit is the tolerated bid for one sell tranche: the plan's basis less the
 // same tourPriceTolerancePct band the buy ceiling adds to the ask; 0 is a plain sell.
 // Arming costs a live bid re-read and the fleet flies at its API ceiling, so two bounds
-// decide it. DEPTH: only once this visit has put tourACapTranches × trade_volume into the
+// decide it. DEPTH: only once this visit has put acap_tranches × trade_volume into the
 // sink, past which the leg gate's cached quote necessarily predates our own impact (an
 // unevaluable predicate — no trade_volume — does not arm). BUDGET: one refusal per good
 // per tour, so a hold is withheld at most once and its exit stays reachable, every later
@@ -50,7 +53,7 @@ func (r tourPlanRun) sellFloorPerUnit(good string, planned, tradeVolume int) int
 	if planned <= 0 || r.sellFloorSpent == nil || r.sellFloorSpent[good] {
 		return 0
 	}
-	if tradeVolume <= 0 || r.legSold[good] < tourACapTranches*tradeVolume {
+	if tradeVolume <= 0 || r.legSold[good] < resolveACapTranches(r.acapTranches)*tradeVolume {
 		return 0
 	}
 	return planned - planned*tourPriceTolerancePct/100

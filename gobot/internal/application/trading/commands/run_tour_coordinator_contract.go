@@ -252,6 +252,11 @@ type RunTourCoordinatorCommand struct {
 	// gate adjacency. false/absent → the live jump-gate query, exactly as today.
 	TourNeighborsDurableFirst bool
 
+	// ACapTranches is the fleet-wide absorption sink cap in trade_volume tranches, from
+	// [trade_fleet].acap_tranches. 0/absent (and any negative) → defaultTourACapTranches,
+	// which documents why it moves in step with the solver's own tranche cap.
+	ACapTranches int
+
 	// ExternalityWeight prices the recovery burden a planned sell tranche imposes on the
 	// rest of the fleet, so hulls stop converging on the same sinks.
 	// Config-driven from [trade_fleet] (RULINGS #5) and threaded through the container

@@ -25,13 +25,14 @@ import (
 // (the previous shape and every test that does not call SetAbsorptionLedger).
 
 const (
-	// tourACapTranches MUST stay in lockstep with tour_solver.py's
-	// MAX_PLANNED_TRANCHES_PER_MARKET_GOOD_SIDE: the fleet-wide reservation ceiling per
-	// (market, good, side) is this many trade_volume tranches. The solver A-caps the
-	// tranches a single plan takes; the ledger's Reserve makes that cap FLEET-WIDE (the
-	// bead's design goal (a)) by rejecting a plan whose tranches + others' outstanding
-	// would exceed it.
-	tourACapTranches = 2
+	// defaultTourACapTranches is what trade_fleet.acap_tranches falls back to when unset:
+	// the fleet-wide reservation ceiling per (market, good, side) is this many trade_volume
+	// tranches. The solver A-caps the tranches a single plan takes; the ledger's Reserve
+	// makes that cap FLEET-WIDE (the bead's design goal (a)) by rejecting a plan whose
+	// tranches + others' outstanding would exceed it. The knob and tour_solver.py's
+	// MAX_PLANNED_TRANCHES_PER_MARKET_GOOD_SIDE MUST be raised TOGETHER: a solver widened
+	// past this ceiling breaches its own reservation on every plan it produces.
+	defaultTourACapTranches = 2
 	// defaultTourPlannedTTLSlack pads a plan's projected round-trip so a healthy in-flight
 	// reservation never expires mid-tour; minTourPlannedTTL floors it for short tours.
 	// The ledger's TTL sweep + dead-container reclaim are the real cleanup — this is the
@@ -56,6 +57,25 @@ const (
 	// (RULINGS #5 bounds the parametrize-don't-hardcode rule to values like that).
 	tourContendedHolderLogCooldown = 60 * time.Second
 )
+
+// aCapTranches is this run's fleet-wide sink cap in trade_volume tranches — the ONE
+// resolution seam the reserve ceiling, the live-depth re-read, the sell-floor DEPTH rule and
+// the cap-binding metric all read, so they can never disagree about it.
+func (cmd *RunTourCoordinatorCommand) aCapTranches() int {
+	if cmd == nil {
+		return defaultTourACapTranches
+	}
+	return resolveACapTranches(cmd.ACapTranches)
+}
+
+// resolveACapTranches floors the knob to the default: unset (0) and any negative a config
+// edit could produce must never shrink the cap below what the solver already plans against.
+func resolveACapTranches(knob int) int {
+	if knob >= 1 {
+		return knob
+	}
+	return defaultTourACapTranches
+}
 
 // SetAbsorptionLedger wires the cross-engine absorption ledger (sp-78ai L3) so the tour
 // reserves/nets/converts against fleet-wide market depth. plannedTTLSlack pads
@@ -190,7 +210,7 @@ func (h *RunTourCoordinatorHandler) reserveTourPlan(ctx context.Context, cmd *Ru
 	if h.absorptionLedger == nil || cmd.ContainerID == "" {
 		return true, nil
 	}
-	entries := h.buildTourReserveEntries(plan, snapshot)
+	entries := h.buildTourReserveEntries(cmd, plan, snapshot)
 	// sp-pcxju Part 2: a held-cargo sink this container PRESERVED across the re-plan is
 	// already firmly reserved — drop it from the fresh reserve so the plan re-USES it
 	// instead of stacking a second row (which the cap check might breach, and whose sale
@@ -260,7 +280,7 @@ func (h *RunTourCoordinatorHandler) logContendedHolders(ctx context.Context, cmd
 	// Same derivation reserveTourPlan used on this attempt, dropPreservedSinks included —
 	// so the keys queried here are EXACTLY what was submitted to Reserve and breached,
 	// never a sink this container preserved (and so never even sent to the failed call).
-	entries := h.dropPreservedSinks(ctx, cmd, h.buildTourReserveEntries(plan, snapshot))
+	entries := h.dropPreservedSinks(ctx, cmd, h.buildTourReserveEntries(cmd, plan, snapshot))
 	if len(entries) == 0 {
 		return
 	}
@@ -348,14 +368,15 @@ func (h *RunTourCoordinatorHandler) allowContendedHolderLog(containerID string) 
 
 // buildTourReserveEntries aggregates a plan's planned units per (waypoint, good, side) —
 // skipping DEPOSIT tranches, whose synthetic warehouse sink has no market depth to reserve
-// — and sizes each entry: CapUnits = tourACapTranches × trade_volume, the ceiling on OTHER
+// — and sizes each entry: CapUnits = the resolved acap_tranches × trade_volume, the ceiling on OTHER
 // containers' outstanding depth on the lane — the plan's own size is irrelevant to its
 // admission and never raises the cap (raising it refused every bulk plan on any shadow,
 // sp-6zqza); Tier = the sink's live activity tier (so a converted shadow decays on the
 // right curve), QuotedPrice = the side's live quote (telemetry), TTL = 2× projected tour
 // seconds + slack. The entry order is deterministic (plan/leg/trade order) so reservation
 // IDs line up with the plan.
-func (h *RunTourCoordinatorHandler) buildTourReserveEntries(plan *routing.TourPlan, snapshot []routing.TourGoodSnapshot) []absorption.ReserveEntry {
+func (h *RunTourCoordinatorHandler) buildTourReserveEntries(cmd *RunTourCoordinatorCommand, plan *routing.TourPlan, snapshot []routing.TourGoodSnapshot) []absorption.ReserveEntry {
+	capTranches := cmd.aCapTranches()
 	type wg struct{ wp, good string }
 	snap := make(map[wg]routing.TourGoodSnapshot, len(snapshot))
 	for _, s := range snapshot {
@@ -395,7 +416,7 @@ func (h *RunTourCoordinatorHandler) buildTourReserveEntries(plan *routing.TourPl
 			Good:        k.good,
 			Side:        k.side,
 			Units:       units[k],
-			CapUnits:    tourACapTranches * s.TradeVolume,
+			CapUnits:    capTranches * s.TradeVolume,
 			Tier:        s.Activity,
 			QuotedPrice: quoted,
 			TTL:         ttl,
@@ -484,7 +505,7 @@ func (h *RunTourCoordinatorHandler) firmSinkUnits(ctx context.Context, cmd *RunT
 			// LIVE market at buy time — a stale sink contributes 0 (fail-closed), a shrunk one
 			// contributes only its live depth. Inert (contributes the full held units) until
 			// SetSinkFreshness arms it, so this is byte-identical to sp-pcxju by default.
-			total += h.freshReachableSinkDepth(ctx, cmd.PlayerID, key.Waypoint, good, units)
+			total += h.freshReachableSinkDepth(ctx, cmd.PlayerID, cmd.aCapTranches(), key.Waypoint, good, units)
 		}
 	}
 	return total
@@ -502,12 +523,12 @@ func (h *RunTourCoordinatorHandler) firmSinkUnits(ctx context.Context, cmd *RunT
 //     good, or is STALE past the freshness threshold — the "fresh" guarantee cannot be
 //     confirmed, so the gate never buys on spec (RULINGS #4);
 //   - returns min(heldUnits, live absorbable depth) when fresh — shrinking to the live depth
-//     (tourACapTranches × live trade_volume, the SAME cap formula buildTourReserveEntries
+//     (capTranches × live trade_volume, the SAME cap formula buildTourReserveEntries
 //     uses) if the sink shrank since planning, a no-op for a still-deep sink.
 //
 // A zero LastUpdated is "unknown age" and treated as FRESH, matching foreignMarketFresh /
 // freshListings / tour_snapshot — the one place the codebase fails OPEN on missing recency.
-func (h *RunTourCoordinatorHandler) freshReachableSinkDepth(ctx context.Context, playerID int, waypoint, good string, heldUnits int) int {
+func (h *RunTourCoordinatorHandler) freshReachableSinkDepth(ctx context.Context, playerID, capTranches int, waypoint, good string, heldUnits int) int {
 	if h.marketRepo == nil || h.sinkFreshnessMaxAge <= 0 {
 		return heldUnits // freshness clause inert — byte-identical to sp-pcxju
 	}
@@ -539,7 +560,7 @@ func (h *RunTourCoordinatorHandler) freshReachableSinkDepth(ctx context.Context,
 			h.freshness.RotationBound(ctx).Truncate(time.Second)), nil)
 		return 0 // stale market_data — the fresh guarantee failed, fail-closed
 	}
-	liveDepth := tourACapTranches * sink.TradeVolume()
+	liveDepth := resolveACapTranches(capTranches) * sink.TradeVolume()
 	if liveDepth < heldUnits {
 		return liveDepth // sink depth shrank since planning — shrink to what it can now absorb
 	}
