@@ -108,8 +108,10 @@ func runCeilingBuy(t *testing.T, h *PurchaseCargoHandler, maxAsk int) *PurchaseC
 }
 
 // THE RED case: the live ask ladders 4,000→7,000 after tranche 1, so the ceiling
-// (5,000) aborts the remaining tranches — only the healthy first tranche buys, the
-// rest is left unbought (never spent above the ceiling).
+// (5,000) aborts the remaining tranches. Since sp-htzl1.10 tranche 2 dispatches on
+// tranche 1's read (4,000 + 10% still clears 5,000) and it is tranche 2's REALISED
+// 7,000 that trips the abort — the one tranche of exposure the Admiral's
+// 2026-09-03 ruling accepts. Tranche 3 is still never spent above the ceiling.
 func TestPurchaseCargo_PerTrancheCeiling_AbortsOnAskLadder_LeavesRemainderUnbought(t *testing.T) {
 	fix := &ceilingMarketFixture{healthyAsk: 4000, laddedAsk: 7000, limit: 15}
 	h, api := newCeilingBuyHandler(t, fix, &ceilingFakeRefresher{})
@@ -117,13 +119,33 @@ func TestPurchaseCargo_PerTrancheCeiling_AbortsOnAskLadder_LeavesRemainderUnboug
 	pr := runCeilingBuy(t, h, 5000)
 
 	if !pr.CeilingAborted {
-		t.Fatalf("the buy ceiling must abort when the live ask ladders above the ceiling, got %+v", pr)
+		t.Fatalf("the buy ceiling must abort when the ask ladders above the ceiling, got %+v", pr)
 	}
-	if pr.UnitsAdded != 15 {
-		t.Fatalf("only the first (cheap) tranche of 15 may buy; the rest left unbought, got %d", pr.UnitsAdded)
+	if pr.UnitsAdded != 30 {
+		t.Fatalf("the ladder must stop the buy at tranche 2 (30 units), got %d", pr.UnitsAdded)
 	}
 	if pr.CeilingObservedAsk != 7000 {
-		t.Fatalf("the abort must report the laddered live ask 7000, got %d", pr.CeilingObservedAsk)
+		t.Fatalf("the abort must report the laddered ask 7000, got %d", pr.CeilingObservedAsk)
+	}
+	if len(api.buys) != 2 {
+		t.Fatalf("tranche 3 must never be requested, got %v", api.buys)
+	}
+}
+
+// The kill switch restores the pre-reuse guard exactly: with the reuse disarmed
+// every tranche re-reads live, so the ladder is caught BEFORE tranche 2 buys.
+func TestPurchaseCargo_PerTrancheCeiling_ReuseDisarmed_CatchesLadderBeforeTranche2(t *testing.T) {
+	fix := &ceilingMarketFixture{healthyAsk: 4000, laddedAsk: 7000, limit: 15}
+	h, api := newCeilingBuyHandler(t, fix, &ceilingFakeRefresher{})
+	h.SetGuardReuse(0, 0)
+
+	pr := runCeilingBuy(t, h, 5000)
+
+	if !pr.CeilingAborted || pr.CeilingObservedAsk != 7000 {
+		t.Fatalf("a live read per tranche must abort on the laddered ask, got %+v", pr)
+	}
+	if pr.UnitsAdded != 15 {
+		t.Fatalf("only the first (cheap) tranche of 15 may buy, got %d", pr.UnitsAdded)
 	}
 	if len(api.buys) != 1 {
 		t.Fatalf("exactly one tranche may reach the API (the rest aborted), got %v", api.buys)

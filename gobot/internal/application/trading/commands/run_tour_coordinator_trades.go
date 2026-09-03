@@ -446,7 +446,7 @@ func (h *RunTourCoordinatorHandler) executeSell(
 	}
 	if sellResp.FloorAborted {
 		run.spendSellFloor(trade.Good)
-		logger.Log("WARNING", fmt.Sprintf("Tour leg %d: sell floor held %d %s aboard at %s (live bid %d < floor %d) - carrying to the next sink, and this tour's next sell of it is unarmed",
+		logger.Log("WARNING", fmt.Sprintf("Tour leg %d: sell floor held %d %s aboard at %s (observed bid %d < floor %d) - carrying to the next sink, and this tour's next sell of it is unarmed",
 			legIdx, units-sellResp.UnitsSold, trade.Good, leg.Waypoint, sellResp.FloorObservedBid, minBidPerUnit), map[string]interface{}{
 			"action": "tour_sell_floor_abort", "leg": legIdx, "good": trade.Good, "waypoint": leg.Waypoint,
 			"live_bid": sellResp.FloorObservedBid, "floor": minBidPerUnit, "units_held": units - sellResp.UnitsSold,

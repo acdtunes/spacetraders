@@ -3,6 +3,7 @@ package cargo
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	scoutingQuery "github.com/andrescamacho/spacetraders-go/internal/application/scouting/queries"
@@ -45,8 +46,9 @@ type SellCargoResponse struct {
 	TransactionCount int // Number of API transactions executed
 
 	// FloorAborted is true when the per-tranche sell floor stopped the
-	// sale early (live bid below MinBidPerUnit); the unsold remainder is held
-	// aboard. FloorObservedBid is the live bid that tripped it (0 if unreadable).
+	// sale early (bid below MinBidPerUnit) AND a remainder was held aboard.
+	// FloorObservedBid is the bid that tripped it — a live read, or the realised
+	// per-unit price of a tranche that dispatched on a reused one (0 if unreadable).
 	FloorAborted     bool
 	FloorObservedBid int
 
@@ -89,6 +91,11 @@ func NewSellCargoHandler(
 	return &SellCargoHandler{
 		delegate: delegate,
 	}
+}
+
+// SetGuardReuse forwards the per-tranche guard-read reuse knobs to the delegate.
+func (h *SellCargoHandler) SetGuardReuse(headroomPct int, maxAge time.Duration) {
+	h.delegate.SetGuardReuse(headroomPct, maxAge)
 }
 
 // Handle executes the sell cargo command by delegating to the unified handler.

@@ -16,11 +16,14 @@ const scanDedupGuardBuyCeiling = "buy_ceiling"
 
 // sellFloorTripped re-reads the LIVE bid before a sell tranche; a crushed bid holds
 // the remainder aboard. Armed by MinBidPerUnit>0; fails CLOSED on an unreadable bid.
-func (h *CargoTransactionHandler) sellFloorTripped(ctx context.Context, cmd *CargoTransactionCommand, transactionType, waypointSymbol string, unitsRemaining int) (bool, int) {
+func (h *CargoTransactionHandler) sellFloorTripped(ctx context.Context, cmd *CargoTransactionCommand, transactionType, waypointSymbol string, unitsRemaining int, reuse *guardReuse) (bool, int) {
 	if transactionType != "sell" || cmd.MinBidPerUnit <= 0 {
 		return false, 0
 	}
-	liveBid, ok := h.liveBidForFloor(ctx, waypointSymbol, cmd.GoodSymbol, cmd.PlayerID)
+	if h.dispatchOnReusedRead(ctx, cmd, waypointSymbol, cmd.MinBidPerUnit, false, reuse) {
+		return false, 0
+	}
+	liveBid, ok := h.liveBidForFloor(ctx, waypointSymbol, cmd.GoodSymbol, cmd.PlayerID, reuse)
 	if ok && liveBid >= cmd.MinBidPerUnit {
 		return false, 0
 	}
@@ -36,11 +39,14 @@ func (h *CargoTransactionHandler) sellFloorTripped(ctx context.Context, cmd *Car
 
 // buyCeilingTripped mirrors sellFloorTripped on the ask: a laddered ask leaves the
 // remainder unbought. Armed by MaxAskPerUnit>0; fails CLOSED.
-func (h *CargoTransactionHandler) buyCeilingTripped(ctx context.Context, cmd *CargoTransactionCommand, transactionType, waypointSymbol string, unitsRemaining int) (bool, int) {
+func (h *CargoTransactionHandler) buyCeilingTripped(ctx context.Context, cmd *CargoTransactionCommand, transactionType, waypointSymbol string, unitsRemaining int, reuse *guardReuse) (bool, int) {
 	if transactionType != "purchase" || cmd.MaxAskPerUnit <= 0 {
 		return false, 0
 	}
-	liveAsk, ok := h.liveAskForCeiling(ctx, waypointSymbol, cmd.GoodSymbol, cmd.ShipSymbol, cmd.PlayerID, cmd.ScanDedupBeforeTravel, cmd.ScanDedupAfterArrival)
+	if h.dispatchOnReusedRead(ctx, cmd, waypointSymbol, cmd.MaxAskPerUnit, true, reuse) {
+		return false, 0
+	}
+	liveAsk, ok := h.liveAskForCeiling(ctx, waypointSymbol, cmd.GoodSymbol, cmd.ShipSymbol, cmd.PlayerID, cmd.ScanDedupBeforeTravel, cmd.ScanDedupAfterArrival, reuse)
 	if ok && liveAsk <= cmd.MaxAskPerUnit {
 		return false, 0
 	}
@@ -61,7 +67,7 @@ func (h *CargoTransactionHandler) buyCeilingTripped(ctx context.Context, cmd *Ca
 // reads the cached bid (fail-open on the missing port, matching the arb buy
 // guard's optional-port contract). ok=false on any inability to read a bid, so
 // the caller holds the remainder rather than dump it blind.
-func (h *CargoTransactionHandler) liveBidForFloor(ctx context.Context, waypoint, good string, playerID shared.PlayerID) (int, bool) {
+func (h *CargoTransactionHandler) liveBidForFloor(ctx context.Context, waypoint, good string, playerID shared.PlayerID, reuse *guardReuse) (int, bool) {
 	if h.marketRefresher != nil {
 		// LIVE, not budgeted: this guard fails CLOSED, so a bid served from the
 		// market-scan budget's cache would either strand the tranche or price it
@@ -69,6 +75,7 @@ func (h *CargoTransactionHandler) liveBidForFloor(ctx context.Context, waypoint,
 		if err := h.marketRefresher.ScanAndSaveMarket(shared.WithLiveScanRequired(ctx), uint(playerID.Value()), waypoint); err != nil {
 			return 0, false
 		}
+		reuse.verified(h.clock.Now())
 	}
 	mkt, err := h.marketRepo.GetMarketData(ctx, waypoint, playerID.Value())
 	if err != nil || mkt == nil {
@@ -93,7 +100,7 @@ func (h *CargoTransactionHandler) liveBidForFloor(ctx context.Context, waypoint,
 // unless the caller captured one for this purchase): when reuseScanDedup
 // proves it safe, this skips the scan below and reads the row the same
 // visit's arrival already wrote. The ceiling verdict never changes.
-func (h *CargoTransactionHandler) liveAskForCeiling(ctx context.Context, waypoint, good, shipSymbol string, playerID shared.PlayerID, dedupBeforeTravel, dedupAfterArrival time.Time) (int, bool) {
+func (h *CargoTransactionHandler) liveAskForCeiling(ctx context.Context, waypoint, good, shipSymbol string, playerID shared.PlayerID, dedupBeforeTravel, dedupAfterArrival time.Time, reuse *guardReuse) (int, bool) {
 	if h.marketRefresher != nil {
 		if !h.reuseScanDedup(ctx, dedupBeforeTravel, dedupAfterArrival, waypoint, shipSymbol, playerID) {
 			// LIVE, not budgeted — the exact mirror of liveBidForFloor's exemption.
@@ -101,6 +108,9 @@ func (h *CargoTransactionHandler) liveAskForCeiling(ctx context.Context, waypoin
 				return 0, false
 			}
 		}
+		// A deduped arrival scan verifies this good's price as squarely as a live
+		// one, so both stamp the read the next tranche may reuse.
+		reuse.verified(h.clock.Now())
 	}
 	mkt, err := h.marketRepo.GetMarketData(ctx, waypoint, playerID.Value())
 	if err != nil || mkt == nil {

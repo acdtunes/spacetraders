@@ -118,8 +118,9 @@ type tourCeilingAPI struct {
 
 func (a *tourCeilingAPI) PurchaseCargo(_ context.Context, _, _ string, units int, _ string) (*domainPorts.PurchaseResult, error) {
 	a.buys = append(a.buys, units)
+	cost := units * a.fix.trueAsk() // realised at the TRUE ask, laddered or not
 	a.fix.buysDone++
-	return &domainPorts.PurchaseResult{TotalCost: units * 100, UnitsAdded: units}, nil
+	return &domainPorts.PurchaseResult{TotalCost: cost, UnitsAdded: units}, nil
 }
 
 type tourCeilingPlayerRepo struct {
@@ -273,10 +274,11 @@ func TestTourCeilingLegs_ArmedRowProvenFresh_ReusesArrivalScan(t *testing.T) {
 	}
 }
 
-// The empirical multi-tranche proof: the true ask ladders on tranche 1's own fill.
-// Tranche 2's ceiling check must still catch it, proving the shared clear-after-
-// tranche-1 fix protects a purchase driven through h.legs with a bracket captured the
-// way tour's own call sites capture it.
+// The empirical multi-tranche proof: the true ask ladders on tranche 1's own fill and
+// the ceiling must still catch it, driven through h.legs with a bracket captured the
+// way tour's own call sites capture it. Since sp-htzl1.10 tranche 2 rides tranche 1's
+// own verified read and its REALISED 7,000 is what trips the abort — the one tranche of
+// exposure the Admiral's 2026-09-03 ruling accepts.
 func TestTourCeilingLegs_MultiTranchePurchase_BracketMustNotSurviveTranche1_LadderStillCaught(t *testing.T) {
 	clock := &shared.MockClock{CurrentTime: time.Now()}
 	fix := &tourCeilingFixture{healthyAsk: 4000, laddedAsk: 7000, limit: 15, cachedAsk: 4000, updatedAt: clock.CurrentTime}
@@ -291,19 +293,19 @@ func TestTourCeilingLegs_MultiTranchePurchase_BracketMustNotSurviveTranche1_Ladd
 		t.Fatalf("purchaseWithCeiling error: %v", err)
 	}
 	if !resp.CeilingAborted {
-		t.Fatalf("tranche 2 must still catch the ladder even though a dedup bracket was armed for the call, got %+v", resp)
+		t.Fatalf("the ladder must still be caught even though a dedup bracket was armed for the call, got %+v", resp)
 	}
 	if resp.CeilingObservedAsk != 7000 {
 		t.Fatalf("expected the ceiling abort to observe the laddered ask 7000, got %d", resp.CeilingObservedAsk)
 	}
-	if resp.UnitsAdded != 15 {
-		t.Fatalf("only tranche 1 (the cheap ask) may buy; the ladder must stop the remainder unbought, got %d", resp.UnitsAdded)
+	if resp.UnitsAdded != 30 {
+		t.Fatalf("the ladder must stop the buy at tranche 2, leaving tranche 3 unbought, got %d", resp.UnitsAdded)
 	}
-	if refresher.ceilingCalls != 1 {
-		t.Fatalf("tranche 1 legitimately dedups (0 scans); tranche 2 must be forced back onto a live scan (1) to ever see the ladder, got %d", refresher.ceilingCalls)
+	if refresher.ceilingCalls != 0 {
+		t.Fatalf("tranche 1 dedups and tranche 2 rides its read; neither spends a scan, got %d", refresher.ceilingCalls)
 	}
-	if len(api.buys) != 1 {
-		t.Fatalf("expected exactly 1 executed tranche (the ladder stops tranche 2 before it reaches the API), got %d: %v", len(api.buys), api.buys)
+	if len(api.buys) != 2 {
+		t.Fatalf("expected exactly 2 executed tranches (the breach stops tranche 3), got %d: %v", len(api.buys), api.buys)
 	}
 }
 

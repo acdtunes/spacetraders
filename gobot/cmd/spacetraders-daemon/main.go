@@ -787,7 +787,10 @@ func run(cfg *config.Config) error {
 	}
 
 	// Cargo handlers (pass marketScanner to refresh market data after transactions)
+	// guardReuse* arm the money guards' read reuse: absent keys are the armed defaults, an explicit 0 or less disarms.
+	guardReuseHeadroomPct, guardReuseMaxAge := shipCargo.ResolveGuardReuse(cfg.CargoGuards.ReuseHeadroomPct, cfg.CargoGuards.ReuseMaxAgeSecs)
 	purchaseCargoHandler := shipCargo.NewPurchaseCargoHandler(shipRepo, playerRepo, apiClient, marketRepo, med, marketScanner)
+	purchaseCargoHandler.SetGuardReuse(guardReuseHeadroomPct, guardReuseMaxAge)
 	if err := mediator.RegisterHandler[*shipCargo.PurchaseCargoCommand](med, purchaseCargoHandler); err != nil {
 		return fmt.Errorf("failed to register PurchaseCargo handler: %w", err)
 	}
@@ -820,6 +823,7 @@ func run(cfg *config.Config) error {
 	}
 
 	sellCargoHandler := shipCargo.NewSellCargoHandler(shipRepo, playerRepo, apiClient, marketRepo, med, marketScanner)
+	sellCargoHandler.SetGuardReuse(guardReuseHeadroomPct, guardReuseMaxAge)
 	if err := mediator.RegisterHandler[*shipCargo.SellCargoCommand](med, sellCargoHandler); err != nil {
 		return fmt.Errorf("failed to register SellCargo handler: %w", err)
 	}

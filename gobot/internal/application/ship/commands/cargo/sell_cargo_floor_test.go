@@ -104,8 +104,10 @@ func runFloorSell(t *testing.T, h *SellCargoHandler, minBid int) *SellCargoRespo
 }
 
 // THE RED case: the live bid crashes 20,000→4 after tranche 1, so the floor (80%
-// of the 20,000 quote = 16,000) aborts the remaining tranches — only the healthy
-// first tranche sells, the rest stays aboard.
+// of the 20,000 quote = 16,000) aborts the remaining tranches. Since sp-htzl1.10
+// tranche 2 dispatches on tranche 1's read (20,000 less 10% still clears 16,000)
+// and it is tranche 2's REALISED 4 that trips the abort — the one tranche of
+// exposure the Admiral's 2026-09-03 ruling accepts. Tranche 3 still stays aboard.
 func TestSellCargo_PerTrancheFloor_AbortsOnBidCrash_HoldsRemainder(t *testing.T) {
 	fix := &floorMarketFixture{healthyBid: 20000, crashedBid: 4, limit: 15}
 	h, api := newFloorSellHandler(t, fix, &floorFakeRefresher{})
@@ -113,13 +115,33 @@ func TestSellCargo_PerTrancheFloor_AbortsOnBidCrash_HoldsRemainder(t *testing.T)
 	sr := runFloorSell(t, h, 16000)
 
 	if !sr.FloorAborted {
-		t.Fatalf("the sell floor must abort when the live bid crashes below the floor, got %+v", sr)
+		t.Fatalf("the sell floor must abort when the bid crashes below the floor, got %+v", sr)
+	}
+	if sr.UnitsSold != 30 {
+		t.Fatalf("the crash must stop the sale at tranche 2 (30 units), got %d", sr.UnitsSold)
+	}
+	if sr.FloorObservedBid != 4 {
+		t.Fatalf("the abort must report the crashed bid 4, got %d", sr.FloorObservedBid)
+	}
+	if len(api.sells) != 2 {
+		t.Fatalf("tranche 3 must never be requested, got %v", api.sells)
+	}
+}
+
+// The kill switch restores the pre-reuse guard exactly: with the reuse disarmed
+// every tranche re-reads live, so the crash is caught BEFORE tranche 2 sells.
+func TestSellCargo_PerTrancheFloor_ReuseDisarmed_CatchesCrashBeforeTranche2(t *testing.T) {
+	fix := &floorMarketFixture{healthyBid: 20000, crashedBid: 4, limit: 15}
+	h, api := newFloorSellHandler(t, fix, &floorFakeRefresher{})
+	h.SetGuardReuse(0, 0)
+
+	sr := runFloorSell(t, h, 16000)
+
+	if !sr.FloorAborted || sr.FloorObservedBid != 4 {
+		t.Fatalf("a live read per tranche must abort on the crashed bid, got %+v", sr)
 	}
 	if sr.UnitsSold != 15 {
 		t.Fatalf("only the first (healthy) tranche of 15 may sell; the rest held aboard, got %d", sr.UnitsSold)
-	}
-	if sr.FloorObservedBid != 4 {
-		t.Fatalf("the abort must report the crashed live bid 4, got %d", sr.FloorObservedBid)
 	}
 	if len(api.sells) != 1 {
 		t.Fatalf("exactly one tranche may reach the API (the rest aborted), got %v", api.sells)

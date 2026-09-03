@@ -79,19 +79,24 @@ type CargoTransactionResponse struct {
 	TransactionCount int // Number of API transactions executed
 
 	// FloorAborted is true when the per-tranche sell floor stopped the
-	// sale early: the live bid fell below MinBidPerUnit, so the remaining units
-	// were held aboard rather than dumped. UnitsProcessed then reports only what
-	// sold before the abort. FloorObservedBid is the live bid that tripped the
-	// floor (0 when it could not be read — a fail-closed abort). Both stay zero
-	// for an unfloored transaction.
+	// sale early: the bid fell below MinBidPerUnit, so units REMAINED and were
+	// held aboard rather than dumped. UnitsProcessed then reports only what sold
+	// before the abort; a breach with nothing left to withhold never sets it.
+	// FloorObservedBid is the bid that tripped the floor — a live read, or the
+	// REALISED per-unit price of a tranche that dispatched on a reused read
+	// (0 when nothing could be read — a fail-closed abort). Both stay zero for an
+	// unfloored transaction.
 	FloorAborted     bool
 	FloorObservedBid int
 
 	// CeilingAborted is true when the per-tranche buy ceiling stopped the
-	// purchase early: the live ask rose above MaxAskPerUnit, so the remaining units
-	// were left unbought. UnitsProcessed then reports only what was bought before the
-	// abort. CeilingObservedAsk is the live ask that tripped the ceiling (0 when it
-	// could not be read — a fail-closed abort). Both stay zero for an uncapped buy.
+	// purchase early: the ask rose above MaxAskPerUnit, so units REMAINED and were
+	// left unbought. UnitsProcessed then reports only what was bought before the
+	// abort; a breach with nothing left to withhold never sets it.
+	// CeilingObservedAsk is the ask that tripped the ceiling — a live read, or the
+	// REALISED per-unit price of a tranche that dispatched on a reused read
+	// (0 when nothing could be read — a fail-closed abort). Both stay zero for an
+	// uncapped buy.
 	CeilingAborted     bool
 	CeilingObservedAsk int
 
@@ -138,6 +143,12 @@ type CargoTransactionHandler struct {
 	// clock backs the buy-ceiling guard's scan-dedup eligibility check. Defaults
 	// to RealClock; SetClock lets a test share a MockClock with the caller.
 	clock shared.Clock
+
+	// guardReuseHeadroomPct and guardReuseMaxAge arm the per-tranche guard-read
+	// reuse; see cargo_guard_reuse.go. Headroom 0 disables it, restoring a live
+	// read before every tranche.
+	guardReuseHeadroomPct int
+	guardReuseMaxAge      time.Duration
 }
 
 // NewCargoTransactionHandler creates a new cargo transaction handler with the given strategy.
@@ -158,14 +169,28 @@ func NewCargoTransactionHandler(
 	marketRefresher MarketRefresher,
 ) *CargoTransactionHandler {
 	return &CargoTransactionHandler{
-		strategy:        strategy,
-		shipRepo:        shipRepo,
-		playerRepo:      playerRepo,
-		marketRepo:      marketRepo,
-		apiClient:       apiClient,
-		mediator:        mediator,
-		marketRefresher: marketRefresher,
-		clock:           shared.NewRealClock(),
+		strategy:              strategy,
+		shipRepo:              shipRepo,
+		playerRepo:            playerRepo,
+		marketRepo:            marketRepo,
+		apiClient:             apiClient,
+		mediator:              mediator,
+		marketRefresher:       marketRefresher,
+		clock:                 shared.NewRealClock(),
+		guardReuseHeadroomPct: DefaultGuardReuseHeadroomPct,
+		guardReuseMaxAge:      DefaultGuardReuseMaxAge,
+	}
+}
+
+// SetGuardReuse retunes the per-tranche guard-read reuse. headroomPct 0 disarms
+// it; a non-positive maxAge keeps the armed default.
+func (h *CargoTransactionHandler) SetGuardReuse(headroomPct int, maxAge time.Duration) {
+	if headroomPct < 0 {
+		headroomPct = 0
+	}
+	h.guardReuseHeadroomPct = headroomPct
+	if maxAge > 0 {
+		h.guardReuseMaxAge = maxAge
 	}
 }
 
@@ -322,13 +347,22 @@ func (h *CargoTransactionHandler) executeTransactions(ctx context.Context, cmd *
 	// balances on every multi-batch trip (the recurring L28 false alarms).
 	const runningBalance = 0
 
+	// reuse carries this command's own last verified guard read across its
+	// tranches, so a good's second and later tranches need not re-buy a price
+	// their predecessor just proved (the 2026-09-03 ruling).
+	isBuy := transactionType == "purchase"
+	reuse := &guardReuse{headroomPct: h.guardReuseHeadroomPct, maxAge: h.guardReuseMaxAge}
+
 	for unitsRemaining > 0 {
-		if tripped, liveBid := h.sellFloorTripped(ctx, cmd, transactionType, waypointSymbol, unitsRemaining); tripped {
+		reuse.tranche++
+		reuse.dispatched = false
+
+		if tripped, liveBid := h.sellFloorTripped(ctx, cmd, transactionType, waypointSymbol, unitsRemaining, reuse); tripped {
 			floorAborted = true
 			floorObservedBid = liveBid
 			break
 		}
-		if tripped, liveAsk := h.buyCeilingTripped(ctx, cmd, transactionType, waypointSymbol, unitsRemaining); tripped {
+		if tripped, liveAsk := h.buyCeilingTripped(ctx, cmd, transactionType, waypointSymbol, unitsRemaining, reuse); tripped {
 			ceilingAborted = true
 			ceilingObservedAsk = liveAsk
 			break
@@ -337,6 +371,9 @@ func (h *CargoTransactionHandler) executeTransactions(ctx context.Context, cmd *
 		unitsToProcess := utils.Min(unitsRemaining, transactionLimit)
 
 		result, err := h.strategy.Execute(ctx, cmd.ShipSymbol, cmd.GoodSymbol, unitsToProcess, token)
+		// A tranche that needed ANY reconcile or retry is not evidence of a
+		// standing price, so it never licenses the next tranche's reuse.
+		trancheComplete := err == nil
 		if err != nil {
 			// MARKET-VOLUME RECONCILE: a tranche the API rejects with 4604 ("Trade good
 			// <G> has a limit of N units per transaction") is refused WHOLE — no units move —
@@ -402,6 +439,8 @@ func (h *CargoTransactionHandler) executeTransactions(ctx context.Context, cmd *
 			cmd.ScanDedupAfterArrival = time.Time{}
 		}
 
+		reuse.record(result.TotalAmount, result.UnitsProcessed, trancheComplete && result.UnitsProcessed == unitsToProcess, isBuy)
+
 		totalAmount += result.TotalAmount
 		unitsProcessed += result.UnitsProcessed
 		transactionCount++
@@ -419,6 +458,20 @@ func (h *CargoTransactionHandler) executeTransactions(ctx context.Context, cmd *
 		h.recordCargoTransaction(ctx, cmd, waypointSymbol, batchResponse, runningBalance, result.AgentCredits)
 
 		if shortfallExhausted {
+			// The reconcile already closes the transaction, but a breach on a
+			// reused read is still reported before it does.
+			h.guardReuseBreached(ctx, cmd, waypointSymbol, isBuy, reuse, unitsRemaining, true)
+			break
+		}
+
+		if breached, realised := h.guardReuseBreached(ctx, cmd, waypointSymbol, isBuy, reuse, unitsRemaining, false); breached {
+			if isBuy {
+				ceilingAborted = true
+				ceilingObservedAsk = realised
+			} else {
+				floorAborted = true
+				floorObservedBid = realised
+			}
 			break
 		}
 	}

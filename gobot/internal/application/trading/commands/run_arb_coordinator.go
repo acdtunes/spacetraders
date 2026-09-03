@@ -555,7 +555,7 @@ func reportHeldRemainder(
 	if sellResp.FloorAborted {
 		response.SellFloorAbort = true
 		response.AbortReason = fmt.Sprintf(
-			"sell-floor abort: live bid %d < floor %d/unit (%.0f%% of quoted bid %d) at %s - sold %d of %d, %d units of %s held aboard for later liquidation",
+			"sell-floor abort: observed bid %d < floor %d/unit (%.0f%% of quoted bid %d) at %s - sold %d of %d, %d units of %s held aboard for later liquidation",
 			sellResp.FloorObservedBid, minBidPerUnit, sellFloorFraction*100, quotedBid, cmd.SellAt,
 			sellResp.UnitsSold, tranche, held, cmd.Good,
 		)

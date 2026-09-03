@@ -51,8 +51,9 @@ type PurchaseCargoResponse struct {
 	TransactionCount int // Number of API transactions executed
 
 	// CeilingAborted is true when the per-tranche buy ceiling stopped the
-	// purchase early (live ask above MaxAskPerUnit); the remaining units were left
-	// unbought. CeilingObservedAsk is the live ask that tripped it (0 if unreadable).
+	// purchase early (ask above MaxAskPerUnit) AND units were left unbought.
+	// CeilingObservedAsk is the ask that tripped it — a live read, or the realised
+	// per-unit price of a tranche that dispatched on a reused one (0 if unreadable).
 	CeilingAborted     bool
 	CeilingObservedAsk int
 }
@@ -89,6 +90,11 @@ func NewPurchaseCargoHandler(
 	return &PurchaseCargoHandler{
 		delegate: delegate,
 	}
+}
+
+// SetGuardReuse forwards the per-tranche guard-read reuse knobs to the delegate.
+func (h *PurchaseCargoHandler) SetGuardReuse(headroomPct int, maxAge time.Duration) {
+	h.delegate.SetGuardReuse(headroomPct, maxAge)
 }
 
 // Handle executes the purchase cargo command by delegating to the unified handler.

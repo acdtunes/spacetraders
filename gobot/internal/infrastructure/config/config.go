@@ -76,6 +76,8 @@ type Config struct {
 	ContainerLogRetention ContainerLogRetentionConfig `mapstructure:"container_log_retention"`
 	// Refuel holds the fleet's refuel threshold; an absent section resolves to the floor.
 	Refuel RefuelConfig `mapstructure:"refuel"`
+	// CargoGuards holds the per-tranche money guards' read-reuse knobs; absent => defaults.
+	CargoGuards CargoGuardsConfig `mapstructure:"cargo_guards"`
 }
 
 // LoadConfig loads configuration from multiple sources with priority:

@@ -104,8 +104,9 @@ type ladderDedupAPI struct {
 
 func (a *ladderDedupAPI) PurchaseCargo(_ context.Context, _, _ string, units int, _ string) (*domainPorts.PurchaseResult, error) {
 	a.buys = append(a.buys, units)
+	cost := units * a.fix.trueAsk() // realised at the TRUE ask, laddered or not
 	a.fix.buysDone++
-	return &domainPorts.PurchaseResult{TotalCost: units * 100, UnitsAdded: units}, nil
+	return &domainPorts.PurchaseResult{TotalCost: cost, UnitsAdded: units}, nil
 }
 
 func newLadderDedupHandler(t *testing.T, fix *ladderDedupFixture, clock *shared.MockClock) (*PurchaseCargoHandler, *ladderDedupAPI, *ladderDedupRefresher) {
@@ -122,10 +123,10 @@ func newLadderDedupHandler(t *testing.T, fix *ladderDedupFixture, clock *shared.
 
 // THE RED case this test proves fixed: a dedup bracket armed for the visit
 // must NOT survive past tranche 1. The true ask ladders 4,000->7,000 the
-// instant tranche 1 buys (D39 shape); tranche 2's ceiling check MUST catch it
-// exactly as it would with no dedup armed at all — proving the bracket cannot
-// be reused to blind the guard to a purchase's own laddering across its later
-// tranches.
+// instant tranche 1 buys (D39 shape); the ceiling MUST still catch it, proving
+// the bracket cannot be reused to blind the guard to a purchase's own laddering
+// across its later tranches. Since sp-htzl1.10 tranche 2 rides tranche 1's own
+// verified read instead and its REALISED 7,000 is what trips the abort.
 func TestDedupCeiling_MultiTranchePurchase_BracketMustNotSurviveTranche1_LadderStillCaught(t *testing.T) {
 	clock := &shared.MockClock{CurrentTime: time.Now()}
 	fix := &ladderDedupFixture{healthyAsk: 4000, laddedAsk: 7000, limit: 15, cachedAsk: 4000, updatedAt: clock.CurrentTime}
@@ -140,7 +141,31 @@ func TestDedupCeiling_MultiTranchePurchase_BracketMustNotSurviveTranche1_LadderS
 	require.NoError(t, err)
 	pr := resp.(*PurchaseCargoResponse)
 
-	require.True(t, pr.CeilingAborted, "tranche 2 must still catch the ladder even though a dedup bracket was armed for the visit")
+	require.True(t, pr.CeilingAborted, "the ladder must still be caught even though a dedup bracket was armed for the visit")
+	require.Equal(t, 7000, pr.CeilingObservedAsk)
+	require.Equal(t, 30, pr.UnitsAdded, "the ladder must stop the buy at tranche 2, leaving tranche 3 unbought")
+	require.Equal(t, 0, refresher.ceilingCalls, "tranche 1 dedups and tranche 2 rides its read; neither spends a scan")
+	require.Len(t, api.buys, 2)
+}
+
+// With the tranche reuse disarmed the bracket-clearing is what protects tranche
+// 2: it is forced back onto a live scan and catches the ladder before buying.
+func TestDedupCeiling_MultiTranchePurchase_ReuseDisarmed_BracketStillClearedAfterTranche1(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	fix := &ladderDedupFixture{healthyAsk: 4000, laddedAsk: 7000, limit: 15, cachedAsk: 4000, updatedAt: clock.CurrentTime}
+	h, api, refresher := newLadderDedupHandler(t, fix, clock)
+	h.SetGuardReuse(0, 0)
+
+	ctx := auth.WithPlayerToken(context.Background(), "tok")
+	resp, err := h.Handle(ctx, &PurchaseCargoCommand{
+		ShipSymbol: testBuyShip, GoodSymbol: optypeGood, Units: 40,
+		PlayerID: shared.MustNewPlayerID(1), MaxAskPerUnit: 5000,
+		ScanDedupBeforeTravel: clock.CurrentTime, ScanDedupAfterArrival: clock.CurrentTime,
+	})
+	require.NoError(t, err)
+	pr := resp.(*PurchaseCargoResponse)
+
+	require.True(t, pr.CeilingAborted)
 	require.Equal(t, 7000, pr.CeilingObservedAsk)
 	require.Equal(t, 15, pr.UnitsAdded, "only tranche 1 (the cheap ask) may buy; the ladder must stop the remainder unbought")
 	require.Equal(t, 1, refresher.ceilingCalls, "tranche 1 legitimately dedups (0 scans); tranche 2 must be forced back onto a live scan (1) to ever see the ladder")

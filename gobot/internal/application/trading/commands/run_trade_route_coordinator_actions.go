@@ -91,9 +91,9 @@ func (h *RunTradeRouteCoordinatorHandler) dock(ctx context.Context, ship *naviga
 }
 
 // purchaseWithCeiling buys, arming the per-tranche buy ceiling
-// (sp-9mkf): maxAskPerUnit>0 makes the underlying handler re-verify the live ask
-// before each tranche and abort the remainder (left unbought,
-// PurchaseCargoResponse.CeilingAborted) if it rises above the ceiling. It is the
+// (sp-9mkf): maxAskPerUnit>0 makes the handler re-verify the ask before each tranche —
+// live, or against a reused read's realised price — and abort the remainder (left
+// unbought, PurchaseCargoResponse.CeilingAborted) if it rises above the ceiling. It is the
 // buy-side mirror of sellWithFloor and the fix for the stale-ask ladder (SHIP_PARTS
 // bought at D39 as the ask ran 3,985→~7k inside one dispatch). maxAskPerUnit==0 is
 // exactly a plain buy, so the manufacturing/contract callers are unchanged.
@@ -125,9 +125,9 @@ func (h *RunTradeRouteCoordinatorHandler) sell(ctx context.Context, shipSymbol, 
 }
 
 // sellWithFloor sells like sell, but arms the per-tranche sell floor:
-// minBidPerUnit>0 makes the underlying handler re-verify the live bid before each
-// tranche and abort the remainder (held aboard, SellCargoResponse.FloorAborted)
-// if it falls below the floor. minBidPerUnit==0 is exactly the plain sell, so
+// minBidPerUnit>0 makes the handler re-verify the bid before each tranche — live, or
+// against a reused read's realised price — and abort the remainder (held aboard,
+// SellCargoResponse.FloorAborted) if it falls below it. minBidPerUnit==0 is the plain sell, so
 // sell() and every caller that passes 0 are unchanged.
 func (h *RunTradeRouteCoordinatorHandler) sellWithFloor(ctx context.Context, shipSymbol, good string, units, playerID, minBidPerUnit int) (*shipCargo.SellCargoResponse, error) {
 	resp, err := h.mediator.Send(ctx, &shipCargo.SellCargoCommand{
