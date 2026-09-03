@@ -43,6 +43,9 @@ type tourFixture struct {
 	cargoCap int
 
 	markets map[string][]string // system -> market waypoints
+	// marketListErr marks systems whose market-list read FAILS, so a best-effort listings
+	// consumer can be proven to survive an unreadable board. Absent (nil) → reads succeed.
+	marketListErr map[string]bool
 	// bid/ask carry the market's two prices under the sp-en5h7 convention: the ask is
 	// what WE PAY to buy (the market_data.purchase_price column, TradeGood.PurchasePrice)
 	// and the bid is what WE RECEIVE selling to it (sell_price, TradeGood.SellPrice), so
@@ -447,6 +450,9 @@ type tourFakeMarketRepo struct {
 }
 
 func (r *tourFakeMarketRepo) FindAllMarketsInSystem(ctx context.Context, systemSymbol string, playerID int) ([]string, error) {
+	if r.fx.marketListErr[systemSymbol] {
+		return nil, fmt.Errorf("markets of %s unreadable", systemSymbol)
+	}
 	return r.fx.markets[systemSymbol], nil
 }
 

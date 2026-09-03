@@ -78,7 +78,7 @@ func TestMVTClaimAndTravel_EscalatesPastARecentlyLeftRing(t *testing.T) {
 	cmd := mvtEscalationCmd(t, 2)
 	h.mvtState(cmd).leftAt = map[string]time.Time{"X1-S2": time.Now().Add(-5 * time.Minute)}
 
-	moved, err := h.mvtClaimAndTravel(ctx, cmd, &RunTourCoordinatorResponse{}, &repositionEpisode{}, mvtReasonBootstrap, tourPlanBudget{})
+	moved, err := h.mvtClaimAndTravel(ctx, cmd, &RunTourCoordinatorResponse{}, &repositionEpisode{}, map[string]int{}, mvtReasonBootstrap, tourPlanBudget{})
 	if err != nil || !moved {
 		t.Fatalf("moved=%v err=%v, want the escalated claim flown", moved, err)
 	}
@@ -104,7 +104,7 @@ func TestMVTClaimAndTravel_TakesTheRecentlyLeftSystemAtTheCap(t *testing.T) {
 	cmd := mvtEscalationCmd(t, 2)
 	h.mvtState(cmd).leftAt = map[string]time.Time{"X1-S2": now.Add(-5 * time.Minute)}
 
-	moved, err := h.mvtClaimAndTravel(ctx, cmd, &RunTourCoordinatorResponse{}, &repositionEpisode{}, mvtReasonBootstrap, tourPlanBudget{})
+	moved, err := h.mvtClaimAndTravel(ctx, cmd, &RunTourCoordinatorResponse{}, &repositionEpisode{}, map[string]int{}, mvtReasonBootstrap, tourPlanBudget{})
 	if err != nil || !moved {
 		t.Fatalf("moved=%v err=%v, want the drained neighbour taken back rather than an idle hull", moved, err)
 	}
@@ -122,7 +122,7 @@ func TestMVTTravelTo_StampsLeftAtOnDeparture(t *testing.T) {
 	ctx := common.WithLogger(context.Background(), &metaCapturingLogger{})
 	cmd := mvtCmd(t)
 
-	moved, err := h.mvtClaimAndTravel(ctx, cmd, &RunTourCoordinatorResponse{}, &repositionEpisode{}, mvtReasonBootstrap, tourPlanBudget{})
+	moved, err := h.mvtClaimAndTravel(ctx, cmd, &RunTourCoordinatorResponse{}, &repositionEpisode{}, map[string]int{}, mvtReasonBootstrap, tourPlanBudget{})
 	if err != nil || !moved {
 		t.Fatalf("moved=%v err=%v, want the jump flown", moved, err)
 	}

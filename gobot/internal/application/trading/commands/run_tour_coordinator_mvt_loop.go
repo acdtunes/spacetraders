@@ -19,7 +19,7 @@ const mvtReasonClaim = "claim"
 // The reach escalates only here — a hull with nothing priced in reach had no move at all.
 // A hold after repeated travel failures binds here too, or a relaunch and the empty
 // exit would retry the failing route at once.
-func (h *RunTourCoordinatorHandler) mvtClaimAndTravel(ctx context.Context, cmd *RunTourCoordinatorCommand, response *RunTourCoordinatorResponse, episode *repositionEpisode, reason string, budget tourPlanBudget) (bool, error) {
+func (h *RunTourCoordinatorHandler) mvtClaimAndTravel(ctx context.Context, cmd *RunTourCoordinatorCommand, response *RunTourCoordinatorResponse, episode *repositionEpisode, netBought map[string]int, reason string, budget tourPlanBudget) (bool, error) {
 	ship, err := h.legs.loadShip(ctx, cmd.ShipSymbol, cmd.PlayerID)
 	if err != nil || ship == nil || ship.CurrentLocation() == nil {
 		return false, err
@@ -55,7 +55,7 @@ func (h *RunTourCoordinatorHandler) mvtClaimAndTravel(ctx context.Context, cmd *
 			}
 		}
 	}
-	return h.mvtTravelTo(ctx, cmd, response, episode, ranked, reason, 0, budget)
+	return h.mvtTravelTo(ctx, cmd, response, episode, netBought, ranked, reason, 0, budget)
 }
 
 // mvtRescueLimit is how many rescue jumps one margins-death episode may fly.
@@ -157,7 +157,7 @@ func (h *RunTourCoordinatorHandler) mvtStay(ctx context.Context, cmd *RunTourCoo
 // A move is refused — as a stay — under the operator kill-switch, with no spend headroom,
 // once this episode has spent its rescue jumps (mvt_rescue_jumps_per_episode; nil: no bound), or while
 // the hull is laden: the disposal ladder discharges first and the next tour end re-evaluates.
-func (h *RunTourCoordinatorHandler) mvtTravelTo(ctx context.Context, cmd *RunTourCoordinatorCommand, response *RunTourCoordinatorResponse, episode *repositionEpisode, ranked []mvt.ScoredSystem, reason string, yieldHere float64, budget tourPlanBudget) (bool, error) {
+func (h *RunTourCoordinatorHandler) mvtTravelTo(ctx context.Context, cmd *RunTourCoordinatorCommand, response *RunTourCoordinatorResponse, episode *repositionEpisode, netBought map[string]int, ranked []mvt.ScoredSystem, reason string, yieldHere float64, budget tourPlanBudget) (bool, error) {
 	if h.mvt.claims == nil {
 		return false, nil
 	}
@@ -202,6 +202,13 @@ func (h *RunTourCoordinatorHandler) mvtTravelTo(ctx context.Context, cmd *RunTou
 		return false, nil
 	}
 	h.persistReposition(ctx, cmd, RepositionEpisode{InProgress: true, TargetSystem: target.System, TargetWaypoint: target.EntryWaypoint})
+	// The claim jump was the loop's deadhead: load before flying so the crossing carries value,
+	// after the persisted in-progress flag (RULINGS #2). Best-effort — it never refuses the claim.
+	loadedUnits := h.loadLookbackManifest(ctx, cmd, response, netBought, current, target.System, budget.maxSpend, budget.reserve)
+	if loadedUnits > 0 {
+		logger.Log("INFO", "MVT CLAIM: manifest loaded", map[string]interface{}{
+			"hull": cmd.ShipSymbol, "from": current, "to": target.System, "units": loadedUnits})
+	}
 	jumps := target.Hops
 	if jumps < 1 {
 		jumps = 1
@@ -213,7 +220,7 @@ func (h *RunTourCoordinatorHandler) mvtTravelTo(ctx context.Context, cmd *RunTou
 			return false, fmt.Errorf("MVT TRAVEL of %s to %s interrupted: %w", cmd.ShipSymbol, target.EntryWaypoint, terr)
 		}
 		// The flight may have failed after a jump landed, so the scope pins to where the
-		// hull physically stands, never to where it started.
+		// hull physically stands, never to where it started; manifest cargo stays aboard, booked.
 		standing := h.mvtStanding(ctx, cmd, current)
 		if standing != target.System {
 			logger.Log("WARNING", "MVT TRAVEL failed; claim released", map[string]interface{}{"hull": cmd.ShipSymbol, "target": target.System, "standing": standing, "error": terr.Error()})
@@ -238,6 +245,7 @@ func (h *RunTourCoordinatorHandler) mvtTravelTo(ctx context.Context, cmd *RunTou
 	_ = h.mvt.claims.MarkArrived(ctx, cmd.PlayerID, cmd.ShipSymbol, h.clock.Now())
 	h.persistReposition(ctx, cmd, RepositionEpisode{})
 	metrics.RecordTourReposition(cmd.PlayerID, "success")
+	metrics.RecordTourJumpLoaded(cmd.PlayerID, loadedUnits > 0)
 	response.Repositions++
 	if episode != nil {
 		episode.repositioned = true
@@ -282,7 +290,7 @@ func (h *RunTourCoordinatorHandler) mvtStampPresence(ctx context.Context, cmd *R
 // mvtRecover restores the loop after a container restart from the claim row and the
 // in-flight reposition resume. An arrived claim is adopted only where the hull actually
 // stands; a hull with no usable claim bootstraps from where it stands.
-func (h *RunTourCoordinatorHandler) mvtRecover(ctx context.Context, cmd *RunTourCoordinatorCommand, response *RunTourCoordinatorResponse, episode *repositionEpisode, budget tourPlanBudget) error {
+func (h *RunTourCoordinatorHandler) mvtRecover(ctx context.Context, cmd *RunTourCoordinatorCommand, response *RunTourCoordinatorResponse, episode *repositionEpisode, netBought map[string]int, budget tourPlanBudget) error {
 	if h.mvt.claims == nil {
 		return nil
 	}
@@ -312,7 +320,7 @@ func (h *RunTourCoordinatorHandler) mvtRecover(ctx context.Context, cmd *RunTour
 	case ok:
 		_ = h.mvt.claims.Release(ctx, cmd.PlayerID, cmd.ShipSymbol)
 	}
-	_, err = h.mvtClaimAndTravel(ctx, cmd, response, episode, mvtReasonBootstrap, budget)
+	_, err = h.mvtClaimAndTravel(ctx, cmd, response, episode, netBought, mvtReasonBootstrap, budget)
 	return err
 }
 
@@ -410,7 +418,7 @@ func (h *RunTourCoordinatorHandler) mvtObserveLeg(cmd *RunTourCoordinatorCommand
 // mvtAfterTour applies the departure rule after a productive tour. Deviation from spec
 // §1 recorded in the plan: the EWMA updates per sell, the decision is taken at tour end.
 // Unwired ports make it a no-op.
-func (h *RunTourCoordinatorHandler) mvtAfterTour(ctx context.Context, cmd *RunTourCoordinatorCommand, response *RunTourCoordinatorResponse, budget tourPlanBudget) error {
+func (h *RunTourCoordinatorHandler) mvtAfterTour(ctx context.Context, cmd *RunTourCoordinatorCommand, response *RunTourCoordinatorResponse, netBought map[string]int, budget tourPlanBudget) error {
 	if h.mvt.claims == nil {
 		return nil
 	}
@@ -450,6 +458,6 @@ func (h *RunTourCoordinatorHandler) mvtAfterTour(ctx context.Context, cmd *RunTo
 	// The verdict weighed realised yield here against the alternatives, so the ledger's own
 	// (unrealised) score for this system must not put it back at the head of the list. A
 	// productive tour just cleared the episode, so the departure carries no rescue bound.
-	_, err = h.mvtTravelTo(ctx, cmd, response, nil, mvtOthers(ranked, current), d.Reason, d.YieldHere, budget)
+	_, err = h.mvtTravelTo(ctx, cmd, response, nil, netBought, mvtOthers(ranked, current), d.Reason, d.YieldHere, budget)
 	return err
 }

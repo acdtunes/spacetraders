@@ -253,7 +253,7 @@ func TestMVTAfterTour_NeverRelaxesFloor(t *testing.T) {
 	for i := 0; i < 3; i++ { // a productive tour: enough sells to clear the cold-start guard
 		st.yield.Observe(1, 10, t0.Add(time.Duration(i)*time.Second))
 	}
-	if err := h.mvtAfterTour(ctx, cmd, &RunTourCoordinatorResponse{}, tourPlanBudget{}); err != nil {
+	if err := h.mvtAfterTour(ctx, cmd, &RunTourCoordinatorResponse{}, map[string]int{}, tourPlanBudget{}); err != nil {
 		t.Fatalf("after tour: %v", err)
 	}
 	if got := trans.last(t); got.Reason != mvt.ReasonNoAlternative || got.To != mvt.StateTrade || got.System != "X1-S1" {

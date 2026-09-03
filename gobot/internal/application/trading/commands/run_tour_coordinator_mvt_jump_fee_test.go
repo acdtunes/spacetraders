@@ -52,7 +52,7 @@ func TestMVTTravelTo_JumpFeeGuardRefusesExpensiveJump(t *testing.T) {
 	cmd := mvtCmd(t)
 	cmd.MVTJumpFeeMaxSharePct = 20
 
-	moved, err := h.mvtClaimAndTravel(ctx, cmd, &RunTourCoordinatorResponse{}, &repositionEpisode{}, mvtReasonBootstrap, tourPlanBudget{})
+	moved, err := h.mvtClaimAndTravel(ctx, cmd, &RunTourCoordinatorResponse{}, &repositionEpisode{}, map[string]int{}, mvtReasonBootstrap, tourPlanBudget{})
 	if err != nil || moved || len(fx.jumps) != 0 {
 		t.Fatalf("moved=%v err=%v jumps=%v, want the jump refused", moved, err, fx.jumps)
 	}
@@ -76,7 +76,7 @@ func TestMVTTravelTo_JumpFeeGuardShareOneHundredNeverRefusesBelowTheLoad(t *test
 	cmd := mvtCmd(t)
 	cmd.MVTJumpFeeMaxSharePct = 100
 
-	moved, err := h.mvtClaimAndTravel(ctx, cmd, &RunTourCoordinatorResponse{}, &repositionEpisode{}, mvtReasonBootstrap, tourPlanBudget{})
+	moved, err := h.mvtClaimAndTravel(ctx, cmd, &RunTourCoordinatorResponse{}, &repositionEpisode{}, map[string]int{}, mvtReasonBootstrap, tourPlanBudget{})
 	if err != nil || !moved || len(fx.jumps) != 1 {
 		t.Fatalf("moved=%v err=%v jumps=%v, want the jump flown", moved, err, fx.jumps)
 	}
@@ -88,7 +88,7 @@ func TestMVTTravelTo_JumpFeeGuardShareOneHundredNeverRefusesBelowTheLoad(t *test
 	h, _, trans := mvtJumpFeeHandler(t, tight, 40_000)
 	cmd = mvtCmd(t)
 	cmd.MVTJumpFeeMaxSharePct = 20
-	if moved, err = h.mvtClaimAndTravel(ctx, cmd, &RunTourCoordinatorResponse{}, &repositionEpisode{}, mvtReasonBootstrap, tourPlanBudget{}); err != nil || moved {
+	if moved, err = h.mvtClaimAndTravel(ctx, cmd, &RunTourCoordinatorResponse{}, &repositionEpisode{}, map[string]int{}, mvtReasonBootstrap, tourPlanBudget{}); err != nil || moved {
 		t.Fatalf("moved=%v err=%v, want the same fee refused at the shipped share", moved, err)
 	}
 	if got := trans.last(t); got.Reason != mvtReasonJumpFeeGuard {
@@ -111,7 +111,7 @@ func TestMVTTravelTo_JumpFeeGuardPicksTheNextCandidateWhenTheBestFailsTheGuard(t
 		{System: "X1-S2", Hops: 1, EntryWaypoint: "X1-S2-SRC", Score: 1, GateFee: 5_000, ExpectedLoadCredits: 500_000},
 	}
 
-	moved, err := h.mvtTravelTo(ctx, cmd, &RunTourCoordinatorResponse{}, nil, ranked, mvtReasonBootstrap, 0, tourPlanBudget{})
+	moved, err := h.mvtTravelTo(ctx, cmd, &RunTourCoordinatorResponse{}, nil, map[string]int{}, ranked, mvtReasonBootstrap, 0, tourPlanBudget{})
 	if err != nil || !moved {
 		t.Fatalf("moved=%v err=%v, want the surviving candidate flown", moved, err)
 	}
@@ -132,7 +132,7 @@ func TestMVTTravelTo_JumpFeeGuardRefusesAValuelessLoad(t *testing.T) {
 	ctx := common.WithLogger(context.Background(), &metaCapturingLogger{})
 	ranked := []mvt.ScoredSystem{{System: "X1-S2", Hops: 1, EntryWaypoint: "X1-S2-SRC", Score: 1, GateFee: 1}}
 
-	moved, err := h.mvtTravelTo(ctx, mvtCmd(t), &RunTourCoordinatorResponse{}, nil, ranked, mvtReasonBootstrap, 0, tourPlanBudget{})
+	moved, err := h.mvtTravelTo(ctx, mvtCmd(t), &RunTourCoordinatorResponse{}, nil, map[string]int{}, ranked, mvtReasonBootstrap, 0, tourPlanBudget{})
 	if err != nil || moved || len(fx.jumps) != 0 {
 		t.Fatalf("moved=%v err=%v jumps=%v, want a stay", moved, err, fx.jumps)
 	}
@@ -161,7 +161,7 @@ func TestMVTClaimAndTravel_JumpFeeGuardFliesTheDrainedNeighbourRatherThanIdle(t 
 	cmd.MVTJumpFeeMaxSharePct = 20
 	h.mvtState(cmd).leftAt = map[string]time.Time{"X1-S2": now.Add(-5 * time.Minute)}
 
-	moved, err := h.mvtClaimAndTravel(ctx, cmd, &RunTourCoordinatorResponse{}, &repositionEpisode{}, mvtReasonBootstrap, tourPlanBudget{})
+	moved, err := h.mvtClaimAndTravel(ctx, cmd, &RunTourCoordinatorResponse{}, &repositionEpisode{}, map[string]int{}, mvtReasonBootstrap, tourPlanBudget{})
 	if err != nil || !moved {
 		t.Fatalf("moved=%v err=%v, want the affordable jump flown rather than a stay", moved, err)
 	}
@@ -191,7 +191,7 @@ func mvtDrainedNeighbourRun(t *testing.T, homeSpread, s2Spread, s3Spread int) (*
 	cmd := mvtCmd(t)
 	cmd.MVTJumpFeeMaxSharePct = 20
 	h.mvtState(cmd).leftAt = map[string]time.Time{"X1-S2": now.Add(-5 * time.Minute)}
-	moved, err := h.mvtClaimAndTravel(ctx, cmd, &RunTourCoordinatorResponse{}, &repositionEpisode{}, mvtReasonBootstrap, tourPlanBudget{})
+	moved, err := h.mvtClaimAndTravel(ctx, cmd, &RunTourCoordinatorResponse{}, &repositionEpisode{}, map[string]int{}, mvtReasonBootstrap, tourPlanBudget{})
 	if err != nil {
 		t.Fatalf("claim and travel: %v", err)
 	}

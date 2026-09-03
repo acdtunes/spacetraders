@@ -644,7 +644,7 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 		// against a hold that no longer exists.
 		launchedLaden = h.launchedStuckLaden(ctx, cmd)
 		if cmd.MVTLoop {
-			if err := h.mvtRecover(ctx, cmd, response, &episode, h.mvtBootBudget(ctx, cmd, budget)); err != nil {
+			if err := h.mvtRecover(ctx, cmd, response, &episode, netBought, h.mvtBootBudget(ctx, cmd, budget)); err != nil {
 				return err
 			}
 		}
@@ -1000,7 +1000,7 @@ func (h *RunTourCoordinatorHandler) afterProductiveTour(ctx context.Context, cmd
 		h.mvtShadow(ctx, cmd)
 	}
 	if cmd.MVTLoop {
-		return time.Time{}, h.mvtAfterTour(ctx, cmd, response, budget)
+		return time.Time{}, h.mvtAfterTour(ctx, cmd, response, netBought, budget)
 	}
 	// Rate-floor early-reposition (DEFAULT-OFF): a hull that just flew a
 	// PRODUCTIVE-but-mediocre tour (well below the fleet-median realized rate) never
@@ -1056,7 +1056,7 @@ func (h *RunTourCoordinatorHandler) rescueStarvedGround(ctx context.Context, cmd
 	// re-entered with a lost productive count and 3-struck on iteration-1 infeasibility
 	// rotates off the drained ground instead of dying on it.
 	if cmd.MVTLoop {
-		return h.mvtClaimAndTravel(ctx, cmd, response, episode, mvtReasonEmpty, budget)
+		return h.mvtClaimAndTravel(ctx, cmd, response, episode, netBought, mvtReasonEmpty, budget)
 	}
 	repositioned, rerr := h.maybeReposition(ctx, cmd, response, episode, netBought, budget)
 	if rerr != nil {
