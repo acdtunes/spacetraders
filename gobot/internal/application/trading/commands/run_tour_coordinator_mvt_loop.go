@@ -15,6 +15,7 @@ const mvtReasonClaim = "claim"
 // mvtClaimAndTravel runs CLAIM from wherever the hull stands. Every failure resolves to
 // "stay where you are". The empty exit drops the current system from the ranking: three
 // no-plan tours are the solver's verdict on it, whatever depth the ledger still shows.
+// The reach escalates only here — a hull with nothing priced in reach had no move at all.
 // A hold after repeated travel failures binds here too, or a relaunch and the empty
 // exit would retry the failing route at once.
 func (h *RunTourCoordinatorHandler) mvtClaimAndTravel(ctx context.Context, cmd *RunTourCoordinatorCommand, response *RunTourCoordinatorResponse, episode *repositionEpisode, reason string, budget tourPlanBudget) (bool, error) {
@@ -31,7 +32,7 @@ func (h *RunTourCoordinatorHandler) mvtClaimAndTravel(ctx context.Context, cmd *
 		h.mvtRecord(ctx, cmd, mvt.StateTrade, mvt.StateTrade, current, 0, 0, 0, mvtReasonHold)
 		return false, nil
 	}
-	ranked, rerr := h.mvtRank(ctx, cmd, ship)
+	ranked, _, rerr := h.mvtRankEscalating(ctx, cmd, ship, reason == mvtReasonEmpty)
 	if rerr != nil {
 		common.LoggerFromContext(ctx).Log("WARNING", "MVT CLAIM: ranker unreadable, staying", map[string]interface{}{"hull": cmd.ShipSymbol, "error": rerr.Error()})
 		st.mu.Lock()

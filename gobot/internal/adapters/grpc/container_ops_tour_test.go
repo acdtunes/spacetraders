@@ -705,3 +705,39 @@ func TestTourClaimPermittedOnMigrationTradeTags(t *testing.T) {
 		})
 	}
 }
+
+// claim_reach_max_hops rides the launch config exactly like claim_reach_hops: stamped only when
+// the captain set it, so an unset knob rebuilds to the coordinator's spec default (4) and a set
+// one round-trips through the recovery rebuild.
+func TestStartTourRun_StampsClaimReachMaxHopsFromTradeFleetConfig(t *testing.T) {
+	launch := func(t *testing.T, maxHops int) (string, *tradingCmd.RunTourCoordinatorCommand) {
+		t.Helper()
+		s, db, playerID := newRecoveryTestServer(t)
+		s.tradeFleetConfig.ClaimReachMaxHops = maxHops
+		hull := newIdleTradeShip(t, "TORWIND-19", playerID)
+		hull.SetDedicatedFleet("trade")
+		s.shipRepo = &tradeRouteShipRepo{ships: map[string]*navigation.Ship{"TORWIND-19": hull}}
+
+		result, err := s.StartTourRun(context.Background(), "TORWIND-19", 5, int64(100000), 10, 3, int64(0), "AGENT", 1, playerID, nil)
+		require.NoError(t, err)
+		runner := s.registeredRunner(result.ContainerID)
+		require.NotNil(t, runner)
+		defer runner.cancelFunc()
+
+		var model persistence.ContainerModel
+		require.NoError(t, db.First(&model, "id = ?", result.ContainerID).Error)
+		var cfg map[string]interface{}
+		require.NoError(t, json.Unmarshal([]byte(model.Config), &cfg))
+		rebuilt, err := s.buildCommandForType("tour_run", cfg, playerID, result.ContainerID)
+		require.NoError(t, err)
+		return model.Config, rebuilt.(*tradingCmd.RunTourCoordinatorCommand)
+	}
+
+	raw, cmd := launch(t, 5)
+	require.Contains(t, raw, `"claim_reach_max_hops":5`, "a set knob must be stamped so the rebuild reads it back")
+	require.Equal(t, 5, cmd.ClaimReachMaxHops)
+
+	raw, cmd = launch(t, 0)
+	require.NotContains(t, raw, `"claim_reach_max_hops"`, "an unset knob must not pin a 0 into the launch config")
+	require.Equal(t, tradingCmd.DefaultClaimReachMaxHops, cmd.ClaimReachMaxHops)
+}

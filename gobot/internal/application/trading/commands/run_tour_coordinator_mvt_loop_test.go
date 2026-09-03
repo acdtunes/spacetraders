@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -1002,5 +1003,219 @@ func TestRecordLeg_NilTelemetryStillFeedsTheYieldTracker(t *testing.T) {
 	h.recordLeg(ctx, cmd, trading.LegEngineSolver, leg("X1-S1-B", "X1-S1"), 1, sell("G", 10, 200), 10, 200, at)
 	if st := h.mvtState(cmd); st.yield.Sells() != 1 {
 		t.Fatalf("sells = %d, want the sell observed with no telemetry sink", st.yield.Sells())
+	}
+}
+
+// mvtChainHandler wires the stored X1-S1—X1-S2—X1-S3 chain over the reposition fixture with
+// the given credits of fresh depth per system (absent = unpriced) and the jump path the
+// relaxed resolver answers, so a CLAIM two hops out really flies both hops.
+func mvtChainHandler(t *testing.T, fx *tourFixture, depths map[string]int, path ...string) (*RunTourCoordinatorHandler, *mvtFakeClaims, *mvtFakeTransitions) {
+	t.Helper()
+	h, claims, trans := mvtHandler(t, fx, rateFloorPlanner(feasiblePlan(600000, 600000)), 0, 0)
+	now := time.Now()
+	lanes := map[string][]mvt.LaneDepth{}
+	for sys, d := range depths {
+		lanes[sys] = mvtLane(sys, "IRON", d, 100, 200, now)
+	}
+	h.SetMVTPorts(claims, &mvtFakeDepth{lanes: lanes}, trans)
+	g := mvtStoredGraph([2]string{"X1-S1", "X1-S2"}, [2]string{"X1-S2", "X1-S3"})
+	g.path = path
+	h.SetGateGraph(g)
+	return h, claims, trans
+}
+
+// mvtEscalationCmd is mvtCmd at a one-hop reach with the escalation cap given.
+func mvtEscalationCmd(t *testing.T, maxHops int) *RunTourCoordinatorCommand {
+	t.Helper()
+	cmd := mvtCmd(t)
+	cmd.ClaimReachHops, cmd.ClaimReachMaxHops = 1, maxHops
+	return cmd
+}
+
+// mvtEscalatedTo is the to_hops of the "reach escalated" line, or -1 when none was logged.
+func mvtEscalatedTo(l *metaCapturingLogger) int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, e := range l.entries {
+		if strings.Contains(e.message, "reach escalated") {
+			n, _ := e.metadata["to_hops"].(int)
+			return n
+		}
+	}
+	return -1
+}
+
+// mvtWantFlownToS3 pins the escalated two-hop claim: both jumps flown, X1-S3 claimed and
+// arrived, the escalation logged at to_hops 2, and the three transitions led by reason.
+func mvtWantFlownToS3(t *testing.T, fx *tourFixture, claims *mvtFakeClaims, trans *mvtFakeTransitions, logger *metaCapturingLogger, reason string) {
+	t.Helper()
+	if len(fx.jumps) != 2 || fx.jumps[0] != "X1-S2" || fx.jumps[1] != "X1-S3" {
+		t.Fatalf("jumps = %v, want the two hops to X1-S3", fx.jumps)
+	}
+	c, ok, _ := claims.Get(context.Background(), 1, "TOUR-MVT")
+	if !ok || c.System != "X1-S3" || c.ArrivedAt == nil {
+		t.Fatalf("claim = %+v ok=%v, want X1-S3 arrived", c, ok)
+	}
+	if got := mvtEscalatedTo(logger); got != 2 {
+		t.Fatalf("reach escalated to_hops = %d, want 2 (X1-S3 is two hops out)", got)
+	}
+	want := []string{"TRADE>CLAIM:" + reason + "@X1-S1", "CLAIM>TRAVEL:" + mvtReasonClaim + "@X1-S3", "TRAVEL>TRADE:" + mvtReasonArrived + "@X1-S3"}
+	if got := mvtSeen(trans.rows); len(got) != len(want) || got[0] != want[0] || got[1] != want[1] || got[2] != want[2] {
+		t.Fatalf("transitions = %v, want %v", got, want)
+	}
+}
+
+// Nothing is priced within one hop and the solver has declared home dead: the empty exit
+// widens the reach a hop at a time until a ranking offers an alternative, then claims it.
+func TestMVTClaimAndTravel_EscalatesReachOnEmptyExit(t *testing.T) {
+	fx := repositionFixture()
+	h, claims, trans := mvtChainHandler(t, fx, map[string]int{"X1-S3": 500}, "X1-S1", "X1-S2", "X1-S3")
+	logger := &metaCapturingLogger{}
+	ctx := common.WithLogger(context.Background(), logger)
+	moved, err := h.mvtClaimAndTravel(ctx, mvtEscalationCmd(t, 3), &RunTourCoordinatorResponse{}, &repositionEpisode{}, mvtReasonEmpty, tourPlanBudget{})
+	if err != nil || !moved {
+		t.Fatalf("moved=%v err=%v, want the escalated claim flown", moved, err)
+	}
+	if len(fx.jumps) != 2 || fx.jumps[0] != "X1-S2" || fx.jumps[1] != "X1-S3" {
+		t.Fatalf("jumps = %v, want the two hops to X1-S3", fx.jumps)
+	}
+	c, ok, _ := claims.Get(ctx, 1, "TOUR-MVT")
+	if !ok || c.System != "X1-S3" || c.ArrivedAt == nil {
+		t.Fatalf("claim = %+v ok=%v, want X1-S3 arrived", c, ok)
+	}
+	if got := mvtEscalatedTo(logger); got != 2 {
+		t.Fatalf("reach escalated to_hops = %d, want 2 (X1-S3 is two hops out)", got)
+	}
+	want := []string{"TRADE>CLAIM:" + mvtReasonEmpty + "@X1-S1", "CLAIM>TRAVEL:" + mvtReasonClaim + "@X1-S3", "TRAVEL>TRADE:" + mvtReasonArrived + "@X1-S3"}
+	if got := mvtSeen(trans.rows); len(got) != len(want) || got[0] != want[0] || got[1] != want[1] || got[2] != want[2] {
+		t.Fatalf("transitions = %v, want %v", got, want)
+	}
+}
+
+// A profitable home is an offer at the configured reach: the bootstrap stays on zero travel
+// and never looks past it, however rich the ground two hops out.
+func TestMVTClaimAndTravel_BootstrapDoesNotEscalatePastAProfitableHome(t *testing.T) {
+	fx := repositionFixture()
+	h, claims, trans := mvtChainHandler(t, fx, map[string]int{"X1-S1": 500, "X1-S3": 500}, "X1-S1", "X1-S2", "X1-S3")
+	logger := &metaCapturingLogger{}
+	ctx := common.WithLogger(context.Background(), logger)
+	moved, err := h.mvtClaimAndTravel(ctx, mvtEscalationCmd(t, 3), &RunTourCoordinatorResponse{}, &repositionEpisode{}, mvtReasonBootstrap, tourPlanBudget{})
+	if err != nil || moved || len(fx.jumps) != 0 {
+		t.Fatalf("moved=%v err=%v jumps=%v, want a stay", moved, err, fx.jumps)
+	}
+	c, ok, _ := claims.Get(ctx, 1, "TOUR-MVT")
+	if !ok || c.System != "X1-S1" || c.ArrivedAt == nil {
+		t.Fatalf("claim = %+v ok=%v, want home stamped", c, ok)
+	}
+	if got := mvtEscalatedTo(logger); got != -1 {
+		t.Fatalf("a profitable home must not escalate, yet reach escalated to %d", got)
+	}
+	want := "CLAIM>TRADE:" + mvt.ReasonStay + "@X1-S1"
+	if got := mvtSeen(trans.rows); len(got) != 1 || got[0] != want {
+		t.Fatalf("transitions = %v, want exactly [%s]", got, want)
+	}
+}
+
+// Nothing priced within one hop of an unpriced home: an empty ranking is no offer, so the
+// bootstrap widens too rather than settling for no_alternative on ground it has not seen.
+func TestMVTClaimAndTravel_BootstrapEscalatesAnEmptyReach(t *testing.T) {
+	fx := repositionFixture()
+	h, claims, trans := mvtChainHandler(t, fx, map[string]int{"X1-S3": 500}, "X1-S1", "X1-S2", "X1-S3")
+	logger := &metaCapturingLogger{}
+	ctx := common.WithLogger(context.Background(), logger)
+	moved, err := h.mvtClaimAndTravel(ctx, mvtEscalationCmd(t, 3), &RunTourCoordinatorResponse{}, &repositionEpisode{}, mvtReasonBootstrap, tourPlanBudget{})
+	if err != nil || !moved {
+		t.Fatalf("moved=%v err=%v, want the escalated claim flown", moved, err)
+	}
+	mvtWantFlownToS3(t, fx, claims, trans, logger, mvtReasonBootstrap)
+}
+
+// The cap binds: with the rich ground two hops out and the reach capped at one (or the cap
+// unset below the reach), the empty exit finds nothing and stays.
+func TestMVTClaimAndTravel_EscalationStopsAtMaxHops(t *testing.T) {
+	for _, maxHops := range []int{1, 0} {
+		fx := repositionFixture()
+		h, _, trans := mvtChainHandler(t, fx, map[string]int{"X1-S3": 500}, "X1-S1", "X1-S2", "X1-S3")
+		logger := &metaCapturingLogger{}
+		ctx := common.WithLogger(context.Background(), logger)
+		moved, err := h.mvtClaimAndTravel(ctx, mvtEscalationCmd(t, maxHops), &RunTourCoordinatorResponse{}, &repositionEpisode{}, mvtReasonEmpty, tourPlanBudget{})
+		if err != nil || moved || len(fx.jumps) != 0 {
+			t.Fatalf("max=%d: moved=%v err=%v jumps=%v, want a stay", maxHops, moved, err, fx.jumps)
+		}
+		if got := mvtEscalatedTo(logger); got != -1 {
+			t.Fatalf("max=%d: reach must not escalate past the cap, yet escalated to %d", maxHops, got)
+		}
+		want := "CLAIM>TRADE:" + mvt.ReasonNoAlternative + "@X1-S1"
+		if got := mvtSeen(trans.rows); len(got) != 1 || got[0] != want {
+			t.Fatalf("max=%d: transitions = %v, want exactly [%s]", maxHops, got, want)
+		}
+	}
+}
+
+// The ledger still ranks home first, but the solver's three no-plan tours outrank its depth:
+// the empty exit takes the one-hop alternative rather than re-electing dead ground.
+func TestMVTClaimAndTravel_EmptyExitNeverStaysWhileAnAlternativeExists(t *testing.T) {
+	fx := repositionFixture()
+	h, claims, trans := mvtChainHandler(t, fx, map[string]int{"X1-S1": 500, "X1-S2": 10}, "X1-S1", "X1-S2")
+	logger := &metaCapturingLogger{}
+	ctx := common.WithLogger(context.Background(), logger)
+	cmd := mvtEscalationCmd(t, 3)
+	ship, _ := h.legs.loadShip(ctx, cmd.ShipSymbol, cmd.PlayerID)
+	if ranked, err := h.mvtRank(ctx, cmd, ship); err != nil || len(ranked) != 2 || ranked[0].System != "X1-S1" {
+		t.Fatalf("precondition: home must outrank the neighbour, got %+v err=%v", ranked, err)
+	}
+	moved, err := h.mvtClaimAndTravel(ctx, cmd, &RunTourCoordinatorResponse{}, &repositionEpisode{}, mvtReasonEmpty, tourPlanBudget{})
+	if err != nil || !moved || len(fx.jumps) != 1 || fx.jumps[0] != "X1-S2" {
+		t.Fatalf("moved=%v err=%v jumps=%v, want the one jump to X1-S2", moved, err, fx.jumps)
+	}
+	c, ok, _ := claims.Get(ctx, 1, "TOUR-MVT")
+	if !ok || c.System != "X1-S2" || c.ArrivedAt == nil {
+		t.Fatalf("claim = %+v ok=%v, want X1-S2 arrived", c, ok)
+	}
+	if got := mvtEscalatedTo(logger); got != -1 {
+		t.Fatalf("an alternative at the configured reach must not escalate, yet escalated to %d", got)
+	}
+	if got := mvtSeen(trans.rows); len(got) == 0 || got[0] != "TRADE>CLAIM:"+mvtReasonEmpty+"@X1-S1" {
+		t.Fatalf("transitions = %v, want the empty exit to lead", got)
+	}
+}
+
+// Home still shows ledger depth, so the one-hop ranking is current-only. That is not an offer
+// on the empty exit: stopping there would re-elect the dead ground as no_alternative and
+// relaunch into the same starvation loop, so the reach must widen until an alternative ranks.
+func TestMVTClaimAndTravel_EmptyExitEscalatesPastACurrentOnlyRanking(t *testing.T) {
+	fx := repositionFixture()
+	h, claims, trans := mvtChainHandler(t, fx, map[string]int{"X1-S1": 500, "X1-S3": 500}, "X1-S1", "X1-S2", "X1-S3")
+	logger := &metaCapturingLogger{}
+	ctx := common.WithLogger(context.Background(), logger)
+	moved, err := h.mvtClaimAndTravel(ctx, mvtEscalationCmd(t, 3), &RunTourCoordinatorResponse{}, &repositionEpisode{}, mvtReasonEmpty, tourPlanBudget{})
+	if err != nil || !moved {
+		t.Fatalf("moved=%v err=%v, want the escalated claim flown", moved, err)
+	}
+	mvtWantFlownToS3(t, fx, claims, trans, logger, mvtReasonEmpty)
+}
+
+// The departure rule compares a working system against the alternatives at the configured
+// reach only: an empty one-hop ring is no_alternative even with rich ground two hops out.
+func TestMVTAfterTour_DoesNotEscalate(t *testing.T) {
+	fx := repositionFixture()
+	h, _, trans := mvtChainHandler(t, fx, map[string]int{"X1-S3": 500}, "X1-S1", "X1-S2", "X1-S3")
+	logger := &metaCapturingLogger{}
+	ctx := common.WithLogger(context.Background(), logger)
+	cmd := mvtEscalationCmd(t, 3)
+	st := h.mvtState(cmd)
+	st.claimed = "X1-S1"
+	t0 := time.Now().Add(-time.Hour)
+	for i := 0; i < 3; i++ { // warm: 1 credit/unit here, far below S3's 100/unit
+		st.yield.Observe(1, 10, t0.Add(time.Duration(i)*time.Second))
+	}
+	if err := h.mvtAfterTour(ctx, cmd, &RunTourCoordinatorResponse{}, tourPlanBudget{}); err != nil {
+		t.Fatalf("after tour: %v", err)
+	}
+	if got := trans.last(t); got.Reason != mvt.ReasonNoAlternative || got.To != mvt.StateTrade || got.System != "X1-S1" {
+		t.Fatalf("after-tour verdict = %+v, want TRADE>TRADE:no_alternative@X1-S1", got)
+	}
+	if len(fx.jumps) != 0 || mvtEscalatedTo(logger) != -1 {
+		t.Fatalf("the departure rule must neither fly nor escalate: jumps=%v escalated=%d", fx.jumps, mvtEscalatedTo(logger))
 	}
 }

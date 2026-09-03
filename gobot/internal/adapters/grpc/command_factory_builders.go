@@ -659,7 +659,10 @@ func buildTourCoordinatorCommand(cfg *configReader, playerID int, containerID st
 		YieldWindowSells:         cfg.OptionalInt("yield_window_sells", tradingCmd.DefaultYieldWindowSells),
 		YieldMinSells:            cfg.OptionalInt("yield_min_sells", tradingCmd.DefaultYieldMinSells),
 		ClaimReachHops:           cfg.OptionalInt("claim_reach_hops", tradingCmd.DefaultClaimReachHops),
+		ClaimReachMaxHops:        cfg.OptionalInt("claim_reach_max_hops", tradingCmd.DefaultClaimReachMaxHops),
 		SpecialistCadenceMinutes: cfg.OptionalInt("specialist_cadence_minutes", tradingCmd.DefaultSpecialistCadenceMinutes),
+		// Below this span the fleet rate stands in for the hull's own; 0/absent ⇒ the spec default.
+		YieldRateSpanFloorMinutes: cfg.OptionalInt("yield_rate_span_floor_minutes", tradingCmd.DefaultYieldRateSpanFloorMinutes),
 		// sp-uf64 reposition reach (always-broaden discovery + deadhead-decay ranking + anti-herd).
 		// OptionalBool/OptionalInt yield zero values for absent keys — the exact default-OFF dormancy
 		// the Placement*/Reposition* knobs use: reposition_reach_enabled absent ⇒ false ⇒ the legacy

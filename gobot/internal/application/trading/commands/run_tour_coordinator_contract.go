@@ -222,11 +222,17 @@ type RunTourCoordinatorCommand struct {
 	// MVT trade loop (spec docs/superpowers/specs/2026-09-02-mvt-trade-loop-design.md).
 	// MVTLoop is set from the hull's fleet tag (trade-mvt) at launch; the knobs below are
 	// resolved by the command builder from trade_fleet.* with the spec defaults.
-	MVTLoop                  bool
-	YieldWindowSells         int
-	YieldMinSells            int
-	ClaimReachHops           int
+	MVTLoop          bool
+	YieldWindowSells int
+	YieldMinSells    int
+	ClaimReachHops   int
+	// ClaimReachMaxHops caps how far a CLAIM widens its reach when the ranking at
+	// ClaimReachHops offers the hull nothing; equal to ClaimReachHops means no escalation.
+	ClaimReachMaxHops        int
 	SpecialistCadenceMinutes int
+	// YieldRateSpanFloorMinutes is how long a visit must have run before the hull's own
+	// earning rate outranks the fleet's in the travel-cost term. 0/absent → no floor.
+	YieldRateSpanFloorMinutes int
 
 	// TourNeighborsDurableFirst serves the tour graph's 1-hop neighbor scan from the persisted
 	// gate adjacency. false/absent → the live jump-gate query, exactly as today.
@@ -273,12 +279,14 @@ type RunTourCoordinatorCommand struct {
 
 // MVT trade loop defaults (spec §5). Fitted from the replay before ship; none encodes fleet size.
 const (
-	DefaultYieldWindowSells         = 8
-	DefaultYieldMinSells            = 3
-	DefaultClaimReachHops           = 2
-	DefaultSpecialistFractionPct    = 10  // specialist_fraction 0.10
-	DefaultFatLaneMultiplePct       = 200 // fat_lane_multiple 2.0
-	DefaultSpecialistCadenceMinutes = 60  // specialist_cadence 1h
+	DefaultYieldWindowSells          = 8
+	DefaultYieldMinSells             = 3
+	DefaultClaimReachHops            = 2
+	DefaultClaimReachMaxHops         = 4
+	DefaultSpecialistFractionPct     = 10  // specialist_fraction 0.10
+	DefaultFatLaneMultiplePct        = 200 // fat_lane_multiple 2.0
+	DefaultSpecialistCadenceMinutes  = 60  // specialist_cadence 1h
+	DefaultYieldRateSpanFloorMinutes = 0
 )
 
 // RunTourCoordinatorResponse reports the realised tour economics and — via

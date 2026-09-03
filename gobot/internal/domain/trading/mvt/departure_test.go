@@ -29,6 +29,7 @@ func TestYieldTracker_EWMAAndColdStart(t *testing.T) {
 
 func TestYieldTracker_CreditsPerSec(t *testing.T) {
 	tr := NewYieldTracker(8, 1)
+	tr.SetRateSpanFloor(0) // the arithmetic itself; the floor has its own test below
 	t0 := time.Unix(1_000_000, 0)
 	if tr.CreditsPerSec(t0) != 0 {
 		t.Fatal("no observations → 0")
@@ -44,6 +45,34 @@ func TestYieldTracker_CreditsPerSec(t *testing.T) {
 	tr.Reset()
 	if tr.Sells() != 0 || tr.CreditsPerSec(t0.Add(time.Hour)) != 0 {
 		t.Fatal("reset must clear everything")
+	}
+}
+
+func TestYieldTracker_CreditsPerSec_FloorFallsBackUntilSpanClears(t *testing.T) {
+	tr := NewYieldTracker(8, 1)
+	tr.SetRateSpanFloor(30 * time.Minute)
+	t0 := time.Unix(1_000_000, 0)
+	observe := func() {
+		tr.Observe(50, 10, t0)
+		tr.Observe(50, 10, t0.Add(100*time.Second)) // 1000 credits over 100 s
+	}
+	observe()
+	if got := tr.CreditsPerSec(t0.Add(100 * time.Second)); got != 0 {
+		t.Fatalf("rate = %v under a 30-minute floor, want 0 (the caller falls back to the fleet rate)", got)
+	}
+	if got := tr.CreditsPerSec(t0.Add(30 * time.Minute)); got != 1000.0/1800.0 {
+		t.Fatalf("rate at the floor = %v, want %v", got, 1000.0/1800.0)
+	}
+
+	tr.Reset()
+	observe()
+	if got := tr.CreditsPerSec(t0.Add(100 * time.Second)); got != 0 {
+		t.Fatalf("rate = %v after a reset, want 0: Reset must preserve the span floor", got)
+	}
+
+	tr.SetRateSpanFloor(0)
+	if got := tr.CreditsPerSec(t0.Add(100 * time.Second)); got != 10 {
+		t.Fatalf("rate = %v with the floor off, want 10", got)
 	}
 }
 

@@ -268,12 +268,14 @@ type TradeFleetConfig struct {
 
 	// --- MVT trade loop (spec docs/superpowers/specs/2026-09-02-mvt-trade-loop-design.md) ---
 	// MVT trade loop knobs (spec §5). Zero means "use the code default".
-	YieldWindowSells         int `mapstructure:"yield_window_sells"`
-	YieldMinSells            int `mapstructure:"yield_min_sells"`
-	ClaimReachHops           int `mapstructure:"claim_reach_hops"`
-	SpecialistFractionPct    int `mapstructure:"specialist_fraction_pct"`
-	FatLaneMultiplePct       int `mapstructure:"fat_lane_multiple_pct"`
-	SpecialistCadenceMinutes int `mapstructure:"specialist_cadence_minutes"`
+	YieldWindowSells          int `mapstructure:"yield_window_sells"`
+	YieldMinSells             int `mapstructure:"yield_min_sells"`
+	ClaimReachHops            int `mapstructure:"claim_reach_hops"`
+	ClaimReachMaxHops         int `mapstructure:"claim_reach_max_hops"`
+	SpecialistFractionPct     int `mapstructure:"specialist_fraction_pct"`
+	FatLaneMultiplePct        int `mapstructure:"fat_lane_multiple_pct"`
+	SpecialistCadenceMinutes  int `mapstructure:"specialist_cadence_minutes"`
+	YieldRateSpanFloorMinutes int `mapstructure:"yield_rate_span_floor_minutes"`
 }
 
 // defaultSinkFreshnessMaxMinutes is the sink-freshness clause's boot floor, applied when

@@ -169,6 +169,31 @@ func mvtShadowHandler(t *testing.T, fx *tourFixture, depth mvt.SystemDepthReader
 	return h, claims, trans
 }
 
+// The span floor reaches the tracker from the command; a zero command value means no
+// floor (the replay-fitted default), so the hull's own rate applies at once.
+func TestMVTState_AppliesTheRateSpanFloorFromTheCommand(t *testing.T) {
+	t0 := time.Unix(1_000_000, 0)
+	rateAt := func(cmd *RunTourCoordinatorCommand, at time.Time) float64 {
+		h := &RunTourCoordinatorHandler{}
+		st := h.mvtState(cmd)
+		st.yield.Observe(50, 10, t0)
+		st.yield.Observe(50, 10, t0.Add(time.Minute))
+		return st.yield.CreditsPerSec(at)
+	}
+	five := &RunTourCoordinatorCommand{ShipSymbol: "TOUR-5", YieldWindowSells: 8, YieldMinSells: 1, YieldRateSpanFloorMinutes: 5}
+	if got := rateAt(five, t0.Add(time.Minute)); got != 0 {
+		t.Fatalf("rate at +1m under a 5-minute floor = %v, want 0", got)
+	}
+	if got := rateAt(five, t0.Add(5*time.Minute)); got <= 0 {
+		t.Fatalf("rate at +5m = %v, want the hull's own rate once the floor clears", got)
+	}
+
+	zero := &RunTourCoordinatorCommand{ShipSymbol: "TOUR-0", YieldWindowSells: 8, YieldMinSells: 1}
+	if got := rateAt(zero, t0.Add(2*time.Minute)); got <= 0 {
+		t.Fatalf("rate at +2m with no configured floor = %v, want the hull's own rate (default floor is %d minutes)", got, DefaultYieldRateSpanFloorMinutes)
+	}
+}
+
 func TestMVTShadow_RecordsWouldBeDecisionOnOldPath(t *testing.T) {
 	fx := repositionFixture()
 	now := time.Now()

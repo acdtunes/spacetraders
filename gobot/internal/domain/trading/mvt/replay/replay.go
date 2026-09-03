@@ -20,8 +20,10 @@ type Config struct {
 	YieldWindowSells  int
 	YieldMinSells     int
 	ClaimReachHops    int
+	ClaimReachMaxHops int
 	TollSecondsPerHop int
 	GateFee           int64
+	RateSpanFloor     time.Duration
 }
 
 // Decision is one visit boundary. ActualCredit is the hull's own lot-matched margin over
@@ -160,6 +162,15 @@ type lot struct{ units, price int }
 type claim struct {
 	system  string
 	arrival time.Time
+}
+
+func anyOther(cands []mvt.Candidate, from string) bool {
+	for _, c := range cands {
+		if c.System != from {
+			return true
+		}
+	}
+	return false
 }
 
 func hopsFrom(neighbours map[string][]string, origin string, maxHops int) map[string]int {
@@ -333,25 +344,33 @@ func Run(legs []trading.TourLegTelemetry, neighbours map[string][]string, cfg Co
 	for _, b := range bounds {
 		hl := byHull[b.hull]
 		tracker := mvt.NewYieldTracker(cfg.YieldWindowSells, cfg.YieldMinSells)
+		tracker.SetRateSpanFloor(cfg.RateSpanFloor)
 		for i := b.v.start; i <= b.v.end; i++ {
 			if mpu, ok := marginPerUnitOf[b.hull][i]; ok {
 				tracker.Observe(mpu, hl[i].RealizedUnits, hl[i].RealizedAt)
 			}
 		}
-		reach := hopsFrom(neighbours, b.v.system, cfg.ClaimReachHops)
-		var cands []mvt.Candidate
-		for sys, hops := range reach {
-			credits, units := yield(sys, b.at.Add(-cfg.Horizon), b.at)
-			if units == 0 {
-				continue
-			}
-			inTransit := 0
-			for _, c := range claims {
-				if c.system == sys && c.arrival.After(b.at) {
-					inTransit++
+		candidatesWithin := func(maxHops int) []mvt.Candidate {
+			var cands []mvt.Candidate
+			for sys, hops := range hopsFrom(neighbours, b.v.system, maxHops) {
+				credits, units := yield(sys, b.at.Add(-cfg.Horizon), b.at)
+				if units == 0 {
+					continue
 				}
+				inTransit := 0
+				for _, c := range claims {
+					if c.system == sys && c.arrival.After(b.at) {
+						inTransit++
+					}
+				}
+				cands = append(cands, mvt.Candidate{System: sys, Hops: hops, YieldCredits: credits, DepthUnits: units, InTransit: inTransit})
 			}
-			cands = append(cands, mvt.Candidate{System: sys, Hops: hops, YieldCredits: credits, DepthUnits: units, InTransit: inTransit})
+			return cands
+		}
+		cands := candidatesWithin(cfg.ClaimReachHops)
+		// No sells this visit (the exhaustion proxy) and nothing priced but here: widen as the loop does.
+		for hops := cfg.ClaimReachHops + 1; hops <= cfg.ClaimReachMaxHops && tracker.Sells() == 0 && !anyOther(cands, b.v.system); hops++ {
+			cands = candidatesWithin(hops)
 		}
 		capHull := capacity[b.hull]
 		if capHull < 1 {

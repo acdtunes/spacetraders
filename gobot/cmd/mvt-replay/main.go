@@ -23,8 +23,10 @@ func main() {
 	windowSells := flag.Int("yield-window-sells", 8, "EWMA window")
 	minSells := flag.Int("yield-min-sells", 3, "cold-start guard")
 	reach := flag.Int("claim-reach-hops", 2, "candidate radius")
+	maxReach := flag.Int("claim-reach-max-hops", 4, "radius an empty ranking widens to (2 = escalation off at -claim-reach-hops 2)")
 	toll := flag.Int("toll-seconds", 361, "seconds per gate hop (jump cooldown)")
 	fee := flag.Int64("gate-fee", 0, "credits per hop from the departure system")
+	spanFloor := flag.Duration("rate-span-floor", 0,"visit span below which travel is priced on the FLEET rate, not the hull's (0 = off)")
 	asJSON := flag.Bool("json", false, "print the full report as JSON")
 	flag.Parse()
 
@@ -57,8 +59,8 @@ func main() {
 	}
 	rep := replay.Run(legs, neighbours, replay.Config{
 		Window: time.Duration(*hours) * time.Hour, Horizon: *horizon, BoundaryGap: *gap,
-		YieldWindowSells: *windowSells, YieldMinSells: *minSells, ClaimReachHops: *reach,
-		TollSecondsPerHop: *toll, GateFee: *fee,
+		YieldWindowSells: *windowSells, YieldMinSells: *minSells, ClaimReachHops: *reach, ClaimReachMaxHops: *maxReach,
+		TollSecondsPerHop: *toll, GateFee: *fee, RateSpanFloor: *spanFloor,
 	})
 	if *asJSON {
 		_ = json.NewEncoder(os.Stdout).Encode(rep)

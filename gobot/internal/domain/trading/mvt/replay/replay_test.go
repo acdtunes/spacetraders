@@ -267,6 +267,55 @@ func TestRun_DeterministicOnTiedTimestamps(t *testing.T) {
 	}
 }
 
+// H1 sells a fat arrival load inside eight minutes, so its own credits-per-second is two
+// orders of magnitude above the fleet's and would price the one reachable neighbour out of
+// reach. Above the span floor the boundary is scored on the fleet rate instead; with the
+// floor off the old, inflated travel cost returns.
+func TestRun_RateSpanFloorPricesAShortVisitAtTheFleetRate(t *testing.T) {
+	t0 := time.Unix(1_700_000_000, 0)
+	legs := []trading.TourLegTelemetry{
+		rl("H1", "X1-A-1", "IRON", true, 10, 100, t0),
+		rl("H1", "X1-A-2", "IRON", false, 10, 1100, t0.Add(2*time.Minute)),
+		rl("H1", "X1-A-1", "IRON", true, 10, 100, t0.Add(4*time.Minute)),
+		rl("H1", "X1-A-2", "IRON", false, 10, 1100, t0.Add(10*time.Minute)),
+		rl("H1", "X1-B-1", "IRON", true, 10, 100, t0.Add(40*time.Minute)),
+		rl("H1", "X1-B-2", "IRON", false, 10, 110, t0.Add(45*time.Minute)),
+		// X1-B has to be priced before the boundary to rank as an alternative at all.
+		rl("H3", "X1-B-1", "IRON", true, 10, 100, t0.Add(time.Minute)),
+		rl("H3", "X1-B-2", "IRON", false, 10, 200, t0.Add(2*time.Minute)),
+	}
+	graph := map[string][]string{"X1-A": {"X1-B"}, "X1-B": {"X1-A"}}
+	base := cfg()
+	base.TollSecondsPerHop = 361
+
+	boundary := func(c Config) Decision {
+		t.Helper()
+		r := Run(legs, graph, c)
+		for _, d := range r.Decisions {
+			if d.Hull == "H1" && d.From == "X1-A" {
+				return d
+			}
+		}
+		t.Fatalf("no X1-A boundary for H1: %+v", r.Decisions)
+		return Decision{}
+	}
+
+	floored := base
+	floored.RateSpanFloor = time.Hour
+	unfloored := base
+	unfloored.RateSpanFloor = 0
+
+	stats := mvt.ComputeFleetStats(legs, base.Window)
+	// One hop, cap 10, no gate fee: the whole travel term is the toll priced at the rate.
+	want := float64(base.TollSecondsPerHop) * stats.CreditsPerHullSec / 10
+	if got := boundary(floored).TravelCost; got != want {
+		t.Fatalf("floored travel cost = %v, want the fleet rate's %v", got, want)
+	}
+	if got := boundary(unfloored).TravelCost; got <= 100*want {
+		t.Fatalf("unfloored travel cost = %v, want the inflated hull rate far above %v", got, want)
+	}
+}
+
 // Neither window has a sell at the destination: the decision is flagged and credited zero.
 func TestRun_NothingObservedEitherWayCreditsZeroAndFlags(t *testing.T) {
 	t0 := time.Unix(1_700_000_000, 0)
@@ -284,5 +333,37 @@ func TestRun_NothingObservedEitherWayCreditsZeroAndFlags(t *testing.T) {
 	}
 	if pass, _ := r.Gate(); pass {
 		t.Fatal("zero loop credit against real actual margin must fail the gate")
+	}
+}
+
+// H1's last visit in X1-A bought and never sold; nothing within two hops is priced and X1-D,
+// three hops down the chain, is rich. The replay widens the reach as the loop's empty exit
+// does, up to the cap: at 4 the loop leaves for X1-D, at 2 it stays.
+func TestRun_EmptyRankingEscalatesReachUpToTheCap(t *testing.T) {
+	t0 := time.Unix(1_700_000_000, 0)
+	legs := []trading.TourLegTelemetry{
+		rl("H3", "X1-D-1", "IRON", true, 10, 100, t0.Add(-40*time.Minute)),
+		rl("H3", "X1-D-2", "IRON", false, 10, 200, t0.Add(-30*time.Minute)),
+		rl("H1", "X1-A-1", "IRON", true, 10, 100, t0),
+		rl("H1", "X1-Z-2", "IRON", false, 10, 110, t0.Add(35*time.Minute)),
+	}
+	chain := map[string][]string{"X1-A": {"X1-B"}, "X1-B": {"X1-A", "X1-C"}, "X1-C": {"X1-B", "X1-D"}, "X1-D": {"X1-C"}}
+	for _, tc := range []struct {
+		maxHops int
+		want    string
+		reason  string
+	}{{4, "X1-D", "empty"}, {2, "X1-A", mvt.ReasonColdStart}} {
+		c := cfg()
+		c.ClaimReachMaxHops = tc.maxHops
+		r := Run(legs, chain, c)
+		var d *Decision
+		for i := range r.Decisions {
+			if r.Decisions[i].Hull == "H1" && r.Decisions[i].From == "X1-A" {
+				d = &r.Decisions[i]
+			}
+		}
+		if d == nil || d.LoopNext != tc.want || d.Reason != tc.reason {
+			t.Fatalf("max=%d: decision = %+v, want LoopNext %s reason %s", tc.maxHops, d, tc.want, tc.reason)
+		}
 	}
 }

@@ -82,6 +82,11 @@ func (h *RunTourCoordinatorHandler) mvtState(cmd *RunTourCoordinatorCommand) *mv
 	st := h.mvtHulls[cmd.ShipSymbol]
 	if st == nil {
 		st = &mvtHullState{yield: mvt.NewYieldTracker(cmd.YieldWindowSells, cmd.YieldMinSells), basis: map[string][]mvtLot{}}
+		floor := cmd.YieldRateSpanFloorMinutes
+		if floor <= 0 {
+			floor = DefaultYieldRateSpanFloorMinutes
+		}
+		st.yield.SetRateSpanFloor(time.Duration(floor) * time.Minute)
 		h.mvtHulls[cmd.ShipSymbol] = st
 	}
 	return st
@@ -132,7 +137,7 @@ func (h *RunTourCoordinatorHandler) mvtFleetStats(ctx context.Context, cmd *RunT
 	return fc.stats
 }
 
-// mvtReach lists the hull's current system and every system within ClaimReachHops of it, read
+// mvtReach lists the hull's current system and every system within reach hops of it, read
 // from the PERSISTED gate adjacency only (GateGraph.StoredSystemsWithinJumps). The shadow runs
 // after every productive tour of every trade hull, so its discovery must cost zero API and write
 // nothing: the reposition scan's fetch-through walk (repositionNeighborsWithinJumps → Connections)
@@ -142,13 +147,12 @@ func (h *RunTourCoordinatorHandler) mvtFleetStats(ctx context.Context, cmd *RunT
 // is no stored adjacency to walk and the hull ranks its own system alone (never the live
 // jump-gate scan); an unreadable store is an error and the caller stays put. Systems come back
 // with current first and the rest in symbol order, so a given graph ranks the same way twice.
-func (h *RunTourCoordinatorHandler) mvtReach(ctx context.Context, cmd *RunTourCoordinatorCommand, current string) ([]string, map[string]int, error) {
+func (h *RunTourCoordinatorHandler) mvtReach(ctx context.Context, current string, reach int) ([]string, map[string]int, error) {
 	systems := []string{current}
 	hops := map[string]int{current: 0}
 	if h.legs.gateGraph == nil {
 		return systems, hops, nil
 	}
-	reach := cmd.ClaimReachHops
 	if reach <= 0 {
 		reach = DefaultClaimReachHops
 	}
@@ -167,10 +171,47 @@ func (h *RunTourCoordinatorHandler) mvtReach(ctx context.Context, cmd *RunTourCo
 	return systems, hops, nil
 }
 
-// mvtRank ranks the hull's current system and every priced system within ClaimReachHops
+// mvtRank ranks the hull's current system and every priced system within ClaimReachHops.
+func (h *RunTourCoordinatorHandler) mvtRank(ctx context.Context, cmd *RunTourCoordinatorCommand, ship *navigation.Ship) ([]mvt.ScoredSystem, error) {
+	return h.mvtRankReach(ctx, cmd, ship, cmd.ClaimReachHops)
+}
+
+// mvtRankEscalating widens the claim reach one hop at a time, up to ClaimReachMaxHops,
+// until the ranking offers the hull somewhere to go. excludeCurrent is the empty-exit
+// case: the solver found nothing here, so only an alternative counts as an offer.
+func (h *RunTourCoordinatorHandler) mvtRankEscalating(ctx context.Context, cmd *RunTourCoordinatorCommand, ship *navigation.Ship, excludeCurrent bool) (ranked []mvt.ScoredSystem, hops int, err error) {
+	start := cmd.ClaimReachHops
+	if start <= 0 {
+		start = DefaultClaimReachHops
+	}
+	limit := cmd.ClaimReachMaxHops
+	if limit < start {
+		limit = start
+	}
+	current := ""
+	if ship.CurrentLocation() != nil {
+		current = ship.CurrentLocation().SystemSymbol
+	}
+	for hops = start; ; hops++ {
+		if ranked, err = h.mvtRankReach(ctx, cmd, ship, hops); err != nil {
+			return nil, hops, err
+		}
+		_, hasAlt := mvt.BestAlternative(ranked, current)
+		if hops >= limit || (len(ranked) > 0 && (!excludeCurrent || hasAlt)) {
+			break
+		}
+	}
+	if hops > start {
+		common.LoggerFromContext(ctx).Log("INFO", "MVT CLAIM: reach escalated", map[string]interface{}{
+			"hull": cmd.ShipSymbol, "from_hops": start, "to_hops": hops, "candidates": len(ranked)})
+	}
+	return ranked, hops, nil
+}
+
+// mvtRankReach ranks the hull's current system and every priced system within hops of it
 // (discovered by mvtReach, stored-only). Any unreadable input returns an error and the caller
 // stays put.
-func (h *RunTourCoordinatorHandler) mvtRank(ctx context.Context, cmd *RunTourCoordinatorCommand, ship *navigation.Ship) ([]mvt.ScoredSystem, error) {
+func (h *RunTourCoordinatorHandler) mvtRankReach(ctx context.Context, cmd *RunTourCoordinatorCommand, ship *navigation.Ship, hops int) ([]mvt.ScoredSystem, error) {
 	if h.mvt.depth == nil || h.mvt.claims == nil {
 		return nil, errors.New("mvt ports not wired")
 	}
@@ -181,7 +222,7 @@ func (h *RunTourCoordinatorHandler) mvtRank(ctx context.Context, cmd *RunTourCoo
 		return nil, errors.New("mvt ranker needs jump toll and gate fee readers")
 	}
 	current := ship.CurrentLocation().SystemSymbol
-	systems, hops, err := h.mvtReach(ctx, cmd, current)
+	systems, hopsOf, err := h.mvtReach(ctx, current, hops)
 	if err != nil {
 		return nil, err
 	}
@@ -204,7 +245,7 @@ func (h *RunTourCoordinatorHandler) mvtRank(ctx context.Context, cmd *RunTourCoo
 		if units == 0 {
 			continue
 		}
-		cands = append(cands, mvt.Candidate{System: sys, Hops: hops[sys], YieldCredits: credits, DepthUnits: units,
+		cands = append(cands, mvt.Candidate{System: sys, Hops: hopsOf[sys], YieldCredits: credits, DepthUnits: units,
 			InTransit: inTransit[sys], EntryWaypoint: entry})
 	}
 	costs := mvt.Costs{

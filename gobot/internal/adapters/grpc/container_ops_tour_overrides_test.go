@@ -6,6 +6,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	tradingCmd "github.com/andrescamacho/spacetraders-go/internal/application/trading/commands"
+	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
 )
 
 // sp-nxrt part (a): the trade-fleet coordinator escalates a twice-fast-failed hull to
@@ -66,5 +67,28 @@ func TestBuildTourCoordinatorCommand_MVTLoopReadsTheSelectorAndKnobDefaults(t *t
 	require.Equal(t, tradingCmd.DefaultYieldWindowSells, off.YieldWindowSells)
 	require.Equal(t, tradingCmd.DefaultYieldMinSells, off.YieldMinSells)
 	require.Equal(t, tradingCmd.DefaultClaimReachHops, off.ClaimReachHops)
+	require.Equal(t, tradingCmd.DefaultClaimReachMaxHops, off.ClaimReachMaxHops)
+	require.Equal(t, 4, off.ClaimReachMaxHops, "an absent claim_reach_max_hops caps escalation at the spec default")
 	require.Equal(t, tradingCmd.DefaultSpecialistCadenceMinutes, off.SpecialistCadenceMinutes)
+	require.Equal(t, tradingCmd.DefaultYieldRateSpanFloorMinutes, off.YieldRateSpanFloorMinutes)
+
+	tuned := build(map[string]interface{}{"ship_symbol": "HULL-1", "yield_rate_span_floor_minutes": 5})
+	require.Equal(t, 5, tuned.YieldRateSpanFloorMinutes, "a configured floor rides through to the command")
+}
+
+// The MVT knobs are stamped into the launch config only when the captain set them, so an
+// absent [trade_fleet] key leaves the coordinator's spec default in force instead of pinning
+// a 0 that a recovery rebuild would read back as "no floor".
+func TestAddTradeFleetTourKnobs_WritesTheMVTKnobsOnlyWhenConfigured(t *testing.T) {
+	unset := map[string]interface{}{}
+	(&DaemonServer{}).addTradeFleetTourKnobs(unset)
+	for _, key := range []string{"yield_window_sells", "yield_min_sells", "claim_reach_hops",
+		"specialist_cadence_minutes", "yield_rate_span_floor_minutes"} {
+		_, present := unset[key]
+		require.Falsef(t, present, "an unset %s must not be written", key)
+	}
+
+	set := map[string]interface{}{}
+	(&DaemonServer{tradeFleetConfig: config.TradeFleetConfig{YieldRateSpanFloorMinutes: 45}}).addTradeFleetTourKnobs(set)
+	require.Equal(t, 45, set["yield_rate_span_floor_minutes"])
 }
