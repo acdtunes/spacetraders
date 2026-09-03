@@ -71,7 +71,7 @@ func TestTour_DefaultReserve_ParksBuysInContractBand(t *testing.T) {
 
 // An EXPLICITLY configured reserve still wins verbatim — even one BELOW the 150k default.
 // A 60,000 launch-config reserve with a 100,000 live balance leaves 40,000 of headroom, so
-// the planned 100-unit buy is SHRUNK to 40 units and executed. Guards against the wrong
+// the planned 100-unit buy is SHRUNK to 34 units (40,000 / the 1,150 ceiling) and executed. Guards against the wrong
 // implementation max(explicit, default), which would skip this buy; only the absent-config
 // DEFAULT rose to 150k (sp-q8bon preserves the explicit-reserve semantics).
 func TestTour_ExplicitReserveBelowDefault_StillWins(t *testing.T) {
@@ -94,7 +94,7 @@ func TestTour_ExplicitReserveBelowDefault_StillWins(t *testing.T) {
 	if fx.buys != 1 {
 		t.Fatalf("an explicit 60,000 reserve must win over the 150k default (one shrunk buy), got %d buys — zero means the default incorrectly overrode the configured reserve", fx.buys)
 	}
-	if r.TotalSpent != 40*1000 {
-		t.Fatalf("expected the tranche shrunk to the explicit reserve's 40,000 headroom (40 units), got spend %d", r.TotalSpent)
+	if r.TotalSpent != 34*1000 {
+		t.Fatalf("expected the tranche shrunk to the explicit reserve's 40,000 headroom (34 units at the 1,150 ceiling), got spend %d", r.TotalSpent)
 	}
 }

@@ -74,7 +74,14 @@ func (r *freshnessFakeMarketRepo) UpsertMarketData(_ context.Context, _ uint, _ 
 // the number of live GetMarket calls the arrival scan made under the given policy.
 func runArrivalScan(t *testing.T, cachedLastUpdated time.Time, policy *shared.ScanPolicy) int {
 	t.Helper()
-	const marketWaypoint = "X1-RTE-MKT"
+	return runArrivalScanWith(t, cachedLastUpdated, policy, nil, nil)
+}
+
+// runArrivalScanWith is runArrivalScan with two seams the deferral suite needs: a ctx
+// decorator (to stamp the marker) and a logger to capture the line it emits.
+func runArrivalScanWith(t *testing.T, cachedLastUpdated time.Time, policy *shared.ScanPolicy, decorate func(context.Context) context.Context, logger common.ContainerLogger) int {
+	t.Helper()
+	const marketWaypoint = arrivalScanMarketWaypoint
 
 	api := &countingMarketAPI{}
 	marketRepo := &freshnessFakeMarketRepo{waypoint: marketWaypoint, lastUpdated: cachedLastUpdated}
@@ -104,6 +111,12 @@ func runArrivalScan(t *testing.T, cachedLastUpdated time.Time, policy *shared.Sc
 	ctx := common.WithPlayerToken(context.Background(), "test-token")
 	if policy != nil {
 		ctx = shared.WithScanPolicy(ctx, *policy)
+	}
+	if logger != nil {
+		ctx = common.WithLogger(ctx, logger)
+	}
+	if decorate != nil {
+		ctx = decorate(ctx)
 	}
 	require.NoError(t, executor.ExecuteRoute(ctx, route, shipEntity, playerID))
 	return api.gets

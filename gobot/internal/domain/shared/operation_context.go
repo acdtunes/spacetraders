@@ -9,13 +9,14 @@ import (
 type contextKey int
 
 const (
-	operationContextKey   contextKey = iota
-	skipMarketRefreshKey             // Skip market refresh after cargo transactions (optimization)
-	selectorBranchKey                // Factory input-source selector branch, tagged onto the buy's ledger row
-	constructionSupplyKey            // Marks a ProduceGood run as construction supply, exempt from resale-margin guards
-	scanPolicyKey                    // Tour-scan load policy: recent-scan freshness gate + impact-sample rate
-	liveScanRequiredKey              // Marks a market read as pre-commit money-guard verification, exempt from being served from store
-	pairedScanKey                    // Marks a market read as the "after" half of an impact-measurement pair, exempt from the freshness veto
+	operationContextKey    contextKey = iota
+	skipMarketRefreshKey              // Skip market refresh after cargo transactions (optimization)
+	selectorBranchKey                 // Factory input-source selector branch, tagged onto the buy's ledger row
+	constructionSupplyKey             // Marks a ProduceGood run as construction supply, exempt from resale-margin guards
+	scanPolicyKey                     // Tour-scan load policy: recent-scan freshness gate + impact-sample rate
+	liveScanRequiredKey               // Marks a market read as pre-commit money-guard verification, exempt from being served from store
+	pairedScanKey                     // Marks a market read as the "after" half of an impact-measurement pair, exempt from the freshness veto
+	arrivalScanDeferredKey            // Waypoint whose arrival scan a money guard's own live read duplicates
 )
 
 // OperationContext provides traceability from high-level operations (containers)
@@ -274,4 +275,17 @@ func WithPairedScan(ctx context.Context) context.Context {
 func PairedScanFromContext(ctx context.Context) bool {
 	paired, ok := ctx.Value(pairedScanKey).(bool)
 	return ok && paired
+}
+
+// WithArrivalScanDeferred marks waypoint's ARRIVAL market scan redundant: a money guard
+// live-reads it before any trade there. ONE waypoint is the scope, never a whole flight.
+func WithArrivalScanDeferred(ctx context.Context, waypoint string) context.Context {
+	return context.WithValue(ctx, arrivalScanDeferredKey, waypoint)
+}
+
+func ArrivalScanDeferredFromContext(ctx context.Context) (string, bool) {
+	if waypoint, ok := ctx.Value(arrivalScanDeferredKey).(string); ok && waypoint != "" {
+		return waypoint, true
+	}
+	return "", false
 }

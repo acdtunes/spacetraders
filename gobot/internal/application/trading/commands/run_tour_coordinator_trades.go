@@ -32,8 +32,9 @@ type tourPlanRun struct {
 	reserve         int64
 	// sellFloorSpent names the goods whose per-tranche sell floor has already refused a
 	// tranche, spanning this tour's plans and re-plans — see sellFloorPerUnit.
-	sellFloorSpent map[string]bool
-	legSold        map[string]int // units realized into THIS leg's sink per good; executePlan hands each leg a fresh map
+	sellFloorSpent  map[string]bool
+	legSold         map[string]int // units realized into THIS leg's sink per good; executePlan hands each leg a fresh map
+	legScanDeferred bool           // this leg's arrival scan was deferred, so its cached ask is unrefreshed — see tourBuySizingAsk
 }
 
 // sellFloorPerUnit is the tolerated bid for one sell tranche: the plan's basis less the
@@ -88,6 +89,47 @@ func legTradesToFly(trades []routing.TourTrade, discharging bool) []routing.Tour
 		}
 	}
 	return sells
+}
+
+// tourLegDefersArrivalScan reports whether this leg's ARRIVAL scan is pure duplication:
+// every trade it will fly is a BUY through purchaseWithCeiling with a positive ceiling,
+// so the buy-ceiling guard live-re-reads this market moments later and THAT read protects
+// the trade. Sells never qualify — sellFloorPerUnit arms a floor only past
+// tourACapTranches x trade_volume and legSold starts empty each leg, so a leg's first
+// sell tranche always dispatches unguarded. A deposit reads no market, and a leg with
+// nothing to fly has no guard to defer to; both keep the scan they have today.
+func tourLegDefersArrivalScan(leg routing.TourLeg, discharging bool) bool {
+	trades := legTradesToFly(leg.Trades, discharging)
+	if len(trades) == 0 {
+		return false
+	}
+	for _, t := range trades {
+		if !t.IsBuy || t.IsDeposit || t.GuardBasis() <= 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// tourBuyCeiling is the most one unit of this tranche can cost: the UNDISCOUNTED basis
+// plus the band the per-tranche guard enforces live, aborting anything priced past it.
+func tourBuyCeiling(trade routing.TourTrade) int {
+	planned := trade.GuardBasis()
+	return planned + planned*tourPriceTolerancePct/100
+}
+
+// tourBuySizingAsk is the per-unit price the buy's CUTS divide by. Where the arrival scan
+// was deferred, the cached ask may read too LOW and so size the tranche too LARGE; the
+// ceiling is the price no purchased unit can exceed, so both cuts stay fail-closed with no
+// second live read. Everywhere else this is the cached ask, unchanged.
+func tourBuySizingAsk(liveAsk int, trade routing.TourTrade, arrivalScanDeferred bool) int {
+	if !arrivalScanDeferred {
+		return liveAsk
+	}
+	if ceiling := tourBuyCeiling(trade); ceiling > liveAsk {
+		return ceiling
+	}
+	return liveAsk
 }
 
 // legsCanDischargeHold reports whether any of legs sells (or deposits) a good the hull is
@@ -170,7 +212,7 @@ func (h *RunTourCoordinatorHandler) executeTrade(
 	}
 
 	if trade.IsBuy {
-		return h.executeBuy(ctx, run.cmd, leg, legIdx, trade, run.shadowSinks, run.dispositions, live, run.response, run.netBought, run.cumulativeSpend, run.maxSpend, run.reserve, dedup, legFlows)
+		return h.executeBuy(ctx, run.cmd, leg, legIdx, trade, run.shadowSinks, run.dispositions, live, run.response, run.netBought, run.cumulativeSpend, run.maxSpend, run.reserve, dedup, legFlows, run.legScanDeferred)
 	}
 	return h.executeSell(ctx, run, leg, legIdx, trade, live, legFlows)
 }
@@ -190,6 +232,7 @@ func (h *RunTourCoordinatorHandler) executeBuy(
 	maxSpend, reserve int64,
 	dedup scanDedupBracket,
 	legFlows map[tourFlowKey]*tourMarketFlow,
+	arrivalScanDeferred bool,
 ) (bool, error) {
 	logger := common.LoggerFromContext(ctx)
 
@@ -201,6 +244,8 @@ func (h *RunTourCoordinatorHandler) executeBuy(
 	if liveAsk <= 0 {
 		return false, nil
 	}
+	// Every per-unit CUT below divides by this: understating the divisor oversizes the tranche.
+	sizingAsk := tourBuySizingAsk(liveAsk, trade, arrivalScanDeferred)
 	units := trade.Units
 	if space := ship.AvailableCargoSpace(); space < units {
 		units = space
@@ -216,7 +261,7 @@ func (h *RunTourCoordinatorHandler) executeBuy(
 			})
 			return false, nil
 		}
-		if affordable := int(remaining / int64(liveAsk)); affordable < units {
+		if affordable := int(remaining / int64(sizingAsk)); affordable < units {
 			units = affordable
 		}
 	}
@@ -271,7 +316,7 @@ func (h *RunTourCoordinatorHandler) executeBuy(
 		return false, nil
 	}
 	if guardOn {
-		floorMaxUnits := headroom / liveAsk // floor-respecting max; headroom may be <= 0 (skip)
+		floorMaxUnits := headroom / sizingAsk // floor-respecting max; headroom may be <= 0 (skip)
 		if floorMaxUnits <= 0 {
 			// The guard is right to refuse and stays exactly as it is; what the run records
 			// here is the DIAGNOSIS — this tour was denied capital, so the loop must not read
@@ -279,16 +324,16 @@ func (h *RunTourCoordinatorHandler) executeBuy(
 			response.CapitalDeniedBuys++
 			metrics.RecordTourReserveFloorEngagement(cmd.PlayerID, "skip") // floor bound the whole tranche
 			logger.Log("WARNING", fmt.Sprintf("Tour leg %d: buy of %d %s @ %d would breach working-capital floor - live balance %d, reserve %d, even 1 unit pierces - skipping, will re-plan",
-				legIdx, units, trade.Good, liveAsk, liveBalance, reserve), map[string]interface{}{
-				"leg": legIdx, "good": trade.Good, "planned_units": units, "ask": liveAsk, "live_balance": liveBalance, "reserve": reserve,
+				legIdx, units, trade.Good, sizingAsk, liveBalance, reserve), map[string]interface{}{
+				"leg": legIdx, "good": trade.Good, "planned_units": units, "ask": sizingAsk, "live_balance": liveBalance, "reserve": reserve,
 			})
 			return false, nil
 		}
 		if floorMaxUnits < units {
 			metrics.RecordTourReserveFloorEngagement(cmd.PlayerID, "shrink") // floor cut the tranche to fit
 			logger.Log("WARNING", fmt.Sprintf("Tour leg %d: shrinking buy of %s from %d to %d units @ %d to respect working-capital floor (live balance %d, reserve %d)",
-				legIdx, trade.Good, units, floorMaxUnits, liveAsk, liveBalance, reserve), map[string]interface{}{
-				"leg": legIdx, "good": trade.Good, "planned_units": units, "floor_max_units": floorMaxUnits, "ask": liveAsk, "live_balance": liveBalance, "reserve": reserve,
+				legIdx, trade.Good, units, floorMaxUnits, sizingAsk, liveBalance, reserve), map[string]interface{}{
+				"leg": legIdx, "good": trade.Good, "planned_units": units, "floor_max_units": floorMaxUnits, "ask": sizingAsk, "live_balance": liveBalance, "reserve": reserve,
 			})
 			units = floorMaxUnits
 		}
@@ -305,8 +350,7 @@ func (h *RunTourCoordinatorHandler) executeBuy(
 	// multi-tranche purchase walks up itself, aborting the remainder once a
 	// sub-tranche prices past the plan's tolerance, over the UNDISCOUNTED basis (a
 	// marked-UP ask would raise this ceiling by exactly the haircut).
-	planned := trade.GuardBasis()
-	maxAskPerUnit := planned + planned*tourPriceTolerancePct/100
+	maxAskPerUnit := tourBuyCeiling(trade)
 	buyResp, err := h.legs.purchaseWithCeiling(ctx, cmd.ShipSymbol, trade.Good, units, cmd.PlayerID, maxAskPerUnit, dedup)
 	if err != nil {
 		return false, fmt.Errorf("purchase of %d %s at %s failed: %w", units, trade.Good, leg.Waypoint, err)

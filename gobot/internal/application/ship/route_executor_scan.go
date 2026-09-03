@@ -10,31 +10,46 @@ import (
 )
 
 func (e *RouteExecutor) scanMarketIfPresent(ctx context.Context, segment *domainNavigation.RouteSegment, ship *domainNavigation.Ship, playerID shared.PlayerID) {
-	if e.marketScanner != nil && segment.ToWaypoint.IsMarketplace() {
-		logger := common.LoggerFromContext(ctx)
-		logger.Log("INFO", "Marketplace detected - scanning market data", map[string]interface{}{
+	if e.marketScanner == nil || !segment.ToWaypoint.IsMarketplace() {
+		return
+	}
+	logger := common.LoggerFromContext(ctx)
+
+	// Guard-deferral gate: the caller stamped THIS waypoint because a money-guarded
+	// trade live-reads it seconds from now (liveAskForCeiling/liveBidForFloor), so
+	// this scan would buy nothing the guard's own read does not already buy. Only
+	// the stamped waypoint is skipped — a flight's gate arrivals still scan.
+	if deferred, ok := shared.ArrivalScanDeferredFromContext(ctx); ok && deferred == segment.ToWaypoint.Symbol {
+		logger.Log("INFO", "Arrival market scan deferred to the trade guard", map[string]interface{}{
+			"ship_symbol": ship.ShipSymbol(),
+			"action":      "scan_deferred_to_guard",
+			"waypoint":    segment.ToWaypoint.Symbol,
+		})
+		return
+	}
+
+	logger.Log("INFO", "Marketplace detected - scanning market data", map[string]interface{}{
+		"ship_symbol": ship.ShipSymbol(),
+		"action":      "scan_market",
+		"waypoint":    segment.ToWaypoint.Symbol,
+	})
+
+	// Recent-scan freshness gate: a trade coordinator stamps a ScanPolicy with
+	// MaxScanAge>0, so an arrival at a market scanned within that window reuses
+	// the cache instead of re-calling GetMarket. The freshness-scout recovery path
+	// stamps NO policy (maxAge 0), so ScanAndSaveMarketFresh always scans and its
+	// recovery/decay dataset is untouched.
+	var maxScanAge time.Duration
+	if policy, ok := shared.ScanPolicyFromContext(ctx); ok {
+		maxScanAge = policy.MaxScanAge
+	}
+	if _, err := e.marketScanner.ScanAndSaveMarketFresh(ctx, uint(playerID.Value()), segment.ToWaypoint.Symbol, maxScanAge); err != nil {
+		logger.Log("ERROR", "Market scan failed", map[string]interface{}{
 			"ship_symbol": ship.ShipSymbol(),
 			"action":      "scan_market",
 			"waypoint":    segment.ToWaypoint.Symbol,
+			"error":       err.Error(),
 		})
-
-		// Recent-scan freshness gate: a trade coordinator stamps a ScanPolicy with
-		// MaxScanAge>0, so an arrival at a market scanned within that window reuses
-		// the cache instead of re-calling GetMarket. The freshness-scout recovery path
-		// stamps NO policy (maxAge 0), so ScanAndSaveMarketFresh always scans and its
-		// recovery/decay dataset is untouched.
-		var maxScanAge time.Duration
-		if policy, ok := shared.ScanPolicyFromContext(ctx); ok {
-			maxScanAge = policy.MaxScanAge
-		}
-		if _, err := e.marketScanner.ScanAndSaveMarketFresh(ctx, uint(playerID.Value()), segment.ToWaypoint.Symbol, maxScanAge); err != nil {
-			logger.Log("ERROR", "Market scan failed", map[string]interface{}{
-				"ship_symbol": ship.ShipSymbol(),
-				"action":      "scan_market",
-				"waypoint":    segment.ToWaypoint.Symbol,
-				"error":       err.Error(),
-			})
-		}
 	}
 }
 

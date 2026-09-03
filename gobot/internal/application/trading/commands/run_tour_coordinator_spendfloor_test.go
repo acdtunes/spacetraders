@@ -61,6 +61,8 @@ func floorRoundTripFixture() *tourFixture {
 	}
 }
 
+// The buy leg below is buy-only and guarded, so its arrival scan is deferred and every
+// per-unit CUT divides by the buy ceiling (1000 + 15% = 1150), not the cached ask.
 func floorRoundTripPlan(buyUnits int) *routing.TourPlan {
 	return &routing.TourPlan{Feasible: true, Legs: []routing.TourLeg{
 		leg("X1-S1-A", "X1-S1", buy("G", buyUnits, 1000)),
@@ -68,8 +70,8 @@ func floorRoundTripPlan(buyUnits int) *routing.TourPlan {
 	}}
 }
 
-// Shrink: live balance 1,090,000, reserve 1,000,000 → 90,000 headroom / 1,000 ask = 90
-// affordable units. A planned 100-unit buy is SHRUNK to 90 (not skipped, not bought
+// Shrink: live balance 1,090,000, reserve 1,000,000 → 90,000 headroom / 1,150 ceiling = 78
+// affordable units. A planned 100-unit buy is SHRUNK to 78 (not skipped, not bought
 // whole). The old skip-only guard bought 0 here, so this is the behavior delta.
 func TestTour_BuyFloor_ShrinksTrancheToFloorRespectingUnits(t *testing.T) {
 	fx := floorRoundTripFixture()
@@ -91,8 +93,8 @@ func TestTour_BuyFloor_ShrinksTrancheToFloorRespectingUnits(t *testing.T) {
 	if fx.buys != 1 {
 		t.Fatalf("expected exactly ONE buy dispatch (shrunk, not skipped), got %d", fx.buys)
 	}
-	if r.TotalSpent != 90*1000 {
-		t.Fatalf("expected the tranche shrunk to 90 units (spend 90,000), got spend %d — a whole 100-unit buy (100,000) breaches the 1M floor, a skip spends 0", r.TotalSpent)
+	if r.TotalSpent != 78*1000 {
+		t.Fatalf("expected the tranche shrunk to 78 units = 90,000 headroom / the 1,150 ceiling (spend 78,000), got spend %d — a whole 100-unit buy (100,000) breaches the 1M floor, a skip spends 0", r.TotalSpent)
 	}
 	if r.CargoStranded {
 		t.Fatalf("the shrunk 90 units were sold at B — must not strand: %s", r.CargoStrandedReason)
@@ -199,7 +201,7 @@ func TestTour_BuyFloor_UnreadableBalanceFailsClosedNoSpendNoDeath(t *testing.T) 
 // plan-time treasury (8,000,000 → a 4,200,000 dynamic cap that comfortably admits the
 // 100-unit buy), but by execution the live balance has DROPPED to 1,090,000 (a sibling
 // hull drained the shared treasury). The floor binds at EXECUTION against the live
-// balance — the tranche shrinks to the 90 units that 90,000 of headroom allows — proving
+// balance — the tranche shrinks to the 78 units that 90,000 of headroom allows — proving
 // the guard reads the balance at buy time, not at plan time.
 func TestTour_BuyFloor_HoldsAtExecutionWhenTreasuryDropsAfterPlanning(t *testing.T) {
 	fx := floorRoundTripFixture()
@@ -225,7 +227,7 @@ func TestTour_BuyFloor_HoldsAtExecutionWhenTreasuryDropsAfterPlanning(t *testing
 	if fx.buys != 1 {
 		t.Fatalf("expected one shrunk buy, got %d", fx.buys)
 	}
-	if r.TotalSpent != 90*1000 {
-		t.Fatalf("the floor must bind at EXECUTION against the dropped live balance (spend 90,000 = 90 units), got %d — 100,000 would mean the floor used the stale plan-time balance", r.TotalSpent)
+	if r.TotalSpent != 78*1000 {
+		t.Fatalf("the floor must bind at EXECUTION against the dropped live balance (spend 78,000 = 78 units), got %d — 100,000 would mean the floor used the stale plan-time balance", r.TotalSpent)
 	}
 }

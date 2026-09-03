@@ -93,6 +93,11 @@ type tourFixture struct {
 	// test can assert the cross-system departure hop (waypoint->source gate) fired BEFORE the
 	// jump. Purely additive — no existing test reads it.
 	navDests []string
+	// navDeferredScan records, per NavigateRouteCommand in the same order as navDests, the
+	// waypoint the sp-unw6h arrival-scan deferral marker named on that navigate's ctx ("" when
+	// unstamped). It is the seam a deferral test reads: the marker never reaches a command
+	// field, only the ctx the movement primitive is handed.
+	navDeferredScan []string
 	// jumpRequiresGate, when true, makes the fake JumpShipCommand enforce the live engine's
 	// precondition — a driveless hull must be sitting ON a jump gate — and reject a jump from a
 	// non-gate waypoint with the exact "not at a jump gate" error jump_ship.go returns (sp-trnp).
@@ -140,6 +145,9 @@ type tourFixture struct {
 	// sellCmds captures every dispatched SellCargoCommand in order, so a test can read the
 	// per-tranche floor the caller armed. Purely additive.
 	sellCmds []*shipCargo.SellCargoCommand
+	// buyCmds is the mirror for purchases, so a test can read the per-tranche CEILING the
+	// caller armed (MaxAskPerUnit>0 is what makes the guard live-re-read the ask).
+	buyCmds []*shipCargo.PurchaseCargoCommand
 
 	// Normalized operation_type carried on ctx at each buy/sell dispatch — the exact
 	// value the real cargo-tx path stamps onto the ledger row. Captured at
@@ -269,6 +277,8 @@ func (m *tourFakeMediator) Send(ctx context.Context, request common.Request) (co
 	case *navCmd.NavigateRouteCommand:
 		m.fx.mu.Lock()
 		m.fx.navDests = append(m.fx.navDests, cmd.Destination)
+		deferred, _ := shared.ArrivalScanDeferredFromContext(ctx)
+		m.fx.navDeferredScan = append(m.fx.navDeferredScan, deferred)
 		if m.fx.navHook != nil {
 			if err := m.fx.navHook(cmd.Destination); err != nil {
 				m.fx.mu.Unlock()
@@ -296,6 +306,7 @@ func (m *tourFakeMediator) Send(ctx context.Context, request common.Request) (co
 			m.fx.mu.Unlock()
 			return nil, err
 		}
+		m.fx.buyCmds = append(m.fx.buyCmds, cmd)
 		price := m.fx.ask[m.fx.location][cmd.GoodSymbol]
 		// Honor the sp-9mkf per-tranche buy ceiling like the real PurchaseCargoCommand
 		// handler: a live ask above MaxAskPerUnit aborts the buy (zero units) rather than

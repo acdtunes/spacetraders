@@ -1319,7 +1319,16 @@ func (h *RunTourCoordinatorHandler) executePlan(
 		// Captured before travel(); cleared after the leg's first buy consumes it
 		// (below), since a leg may carry several.
 		legDedupBracket := h.legs.startScanDedupBracket(ctx, cmd.ShipSymbol, cmd.PlayerID)
-		ship, err = h.legs.travel(ctx, ship, leg.Waypoint, cmd.PlayerID)
+		// A fully guarded leg gets its live read from the guard moments after arrival, so
+		// the arrival scan duplicates it. TRAVEL ctx only — the trade ctx is untouched.
+		// The same verdict rides run into the leg's buys, whose cuts then size off the
+		// guard ceiling rather than a cached ask no arrival scan refreshed.
+		run.legScanDeferred = tourLegDefersArrivalScan(leg, discharging || retiring)
+		travelCtx := ctx
+		if run.legScanDeferred {
+			travelCtx = shared.WithArrivalScanDeferred(ctx, leg.Waypoint)
+		}
+		ship, err = h.legs.travel(travelCtx, ship, leg.Waypoint, cmd.PlayerID)
 		if err != nil {
 			if errors.Is(err, gategraph.ErrUnroutable) {
 				logger.Log("WARNING", fmt.Sprintf("Leg %d to %s unroutable (gate-graph drift) - degrading to re-plan: %v", legIdx, leg.Waypoint, err), map[string]interface{}{
