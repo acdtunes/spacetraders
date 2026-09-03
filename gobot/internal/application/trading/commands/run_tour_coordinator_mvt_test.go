@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -228,6 +229,42 @@ func TestMVTRank_SpreadFloorFromCommand(t *testing.T) {
 		}
 		if got != tc.want {
 			t.Fatalf("floor %d: X1-S2 present = %v, want %v (ranked %+v)", tc.floor, got, tc.want, ranked)
+		}
+	}
+}
+
+// mvtAfterTour's departure rule uses the non-escalating mvtRank: thin-only neighbours under
+// the floor are no offer at all, and — unlike the escalating CLAIM path — that is never
+// relaxed. A hull on productive ground must keep comparing against rich alternatives only.
+func TestMVTAfterTour_NeverRelaxesFloor(t *testing.T) {
+	fx := repositionFixture()
+	h, claims, trans := mvtHandler(t, fx, rateFloorPlanner(feasiblePlan(600000, 600000)), 0, 0)
+	now := time.Now()
+	h.SetMVTPorts(claims, &mvtFakeDepth{lanes: map[string][]mvt.LaneDepth{
+		"X1-S2": mvtLane("X1-S2", "IRON", 100, 100, 250, now), // 150/unit, below the 200 floor
+	}}, trans)
+	h.SetGateGraph(mvtTravelGraph())
+	logger := &metaCapturingLogger{}
+	ctx := common.WithLogger(context.Background(), logger)
+	cmd := mvtCmd(t) // RankerMinSpreadPerUnit unset -> the default 200 floor
+	st := h.mvtState(cmd)
+	st.claimed = "X1-S1"
+	t0 := time.Now().Add(-time.Hour)
+	for i := 0; i < 3; i++ { // a productive tour: enough sells to clear the cold-start guard
+		st.yield.Observe(1, 10, t0.Add(time.Duration(i)*time.Second))
+	}
+	if err := h.mvtAfterTour(ctx, cmd, &RunTourCoordinatorResponse{}, tourPlanBudget{}); err != nil {
+		t.Fatalf("after tour: %v", err)
+	}
+	if got := trans.last(t); got.Reason != mvt.ReasonNoAlternative || got.To != mvt.StateTrade || got.System != "X1-S1" {
+		t.Fatalf("after-tour verdict = %+v, want TRADE>TRADE:no_alternative@X1-S1", got)
+	}
+	if len(fx.jumps) != 0 {
+		t.Fatalf("the departure rule must not fly under the floor: jumps=%v", fx.jumps)
+	}
+	for _, e := range logger.entries {
+		if strings.Contains(e.message, "spread floor relaxed") {
+			t.Fatalf("mvtAfterTour must never relax the floor, got %+v", e)
 		}
 	}
 }

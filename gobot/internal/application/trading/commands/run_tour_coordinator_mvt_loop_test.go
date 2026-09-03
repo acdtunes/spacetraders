@@ -1031,6 +1031,18 @@ func mvtChainHandler(t *testing.T, fx *tourFixture, depths map[string]int, path 
 	return h, claims, trans
 }
 
+// mvtChainHandlerLanes is mvtChainHandler for a fixture that needs lanes built directly
+// (e.g. a thin, non-mvtRichLane spread) rather than the rich credits-per-system shorthand.
+func mvtChainHandlerLanes(t *testing.T, fx *tourFixture, lanes map[string][]mvt.LaneDepth, path ...string) (*RunTourCoordinatorHandler, *mvtFakeClaims, *mvtFakeTransitions) {
+	t.Helper()
+	h, claims, trans := mvtHandler(t, fx, rateFloorPlanner(feasiblePlan(600000, 600000)), 0, 0)
+	h.SetMVTPorts(claims, &mvtFakeDepth{lanes: lanes}, trans)
+	g := mvtStoredGraph([2]string{"X1-S1", "X1-S2"}, [2]string{"X1-S2", "X1-S3"})
+	g.path = path
+	h.SetGateGraph(g)
+	return h, claims, trans
+}
+
 // mvtEscalationCmd is mvtCmd at a one-hop reach with the escalation cap given.
 func mvtEscalationCmd(t *testing.T, maxHops int) *RunTourCoordinatorCommand {
 	t.Helper()
@@ -1050,6 +1062,18 @@ func mvtEscalatedTo(l *metaCapturingLogger) int {
 		}
 	}
 	return -1
+}
+
+// mvtRelaxedLog is the "spread floor relaxed" line's metadata, or nil when none was logged.
+func mvtRelaxedLog(l *metaCapturingLogger) map[string]interface{} {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, e := range l.entries {
+		if strings.Contains(e.message, "spread floor relaxed") {
+			return e.metadata
+		}
+	}
+	return nil
 }
 
 // mvtWantFlownToS3 pins the escalated two-hop claim: both jumps flown, X1-S3 claimed and
@@ -1224,5 +1248,91 @@ func TestMVTAfterTour_DoesNotEscalate(t *testing.T) {
 	}
 	if len(fx.jumps) != 0 || mvtEscalatedTo(logger) != -1 {
 		t.Fatalf("the departure rule must neither fly nor escalate: jumps=%v escalated=%d", fx.jumps, mvtEscalatedTo(logger))
+	}
+}
+
+// The floor was meant to steer a hull toward rich ground, not to hold it in a drained pocket:
+// with nothing clearing 200/unit anywhere in reach, the escalation relaxes to floor 0 once at
+// the cap and takes the best thin (150/unit) alternative instead of idling (sp-htzl1.1).
+func TestMVTClaimAndTravel_RelaxesFloorWhenNothingRichIsReachable(t *testing.T) {
+	fx := repositionFixture()
+	now := time.Now()
+	lanes := map[string][]mvt.LaneDepth{
+		"X1-S2": mvtLane("X1-S2", "IRON", 100, 100, 250, now), // 150/unit, one hop out
+		"X1-S3": mvtLane("X1-S3", "IRON", 100, 100, 250, now), // 150/unit, two hops out
+	}
+	h, claims, trans := mvtChainHandlerLanes(t, fx, lanes, "X1-S1", "X1-S2")
+	logger := &metaCapturingLogger{}
+	ctx := common.WithLogger(context.Background(), logger)
+	cmd := mvtEscalationCmd(t, 2)
+	cmd.RankerMinSpreadPerUnit = 200
+	moved, err := h.mvtClaimAndTravel(ctx, cmd, &RunTourCoordinatorResponse{}, &repositionEpisode{}, mvtReasonEmpty, tourPlanBudget{})
+	if err != nil || !moved {
+		t.Fatalf("moved=%v err=%v, want the relaxed claim flown", moved, err)
+	}
+	if len(fx.jumps) != 1 || fx.jumps[0] != "X1-S2" {
+		t.Fatalf("jumps = %v, want the one hop to the nearer thin system X1-S2", fx.jumps)
+	}
+	c, ok, _ := claims.Get(ctx, 1, "TOUR-MVT")
+	if !ok || c.System != "X1-S2" || c.ArrivedAt == nil {
+		t.Fatalf("claim = %+v ok=%v, want X1-S2 arrived", c, ok)
+	}
+	if got := mvtSeen(trans.rows); len(got) == 0 || got[0] != "TRADE>CLAIM:"+mvtReasonEmpty+"@X1-S1" {
+		t.Fatalf("transitions = %v, want a CLAIM lead, not no_alternative", got)
+	}
+	meta := mvtRelaxedLog(logger)
+	if meta == nil {
+		t.Fatal("want a 'spread floor relaxed' log line")
+	}
+	if hops, _ := meta["hops"].(int); hops != 2 {
+		t.Fatalf("relaxed hops = %v, want 2", meta["hops"])
+	}
+}
+
+// A rich alternative two hops out ranks on its own at the floor: nothing thin competes for the
+// choice and the relaxation never fires.
+func TestMVTClaimAndTravel_DoesNotRelaxWhenARichSystemRanks(t *testing.T) {
+	fx := repositionFixture()
+	now := time.Now()
+	lanes := map[string][]mvt.LaneDepth{
+		"X1-S2": mvtLane("X1-S2", "IRON", 100, 100, 250, now), // 150/unit, below the floor
+		"X1-S3": mvtRichLane("X1-S3", 500, now),               // 500/unit, clears the floor
+	}
+	h, claims, trans := mvtChainHandlerLanes(t, fx, lanes, "X1-S1", "X1-S2", "X1-S3")
+	logger := &metaCapturingLogger{}
+	ctx := common.WithLogger(context.Background(), logger)
+	cmd := mvtEscalationCmd(t, 2)
+	cmd.RankerMinSpreadPerUnit = 200
+	moved, err := h.mvtClaimAndTravel(ctx, cmd, &RunTourCoordinatorResponse{}, &repositionEpisode{}, mvtReasonEmpty, tourPlanBudget{})
+	if err != nil || !moved {
+		t.Fatalf("moved=%v err=%v, want the rich claim flown", moved, err)
+	}
+	c, ok, _ := claims.Get(ctx, 1, "TOUR-MVT")
+	if !ok || c.System != "X1-S3" || c.ArrivedAt == nil {
+		t.Fatalf("claim = %+v ok=%v, want X1-S3 arrived", c, ok)
+	}
+	if got := mvtSeen(trans.rows); len(got) == 0 || got[0] != "TRADE>CLAIM:"+mvtReasonEmpty+"@X1-S1" {
+		t.Fatalf("transitions = %v, want a CLAIM lead", got)
+	}
+	if meta := mvtRelaxedLog(logger); meta != nil {
+		t.Fatalf("a ranked rich alternative must never trigger the relaxation: %+v", meta)
+	}
+}
+
+// Nothing priced anywhere in reach: the relaxed re-rank at floor 0 still finds nothing, so
+// no_alternative stands exactly as it did before the floor existed.
+func TestMVTClaimAndTravel_RelaxationStillEmptyStaysNoAlternative(t *testing.T) {
+	fx := repositionFixture()
+	h, _, trans := mvtChainHandlerLanes(t, fx, map[string][]mvt.LaneDepth{}, "X1-S1", "X1-S2", "X1-S3")
+	ctx := common.WithLogger(context.Background(), &metaCapturingLogger{})
+	cmd := mvtEscalationCmd(t, 2)
+	cmd.RankerMinSpreadPerUnit = 200
+	moved, err := h.mvtClaimAndTravel(ctx, cmd, &RunTourCoordinatorResponse{}, &repositionEpisode{}, mvtReasonEmpty, tourPlanBudget{})
+	if err != nil || moved || len(fx.jumps) != 0 {
+		t.Fatalf("moved=%v err=%v jumps=%v, want a stay", moved, err, fx.jumps)
+	}
+	want := "CLAIM>TRADE:" + mvt.ReasonNoAlternative + "@X1-S1"
+	if got := mvtSeen(trans.rows); len(got) != 1 || got[0] != want {
+		t.Fatalf("transitions = %v, want exactly [%s]", got, want)
 	}
 }

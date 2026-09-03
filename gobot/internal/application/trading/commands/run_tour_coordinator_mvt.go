@@ -181,7 +181,7 @@ func mvtSpreadFloor(cmd *RunTourCoordinatorCommand) int {
 
 // mvtRank ranks the hull's current system and every priced system within ClaimReachHops.
 func (h *RunTourCoordinatorHandler) mvtRank(ctx context.Context, cmd *RunTourCoordinatorCommand, ship *navigation.Ship) ([]mvt.ScoredSystem, error) {
-	return h.mvtRankReach(ctx, cmd, ship, cmd.ClaimReachHops)
+	return h.mvtRankReach(ctx, cmd, ship, cmd.ClaimReachHops, mvtSpreadFloor(cmd))
 }
 
 // mvtRankEscalating widens the claim reach one hop at a time, up to ClaimReachMaxHops,
@@ -200,11 +200,13 @@ func (h *RunTourCoordinatorHandler) mvtRankEscalating(ctx context.Context, cmd *
 	if ship.CurrentLocation() != nil {
 		current = ship.CurrentLocation().SystemSymbol
 	}
+	floor := mvtSpreadFloor(cmd)
+	var hasAlt bool
 	for hops = start; ; hops++ {
-		if ranked, err = h.mvtRankReach(ctx, cmd, ship, hops); err != nil {
+		if ranked, err = h.mvtRankReach(ctx, cmd, ship, hops, floor); err != nil {
 			return nil, hops, err
 		}
-		_, hasAlt := mvt.BestAlternative(ranked, current)
+		_, hasAlt = mvt.BestAlternative(ranked, current)
 		if hops >= limit || (len(ranked) > 0 && (!excludeCurrent || hasAlt)) {
 			break
 		}
@@ -212,7 +214,17 @@ func (h *RunTourCoordinatorHandler) mvtRankEscalating(ctx context.Context, cmd *
 	if hops > start {
 		common.LoggerFromContext(ctx).Log("INFO", "MVT CLAIM: reach escalated", map[string]interface{}{
 			"hull": cmd.ShipSymbol, "from_hops": start, "to_hops": hops, "candidates": len(ranked),
-			"min_spread": mvtSpreadFloor(cmd)})
+			"min_spread": floor})
+	}
+	// The floor steers toward rich ground; with nothing reachable even at the cap, idling
+	// the hull is worse than the best thin option, so it gets one relaxed look at floor 0.
+	if (len(ranked) == 0 || (excludeCurrent && !hasAlt)) && floor > 0 {
+		if ranked, err = h.mvtRankReach(ctx, cmd, ship, limit, 0); err != nil {
+			return nil, limit, err
+		}
+		common.LoggerFromContext(ctx).Log("INFO", "MVT CLAIM: spread floor relaxed", map[string]interface{}{
+			"hull": cmd.ShipSymbol, "hops": limit, "min_spread": floor, "candidates": len(ranked)})
+		hops = limit
 	}
 	return ranked, hops, nil
 }
@@ -220,7 +232,7 @@ func (h *RunTourCoordinatorHandler) mvtRankEscalating(ctx context.Context, cmd *
 // mvtRankReach ranks the hull's current system and every priced system within hops of it
 // (discovered by mvtReach, stored-only). Any unreadable input returns an error and the caller
 // stays put.
-func (h *RunTourCoordinatorHandler) mvtRankReach(ctx context.Context, cmd *RunTourCoordinatorCommand, ship *navigation.Ship, hops int) ([]mvt.ScoredSystem, error) {
+func (h *RunTourCoordinatorHandler) mvtRankReach(ctx context.Context, cmd *RunTourCoordinatorCommand, ship *navigation.Ship, hops int, floor int) ([]mvt.ScoredSystem, error) {
 	if h.mvt.depth == nil || h.mvt.claims == nil {
 		return nil, errors.New("mvt ports not wired")
 	}
@@ -250,7 +262,7 @@ func (h *RunTourCoordinatorHandler) mvtRankReach(ctx context.Context, cmd *RunTo
 	now := h.clock.Now()
 	cands := make([]mvt.Candidate, 0, len(systems))
 	for _, sys := range systems {
-		credits, units, entry := mvt.SystemYield(depths[sys], h.rankerAgeCaps, now, float64(mvtSpreadFloor(cmd)))
+		credits, units, entry := mvt.SystemYield(depths[sys], h.rankerAgeCaps, now, float64(floor))
 		if units == 0 {
 			continue
 		}
