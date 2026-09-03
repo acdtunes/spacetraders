@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	domainNavigation "github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
@@ -20,10 +21,13 @@ func (e *RouteExecutor) scanMarketIfPresent(ctx context.Context, segment *domain
 	// this scan would buy nothing the guard's own read does not already buy. Only
 	// the stamped waypoint is skipped — a flight's gate arrivals still scan.
 	if deferred, ok := shared.ArrivalScanDeferredFromContext(ctx); ok && deferred == segment.ToWaypoint.Symbol {
+		side := shared.ArrivalScanDeferredSideFromContext(ctx)
+		metrics.RecordArrivalScanDeferred(playerID.Value(), side)
 		logger.Log("INFO", "Arrival market scan deferred to the trade guard", map[string]interface{}{
 			"ship_symbol": ship.ShipSymbol(),
 			"action":      "scan_deferred_to_guard",
 			"waypoint":    segment.ToWaypoint.Symbol,
+			"side":        side,
 		})
 		return
 	}

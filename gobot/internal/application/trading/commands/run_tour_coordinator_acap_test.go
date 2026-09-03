@@ -63,10 +63,15 @@ func TestClassifyCapBinding_CeilingFollowsTheKnob(t *testing.T) {
 
 // SITE 3, the sell floor's DEPTH rule. The floor arms only past acap_tranches x
 // trade_volume into one visit's sink, so raising the knob must push the arming point out
-// with it: at 4 the first FOUR tranches dispatch unarmed and only the fifth carries a floor.
-// A DEPTH rule still reading the hard-coded 2 arms on the third.
+// with it: at 4 only the fifth tranche reaches the depth. A DEPTH rule still reading the
+// hard-coded 2 arms on the third.
+//
+// The leg's FIRST tranche is armed by a different bound (sp-htzl1.11: this sell-only leg
+// deferred its arrival scan, so the floor's live bid replaces it) and the bid is healthy so
+// that tranche sells — which is what leaves the one-refusal budget intact for the depth rule
+// to be observed at all. Tranche 2 onwards is the DEPTH rule's, and only the knob moves it.
 func TestTourSellFloor_DepthRuleFollowsTheKnob(t *testing.T) {
-	fx := sfFixture(map[string]map[string]int{sfSink: {sfGood: sfCrushed}}, sfSink)
+	fx := sfFixture(nil, sfSink)
 
 	h := newTourHandler(t, fx, sfPlanner(5, sfSink), &tourFakeTelemetry{})
 	_, err := h.Handle(common.WithLogger(context.Background(), &laneLogCapturingLogger{}), &RunTourCoordinatorCommand{
@@ -75,15 +80,15 @@ func TestTourSellFloor_DepthRuleFollowsTheKnob(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	require.Equal(t, []int{0, 0, 0, 0, sfFloor}, sfFloors(fx),
+	require.Equal(t, []int{sfFloor, 0, 0, 0, sfFloor}, sfFloors(fx),
 		"acap_tranches 4 arms the floor only past 4 x trade_volume into the visit")
-	require.Equal(t, 4, fx.sells, "the four shallow tranches sell; the deep one is refused on the crushed bid")
+	require.Equal(t, 5, fx.sells, "the bid is within tolerance, so every tranche sells")
 }
 
-// The same fixture under an UNSET knob is byte-identical to the shipped behaviour: the floor
-// arms on the third tranche, past two tranches of depth.
+// The same fixture under an UNSET knob is byte-identical to the shipped behaviour: the depth
+// rule arms on the third tranche, past two tranches of depth, and every tranche past it.
 func TestTourSellFloor_UnsetKnobKeepsTheTwoTrancheDepthRule(t *testing.T) {
-	fx := sfFixture(map[string]map[string]int{sfSink: {sfGood: sfCrushed}}, sfSink)
+	fx := sfFixture(nil, sfSink)
 
 	h := newTourHandler(t, fx, sfPlanner(5, sfSink), &tourFakeTelemetry{})
 	_, err := h.Handle(common.WithLogger(context.Background(), &laneLogCapturingLogger{}), &RunTourCoordinatorCommand{
@@ -92,8 +97,8 @@ func TestTourSellFloor_UnsetKnobKeepsTheTwoTrancheDepthRule(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	require.Equal(t, []int{0, 0, sfFloor, 0, 0}, sfFloors(fx),
-		"an unset knob still arms on the third tranche, and the one-refusal budget disarms the rest")
+	require.Equal(t, []int{sfFloor, 0, sfFloor, sfFloor, sfFloor}, sfFloors(fx),
+		"an unset knob still arms on the third tranche, two tranches of depth behind it")
 }
 
 // SITE 4, the firm-sink gate's LIVE depth re-read. The sink's live trade_volume collapsed to

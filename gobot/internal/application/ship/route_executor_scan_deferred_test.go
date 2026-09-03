@@ -7,8 +7,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/require"
 
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
@@ -48,6 +50,18 @@ func (l *deferralLogCapture) sawAction(action string) bool {
 	return false
 }
 
+// fieldOf is the value field carried by the first line logging action; nil if none did.
+func (l *deferralLogCapture) fieldOf(action, field string) interface{} {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, f := range l.entries {
+		if f["action"] == action {
+			return f[field]
+		}
+	}
+	return nil
+}
+
 func (l *deferralLogCapture) messagesContain(sub string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -63,16 +77,50 @@ func (l *deferralLogCapture) messagesContain(sub string) bool {
 // yet the marker names this waypoint — the guard's live read is coming, so no
 // GetMarket fires here.
 func TestArrivalScan_DeferredToTradeGuard_SkipsGetMarket(t *testing.T) {
+	prevRegistry := metrics.Registry
+	t.Cleanup(func() { metrics.Registry = prevRegistry })
+	metrics.Registry = prometheus.NewRegistry()
+	collector := metrics.NewScanDedupMetricsCollector()
+	require.NoError(t, collector.Register())
+	metrics.SetGlobalScanDedupCollector(collector)
+	t.Cleanup(func() { metrics.SetGlobalScanDedupCollector(nil) })
+
 	logger := &deferralLogCapture{}
 	gets := runArrivalScanWith(t, time.Now().Add(-10*time.Minute), &shared.ScanPolicy{MaxScanAge: 90 * time.Second},
 		func(ctx context.Context) context.Context {
-			return shared.WithArrivalScanDeferred(ctx, arrivalScanMarketWaypoint)
+			return shared.WithArrivalScanDeferred(ctx, arrivalScanMarketWaypoint, shared.ArrivalScanSideSell)
 		}, logger)
 
 	require.Equal(t, 0, gets, "a money-guarded trade live-reads this market seconds later - the arrival scan must not duplicate it")
 	require.True(t, logger.sawAction("scan_deferred_to_guard"), "the skipped scan must be logged with action=scan_deferred_to_guard, got %v", logger.entries)
 	require.True(t, logger.messagesContain("Arrival market scan deferred to the trade guard"))
 	require.False(t, logger.sawAction("scan_market"), "a deferred arrival must not also claim it is scanning")
+	// sp-htzl1.11: the split between buy legs and sell legs must be queryable, so the line
+	// carries the side that deferred it AND the counter records it under that label.
+	require.Equal(t, shared.ArrivalScanSideSell, logger.fieldOf("scan_deferred_to_guard", "side"),
+		"the deferral line must name the side whose guard is doing the reading, got %v", logger.entries)
+	require.Equal(t, 1.0, deferralCountBySide(t, shared.ArrivalScanSideSell),
+		"the skipped scan must also be counted on arrival_scan_deferred_total{side=\"sell\"}")
+}
+
+// deferralCountBySide reads the deferral counter for one side off the test registry.
+func deferralCountBySide(t *testing.T, side string) float64 {
+	t.Helper()
+	families, err := metrics.Registry.Gather()
+	require.NoError(t, err)
+	for _, f := range families {
+		if f.GetName() != "spacetraders_daemon_arrival_scan_deferred_total" {
+			continue
+		}
+		for _, m := range f.GetMetric() {
+			for _, l := range m.GetLabel() {
+				if l.GetName() == "side" && l.GetValue() == side {
+					return m.GetCounter().GetValue()
+				}
+			}
+		}
+	}
+	return 0
 }
 
 // The marker is waypoint-scoped: a stamp naming a DIFFERENT waypoint (a flight's jump
@@ -80,7 +128,7 @@ func TestArrivalScan_DeferredToTradeGuard_SkipsGetMarket(t *testing.T) {
 func TestArrivalScan_DeferralNamingAnotherWaypoint_StillScans(t *testing.T) {
 	gets := runArrivalScanWith(t, time.Now().Add(-10*time.Minute), &shared.ScanPolicy{MaxScanAge: 90 * time.Second},
 		func(ctx context.Context) context.Context {
-			return shared.WithArrivalScanDeferred(ctx, "X1-RTE-OTHER")
+			return shared.WithArrivalScanDeferred(ctx, "X1-RTE-OTHER", shared.ArrivalScanSideBuy)
 		}, nil)
 	require.Equal(t, 1, gets, "only the stamped waypoint's scan is deferred")
 }

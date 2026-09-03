@@ -6,14 +6,17 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-// ScanDedupMetricsCollector publishes how many Earning-class guard scans the
-// scan-dedup A/B test avoided by reusing a visit's own arrival scan. This is
-// the measurement instrument for the experiment's API-cost side.
+// ScanDedupMetricsCollector publishes the GetMarket calls a visit did NOT spend because
+// another live read of the same market already covers it: the Earning-class guard checks
+// the scan-dedup A/B test served from a visit's own arrival scan, and the mirror image —
+// arrival scans deferred to the guard that live-reads moments later. This is the
+// measurement instrument for the API-cost side of both.
 //
 // Pure observation: Record is nil-safe and best-effort, never touching an
 // admission decision.
 type ScanDedupMetricsCollector struct {
-	callsSaved *prometheus.CounterVec
+	callsSaved      *prometheus.CounterVec
+	arrivalDeferred *prometheus.CounterVec
 }
 
 // NewScanDedupMetricsCollector creates a new scan-dedup collector.
@@ -26,15 +29,21 @@ func NewScanDedupMetricsCollector() *ScanDedupMetricsCollector {
 			"ship_symbol",
 			"guard",
 		),
+		arrivalDeferred: newCounterVec(
+			"arrival_scan_deferred_total",
+			"Arrival market scans skipped because a money guard live-reads that market before trading there, by player and the side whose guard does the reading (buy, sell, mixed)",
+			"player_id",
+			"side",
+		),
 	}
 }
 
-// Register registers the scan-dedup metric with the Prometheus registry.
+// Register registers the scan-dedup metrics with the Prometheus registry.
 func (c *ScanDedupMetricsCollector) Register() error {
 	if Registry == nil {
 		return nil
 	}
-	return registerAll(c.callsSaved)
+	return registerAll(c.callsSaved, c.arrivalDeferred)
 }
 
 // RecordSaved counts one guard check that reused a scan instead of an API call.
@@ -43,6 +52,14 @@ func (c *ScanDedupMetricsCollector) RecordSaved(playerID int, shipSymbol, guard 
 		return
 	}
 	c.callsSaved.WithLabelValues(strconv.Itoa(playerID), shipSymbol, guard).Inc()
+}
+
+// RecordArrivalDeferred counts one arrival scan handed to a trade guard's own live read.
+func (c *ScanDedupMetricsCollector) RecordArrivalDeferred(playerID int, side string) {
+	if c == nil || c.arrivalDeferred == nil {
+		return
+	}
+	c.arrivalDeferred.WithLabelValues(strconv.Itoa(playerID), side).Inc()
 }
 
 var globalScanDedupCollector *ScanDedupMetricsCollector
@@ -61,5 +78,12 @@ func GetGlobalScanDedupCollector() *ScanDedupMetricsCollector {
 func RecordScanDedupSaved(playerID int, shipSymbol, guard string) {
 	if c := GetGlobalScanDedupCollector(); c != nil {
 		c.RecordSaved(playerID, shipSymbol, guard)
+	}
+}
+
+// RecordArrivalScanDeferred is the nil-safe package-level convenience callers use.
+func RecordArrivalScanDeferred(playerID int, side string) {
+	if c := GetGlobalScanDedupCollector(); c != nil {
+		c.RecordArrivalDeferred(playerID, side)
 	}
 }

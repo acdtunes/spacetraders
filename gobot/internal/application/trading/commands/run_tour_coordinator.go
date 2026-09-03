@@ -1331,12 +1331,14 @@ func (h *RunTourCoordinatorHandler) executePlan(
 		legDedupBracket := h.legs.startScanDedupBracket(ctx, cmd.ShipSymbol, cmd.PlayerID)
 		// A fully guarded leg gets its live read from the guard moments after arrival, so
 		// the arrival scan duplicates it. TRAVEL ctx only — the trade ctx is untouched.
-		// The same verdict rides run into the leg's buys, whose cuts then size off the
-		// guard ceiling rather than a cached ask no arrival scan refreshed.
-		run.legScanDeferred = tourLegDefersArrivalScan(leg, discharging || retiring)
+		// The same verdict rides run into the leg's trades: its buys size off the guard
+		// ceiling, and its first sell of each good arms the floor whose read replaces
+		// the scan (sellFloorPerUnit) — neither is left on a row nothing refreshed.
+		deferralSide := tourLegDeferralSide(leg, discharging || retiring, run.sellFloorSpent)
+		run.legScanDeferred = deferralSide != ""
 		travelCtx := ctx
 		if run.legScanDeferred {
-			travelCtx = shared.WithArrivalScanDeferred(ctx, leg.Waypoint)
+			travelCtx = shared.WithArrivalScanDeferred(ctx, leg.Waypoint, deferralSide)
 		}
 		ship, err = h.legs.travel(travelCtx, ship, leg.Waypoint, cmd.PlayerID)
 		if err != nil {

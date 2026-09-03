@@ -140,17 +140,19 @@ func TestTourGuardBasis_AgedSinkRaisesTheArmedSellFloor(t *testing.T) {
 	if len(freshFloors) < 3 || len(agedFloors) < 3 {
 		t.Fatalf("both runs must dispatch the three planned tranches; fresh=%v aged=%v", freshFloors, agedFloors)
 	}
+	// Tranche 0 is armed because the leg deferred its arrival scan (sp-htzl1.11); tranche 1
+	// is the depth bound's, still unarmed. Both armed tranches band the same basis.
 	for _, floors := range [][]int{freshFloors, agedFloors} {
-		if floors[0] != 0 || floors[1] != 0 {
-			t.Fatalf("the depth bound must still hold the first two tranches unarmed, got %v", floors)
+		if floors[1] != 0 {
+			t.Fatalf("the depth bound must still hold the second tranche unarmed, got %v", floors)
 		}
 	}
-	if freshFloors[2] != sfFloor {
-		t.Fatalf("an uncharged quote must leave the floor exactly where it is: want %d, got %d", sfFloor, freshFloors[2])
+	if freshFloors[0] != sfFloor || freshFloors[2] != sfFloor {
+		t.Fatalf("an uncharged quote must leave the floor exactly where it is: want %d, got %v", sfFloor, freshFloors)
 	}
-	if agedFloors[2] <= sfFloor {
-		t.Fatalf("a %dh-old STRONG sink must RAISE the armed floor above %d, got %d",
-			int(gbAge.Hours()), sfFloor, agedFloors[2])
+	if agedFloors[0] <= sfFloor || agedFloors[2] <= sfFloor {
+		t.Fatalf("a %dh-old STRONG sink must RAISE every armed floor above %d, got %v",
+			int(gbAge.Hours()), sfFloor, agedFloors)
 	}
 	if fresh.sells != aged.sells {
 		t.Fatalf("neither run refuses a tranche here, so both must sell the same; fresh=%d aged=%d",

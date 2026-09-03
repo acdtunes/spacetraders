@@ -42,16 +42,21 @@ type tourPlanRun struct {
 
 // sellFloorPerUnit is the tolerated bid for one sell tranche: the plan's basis less the
 // same tourPriceTolerancePct band the buy ceiling adds to the ask; 0 is a plain sell.
-// Arming costs a live bid re-read and the fleet flies at its API ceiling, so two bounds
-// decide it. DEPTH: only once this visit has put acap_tranches × trade_volume into the
-// sink, past which the leg gate's cached quote necessarily predates our own impact (an
-// unevaluable predicate — no trade_volume — does not arm). BUDGET: one refusal per good
-// per tour, so a hold is withheld at most once and its exit stays reachable, every later
-// sell of that good dispatching unarmed. Both fall back to the plain sell, never cheaper.
+// Arming costs a live bid re-read and the fleet flies at its API ceiling, so three bounds
+// decide it. DEFERRAL: this leg skipped its arrival scan, so the FIRST tranche of a good
+// here has no fresh read behind it and the floor's own live bid IS that scan. DEPTH: only
+// once this visit has put acap_tranches × trade_volume into the sink, past which the leg
+// gate's cached quote necessarily predates our own impact (an unevaluable predicate — no
+// trade_volume — does not arm). BUDGET: one refusal per good per tour, so a hold is
+// withheld at most once and its exit stays reachable, every later sell of that good
+// dispatching unarmed. All fall back to the plain sell, never cheaper.
 // planned is the caller's GuardBasis: a marked-DOWN bid would drop this floor by the haircut.
 func (r tourPlanRun) sellFloorPerUnit(good string, planned, tradeVolume int) int {
 	if planned <= 0 || r.sellFloorSpent == nil || r.sellFloorSpent[good] {
 		return 0
+	}
+	if r.legScanDeferred && r.legSold[good] == 0 {
+		return planned - planned*tourPriceTolerancePct/100
 	}
 	if tradeVolume <= 0 || r.legSold[good] < resolveACapTranches(r.acapTranches)*tradeVolume {
 		return 0
@@ -95,23 +100,56 @@ func legTradesToFly(trades []routing.TourTrade, discharging bool) []routing.Tour
 }
 
 // tourLegDefersArrivalScan reports whether this leg's ARRIVAL scan is pure duplication:
-// every trade it will fly is a BUY through purchaseWithCeiling with a positive ceiling,
-// so the buy-ceiling guard live-re-reads this market moments later and THAT read protects
-// the trade. Sells never qualify — sellFloorPerUnit arms a floor only past
-// tourACapTranches x trade_volume and legSold starts empty each leg, so a leg's first
-// sell tranche always dispatches unguarded. A deposit reads no market, and a leg with
-// nothing to fly has no guard to defer to; both keep the scan they have today.
-func tourLegDefersArrivalScan(leg routing.TourLeg, discharging bool) bool {
+// every trade it will fly is money-guarded off a positive basis, so the guard's own live
+// re-read of this market moments later is THE read that protects the trade. A buy reads
+// through purchaseWithCeiling; a sell reads through the floor sellFloorPerUnit arms on a
+// deferred leg's first tranche, which exists so no sell here dispatches on a row the
+// skipped scan would have refreshed. A deposit reads no market, an unguarded trade has no
+// read to defer to, and a leg with nothing to fly has neither: all keep today's scan.
+//
+// sellFloorSpent is the tour's one-refusal-per-good budget, and the sell half of this test
+// is the exact negation of sellFloorPerUnit's own refusals: a spent good — or no budget map
+// at all — arms NO floor, so a leg selling one reads this market nowhere and must keep its
+// scan, or the tranche dispatches against a row nothing refreshed. Keep the two in step: a
+// deferred leg is one where every sell WILL arm a floor on its first tranche.
+func tourLegDefersArrivalScan(leg routing.TourLeg, discharging bool, sellFloorSpent map[string]bool) bool {
 	trades := legTradesToFly(leg.Trades, discharging)
 	if len(trades) == 0 {
 		return false
 	}
 	for _, t := range trades {
-		if !t.IsBuy || t.IsDeposit || t.GuardBasis() <= 0 {
+		if t.IsDeposit || t.GuardBasis() <= 0 {
+			return false
+		}
+		if !t.IsBuy && (sellFloorSpent == nil || sellFloorSpent[t.Good]) {
 			return false
 		}
 	}
 	return true
+}
+
+// tourLegDeferralSide names which guards a deferred leg hands its arrival scan to — buy,
+// sell or mixed — for the marker's telemetry. Empty means the leg defers nothing.
+func tourLegDeferralSide(leg routing.TourLeg, discharging bool, sellFloorSpent map[string]bool) string {
+	if !tourLegDefersArrivalScan(leg, discharging, sellFloorSpent) {
+		return ""
+	}
+	buys, sells := false, false
+	for _, t := range legTradesToFly(leg.Trades, discharging) {
+		if t.IsBuy {
+			buys = true
+			continue
+		}
+		sells = true
+	}
+	switch {
+	case buys && sells:
+		return shared.ArrivalScanSideMixed
+	case sells:
+		return shared.ArrivalScanSideSell
+	default:
+		return shared.ArrivalScanSideBuy
+	}
 }
 
 // tourBuyCeiling is the most one unit of this tranche can cost: the UNDISCOUNTED basis

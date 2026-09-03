@@ -16,7 +16,7 @@ const (
 	scanPolicyKey                     // Tour-scan load policy: recent-scan freshness gate + impact-sample rate
 	liveScanRequiredKey               // Marks a market read as pre-commit money-guard verification, exempt from being served from store
 	pairedScanKey                     // Marks a market read as the "after" half of an impact-measurement pair, exempt from the freshness veto
-	arrivalScanDeferredKey            // Waypoint whose arrival scan a money guard's own live read duplicates
+	arrivalScanDeferredKey            // Waypoint (+ side) whose arrival scan a money guard's own live read duplicates
 )
 
 // OperationContext provides traceability from high-level operations (containers)
@@ -277,15 +277,37 @@ func PairedScanFromContext(ctx context.Context) bool {
 	return ok && paired
 }
 
+// Which guards' live reads a deferral is handing the skipped scan to, for its telemetry.
+const (
+	ArrivalScanSideBuy   = "buy"
+	ArrivalScanSideSell  = "sell"
+	ArrivalScanSideMixed = "mixed"
+)
+
+// arrivalScanDeferral is the marker's payload: the one waypoint deferred, plus the side
+// that named it (telemetry only — the skip is decided by the waypoint alone).
+type arrivalScanDeferral struct {
+	waypoint string
+	side     string
+}
+
 // WithArrivalScanDeferred marks waypoint's ARRIVAL market scan redundant: a money guard
 // live-reads it before any trade there. ONE waypoint is the scope, never a whole flight.
-func WithArrivalScanDeferred(ctx context.Context, waypoint string) context.Context {
-	return context.WithValue(ctx, arrivalScanDeferredKey, waypoint)
+func WithArrivalScanDeferred(ctx context.Context, waypoint, side string) context.Context {
+	return context.WithValue(ctx, arrivalScanDeferredKey, arrivalScanDeferral{waypoint: waypoint, side: side})
 }
 
 func ArrivalScanDeferredFromContext(ctx context.Context) (string, bool) {
-	if waypoint, ok := ctx.Value(arrivalScanDeferredKey).(string); ok && waypoint != "" {
-		return waypoint, true
+	if d, ok := ctx.Value(arrivalScanDeferredKey).(arrivalScanDeferral); ok && d.waypoint != "" {
+		return d.waypoint, true
 	}
 	return "", false
+}
+
+// ArrivalScanDeferredSideFromContext is the side the marker carried; "" when unstamped.
+func ArrivalScanDeferredSideFromContext(ctx context.Context) string {
+	if d, ok := ctx.Value(arrivalScanDeferredKey).(arrivalScanDeferral); ok && d.waypoint != "" {
+		return d.side
+	}
+	return ""
 }

@@ -15,9 +15,9 @@ import (
 
 // Live balance 1,090,000 against a 1,000,000 reserve: 90,000 of headroom, ample hold and
 // trade volume, so only the working-capital floor can bind the tranche.
-func deferredSizingHandler(t *testing.T, fx *tourFixture, plan *routing.TourPlan) *RunTourCoordinatorHandler {
+func deferredSizingHandler(t *testing.T, fx *tourFixture, plans ...*routing.TourPlan) *RunTourCoordinatorHandler {
 	t.Helper()
-	planner := &tourFakeRoutingClient{plans: []*routing.TourPlan{plan}}
+	planner := &tourFakeRoutingClient{plans: plans}
 	return newTourHandlerWithAPI(t, fx, planner, &tourFakeTelemetry{}, &tourSeqAPIClient{balances: []int{1_090_000}})
 }
 
@@ -54,8 +54,9 @@ func TestTour_DeferredArrivalScan_SizesBuyOffTheGuardCeiling(t *testing.T) {
 	}
 }
 
-// The control: same prices, same headroom, but a MIXED leg (a sell beside the buy) keeps
-// its arrival scan, so the floor divides by its cached ask — 90,000 / 1,000 = 90 units.
+// The control: same prices, same headroom, but one UNGUARDED trade on the leg (no basis to
+// band, so no guard will read this market) forfeits the deferral for the whole leg — and
+// the floor then divides by its scanned cached ask, 90,000 / 1,000 = 90 units.
 func TestTour_LegKeepingItsArrivalScan_SizesBuyOffTheCachedAsk(t *testing.T) {
 	fx := floorRoundTripFixture()
 	fx.cargo = map[string]int{"H": 20}
@@ -63,9 +64,9 @@ func TestTour_LegKeepingItsArrivalScan_SizesBuyOffTheCachedAsk(t *testing.T) {
 	fx.ask["X1-S1-A"]["H"] = 600
 	fx.tv["X1-S1-A"]["H"] = 1000
 	h := deferredSizingHandler(t, fx, &routing.TourPlan{Feasible: true, Legs: []routing.TourLeg{
-		leg("X1-S1-A", "X1-S1", sell("H", 20, 500), buy("G", 100, 1000)),
+		leg("X1-S1-A", "X1-S1", sell("H", 20, 0), buy("G", 100, 1000)),
 		leg("X1-S1-B", "X1-S1", sell("G", 100, 1200)),
-	}})
+	}}, &routing.TourPlan{Feasible: false, InfeasibleReason: "no profitable tour"})
 
 	runDeferredSizingTour(t, h, "TOUR-KEEP-SIZE")
 

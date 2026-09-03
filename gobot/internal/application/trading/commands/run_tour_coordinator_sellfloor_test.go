@@ -12,8 +12,9 @@ import (
 // --- Per-tranche SELL floor on the tour path ------------------------------
 //
 // The tour buy arms a ceiling at planned×(1+tourPriceTolerancePct/100); these pin the
-// mirror on the bid plus the two bounds that make it affordable and safe — it arms only
-// past defaultTourACapTranches of visit depth, and refuses a hold at most once per tour.
+// mirror on the bid plus the three bounds that make it affordable and safe — it arms the
+// first tranche of a leg that deferred its arrival scan, then only past
+// defaultTourACapTranches of visit depth, and refuses a hold at most once per tour.
 
 const (
 	sfGood    = "IRON_ORE"
@@ -109,16 +110,18 @@ func sfAbortLine(l *laneLogCapturingLogger) *laneLogEntry {
 	return nil
 }
 
-// (a) A tranche PAST the declared per-sink depth whose live bid has collapsed below the
-// plan's tolerance is not sold: it dispatches armed at planned−15%, the market takes
-// nothing, and the cargo stays aboard for the next sink.
-func TestTourSellFloor_RefusesADeepTrancheWhoseLiveBidCollapsedBelowTolerance(t *testing.T) {
+// (a) A tranche whose live bid has collapsed below the plan's tolerance is not sold: it
+// dispatches armed at planned−15%, the market takes nothing, and the cargo stays aboard
+// for the next sink. On a leg that deferred its arrival scan that is the FIRST tranche —
+// the one the skipped scan would have refreshed (sp-htzl1.11); the refusal then spends
+// the good's budget, so the tranches behind it dispatch unarmed exactly as before.
+func TestTourSellFloor_RefusesATrancheWhoseLiveBidCollapsedBelowTolerance(t *testing.T) {
 	fx := sfFixture(map[string]map[string]int{sfSink: {sfGood: sfCrushed}}, sfSink)
 
 	_, logger := sfRun(t, fx, sfPlanner(3, sfSink))
 
-	if want := []int{0, 0, sfFloor}; !sfEqual(sfFloors(fx), want) {
-		t.Fatalf("only the tranche past %d×trade_volume may arm the floor: want %v, got %v", defaultTourACapTranches, want, sfFloors(fx))
+	if want := []int{sfFloor, 0, 0}; !sfEqual(sfFloors(fx), want) {
+		t.Fatalf("a deferred leg arms its first tranche and nothing after the refusal: want %v, got %v", want, sfFloors(fx))
 	}
 	if fx.sells != 2 {
 		t.Fatalf("the two shallow tranches sell and the deep one is refused, got %d sales", fx.sells)
@@ -153,23 +156,29 @@ func TestTourSellFloor_RefusedCargoAlwaysExitsUnarmedOnTheNextLeg(t *testing.T) 
 	if fx.cargo[sfGood] != 0 {
 		t.Fatalf("no-strand violated: %d units of %s never left the hull", fx.cargo[sfGood], sfGood)
 	}
-	if want := []int{0, 0, sfFloor, 0, 0, 0}; !sfEqual(sfFloors(fx), want) {
-		t.Fatalf("after one refusal the good's budget is spent, so the second sink's deep tranche must dispatch unarmed: want %v, got %v", want, sfFloors(fx))
+	if want := []int{sfFloor, 0, 0, 0, 0, 0}; !sfEqual(sfFloors(fx), want) {
+		t.Fatalf("after one refusal the good's budget is spent, so neither the second sink's first tranche nor its deep one may arm: want %v, got %v", want, sfFloors(fx))
 	}
 	if fx.sells != 5 {
 		t.Fatalf("every tranche but the single refusal must land, got %d sales", fx.sells)
 	}
+	// And because the budget is spent, NOTHING will live-read the second sink: that leg must
+	// keep the arrival scan the first one deferred, or its unarmed tranches sell blind off a
+	// row no read refreshed since the plan was built.
+	requireDeferred(t, fx, sfSink)
+	requireNotDeferred(t, fx, sfSink2)
 }
 
-// (c) Within tolerance the floor is inert: the deep tranche is armed but never trips, and
-// the leg books the same units and revenue it books with no floor at all.
+// (c) Within tolerance the floor is inert: the armed tranches never trip, and the leg books
+// the same units and revenue it books with no floor at all. Both arming rules show here —
+// the deferred leg's first tranche, then the depth rule past 2×trade_volume.
 func TestTourSellFloor_WithinTolerance_LeavesTheSaleUnchanged(t *testing.T) {
 	fx := sfFixture(nil, sfSink) // live bid == the cached quote == the plan basis
 
 	resp, logger := sfRun(t, fx, sfPlanner(3, sfSink))
 
-	if want := []int{0, 0, sfFloor}; !sfEqual(sfFloors(fx), want) {
-		t.Fatalf("the deep tranche must still arm on a healthy sale: want %v, got %v", want, sfFloors(fx))
+	if want := []int{sfFloor, 0, sfFloor}; !sfEqual(sfFloors(fx), want) {
+		t.Fatalf("the first and the deep tranche must both arm on a healthy sale: want %v, got %v", want, sfFloors(fx))
 	}
 	if sfAbortLine(logger) != nil {
 		t.Fatalf("a bid within tolerance must not trip the floor, got %+v", logger.entries)
@@ -182,22 +191,22 @@ func TestTourSellFloor_WithinTolerance_LeavesTheSaleUnchanged(t *testing.T) {
 	}
 }
 
-// (d) THE API BOUND: a visit that never reaches the declared depth dispatches every
-// tranche unarmed, so the guard costs no live bid re-read on the common path — the
-// leg-level gate's cached quote is left to decide, exactly as before.
-func TestTourSellFloor_ShallowTranchesDispatchUnarmedSoTheyCostNoLiveScan(t *testing.T) {
-	fx := sfFixture(map[string]map[string]int{sfSink: {sfGood: sfCrushed}}, sfSink)
+// (d) THE API BOUND: a deferred leg buys its first tranche's floor with the arrival scan it
+// skipped — ONE live bid read for the good, not one per tranche. The shallow tranches behind
+// it stay unarmed until the depth rule engages, so the visit costs no read it did not save.
+func TestTourSellFloor_DeferredLegArmsOnlyItsFirstTrancheSoItCostsOneLiveRead(t *testing.T) {
+	fx := sfFixture(nil, sfSink)
 
 	_, logger := sfRun(t, fx, sfPlanner(defaultTourACapTranches, sfSink))
 
-	if want := []int{0, 0}; !sfEqual(sfFloors(fx), want) {
-		t.Fatalf("a visit under %d×trade_volume must never arm the floor: want %v, got %v", defaultTourACapTranches, want, sfFloors(fx))
+	if want := []int{sfFloor, 0}; !sfEqual(sfFloors(fx), want) {
+		t.Fatalf("the first tranche arms and the shallow one behind it does not (under %d×trade_volume): want %v, got %v", defaultTourACapTranches, want, sfFloors(fx))
 	}
 	if sfAbortLine(logger) != nil {
-		t.Fatalf("an unarmed tranche cannot trip the floor, got %+v", logger.entries)
+		t.Fatalf("a bid within tolerance must not trip the floor, got %+v", logger.entries)
 	}
 	if fx.sells != defaultTourACapTranches {
-		t.Fatalf("the shallow tranches sell exactly as before the floor existed, got %d sales", fx.sells)
+		t.Fatalf("both tranches must sell, got %d sales", fx.sells)
 	}
 }
 
@@ -225,7 +234,7 @@ func TestTourSellFloor_ChunkedAbortSpendsTheGoodsBudgetOnceNotPerChunk(t *testin
 	if len(fx.sellCmds) != 6 {
 		t.Fatalf("chunking happens below this coordinator: one dispatch per planned tranche, got %d", len(fx.sellCmds))
 	}
-	if want := []int{0, 0, sfFloor, 0, 0, 0}; !sfEqual(sfFloors(fx), want) {
+	if want := []int{sfFloor, 0, 0, 0, 0, 0}; !sfEqual(sfFloors(fx), want) {
 		t.Fatalf("a chunked abort spends the good's budget exactly once: want %v, got %v", want, sfFloors(fx))
 	}
 	aborts := 0
