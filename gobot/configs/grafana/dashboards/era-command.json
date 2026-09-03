@@ -9,7 +9,7 @@
   ],
   "timezone": "browser",
   "schemaVersion": 41,
-  "version": 1,
+  "version": 2,
   "editable": true,
   "graphTooltip": 1,
   "refresh": "30s",
@@ -155,6 +155,772 @@
     },
     {
       "type": "row",
+      "id": 24,
+      "title": "Realised margin - LOT-MATCHED (the number to steer by; cash-flow panels below lag cargo in transit)",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 9
+      },
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "id": 25,
+      "title": "Realised Margin per Hour - LOT-MATCHED (the number to quote)",
+      "description": "Each purchase matched FIFO on (hull, good) to the sale that closed it, margin booked in the hour the position CLOSED. Identical to `spacetraders ledger positions --bucket 1h`. The naive line is the cash-flow series the panels above use (sells minus buys by the hour each leg landed): it books an hour of selling old inventory as profit and an hour of buying as loss, so it swings with leg placement, not economics. The last bucket is a partial hour.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 10,
+        "w": 18,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "showPoints": "auto",
+            "pointSize": 5,
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "locale",
+          "decimals": 0,
+          "noValue": "no closes in this window"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "lot-matched"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#73BF69"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 3
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "naive (defective)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#8e8e8e"
+                }
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    6,
+                    4
+                  ]
+                }
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "mean",
+            "last"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "13.1.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "WITH cargo AS (\n  SELECT t.created_at AS at, t.metadata->>'ship_symbol' AS hull, t.metadata->>'good_symbol' AS good,\n         (t.metadata->>'units')::numeric AS units, t.transaction_type AS typ, ABS(t.amount)::numeric AS amount\n    FROM transactions t\n   WHERE t.player_id = $player AND t.transaction_type IN ('PURCHASE_CARGO','SELL_CARGO')\n     AND COALESCE(t.metadata->>'ship_symbol','') <> '' AND (t.metadata->>'units')::numeric > 0),\nbuys AS (\n  SELECT hull, good, at, units, amount / units AS unit_cost,\n         SUM(units) OVER (PARTITION BY hull, good ORDER BY at, amount) AS hi\n    FROM cargo WHERE typ = 'PURCHASE_CARGO'),\nsells AS (\n  SELECT hull, good, at, units, amount AS revenue, amount / units AS unit_rev,\n         SUM(units) OVER (PARTITION BY hull, good ORDER BY at, amount) AS hi\n    FROM cargo WHERE typ = 'SELL_CARGO'),\nmatched AS (\n  SELECT s.at, LEAST(s.hi, b.hi) - GREATEST(s.hi - s.units, b.hi - b.units) AS m,\n         s.unit_rev - b.unit_cost AS spread\n    FROM sells s JOIN buys b ON b.hull = s.hull AND b.good = s.good\n     AND b.hi - b.units < s.hi AND b.hi > s.hi - s.units)\nSELECT $__timeGroupAlias(at, 1h), 'lot-matched' AS metric, ROUND(SUM(m * spread))::bigint AS v\n  FROM matched WHERE $__timeFilter(at) GROUP BY 1\nUNION ALL\nSELECT $__timeGroupAlias(t.created_at, 1h), 'naive (defective)' AS metric, ROUND(SUM(t.amount))::bigint AS v\n  FROM transactions t\n WHERE t.player_id = $player AND t.transaction_type IN ('PURCHASE_CARGO','SELL_CARGO')\n   AND COALESCE(t.metadata->>'ship_symbol','') <> '' AND $__timeFilter(t.created_at)\n GROUP BY 1\nORDER BY 1;",
+          "editorMode": "code"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "id": 26,
+      "title": "Lot-matched, last complete hour",
+      "description": "Realised margin of positions closed in the last complete clock hour (FIFO lot-matched). Ignores the time picker.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "x": 18,
+        "y": 10,
+        "w": 6,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#d03b3b",
+                "value": null
+              },
+              {
+                "color": "#73BF69",
+                "value": 0
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "noValue": "no closes",
+          "unit": "locale",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "auto",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "pluginVersion": "13.1.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH cargo AS (\n  SELECT t.created_at AS at, t.metadata->>'ship_symbol' AS hull, t.metadata->>'good_symbol' AS good,\n         (t.metadata->>'units')::numeric AS units, t.transaction_type AS typ, ABS(t.amount)::numeric AS amount\n    FROM transactions t\n   WHERE t.player_id = $player AND t.transaction_type IN ('PURCHASE_CARGO','SELL_CARGO')\n     AND COALESCE(t.metadata->>'ship_symbol','') <> '' AND (t.metadata->>'units')::numeric > 0),\nbuys AS (\n  SELECT hull, good, at, units, amount / units AS unit_cost,\n         SUM(units) OVER (PARTITION BY hull, good ORDER BY at, amount) AS hi\n    FROM cargo WHERE typ = 'PURCHASE_CARGO'),\nsells AS (\n  SELECT hull, good, at, units, amount AS revenue, amount / units AS unit_rev,\n         SUM(units) OVER (PARTITION BY hull, good ORDER BY at, amount) AS hi\n    FROM cargo WHERE typ = 'SELL_CARGO'),\nmatched AS (\n  SELECT s.at, LEAST(s.hi, b.hi) - GREATEST(s.hi - s.units, b.hi - b.units) AS m,\n         s.unit_rev - b.unit_cost AS spread\n    FROM sells s JOIN buys b ON b.hull = s.hull AND b.good = s.good\n     AND b.hi - b.units < s.hi AND b.hi > s.hi - s.units)\nSELECT ROUND(SUM(m * spread))::bigint AS \"last complete hour\"\n  FROM matched\n WHERE at >= date_trunc('hour', NOW()) - interval '1 hour' AND at < date_trunc('hour', NOW());",
+          "editorMode": "code"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "id": 27,
+      "title": "Lot-matched, 24h average per hour",
+      "description": "Realised margin of positions closed in the trailing 24 hours, divided by 24. Ignores the time picker.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "x": 18,
+        "y": 14,
+        "w": 6,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#d03b3b",
+                "value": null
+              },
+              {
+                "color": "#73BF69",
+                "value": 0
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "noValue": "no closes",
+          "unit": "locale",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "auto",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "pluginVersion": "13.1.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH cargo AS (\n  SELECT t.created_at AS at, t.metadata->>'ship_symbol' AS hull, t.metadata->>'good_symbol' AS good,\n         (t.metadata->>'units')::numeric AS units, t.transaction_type AS typ, ABS(t.amount)::numeric AS amount\n    FROM transactions t\n   WHERE t.player_id = $player AND t.transaction_type IN ('PURCHASE_CARGO','SELL_CARGO')\n     AND COALESCE(t.metadata->>'ship_symbol','') <> '' AND (t.metadata->>'units')::numeric > 0),\nbuys AS (\n  SELECT hull, good, at, units, amount / units AS unit_cost,\n         SUM(units) OVER (PARTITION BY hull, good ORDER BY at, amount) AS hi\n    FROM cargo WHERE typ = 'PURCHASE_CARGO'),\nsells AS (\n  SELECT hull, good, at, units, amount AS revenue, amount / units AS unit_rev,\n         SUM(units) OVER (PARTITION BY hull, good ORDER BY at, amount) AS hi\n    FROM cargo WHERE typ = 'SELL_CARGO'),\nmatched AS (\n  SELECT s.at, LEAST(s.hi, b.hi) - GREATEST(s.hi - s.units, b.hi - b.units) AS m,\n         s.unit_rev - b.unit_cost AS spread\n    FROM sells s JOIN buys b ON b.hull = s.hull AND b.good = s.good\n     AND b.hi - b.units < s.hi AND b.hi > s.hi - s.units)\nSELECT ROUND(SUM(m * spread) / 24.0)::bigint AS \"24h avg per hour\"\n  FROM matched WHERE at >= NOW() - interval '24 hours';",
+          "editorMode": "code"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "id": 28,
+      "title": "Margin per unit by bucket (thin filler shows here first)",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 18
+      },
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "id": 29,
+      "title": "Share of UNITS sold per hour, by realised margin per unit",
+      "description": "Every trade-hull sell in the hour, bucketed by realised margin per unit (sell price minus the hull's last buy price of that good). The red band is filler the solver planned at a near-zero spread: on 2026-09-03 it was 43% of units for -3.7% of credits before the 150/unit solver floor (trade_fleet.min_margin). Watch it: a growing red band means the floor is off or the markets thinned.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 19
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "bars",
+            "lineWidth": 1,
+            "fillOpacity": 80,
+            "gradientMode": "none",
+            "stacking": {
+              "mode": "percent",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "percent",
+          "decimals": 0,
+          "noValue": "no sells in window"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "1: under 50 (filler)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#F2495C"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "2: 50-150"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#FF9830"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "3: 150-400"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#FADE2A"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "4: 400-800"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#73BF69"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "5: 800 and up"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#5794F2"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "13.1.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "WITH sl AS (\n  SELECT l.realized_at AS at, l.realized_units AS u, (l.realized_unit_price - b.bpx) AS sp\n    FROM tour_leg_telemetry l\n    JOIN ships s ON s.player_id = $player AND s.ship_symbol = l.ship_symbol AND s.dedicated_fleet LIKE 'trade%'\n    JOIN LATERAL (SELECT b.realized_unit_price AS bpx FROM tour_leg_telemetry b\n                   WHERE b.player_id = $player AND b.ship_symbol = l.ship_symbol AND b.good = l.good AND b.is_buy\n                     AND b.realized_units > 0 AND b.realized_at < l.realized_at AND b.realized_at > l.realized_at - interval '3 hours'\n                   ORDER BY b.realized_at DESC LIMIT 1) b ON true\n   WHERE l.player_id = $player AND NOT l.is_buy AND l.realized_units > 0 AND $__timeFilter(l.realized_at)),\nbk AS (\n  SELECT at, u, sp,\n         CASE WHEN sp < 50 THEN '1: under 50 (filler)' WHEN sp < 150 THEN '2: 50-150' WHEN sp < 400 THEN '3: 150-400'\n              WHEN sp < 800 THEN '4: 400-800' ELSE '5: 800 and up' END AS bucket\n    FROM sl)\nSELECT $__timeGroupAlias(at, 1h), bucket AS metric,\n       ROUND(100.0 * SUM(u) / NULLIF(SUM(SUM(u)) OVER (PARTITION BY $__timeGroup(at, 1h)), 0), 1) AS v\n  FROM bk GROUP BY 1, 2 ORDER BY 1;",
+          "editorMode": "code"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 30,
+      "title": "Share of CREDITS earned per hour, by realised margin per unit",
+      "description": "Same buckets, weighted by credits. Healthy: the top two bands carry ~85% of credits and the red band is near zero or negative.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 19
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "bars",
+            "lineWidth": 1,
+            "fillOpacity": 80,
+            "gradientMode": "none",
+            "stacking": {
+              "mode": "percent",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "percent",
+          "decimals": 0,
+          "noValue": "no sells in window"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "1: under 50 (filler)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#F2495C"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "2: 50-150"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#FF9830"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "3: 150-400"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#FADE2A"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "4: 400-800"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#73BF69"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "5: 800 and up"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#5794F2"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "13.1.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "WITH sl AS (\n  SELECT l.realized_at AS at, l.realized_units AS u, (l.realized_unit_price - b.bpx) AS sp\n    FROM tour_leg_telemetry l\n    JOIN ships s ON s.player_id = $player AND s.ship_symbol = l.ship_symbol AND s.dedicated_fleet LIKE 'trade%'\n    JOIN LATERAL (SELECT b.realized_unit_price AS bpx FROM tour_leg_telemetry b\n                   WHERE b.player_id = $player AND b.ship_symbol = l.ship_symbol AND b.good = l.good AND b.is_buy\n                     AND b.realized_units > 0 AND b.realized_at < l.realized_at AND b.realized_at > l.realized_at - interval '3 hours'\n                   ORDER BY b.realized_at DESC LIMIT 1) b ON true\n   WHERE l.player_id = $player AND NOT l.is_buy AND l.realized_units > 0 AND $__timeFilter(l.realized_at)),\nbk AS (\n  SELECT at, u, sp,\n         CASE WHEN sp < 50 THEN '1: under 50 (filler)' WHEN sp < 150 THEN '2: 50-150' WHEN sp < 400 THEN '3: 150-400'\n              WHEN sp < 800 THEN '4: 400-800' ELSE '5: 800 and up' END AS bucket\n    FROM sl)\nSELECT $__timeGroupAlias(at, 1h), bucket AS metric,\n       ROUND(100.0 * SUM(u * sp) / NULLIF(SUM(SUM(u * sp)) OVER (PARTITION BY $__timeGroup(at, 1h)), 0), 1) AS v\n  FROM bk GROUP BY 1, 2 ORDER BY 1;",
+          "editorMode": "code"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "id": 31,
+      "title": "Last complete hour: thin share, margin/unit, thin net",
+      "description": "Thin = sells under 50 credits/unit. Before the solver floor (2026-09-03): 32% thin, 280/unit, thin net -1.28M/h.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 24,
+        "x": 0,
+        "y": 28
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#73BF69",
+                "value": null
+              },
+              {
+                "color": "#FF9830",
+                "value": 10
+              },
+              {
+                "color": "#F2495C",
+                "value": 25
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "noValue": "no sells",
+          "unit": "short",
+          "decimals": 1
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "margin per unit"
+            },
+            "properties": [
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "#F2495C",
+                      "value": null
+                    },
+                    {
+                      "color": "#FF9830",
+                      "value": 200
+                    },
+                    {
+                      "color": "#73BF69",
+                      "value": 400
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "thin net credits (k)"
+            },
+            "properties": [
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "#F2495C",
+                      "value": null
+                    },
+                    {
+                      "color": "#73BF69",
+                      "value": 0
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "value_and_name",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "pluginVersion": "13.1.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH sl AS (\n  SELECT l.realized_units AS u, (l.realized_unit_price - b.bpx) AS sp\n    FROM tour_leg_telemetry l\n    JOIN ships s ON s.player_id = $player AND s.ship_symbol = l.ship_symbol AND s.dedicated_fleet LIKE 'trade%'\n    JOIN LATERAL (SELECT b.realized_unit_price AS bpx FROM tour_leg_telemetry b\n                   WHERE b.player_id = $player AND b.ship_symbol = l.ship_symbol AND b.good = l.good AND b.is_buy\n                     AND b.realized_units > 0 AND b.realized_at < l.realized_at AND b.realized_at > l.realized_at - interval '3 hours'\n                   ORDER BY b.realized_at DESC LIMIT 1) b ON true\n   WHERE l.player_id = $player AND NOT l.is_buy AND l.realized_units > 0\n     AND l.realized_at >= date_trunc('hour', NOW()) - interval '1 hour' AND l.realized_at < date_trunc('hour', NOW()))\nSELECT ROUND(100.0 * COUNT(*) FILTER (WHERE sp < 50) / NULLIF(COUNT(*), 0), 1) AS \"thin sells % (<50/u)\",\n       ROUND(SUM(u * sp) / NULLIF(SUM(u), 0)) AS \"margin per unit\",\n       ROUND(SUM(u * sp) FILTER (WHERE sp < 50) / 1000.0) AS \"thin net credits (k)\"\n  FROM sl;",
+          "editorMode": "code"
+        }
+      ]
+    },
+    {
+      "type": "row",
       "id": 1,
       "title": "Position (live)",
       "collapsed": false,
@@ -163,7 +929,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 9
+        "y": 32
       }
     },
     {
@@ -179,7 +945,7 @@
         "h": 5,
         "w": 5,
         "x": 0,
-        "y": 10
+        "y": 33
       },
       "fieldConfig": {
         "defaults": {
@@ -254,7 +1020,7 @@
         "h": 5,
         "w": 5,
         "x": 5,
-        "y": 10
+        "y": 33
       },
       "fieldConfig": {
         "defaults": {
@@ -321,7 +1087,7 @@
         "h": 5,
         "w": 3,
         "x": 10,
-        "y": 10
+        "y": 33
       },
       "fieldConfig": {
         "defaults": {
@@ -388,7 +1154,7 @@
         "h": 5,
         "w": 3,
         "x": 13,
-        "y": 10
+        "y": 33
       },
       "fieldConfig": {
         "defaults": {
@@ -455,7 +1221,7 @@
         "h": 5,
         "w": 3,
         "x": 16,
-        "y": 10
+        "y": 33
       },
       "fieldConfig": {
         "defaults": {
@@ -530,7 +1296,7 @@
         "h": 5,
         "w": 5,
         "x": 19,
-        "y": 10
+        "y": 33
       },
       "fieldConfig": {
         "defaults": {
@@ -615,13 +1381,13 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 15
+        "y": 38
       }
     },
     {
       "type": "stat",
       "id": 11,
-      "title": "Net P/L",
+      "title": "Net P/L  [cash-flow: lags cargo in transit, not the number to steer by]",
       "description": "All transactions, net, over the selected window.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
@@ -631,7 +1397,7 @@
         "h": 5,
         "w": 8,
         "x": 0,
-        "y": 16
+        "y": 39
       },
       "fieldConfig": {
         "defaults": {
@@ -692,7 +1458,7 @@
     {
       "type": "stat",
       "id": 12,
-      "title": "Trade Net",
+      "title": "Trade Net  [cash-flow: lags cargo in transit, not the number to steer by]",
       "description": "Trading revenue minus trading costs, selected window.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
@@ -702,7 +1468,7 @@
         "h": 5,
         "w": 8,
         "x": 8,
-        "y": 16
+        "y": 39
       },
       "fieldConfig": {
         "defaults": {
@@ -773,7 +1539,7 @@
         "h": 5,
         "w": 8,
         "x": 16,
-        "y": 16
+        "y": 39
       },
       "fieldConfig": {
         "defaults": {
@@ -841,13 +1607,13 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 21
+        "y": 44
       }
     },
     {
       "type": "timeseries",
       "id": 22,
-      "title": "Net P/L per Hour by Operation",
+      "title": "Net P/L per Hour by Operation  [cash-flow: lags cargo in transit, not the number to steer by]",
       "description": "Hourly net, split by operation.",
       "datasource": {
         "type": "prometheus",
@@ -857,7 +1623,7 @@
         "h": 9,
         "w": 12,
         "x": 0,
-        "y": 22
+        "y": 45
       },
       "fieldConfig": {
         "defaults": {
@@ -913,7 +1679,7 @@
     {
       "type": "timeseries",
       "id": 23,
-      "title": "Operating Profit/hr - Smoothed (1h/3h/6h trailing)",
+      "title": "Operating Profit/hr - Smoothed (1h/3h/6h trailing)  [cash-flow: lags cargo in transit, not the number to steer by]",
       "description": "Profit per hour excluding hull capex, trailing 1h/3h/6h.",
       "datasource": {
         "type": "prometheus",
@@ -923,7 +1689,7 @@
         "h": 9,
         "w": 12,
         "x": 12,
-        "y": 22
+        "y": 45
       },
       "fieldConfig": {
         "defaults": {
