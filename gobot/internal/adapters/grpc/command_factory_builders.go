@@ -660,6 +660,7 @@ func buildTourCoordinatorCommand(cfg *configReader, playerID int, containerID st
 		YieldMinSells:            cfg.OptionalInt("yield_min_sells", tradingCmd.DefaultYieldMinSells),
 		ClaimReachHops:           cfg.OptionalInt("claim_reach_hops", tradingCmd.DefaultClaimReachHops),
 		ClaimReachMaxHops:        cfg.OptionalInt("claim_reach_max_hops", tradingCmd.DefaultClaimReachMaxHops),
+		RankerMinSpreadPerUnit:   cfg.OptionalInt("ranker_min_spread_per_unit", tradingCmd.DefaultRankerMinSpreadPerUnit),
 		SpecialistCadenceMinutes: cfg.OptionalInt("specialist_cadence_minutes", tradingCmd.DefaultSpecialistCadenceMinutes),
 		// Below this span the fleet rate stands in for the hull's own; 0/absent ⇒ the spec default.
 		YieldRateSpanFloorMinutes: cfg.OptionalInt("yield_rate_span_floor_minutes", tradingCmd.DefaultYieldRateSpanFloorMinutes),

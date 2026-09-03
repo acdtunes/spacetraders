@@ -171,6 +171,14 @@ func (h *RunTourCoordinatorHandler) mvtReach(ctx context.Context, current string
 	return systems, hops, nil
 }
 
+// mvtSpreadFloor is the credits-per-unit a market pair must clear to count as depth.
+func mvtSpreadFloor(cmd *RunTourCoordinatorCommand) int {
+	if cmd.RankerMinSpreadPerUnit > 0 {
+		return cmd.RankerMinSpreadPerUnit
+	}
+	return DefaultRankerMinSpreadPerUnit
+}
+
 // mvtRank ranks the hull's current system and every priced system within ClaimReachHops.
 func (h *RunTourCoordinatorHandler) mvtRank(ctx context.Context, cmd *RunTourCoordinatorCommand, ship *navigation.Ship) ([]mvt.ScoredSystem, error) {
 	return h.mvtRankReach(ctx, cmd, ship, cmd.ClaimReachHops)
@@ -203,7 +211,8 @@ func (h *RunTourCoordinatorHandler) mvtRankEscalating(ctx context.Context, cmd *
 	}
 	if hops > start {
 		common.LoggerFromContext(ctx).Log("INFO", "MVT CLAIM: reach escalated", map[string]interface{}{
-			"hull": cmd.ShipSymbol, "from_hops": start, "to_hops": hops, "candidates": len(ranked)})
+			"hull": cmd.ShipSymbol, "from_hops": start, "to_hops": hops, "candidates": len(ranked),
+			"min_spread": mvtSpreadFloor(cmd)})
 	}
 	return ranked, hops, nil
 }
@@ -241,7 +250,7 @@ func (h *RunTourCoordinatorHandler) mvtRankReach(ctx context.Context, cmd *RunTo
 	now := h.clock.Now()
 	cands := make([]mvt.Candidate, 0, len(systems))
 	for _, sys := range systems {
-		credits, units, entry := mvt.SystemYield(depths[sys], h.rankerAgeCaps, now)
+		credits, units, entry := mvt.SystemYield(depths[sys], h.rankerAgeCaps, now, float64(mvtSpreadFloor(cmd)))
 		if units == 0 {
 			continue
 		}

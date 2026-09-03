@@ -204,6 +204,9 @@ func (s *DaemonServer) addTradeFleetTourKnobs(config map[string]interface{}) {
 	if v := s.tradeFleetConfig.ClaimReachMaxHops; v > 0 {
 		config["claim_reach_max_hops"] = v
 	}
+	if v := s.tradeFleetConfig.RankerMinSpreadPerUnit; v > 0 {
+		config["ranker_min_spread_per_unit"] = v
+	}
 	if v := s.tradeFleetConfig.SpecialistCadenceMinutes; v > 0 {
 		config["specialist_cadence_minutes"] = v
 	}

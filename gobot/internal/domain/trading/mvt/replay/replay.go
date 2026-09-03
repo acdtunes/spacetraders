@@ -24,6 +24,7 @@ type Config struct {
 	TollSecondsPerHop int
 	GateFee           int64
 	RateSpanFloor     time.Duration
+	RankerMinSpread   float64
 }
 
 // Decision is one visit boundary. ActualCredit is the hull's own lot-matched margin over
@@ -283,10 +284,13 @@ func Run(legs []trading.TourLegTelemetry, neighbours map[string][]string, cfg Co
 			return ss[i].hull < ss[j].hull
 		})
 	}
-	yield := func(system string, t0, t1 time.Time) (float64, int) {
+	yield := func(system string, t0, t1 time.Time, minSpread float64) (float64, int) {
 		m, u := 0.0, 0
 		for _, s := range sellsBySystem[system] {
 			if !s.at.Before(t0) && s.at.Before(t1) {
+				if minSpread > 0 && s.margin/float64(s.units) < minSpread {
+					continue
+				}
 				m += s.margin
 				u += s.units
 			}
@@ -353,7 +357,7 @@ func Run(legs []trading.TourLegTelemetry, neighbours map[string][]string, cfg Co
 		candidatesWithin := func(maxHops int) []mvt.Candidate {
 			var cands []mvt.Candidate
 			for sys, hops := range hopsFrom(neighbours, b.v.system, maxHops) {
-				credits, units := yield(sys, b.at.Add(-cfg.Horizon), b.at)
+				credits, units := yield(sys, b.at.Add(-cfg.Horizon), b.at, cfg.RankerMinSpread)
 				if units == 0 {
 					continue
 				}
@@ -414,10 +418,10 @@ func Run(legs []trading.TourLegTelemetry, neighbours map[string][]string, cfg Co
 		// Stay and jump are valued alike: the hull's own forward units at the destination's
 		// forward rate, else at its trailing rate — an unobserved counterfactual is not
 		// evidence that the system earned nothing.
-		lm, lu := yield(dec.LoopNext, b.at, b.at.Add(cfg.Horizon))
+		lm, lu := yield(dec.LoopNext, b.at, b.at.Add(cfg.Horizon), 0)
 		if lu == 0 {
 			dec.Stranded = true
-			lm, lu = yield(dec.LoopNext, b.at.Add(-cfg.Horizon), b.at)
+			lm, lu = yield(dec.LoopNext, b.at.Add(-cfg.Horizon), b.at, 0)
 		}
 		if lu > 0 {
 			dec.LoopCredit = float64(hu) * lm / float64(lu)

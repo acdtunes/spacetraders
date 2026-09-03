@@ -69,11 +69,15 @@ func TestBuildTourCoordinatorCommand_MVTLoopReadsTheSelectorAndKnobDefaults(t *t
 	require.Equal(t, tradingCmd.DefaultClaimReachHops, off.ClaimReachHops)
 	require.Equal(t, tradingCmd.DefaultClaimReachMaxHops, off.ClaimReachMaxHops)
 	require.Equal(t, 4, off.ClaimReachMaxHops, "an absent claim_reach_max_hops caps escalation at the spec default")
+	require.Equal(t, tradingCmd.DefaultRankerMinSpreadPerUnit, off.RankerMinSpreadPerUnit)
 	require.Equal(t, tradingCmd.DefaultSpecialistCadenceMinutes, off.SpecialistCadenceMinutes)
 	require.Equal(t, tradingCmd.DefaultYieldRateSpanFloorMinutes, off.YieldRateSpanFloorMinutes)
 
 	tuned := build(map[string]interface{}{"ship_symbol": "HULL-1", "yield_rate_span_floor_minutes": 5})
 	require.Equal(t, 5, tuned.YieldRateSpanFloorMinutes, "a configured floor rides through to the command")
+
+	spread := build(map[string]interface{}{"ship_symbol": "HULL-1", "ranker_min_spread_per_unit": 350})
+	require.Equal(t, 350, spread.RankerMinSpreadPerUnit, "a configured spread floor rides through to the command")
 }
 
 // The MVT knobs are stamped into the launch config only when the captain set them, so an
@@ -83,12 +87,13 @@ func TestAddTradeFleetTourKnobs_WritesTheMVTKnobsOnlyWhenConfigured(t *testing.T
 	unset := map[string]interface{}{}
 	(&DaemonServer{}).addTradeFleetTourKnobs(unset)
 	for _, key := range []string{"yield_window_sells", "yield_min_sells", "claim_reach_hops",
-		"specialist_cadence_minutes", "yield_rate_span_floor_minutes"} {
+		"specialist_cadence_minutes", "yield_rate_span_floor_minutes", "ranker_min_spread_per_unit"} {
 		_, present := unset[key]
 		require.Falsef(t, present, "an unset %s must not be written", key)
 	}
 
 	set := map[string]interface{}{}
-	(&DaemonServer{tradeFleetConfig: config.TradeFleetConfig{YieldRateSpanFloorMinutes: 45}}).addTradeFleetTourKnobs(set)
+	(&DaemonServer{tradeFleetConfig: config.TradeFleetConfig{YieldRateSpanFloorMinutes: 45, RankerMinSpreadPerUnit: 350}}).addTradeFleetTourKnobs(set)
 	require.Equal(t, 45, set["yield_rate_span_floor_minutes"])
+	require.Equal(t, 350, set["ranker_min_spread_per_unit"])
 }

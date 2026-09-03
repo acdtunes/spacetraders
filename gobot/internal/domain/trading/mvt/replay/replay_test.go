@@ -367,3 +367,42 @@ func TestRun_EmptyRankingEscalatesReachUpToTheCap(t *testing.T) {
 		}
 	}
 }
+
+// RankerMinSpread is the ranker's spread floor as this harness can express it: there are no
+// market pairs here, only realised sells, so a sell whose margin per unit is under the floor is
+// not depth a CANDIDATE is credited with. It never touches the valuation of a decision already
+// taken — once there, the hull trades whatever it finds, exactly as the solver does.
+//
+// H1's last visit in X1-A bought and never sold. Its one-hop neighbour X1-B was priced at
+// 150/unit and X1-C, two hops out, at 400/unit; a gate fee of 3000 makes the extra hop cost
+// more than the 250/unit it buys, so unfloored the loop takes the near thin ground. At a 200
+// floor X1-B stops counting as depth at all and the loop pays the hop for X1-C.
+func TestRun_RankerMinSpreadSkipsThinGroundWhenChoosingACandidate(t *testing.T) {
+	t0 := time.Unix(1_700_000_000, 0)
+	legs := []trading.TourLegTelemetry{
+		rl("H2", "X1-B-1", "IRON", true, 10, 100, t0.Add(-40*time.Minute)),
+		rl("H2", "X1-B-2", "IRON", false, 10, 250, t0.Add(-30*time.Minute)), // 150/unit
+		rl("H3", "X1-C-1", "IRON", true, 10, 100, t0.Add(-40*time.Minute)),
+		rl("H3", "X1-C-2", "IRON", false, 10, 500, t0.Add(-30*time.Minute)), // 400/unit
+		rl("H1", "X1-A-1", "IRON", true, 10, 100, t0),
+		rl("H1", "X1-Z-2", "IRON", false, 10, 110, t0.Add(35*time.Minute)),
+	}
+	chain := map[string][]string{"X1-A": {"X1-B"}, "X1-B": {"X1-A", "X1-C"}, "X1-C": {"X1-B"}}
+	for _, tc := range []struct {
+		floor float64
+		want  string
+	}{{0, "X1-B"}, {200, "X1-C"}} {
+		c := cfg()
+		c.GateFee, c.RankerMinSpread = 3000, tc.floor
+		r := Run(legs, chain, c)
+		var d *Decision
+		for i := range r.Decisions {
+			if r.Decisions[i].Hull == "H1" && r.Decisions[i].From == "X1-A" {
+				d = &r.Decisions[i]
+			}
+		}
+		if d == nil || d.LoopNext != tc.want {
+			t.Fatalf("floor %v: decision = %+v, want LoopNext %s", tc.floor, d, tc.want)
+		}
+	}
+}

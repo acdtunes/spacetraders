@@ -24,7 +24,7 @@ func TestSystemYield_PerGoodSpreadTimesUnoccupiedDepth(t *testing.T) {
 		{Listing: listing("X1-A-2", "IRON", "IMPORT", 150, 160, 40, time.Minute, now), SellPlanned: 0},
 		{Listing: listing("X1-A-3", "GOLD", "EXCHANGE", 500, 520, 30, time.Minute, now)},
 	}
-	credits, units, entry := SystemYield(lanes, caps(), now)
+	credits, units, entry := SystemYield(lanes, caps(), now, 0)
 	// IRON: spread 150-100=50; buy depth 60-10-5=45; sell depth 40 → depth 40 → 2000 credits.
 	// GOLD: only one waypoint → no lane.
 	if credits != 2000 || units != 40 || entry != "X1-A-1" {
@@ -40,7 +40,7 @@ func TestSystemYield_StaleAndNonPositiveSpreadExcluded(t *testing.T) {
 		{Listing: listing("X1-A-4", "COPPER", "EXPORT", 90, 100, 60, time.Minute, now)},
 		{Listing: listing("X1-A-5", "COPPER", "IMPORT", 100, 110, 40, time.Minute, now)}, // spread 0
 	}
-	credits, units, _ := SystemYield(lanes, caps(), now)
+	credits, units, _ := SystemYield(lanes, caps(), now, 0)
 	if credits != 0 || units != 0 {
 		t.Fatalf("got credits=%v units=%d, want 0/0", credits, units)
 	}
@@ -59,7 +59,7 @@ func TestSystemYield_MultipleMarketsPerGoodAreMatchedNotMultiplied(t *testing.T)
 	}
 	// Two sources of 40 against two sinks of 40 at spread 50: 80 units, 4000 credits.
 	// The pairwise sum would report 4 pairs × 40 = 160 units and 8000 credits.
-	credits, units, entry := SystemYield(lanes, caps(), now)
+	credits, units, entry := SystemYield(lanes, caps(), now, 0)
 	if credits != 4000 || units != 80 || entry != "X1-A-1" {
 		t.Fatalf("got credits=%v units=%d entry=%q, want 4000/80/X1-A-1", credits, units, entry)
 	}
@@ -73,7 +73,7 @@ func TestSystemYield_GoodDepthBoundedByThinnerAggregateSide(t *testing.T) {
 		{Listing: listing("X1-A-3", "IRON", "IMPORT", 150, 160, 30, time.Minute, now)},
 	}
 	// 80 units of source against 30 units of sink → 30 units, 1500 credits.
-	credits, units, _ := SystemYield(lanes, caps(), now)
+	credits, units, _ := SystemYield(lanes, caps(), now, 0)
 	if credits != 1500 || units != 30 {
 		t.Fatalf("got credits=%v units=%d, want 1500/30", credits, units)
 	}
@@ -87,7 +87,7 @@ func TestSystemYield_RichestSpreadIsMatchedFirst(t *testing.T) {
 		{Listing: listing("X1-A-9", "IRON", "IMPORT", 150, 160, 10, time.Minute, now)},
 	}
 	// The single sink of 10 goes to the 90-ask source: spread 60 → 600 credits, 10 units.
-	credits, units, entry := SystemYield(lanes, caps(), now)
+	credits, units, entry := SystemYield(lanes, caps(), now, 0)
 	if credits != 600 || units != 10 || entry != "X1-A-2" {
 		t.Fatalf("got credits=%v units=%d entry=%q, want 600/10/X1-A-2", credits, units, entry)
 	}
@@ -104,9 +104,39 @@ func TestSystemYield_CrossedRowsExcluded(t *testing.T) {
 		{Listing: listing("X1-A-4", "COPPER", "EXPORT", 90, 100, 40, time.Minute, now)},
 		{Listing: listing("X1-A-5", "COPPER", "IMPORT", 200, 100, 40, time.Minute, now)}, // crossed sink
 	}
-	credits, units, entry := SystemYield(lanes, caps(), now)
+	credits, units, entry := SystemYield(lanes, caps(), now, 0)
 	if credits != 0 || units != 0 || entry != "" {
 		t.Fatalf("got credits=%v units=%d entry=%q, want 0/0/\"\"", credits, units, entry)
+	}
+}
+
+// A pair the fleet earns almost nothing on is depth the ranker must not count: it drags a
+// hull onto near ground whose remaining lanes the solver will still trade at 5 credits a unit.
+// The floor drops such a pair BEFORE matching, so it consumes no depth from either side.
+func TestSystemYield_SpreadFloor(t *testing.T) {
+	now := time.Now()
+	lanes := []LaneDepth{
+		{Listing: listing("WA1", "A", "EXPORT", 90, 100, 100, time.Minute, now)},
+		{Listing: listing("WA2", "A", "IMPORT", 250, 260, 100, time.Minute, now)}, // spread 150
+		{Listing: listing("WB1", "B", "EXPORT", 90, 100, 100, time.Minute, now)},
+		{Listing: listing("WB2", "B", "IMPORT", 500, 510, 100, time.Minute, now)}, // spread 400
+	}
+	for _, tc := range []struct {
+		floor   float64
+		credits float64
+		units   int
+		entry   string
+	}{
+		{0, 55000, 200, "WB1"},
+		{200, 40000, 100, "WB1"},
+		{400, 40000, 100, "WB1"}, // spread == floor still counts
+		{401, 0, 0, ""},
+	} {
+		credits, units, entry := SystemYield(lanes, caps(), now, tc.floor)
+		if credits != tc.credits || units != tc.units || entry != tc.entry {
+			t.Fatalf("floor %v: got credits=%v units=%d entry=%q, want %v/%d/%q",
+				tc.floor, credits, units, entry, tc.credits, tc.units, tc.entry)
+		}
 	}
 }
 

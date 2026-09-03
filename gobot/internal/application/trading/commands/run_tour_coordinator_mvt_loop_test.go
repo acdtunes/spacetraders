@@ -14,6 +14,13 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/trading/mvt"
 )
 
+// mvtRichLane is credits of depth at 500/unit — clear of the ranker's shipped spread floor, so
+// these fixtures keep meaning "there is money here" — over a fifth of the volume, which leaves
+// each system's credits (and so the in-transit draw against them) exactly what it always was.
+func mvtRichLane(system string, credits int, now time.Time) []mvt.LaneDepth {
+	return mvtLane(system, "IRON", credits/5, 100, 600, now)
+}
+
 // mvtHandler wires a tour handler with MVT fakes over the shared reposition fixture
 // (home X1-S1, neighbour X1-S2). depthS1/depthS2 are the credits of fresh depth in each.
 func mvtHandler(t *testing.T, fx *tourFixture, planner *tourFakeRoutingClient, depthS1, depthS2 int) (*RunTourCoordinatorHandler, *mvtFakeClaims, *mvtFakeTransitions) {
@@ -23,10 +30,10 @@ func mvtHandler(t *testing.T, fx *tourFixture, planner *tourFakeRoutingClient, d
 	now := time.Now()
 	lanes := map[string][]mvt.LaneDepth{}
 	if depthS1 > 0 {
-		lanes["X1-S1"] = mvtLane("X1-S1", "IRON", depthS1, 100, 200, now) // 100/unit spread
+		lanes["X1-S1"] = mvtRichLane("X1-S1", depthS1, now)
 	}
 	if depthS2 > 0 {
-		lanes["X1-S2"] = mvtLane("X1-S2", "IRON", depthS2, 100, 200, now)
+		lanes["X1-S2"] = mvtRichLane("X1-S2", depthS2, now)
 	}
 	h.SetMVTPorts(claims, &mvtFakeDepth{lanes: lanes}, trans)
 	h.SetJumpTollReader(mvtFakeTolls{seconds: 1})
@@ -1015,7 +1022,7 @@ func mvtChainHandler(t *testing.T, fx *tourFixture, depths map[string]int, path 
 	now := time.Now()
 	lanes := map[string][]mvt.LaneDepth{}
 	for sys, d := range depths {
-		lanes[sys] = mvtLane(sys, "IRON", d, 100, 200, now)
+		lanes[sys] = mvtRichLane(sys, d, now)
 	}
 	h.SetMVTPorts(claims, &mvtFakeDepth{lanes: lanes}, trans)
 	g := mvtStoredGraph([2]string{"X1-S1", "X1-S2"}, [2]string{"X1-S2", "X1-S3"})

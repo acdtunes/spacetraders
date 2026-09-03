@@ -68,10 +68,10 @@ const (
 //
 // Contributing nothing: rows stale per caps; crossed quotes (trading.GoodListing.IsCrossed —
 // the sp-en5h7 transposed market_data rows, bad data and never a bargain, refused the same way
-// by the sibling ranker's tradeableByGood); non-positive spreads; and a pair whose two ends are
-// the same waypoint (an EXCHANGE selling to itself). entryWaypoint is the source waypoint of
-// the richest matched pair of the good contributing most.
-func SystemYield(lanes []LaneDepth, caps trading.RankerAgeCaps, now time.Time) (credits float64, units int, entryWaypoint string) {
+// by the sibling ranker's tradeableByGood); spreads not positive or under minSpread (0 = no
+// floor); and a pair whose two ends are the same waypoint (an EXCHANGE selling to itself).
+// entryWaypoint is the source waypoint of the richest matched pair of the good contributing most.
+func SystemYield(lanes []LaneDepth, caps trading.RankerAgeCaps, now time.Time, minSpread float64) (credits float64, units int, entryWaypoint string) {
 	type side struct {
 		wp    string
 		price int
@@ -117,7 +117,7 @@ func SystemYield(lanes []LaneDepth, caps trading.RankerAgeCaps, now time.Time) (
 					continue
 				}
 				spread := float64(snks[ki].price - srcs[si].price)
-				if spread <= 0 {
+				if spread <= 0 || spread < minSpread {
 					continue
 				}
 				pairs = append(pairs, pair{si, ki, spread})

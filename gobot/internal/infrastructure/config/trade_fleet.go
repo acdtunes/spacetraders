@@ -272,6 +272,7 @@ type TradeFleetConfig struct {
 	YieldMinSells             int `mapstructure:"yield_min_sells"`
 	ClaimReachHops            int `mapstructure:"claim_reach_hops"`
 	ClaimReachMaxHops         int `mapstructure:"claim_reach_max_hops"`
+	RankerMinSpreadPerUnit    int `mapstructure:"ranker_min_spread_per_unit"`
 	SpecialistFractionPct     int `mapstructure:"specialist_fraction_pct"`
 	FatLaneMultiplePct        int `mapstructure:"fat_lane_multiple_pct"`
 	SpecialistCadenceMinutes  int `mapstructure:"specialist_cadence_minutes"`

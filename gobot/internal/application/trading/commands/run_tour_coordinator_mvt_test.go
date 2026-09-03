@@ -194,6 +194,44 @@ func TestMVTState_AppliesTheRateSpanFloorFromTheCommand(t *testing.T) {
 	}
 }
 
+// The floor reaches the ranker from the command, and an unset one is the shipped default:
+// a neighbour whose only pair pays 150/unit is not ground the loop is offered at 200.
+func TestMVTRank_SpreadFloorFromCommand(t *testing.T) {
+	fx := repositionFixture()
+	h, claims, trans := mvtHandler(t, fx, rateFloorPlanner(feasiblePlan(600000, 600000)), 10, 10)
+	now := time.Now()
+	h.SetMVTPorts(claims, &mvtFakeDepth{lanes: map[string][]mvt.LaneDepth{
+		"X1-S1": mvtLane("X1-S1", "IRON", 100, 100, 500, now), // 400/unit here
+		"X1-S2": mvtLane("X1-S2", "IRON", 100, 100, 250, now), // 150/unit one hop out
+	}}, trans)
+	h.SetGateGraph(mvtTravelGraph())
+	ctx := common.WithLogger(context.Background(), &tradeCaptureLogger{})
+	cmd := mvtCmd(t)
+	ship, err := h.legs.loadShip(ctx, cmd.ShipSymbol, cmd.PlayerID)
+	if err != nil {
+		t.Fatalf("load ship: %v", err)
+	}
+	for _, tc := range []struct {
+		floor int
+		want  bool
+	}{{200, false}, {100, true}, {0, false}} {
+		cmd.RankerMinSpreadPerUnit = tc.floor
+		ranked, err := h.mvtRank(ctx, cmd, ship)
+		if err != nil {
+			t.Fatalf("floor %d: rank: %v", tc.floor, err)
+		}
+		got := false
+		for _, s := range ranked {
+			if s.System == "X1-S2" {
+				got = true
+			}
+		}
+		if got != tc.want {
+			t.Fatalf("floor %d: X1-S2 present = %v, want %v (ranked %+v)", tc.floor, got, tc.want, ranked)
+		}
+	}
+}
+
 func TestMVTShadow_RecordsWouldBeDecisionOnOldPath(t *testing.T) {
 	fx := repositionFixture()
 	now := time.Now()

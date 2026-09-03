@@ -510,3 +510,35 @@ func TestLoadConfig_OwnTradePenalty_AbsentIsArmed(t *testing.T) {
 		"0 is the consumer's resolve-to-default sentinel, so the default stays in ONE place")
 	require.Zero(t, cfg.TradeFleet.OwnTradeColdMinutes)
 }
+
+// ranker_min_spread_per_unit round-trip pin: a typo in the mapstructure tag would ship a
+// silently-inert knob and leave the ranker on its own default, which no other test can see.
+func TestLoadConfig_RankerMinSpreadPerUnit_RoundTrips(t *testing.T) {
+	t.Setenv("SPACETRADERS_CONFIG", "")
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(
+		"trade_fleet:\n"+
+			"  enabled: true\n"+
+			"  ranker_min_spread_per_unit: 350\n"), 0o644))
+	t.Chdir(dir)
+
+	cfg, err := LoadConfig("")
+
+	require.NoError(t, err)
+	require.Equal(t, 350, cfg.TradeFleet.RankerMinSpreadPerUnit)
+}
+
+func TestLoadConfig_RankerMinSpreadPerUnit_AbsentIsZeroSentinel(t *testing.T) {
+	t.Setenv("SPACETRADERS_CONFIG", "")
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(
+		"trade_fleet:\n"+
+			"  enabled: true\n"), 0o644))
+	t.Chdir(dir)
+
+	cfg, err := LoadConfig("")
+
+	require.NoError(t, err)
+	require.Equal(t, 0, cfg.TradeFleet.RankerMinSpreadPerUnit,
+		"absent must stay the sentinel 0 so the coordinator's own default resolves it")
+}
