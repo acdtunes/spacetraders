@@ -167,6 +167,12 @@ func (c *SpaceTradersClient) doWithRetry(ctx context.Context, call apiRequest, o
 			return err
 		}
 
+		// Telemetry only: a transport failure carries no response, so it is not a server
+		// that stopped sending the headers and must not be counted as one.
+		if outcome.networkErr == nil {
+			c.observeRateLimitHeaders(outcome.header, outcome.statusCode)
+		}
+
 		// Record one budget event per attempt, carrying the wait it already paid — this
 		// single call site covers both terminal and retry paths, since it runs before
 		// classify() branches on the outcome.

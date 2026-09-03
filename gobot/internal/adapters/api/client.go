@@ -86,6 +86,11 @@ type APIMetricsRecorder interface {
 	RecordAPIRetry(method string, endpoint string, reason string)
 	RecordRateLimitWait(method string, endpoint string, duration float64)
 	SetRateLimiterTokens(tokens float64)
+	// RecordRateLimitHeaders reports what the SERVER said about its own limit on one
+	// response (x-ratelimit-*). Absent or unparsable numeric fields arrive as
+	// metrics.RateLimitHeaderAbsent; sawHeaders says whether ANY x-ratelimit-* header
+	// arrived, which is what distinguishes a garbled server from a silent one.
+	RecordRateLimitHeaders(kind string, perSecond, burst, remaining, resetSeconds float64, sawHeaders bool)
 }
 
 // SpaceTradersClient implements the APIClient interface

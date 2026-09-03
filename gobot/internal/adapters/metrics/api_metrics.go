@@ -6,6 +6,12 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
+// RateLimitHeaderAbsent is the value RecordRateLimitHeaders callers pass for a
+// server rate-limit header that was missing or would not parse. It is a sentinel,
+// not a measurement: such a field sets no gauge at all, so a stale reading is
+// never mistaken for a fresh one.
+const RateLimitHeaderAbsent = -1.0
+
 // APIMetricsCollector handles all API request metrics
 type APIMetricsCollector struct {
 	// Request metrics
@@ -14,6 +20,14 @@ type APIMetricsCollector struct {
 	apiRetries           *prometheus.CounterVec
 	apiRateLimitWait     *prometheus.HistogramVec
 	apiRateLimiterTokens prometheus.Gauge
+
+	// What the SERVER says its limit is, straight off the x-ratelimit-* response
+	// headers — the client's own limiter is not involved.
+	apiRateLimitServerPerSecond *prometheus.GaugeVec
+	apiRateLimitServerBurst     *prometheus.GaugeVec
+	apiRateLimitServerRemaining *prometheus.GaugeVec
+	apiRateLimitServerReset     *prometheus.GaugeVec
+	apiRateLimitHeadersObserved *prometheus.CounterVec
 }
 
 // NewAPIMetricsCollector creates a new API metrics collector
@@ -60,6 +74,36 @@ func NewAPIMetricsCollector() *APIMetricsCollector {
 			"api_rate_limiter_tokens_available",
 			"Current available tokens in rate limiter (max 30)",
 		),
+
+		apiRateLimitServerPerSecond: newGaugeVec(
+			"api_ratelimit_server_limit_per_second",
+			"Sustained request rate the server reports in x-ratelimit-limit-per-second",
+			"type",
+		),
+
+		apiRateLimitServerBurst: newGaugeVec(
+			"api_ratelimit_server_limit_burst",
+			"Burst allowance the server reports in x-ratelimit-limit-burst",
+			"type",
+		),
+
+		apiRateLimitServerRemaining: newGaugeVec(
+			"api_ratelimit_server_remaining",
+			"Requests the server reports remaining in x-ratelimit-remaining",
+			"type",
+		),
+
+		apiRateLimitServerReset: newGaugeVec(
+			"api_ratelimit_server_reset_seconds",
+			"Seconds until the server's rate-limit window resets (x-ratelimit-reset)",
+			"type",
+		),
+
+		apiRateLimitHeadersObserved: newCounterVec(
+			"api_ratelimit_headers_observed_total",
+			"Responses by whether they carried any x-ratelimit-* header",
+			"present",
+		),
 	}
 }
 
@@ -74,6 +118,11 @@ func (c *APIMetricsCollector) Register() error {
 		c.apiRetries,
 		c.apiRateLimitWait,
 		c.apiRateLimiterTokens,
+		c.apiRateLimitServerPerSecond,
+		c.apiRateLimitServerBurst,
+		c.apiRateLimitServerRemaining,
+		c.apiRateLimitServerReset,
+		c.apiRateLimitHeadersObserved,
 	)
 }
 
@@ -130,6 +179,46 @@ func (c *APIMetricsCollector) SetRateLimiterTokens(tokens float64) {
 	}
 
 	c.apiRateLimiterTokens.Set(tokens)
+}
+
+// RecordRateLimitHeaders records what the server reported about its own rate limit on
+// one response. kind is the x-ratelimit-type value; any numeric field may be
+// RateLimitHeaderAbsent, which sets no gauge. sawHeaders is the caller's prefix scan of
+// the response: presence is a fact about the WIRE, not about whether our five known
+// fields parsed, so a garbled or renamed header still counts present="yes" — otherwise a
+// server sending nonsense reads exactly like one sending nothing.
+func (c *APIMetricsCollector) RecordRateLimitHeaders(
+	kind string,
+	perSecond float64,
+	burst float64,
+	remaining float64,
+	resetSeconds float64,
+	sawHeaders bool,
+) {
+	if c == nil || c.apiRateLimitHeadersObserved == nil {
+		return // Recording is best-effort; never panic the request path.
+	}
+
+	if !sawHeaders {
+		c.apiRateLimitHeadersObserved.WithLabelValues("no").Inc()
+		return
+	}
+	c.apiRateLimitHeadersObserved.WithLabelValues("yes").Inc()
+
+	if kind == "" {
+		kind = "unknown"
+	}
+	setRateLimitHeaderGauge(c.apiRateLimitServerPerSecond, kind, perSecond)
+	setRateLimitHeaderGauge(c.apiRateLimitServerBurst, kind, burst)
+	setRateLimitHeaderGauge(c.apiRateLimitServerRemaining, kind, remaining)
+	setRateLimitHeaderGauge(c.apiRateLimitServerReset, kind, resetSeconds)
+}
+
+func setRateLimitHeaderGauge(gauge *prometheus.GaugeVec, kind string, value float64) {
+	if gauge == nil || value == RateLimitHeaderAbsent {
+		return
+	}
+	gauge.WithLabelValues(kind).Set(value)
 }
 
 // globalAPICollector is the singleton API metrics collector

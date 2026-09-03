@@ -14,11 +14,21 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
+type rateLimitHeaderObservation struct {
+	kind         string
+	perSecond    float64
+	burst        float64
+	remaining    float64
+	resetSeconds float64
+	sawHeaders   bool
+}
+
 type recordingMetrics struct {
 	retryReasons     []string
 	rateLimitWaits   int
 	requestStatuses  []int
 	rateLimiterCalls int
+	rateLimitHeaders []rateLimitHeaderObservation
 }
 
 func (r *recordingMetrics) RecordAPIRequest(method string, endpoint string, statusCode int, duration float64) {
@@ -35,6 +45,17 @@ func (r *recordingMetrics) RecordRateLimitWait(method string, endpoint string, d
 
 func (r *recordingMetrics) SetRateLimiterTokens(tokens float64) {
 	r.rateLimiterCalls++
+}
+
+func (r *recordingMetrics) RecordRateLimitHeaders(kind string, perSecond, burst, remaining, resetSeconds float64, sawHeaders bool) {
+	r.rateLimitHeaders = append(r.rateLimitHeaders, rateLimitHeaderObservation{
+		kind:         kind,
+		perSecond:    perSecond,
+		burst:        burst,
+		remaining:    remaining,
+		resetSeconds: resetSeconds,
+		sawHeaders:   sawHeaders,
+	})
 }
 
 func newRetryTestClient(serverURL string, maxRetries int) (*SpaceTradersClient, *shared.MockClock) {
