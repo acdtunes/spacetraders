@@ -22,7 +22,7 @@ type TransactionRepository interface {
 	CountByPlayer(ctx context.Context, playerID shared.PlayerID, opts QueryOptions) (int, error)
 }
 
-// GateFeeAggregator reads the mean recorded jump-gate fee, in credits, keyed by the system
+// GateFeeAggregator reads the LATEST recorded jump-gate fee, in credits, keyed by the system
 // the hull DEPARTED from (sp-9idvn).
 //
 // DELIBERATELY SEPARATE FROM TransactionRepository, though the same GORM type satisfies
@@ -34,9 +34,9 @@ type TransactionRepository interface {
 // Only rows carrying a non-empty metadata.origin_system are aggregated: a fee whose origin
 // is unknown cannot be attributed to a gate, and guessing one would poison the table.
 //
-// A gate's fee is a CONSTANT of the map, not a market price, so a stale answer is still a
-// correct one and callers may cache it freely. `since` bounds the scan for cost, not for
-// freshness.
+// A gate's fee TRENDS with cumulative traffic rather than sitting still (sp-htzl1.5), so the
+// answer is the most recent observation per origin and a cached copy goes wrong with age.
+// `since` bounds the scan for cost, not for freshness.
 //
 // An empty map is a valid, non-error answer: nothing has been recorded yet, and every
 // caller must already handle that by falling back to its flat charge.

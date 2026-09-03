@@ -172,6 +172,7 @@ var tradeFleetConfigKeys = []string{
 	"specialist_fraction_pct",
 	"fat_lane_multiple_pct",
 	"specialist_cadence_minutes",
+	"mvt_jump_fee_max_share_pct",
 }
 
 // resolveTradeFleetConfig makes config.yaml the single LIVE source of truth for the
@@ -264,5 +265,8 @@ func (s *DaemonServer) injectTradeFleetConfig(config map[string]interface{}) {
 	}
 	if tf.SpecialistCadenceMinutes > 0 {
 		config["specialist_cadence_minutes"] = tf.SpecialistCadenceMinutes
+	}
+	if tf.MVTJumpFeeMaxSharePct > 0 {
+		config["mvt_jump_fee_max_share_pct"] = tf.MVTJumpFeeMaxSharePct
 	}
 }

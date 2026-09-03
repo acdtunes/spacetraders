@@ -74,6 +74,10 @@ func TestBuildTourCoordinatorCommand_MVTLoopReadsTheSelectorAndKnobDefaults(t *t
 	require.Equal(t, tradingCmd.DefaultYieldRateSpanFloorMinutes, off.YieldRateSpanFloorMinutes)
 	require.Equal(t, tradingCmd.DefaultMVTRescueJumpsPerEpisode, off.MVTRescueJumpsPerEpisode)
 	require.Equal(t, 2, off.MVTRescueJumpsPerEpisode, "an absent mvt_rescue_jumps_per_episode allows the second rescue")
+	require.Equal(t, tradingCmd.DefaultMVTJumpFeeMaxSharePct, off.MVTJumpFeeMaxSharePct)
+	require.Equal(t, 20, off.MVTJumpFeeMaxSharePct, "the fee guard is ARMED at the shipped share with no config at all")
+	require.Equal(t, tradingCmd.DefaultMVTRecentlyLeftMinutes, off.MVTRecentlyLeftMinutes)
+	require.Equal(t, 90, off.MVTRecentlyLeftMinutes, "an absent mvt_recently_left_minutes is the shipped window")
 
 	tuned := build(map[string]interface{}{"ship_symbol": "HULL-1", "yield_rate_span_floor_minutes": 5})
 	require.Equal(t, 5, tuned.YieldRateSpanFloorMinutes, "a configured floor rides through to the command")
@@ -83,6 +87,12 @@ func TestBuildTourCoordinatorCommand_MVTLoopReadsTheSelectorAndKnobDefaults(t *t
 
 	capped := build(map[string]interface{}{"ship_symbol": "HULL-1", "mvt_rescue_jumps_per_episode": 1})
 	require.Equal(t, 1, capped.MVTRescueJumpsPerEpisode, "a configured rescue cap rides through to the command")
+
+	share := build(map[string]interface{}{"ship_symbol": "HULL-1", "mvt_jump_fee_max_share_pct": 5})
+	require.Equal(t, 5, share.MVTJumpFeeMaxSharePct, "a configured fee share rides through to the command")
+
+	left := build(map[string]interface{}{"ship_symbol": "HULL-1", "mvt_recently_left_minutes": 15})
+	require.Equal(t, 15, left.MVTRecentlyLeftMinutes, "a configured recently-left window rides through to the command")
 }
 
 // The MVT knobs are stamped into the launch config only when the captain set them, so an
@@ -93,14 +103,17 @@ func TestAddTradeFleetTourKnobs_WritesTheMVTKnobsOnlyWhenConfigured(t *testing.T
 	(&DaemonServer{}).addTradeFleetTourKnobs(unset)
 	for _, key := range []string{"yield_window_sells", "yield_min_sells", "claim_reach_hops",
 		"specialist_cadence_minutes", "yield_rate_span_floor_minutes", "ranker_min_spread_per_unit",
-		"mvt_rescue_jumps_per_episode"} {
+		"mvt_rescue_jumps_per_episode", "mvt_jump_fee_max_share_pct", "mvt_recently_left_minutes"} {
 		_, present := unset[key]
 		require.Falsef(t, present, "an unset %s must not be written", key)
 	}
 
 	set := map[string]interface{}{}
-	(&DaemonServer{tradeFleetConfig: config.TradeFleetConfig{YieldRateSpanFloorMinutes: 45, RankerMinSpreadPerUnit: 350, MVTRescueJumpsPerEpisode: 3}}).addTradeFleetTourKnobs(set)
+	(&DaemonServer{tradeFleetConfig: config.TradeFleetConfig{YieldRateSpanFloorMinutes: 45, RankerMinSpreadPerUnit: 350,
+		MVTRescueJumpsPerEpisode: 3, MVTJumpFeeMaxSharePct: 5, MVTRecentlyLeftMinutes: 30}}).addTradeFleetTourKnobs(set)
 	require.Equal(t, 45, set["yield_rate_span_floor_minutes"])
 	require.Equal(t, 350, set["ranker_min_spread_per_unit"])
 	require.Equal(t, 3, set["mvt_rescue_jumps_per_episode"])
+	require.Equal(t, 5, set["mvt_jump_fee_max_share_pct"])
+	require.Equal(t, 30, set["mvt_recently_left_minutes"])
 }

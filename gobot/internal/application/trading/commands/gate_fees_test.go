@@ -70,6 +70,10 @@ func TestGateFeeReaderServesTheCachedTableWithinItsTTL(t *testing.T) {
 	repo := &gateFeeFakeRepo{fees: map[string]int64{"X1-KD64": 6667}}
 	r := NewLedgerGateFeeReader(repo, clock)
 
+	// Pinned, not merely referenced: a fee that climbs 66k → 300k within hours cannot be
+	// served for half an hour (sp-htzl1.5).
+	require.Equal(t, 5*time.Minute, gateFeeCacheTTL)
+
 	require.Equal(t, map[string]int64{"X1-KD64": 6667}, r.GateFees(context.Background(), 5))
 	require.Equal(t, 1, repo.calls)
 
@@ -91,9 +95,8 @@ func TestGateFeeReaderScansOnlyTheLookbackWindow(t *testing.T) {
 }
 
 func TestGateFeeReaderServesTheLastGoodTableWhenTheLedgerReadFails(t *testing.T) {
-	// A failed read proves nothing about gate prices, and a gate fee is a CONSTANT of the
-	// map — so an expired copy is a better estimate than discarding it and pricing every
-	// crossing at the flat charge again.
+	// A failed read proves nothing about gate prices — so an expired copy is a better
+	// estimate than discarding it and pricing every crossing at the flat charge again.
 	clock := &gateFeeFakeClock{now: time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)}
 	repo := &gateFeeFakeRepo{fees: map[string]int64{"X1-KD64": 6667}}
 	r := NewLedgerGateFeeReader(repo, clock)

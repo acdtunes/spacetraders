@@ -216,6 +216,12 @@ func (s *DaemonServer) addTradeFleetTourKnobs(config map[string]interface{}) {
 	if v := s.tradeFleetConfig.MVTRescueJumpsPerEpisode; v > 0 {
 		config["mvt_rescue_jumps_per_episode"] = v
 	}
+	if v := s.tradeFleetConfig.MVTJumpFeeMaxSharePct; v > 0 {
+		config["mvt_jump_fee_max_share_pct"] = v
+	}
+	if v := s.tradeFleetConfig.MVTRecentlyLeftMinutes; v > 0 {
+		config["mvt_recently_left_minutes"] = v
+	}
 }
 
 // TourRepositionConfigPersister backs the tour coordinator's

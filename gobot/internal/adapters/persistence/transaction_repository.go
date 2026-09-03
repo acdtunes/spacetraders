@@ -111,15 +111,14 @@ func (r *GormTransactionRepository) CountByPlayer(ctx context.Context, playerID 
 	return int(count), nil
 }
 
-// PerOriginGateFees aggregates recorded jump fees into a {departure system: mean fee}
-// table.
+// PerOriginGateFees reads the MOST RECENT recorded jump fee inside the window into a
+// {departure system: fee} table.
 //
-// WHY THE MEAN AND NOT THE MEDIAN, given sp-wtc47 argued the mean for the FLEET constant:
-// there the estimator had to price a SUM of n crossings, so E[total] = n x E[fee] forced
-// the mean. Here the estimator prices ONE crossing of ONE known gate, and within a single
-// gate the spread is 2.38% of that gate's own mean with no meaningful skew — mean and
-// median agree to well under a percent, so the mean is chosen for continuity with the
-// constant it refines rather than because the distribution demands it.
+// LATEST, NOT A MEAN. A gate's fee is not a constant of the map: it climbs with cumulative
+// use and decays when the traffic stops, so averaging a week of it prices the NEXT jump at a
+// fraction of what it will cost. One observation is noisier than a mean; on a fee that
+// trends, the noise costs far less than the lag. `since` still bounds the scan for cost, so
+// a rarely crossed gate keeps a price.
 //
 // amount is stored NEGATIVE for an expense, so it is negated back to a positive fee. Rows
 // without an origin are excluded rather than bucketed as blank — see the port doc.
@@ -128,31 +127,34 @@ func (r *GormTransactionRepository) PerOriginGateFees(
 ) (map[string]int64, error) {
 	type row struct {
 		OriginSystem string
-		MeanFee      float64
+		Fee          float64
 	}
-	var rows []row
-	result := r.db.WithContext(ctx).Model(&TransactionModel{}).
-		Select("metadata->>'origin_system' AS origin_system, AVG(-amount) AS mean_fee").
+	// Ranked, not DISTINCT ON (sqlite); id breaks a same-instant tie the same way twice.
+	ranked := r.db.WithContext(ctx).Model(&TransactionModel{}).
+		Select("metadata->>'origin_system' AS origin_system, -amount AS fee, "+
+			"ROW_NUMBER() OVER (PARTITION BY metadata->>'origin_system' ORDER BY timestamp DESC, id DESC) AS rn").
 		Where("player_id = ?", playerID.Value()).
 		Where("transaction_type = ?", string(ledger.TransactionTypeJump)).
 		Where("timestamp >= ?", since).
 		Where("metadata->>'origin_system' IS NOT NULL").
-		Where("metadata->>'origin_system' <> ''").
-		Group("metadata->>'origin_system'").
-		Scan(&rows)
+		Where("metadata->>'origin_system' <> ''")
+
+	var rows []row
+	result := r.db.WithContext(ctx).Table("(?) AS latest_gate_fees", ranked).
+		Select("origin_system, fee").Where("rn = 1").Scan(&rows)
 	if result.Error != nil {
-		return nil, fmt.Errorf("failed to aggregate per-origin gate fees: %w", result.Error)
+		return nil, fmt.Errorf("failed to read per-origin gate fees: %w", result.Error)
 	}
 
 	fees := make(map[string]int64, len(rows))
 	for _, rw := range rows {
-		// A non-positive mean cannot be a real gate fee. Dropping it here means the
+		// A non-positive fee cannot be a real gate charge. Dropping it here means the
 		// solver falls back to its flat charge instead of pricing a crossing at or below
 		// zero, which is the one direction that biases every candidate toward crossing.
-		if rw.MeanFee <= 0 {
+		if rw.Fee <= 0 {
 			continue
 		}
-		fees[rw.OriginSystem] = int64(math.Round(rw.MeanFee))
+		fees[rw.OriginSystem] = int64(math.Round(rw.Fee))
 	}
 	return fees, nil
 }

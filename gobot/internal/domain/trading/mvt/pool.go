@@ -13,11 +13,14 @@ func PoolSize(fatLanes, hulls, fractionPct int) int {
 	return byFraction
 }
 
-// IsFatLane reports whether a lane's margin per tranche, net of the measured jump cost,
-// clears multiplePct/100 times the fleet's intra-system margin per tranche. With no
-// intra-system baseline nothing qualifies.
-func IsFatLane(marginPerTranche, transitSeconds, fleetCreditsPerSec float64, gateFee int64, intraMarginPerTranche float64, multiplePct int) bool {
+// IsFatLane reports whether a lane's margin per tranche, net of the measured jump cost, clears
+// multiplePct/100 times the fleet's intra-system margin per tranche while paying its gate no
+// more than maxFeeSharePct of that margin. With no intra-system baseline nothing qualifies.
+func IsFatLane(marginPerTranche, transitSeconds, fleetCreditsPerSec float64, gateFee int64, intraMarginPerTranche float64, multiplePct, maxFeeSharePct int) bool {
 	if intraMarginPerTranche <= 0 {
+		return false
+	}
+	if float64(gateFee) > float64(maxFeeSharePct)/100*marginPerTranche {
 		return false
 	}
 	jumpCost := transitSeconds*fleetCreditsPerSec + float64(gateFee)

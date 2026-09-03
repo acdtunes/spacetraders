@@ -233,6 +233,13 @@ type RunTourCoordinatorCommand struct {
 	// before the loop stays put. 0/absent → DefaultMVTRescueJumpsPerEpisode; 1 is the
 	// one-per-episode bound the loop shipped with.
 	MVTRescueJumpsPerEpisode int
+	// MVTJumpFeeMaxSharePct caps a claim's gate fee at that share of the credits the ranker
+	// expects the hull's next load at the target to earn. 0/absent →
+	// DefaultMVTJumpFeeMaxSharePct. It only ever REFUSES a claim; it can never widen one.
+	MVTJumpFeeMaxSharePct int
+	// MVTRecentlyLeftMinutes is how long a system this hull departed stays out of its own
+	// ranking while another candidate survives. 0/absent → DefaultMVTRecentlyLeftMinutes.
+	MVTRecentlyLeftMinutes int
 	// RankerMinSpreadPerUnit is the credits-per-unit floor under which a market pair is not
 	// depth the MVT ranker counts. 0/absent → DefaultRankerMinSpreadPerUnit.
 	RankerMinSpreadPerUnit   int
@@ -291,6 +298,8 @@ const (
 	DefaultClaimReachHops            = 2
 	DefaultClaimReachMaxHops         = 4
 	DefaultMVTRescueJumpsPerEpisode  = 2
+	DefaultMVTJumpFeeMaxSharePct     = 20  // a jump may spend at most a fifth of the load it fetches
+	DefaultMVTRecentlyLeftMinutes    = 90  // ground the hull drained needs time to refill
 	DefaultRankerMinSpreadPerUnit    = 200 // pairs below this carried 53% of units for 8% of credits
 	DefaultSpecialistFractionPct     = 10  // specialist_fraction 0.10
 	DefaultFatLaneMultiplePct        = 200 // fat_lane_multiple 2.0

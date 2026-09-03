@@ -534,7 +534,7 @@ func TestMVTTravelTo_PostJumpHopFailurePinsWhereTheHullStands(t *testing.T) {
 	h.SetGateGraph(mvtTravelGraph())
 	ctx := common.WithLogger(context.Background(), &tradeCaptureLogger{})
 	cmd := mvtCmd(t)
-	ranked := []mvt.ScoredSystem{{System: "X1-S2", Hops: 1, EntryWaypoint: "X1-S2-SRC", Score: 1}}
+	ranked := []mvt.ScoredSystem{{System: "X1-S2", Hops: 1, EntryWaypoint: "X1-S2-SRC", Score: 1, ExpectedLoadCredits: 50_000}}
 	resp := &RunTourCoordinatorResponse{}
 	moved, err := h.mvtTravelTo(ctx, cmd, resp, nil, ranked, mvtReasonBootstrap, 0, tourPlanBudget{})
 	if err != nil || !moved || resp.Repositions != 1 {
@@ -607,7 +607,7 @@ func TestMVTTravelTo_RepeatedFailuresHoldSells(t *testing.T) {
 	h.SetGateGraph(mvtTravelGraph())
 	ctx := common.WithLogger(context.Background(), &tradeCaptureLogger{})
 	cmd := mvtCmd(t)
-	ranked := []mvt.ScoredSystem{{System: "X1-S2", Hops: 1, EntryWaypoint: "X1-S2-SRC", Score: 1}}
+	ranked := []mvt.ScoredSystem{{System: "X1-S2", Hops: 1, EntryWaypoint: "X1-S2-SRC", Score: 1, ExpectedLoadCredits: 50_000}}
 	for i := 1; i <= mvtTravelFailureCap; i++ {
 		moved, err := h.mvtTravelTo(ctx, cmd, &RunTourCoordinatorResponse{}, nil, ranked, mvtReasonEmpty, 0, tourPlanBudget{})
 		if err != nil || moved {
@@ -848,7 +848,7 @@ func TestMVTTravelTo_BudgetWithoutHeadroomStays(t *testing.T) {
 	ctx := common.WithLogger(context.Background(), &tradeCaptureLogger{})
 	cmd := mvtCmd(t)
 	cmd.MaxSpend = 1000
-	ranked := []mvt.ScoredSystem{{System: "X1-S2", Hops: 1, EntryWaypoint: "X1-S2-SRC", Score: 7, TravelPerUnit: 2}}
+	ranked := []mvt.ScoredSystem{{System: "X1-S2", Hops: 1, EntryWaypoint: "X1-S2-SRC", Score: 7, TravelPerUnit: 2, ExpectedLoadCredits: 50_000}}
 	denied := tourPlanBudget{maxSpend: 1000, reserve: 5000}
 	moved, err := h.mvtTravelTo(ctx, cmd, &RunTourCoordinatorResponse{}, nil, ranked, mvt.ReasonYieldBelow, 3, denied)
 	if err != nil || moved || len(fx.jumps) != 0 {
@@ -1003,7 +1003,7 @@ func TestMVTTravelTo_LadenHullStays(t *testing.T) {
 	h.SetGateGraph(mvtTravelGraph())
 	ctx := common.WithLogger(context.Background(), &tradeCaptureLogger{})
 	cmd := mvtCmd(t)
-	ranked := []mvt.ScoredSystem{{System: "X1-S2", Hops: 1, EntryWaypoint: "X1-S2-SRC", Score: 1}}
+	ranked := []mvt.ScoredSystem{{System: "X1-S2", Hops: 1, EntryWaypoint: "X1-S2-SRC", Score: 1, ExpectedLoadCredits: 50_000}}
 	moved, err := h.mvtTravelTo(ctx, cmd, &RunTourCoordinatorResponse{}, nil, ranked, mvtReasonBootstrap, 0, tourPlanBudget{})
 	if err != nil || moved || len(fx.jumps) != 0 {
 		t.Fatalf("moved=%v err=%v jumps=%v, want a laden stay", moved, err, fx.jumps)
@@ -1155,7 +1155,7 @@ func TestMVTTravelTo_ClaimWriteFailureClosesTheSequence(t *testing.T) {
 	claims.failUpsert = true
 	ctx := common.WithLogger(context.Background(), &tradeCaptureLogger{})
 	cmd := mvtCmd(t)
-	ranked := []mvt.ScoredSystem{{System: "X1-S2", Hops: 1, EntryWaypoint: "X1-S2-SRC", Score: 7, TravelPerUnit: 2}}
+	ranked := []mvt.ScoredSystem{{System: "X1-S2", Hops: 1, EntryWaypoint: "X1-S2-SRC", Score: 7, TravelPerUnit: 2, ExpectedLoadCredits: 50_000}}
 	moved, err := h.mvtTravelTo(ctx, cmd, &RunTourCoordinatorResponse{}, nil, ranked, mvtReasonBootstrap, 3, tourPlanBudget{})
 	if err != nil || moved || len(fx.jumps) != 0 {
 		t.Fatalf("moved=%v err=%v jumps=%v, want a stay", moved, err, fx.jumps)
@@ -1212,7 +1212,7 @@ func TestMVTTravelTo_FlightsFeedTheRepositionMetric(t *testing.T) {
 		metrics.Registry = previous
 	})
 	ctx := common.WithLogger(context.Background(), &tradeCaptureLogger{})
-	ranked := []mvt.ScoredSystem{{System: "X1-S2", Hops: 1, EntryWaypoint: "X1-S2-SRC", Score: 1}}
+	ranked := []mvt.ScoredSystem{{System: "X1-S2", Hops: 1, EntryWaypoint: "X1-S2-SRC", Score: 1, ExpectedLoadCredits: 50_000}}
 
 	fx := repositionFixture()
 	h, _, _ := mvtHandler(t, fx, rateFloorPlanner(feasiblePlan(600000, 600000)), 10, 500)

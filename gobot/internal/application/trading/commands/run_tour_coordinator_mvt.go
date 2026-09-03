@@ -28,6 +28,7 @@ const (
 	mvtReasonBudgetDenied       = "budget_denied"
 	mvtReasonEpisodeSpent       = "episode_spent"
 	mvtReasonLaden              = "laden"
+	mvtReasonJumpFeeGuard       = "jump_fee_guard"
 	// The hull was moved by a path that does not own the claim (disposal, offload, retirement, a tag flip).
 	mvtReasonRelocated = "relocated_externally"
 
@@ -59,6 +60,9 @@ type mvtHullState struct {
 	travelFailures int
 	holdSells      int
 	holdUntil      time.Time
+	// leftAt is when this hull last DEPARTED each system, so the ranker can prefer ground it
+	// has not just drained. A restart forgets it, which only widens the choice back to today's.
+	leftAt map[string]time.Time
 }
 
 // holding is the post-failure hold, bounded in both sells and time so a dead system with
@@ -81,7 +85,8 @@ func (h *RunTourCoordinatorHandler) mvtState(cmd *RunTourCoordinatorCommand) *mv
 	}
 	st := h.mvtHulls[cmd.ShipSymbol]
 	if st == nil {
-		st = &mvtHullState{yield: mvt.NewYieldTracker(cmd.YieldWindowSells, cmd.YieldMinSells), basis: map[string][]mvtLot{}}
+		st = &mvtHullState{yield: mvt.NewYieldTracker(cmd.YieldWindowSells, cmd.YieldMinSells),
+			basis: map[string][]mvtLot{}, leftAt: map[string]time.Time{}}
 		floor := cmd.YieldRateSpanFloorMinutes
 		if floor <= 0 {
 			floor = DefaultYieldRateSpanFloorMinutes
@@ -181,7 +186,65 @@ func mvtSpreadFloor(cmd *RunTourCoordinatorCommand) int {
 
 // mvtRank ranks the hull's current system and every priced system within ClaimReachHops.
 func (h *RunTourCoordinatorHandler) mvtRank(ctx context.Context, cmd *RunTourCoordinatorCommand, ship *navigation.Ship) ([]mvt.ScoredSystem, error) {
-	return h.mvtRankReach(ctx, cmd, ship, cmd.ClaimReachHops, mvtSpreadFloor(cmd))
+	rk, err := h.mvtRankReach(ctx, cmd, ship, cmd.ClaimReachHops, mvtSpreadFloor(cmd))
+	return rk.best(), err
+}
+
+// mvtRanking is one reach's scoring under the recently-left preference. systems sinks the
+// ground this hull just drained below everything else; plain is the same scoring with the
+// preference off, and stands whenever nothing undrained is reachable at all.
+type mvtRanking struct {
+	systems, plain []mvt.ScoredSystem
+	demoted        int
+	preferred      int
+}
+
+// best is the ranking to act on: a hull with nowhere fresh to go still gets to move.
+func (rk mvtRanking) best() []mvt.ScoredSystem {
+	if rk.preferred > 0 {
+		return rk.systems
+	}
+	return rk.plain
+}
+
+// mvtRecentlyLeftWindow is how long a system the hull departed ranks below undrained ground.
+func mvtRecentlyLeftWindow(cmd *RunTourCoordinatorCommand) time.Duration {
+	if cmd.MVTRecentlyLeftMinutes > 0 {
+		return time.Duration(cmd.MVTRecentlyLeftMinutes) * time.Minute
+	}
+	return time.Duration(DefaultMVTRecentlyLeftMinutes) * time.Minute
+}
+
+// mvtDemoteRecentlyLeft sinks every system this hull departed inside mvt_recently_left_minutes
+// below the ground it has not just drained, so it does not re-claim what it emptied the moment
+// the neighbour runs dry — the shuttle that drove one gate's fee from 128k to 300k in nine hours.
+//
+// NEVER REMOVES A CANDIDATE, so it can never idle a hull: a demoted system is still reachable
+// behind the rest, which is what lets the fee guard fall back to one it can afford and what
+// leaves the escalation something to take at its cap. Current is never demoted — staying put
+// crosses no gate.
+func (h *RunTourCoordinatorHandler) mvtDemoteRecentlyLeft(cmd *RunTourCoordinatorCommand, ranked []mvt.ScoredSystem, current string, now time.Time) ([]mvt.ScoredSystem, int, int) {
+	window := mvtRecentlyLeftWindow(cmd)
+	st := h.mvtState(cmd)
+	st.mu.Lock()
+	fresh := make([]mvt.ScoredSystem, 0, len(ranked))
+	var drained []mvt.ScoredSystem
+	preferred := 0
+	for _, s := range ranked {
+		if s.System != current {
+			if at, ok := st.leftAt[s.System]; ok && now.Sub(at) < window {
+				drained = append(drained, s)
+				continue
+			}
+			preferred++
+		}
+		fresh = append(fresh, s)
+	}
+	st.mu.Unlock()
+	if len(drained) == 0 {
+		return ranked, 0, preferred
+	}
+	return append(fresh, drained...), len(drained), preferred
 }
 
 // mvtRankEscalating widens the claim reach one hop at a time, up to ClaimReachMaxHops,
@@ -202,26 +265,32 @@ func (h *RunTourCoordinatorHandler) mvtRankEscalating(ctx context.Context, cmd *
 	}
 	floor := mvtSpreadFloor(cmd)
 	var hasAlt bool
+	var rk mvtRanking
 	for hops = start; ; hops++ {
-		if ranked, err = h.mvtRankReach(ctx, cmd, ship, hops, floor); err != nil {
+		if rk, err = h.mvtRankReach(ctx, cmd, ship, hops, floor); err != nil {
 			return nil, hops, err
 		}
+		ranked = rk.best()
 		_, hasAlt = mvt.BestAlternative(ranked, current)
-		if hops >= limit || (len(ranked) > 0 && (!excludeCurrent || hasAlt)) {
+		// A ring offering only ground this hull just drained is no offer: widen first and take
+		// the drained neighbour back at the cap, where mvtRanking.best restores it.
+		offer := len(ranked) > 0 && (!excludeCurrent || hasAlt) && (rk.demoted == 0 || rk.preferred > 0)
+		if hops >= limit || offer {
 			break
 		}
 	}
 	if hops > start {
 		common.LoggerFromContext(ctx).Log("INFO", "MVT CLAIM: reach escalated", map[string]interface{}{
 			"hull": cmd.ShipSymbol, "from_hops": start, "to_hops": hops, "candidates": len(ranked),
-			"min_spread": floor})
+			"min_spread": floor, "recently_left_demoted": rk.demoted})
 	}
 	// The floor steers toward rich ground; with nothing reachable even at the cap, idling
 	// the hull is worse than the best thin option, so it gets one relaxed look at floor 0.
 	if (len(ranked) == 0 || (excludeCurrent && !hasAlt)) && floor > 0 {
-		if ranked, err = h.mvtRankReach(ctx, cmd, ship, limit, 0); err != nil {
+		if rk, err = h.mvtRankReach(ctx, cmd, ship, limit, 0); err != nil {
 			return nil, limit, err
 		}
+		ranked = rk.best()
 		common.LoggerFromContext(ctx).Log("INFO", "MVT CLAIM: spread floor relaxed", map[string]interface{}{
 			"hull": cmd.ShipSymbol, "hops": limit, "min_spread": floor, "candidates": len(ranked)})
 		hops = limit
@@ -232,28 +301,28 @@ func (h *RunTourCoordinatorHandler) mvtRankEscalating(ctx context.Context, cmd *
 // mvtRankReach ranks the hull's current system and every priced system within hops of it
 // (discovered by mvtReach, stored-only). Any unreadable input returns an error and the caller
 // stays put.
-func (h *RunTourCoordinatorHandler) mvtRankReach(ctx context.Context, cmd *RunTourCoordinatorCommand, ship *navigation.Ship, hops int, floor int) ([]mvt.ScoredSystem, error) {
+func (h *RunTourCoordinatorHandler) mvtRankReach(ctx context.Context, cmd *RunTourCoordinatorCommand, ship *navigation.Ship, hops int, floor int) (mvtRanking, error) {
 	if h.mvt.depth == nil || h.mvt.claims == nil {
-		return nil, errors.New("mvt ports not wired")
+		return mvtRanking{}, errors.New("mvt ports not wired")
 	}
 	if ship.CurrentLocation() == nil {
-		return nil, errors.New("hull has no location")
+		return mvtRanking{}, errors.New("hull has no location")
 	}
 	if h.jumpTolls == nil || h.gateFees == nil {
-		return nil, errors.New("mvt ranker needs jump toll and gate fee readers")
+		return mvtRanking{}, errors.New("mvt ranker needs jump toll and gate fee readers")
 	}
 	current := ship.CurrentLocation().SystemSymbol
 	systems, hopsOf, err := h.mvtReach(ctx, current, hops)
 	if err != nil {
-		return nil, err
+		return mvtRanking{}, err
 	}
 	depths, err := h.mvt.depth.SystemDepths(ctx, cmd.PlayerID, systems)
 	if err != nil {
-		return nil, fmt.Errorf("system depths: %w", err)
+		return mvtRanking{}, fmt.Errorf("system depths: %w", err)
 	}
 	inTransit, err := h.mvt.claims.InTransit(ctx, cmd.PlayerID)
 	if err != nil {
-		return nil, fmt.Errorf("in-transit claims: %w", err)
+		return mvtRanking{}, fmt.Errorf("in-transit claims: %w", err)
 	}
 	if own, ok, _ := h.mvt.claims.Get(ctx, cmd.PlayerID, cmd.ShipSymbol); ok && own.ArrivedAt == nil && inTransit[own.System] > 0 {
 		inTransit[own.System]--
@@ -280,7 +349,9 @@ func (h *RunTourCoordinatorHandler) mvtRankReach(ctx context.Context, cmd *RunTo
 	rate := st.yield.CreditsPerSec(now)
 	st.mu.Unlock()
 	hull := mvt.Hull{Symbol: cmd.ShipSymbol, System: current, CargoCapacity: ship.CargoCapacity(), CreditsPerSec: rate}
-	return mvt.Rank(hull, cands, costs), nil
+	plain := mvt.Rank(hull, cands, costs)
+	undrainedFirst, demoted, preferred := h.mvtDemoteRecentlyLeft(cmd, plain, current, now)
+	return mvtRanking{systems: undrainedFirst, plain: plain, demoted: demoted, preferred: preferred}, nil
 }
 
 // mvtRecord writes one telemetry line. Recording never fails a hull.

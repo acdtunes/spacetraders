@@ -80,6 +80,7 @@ func buildTradeFleetCoordinatorCommand(cfg *configReader, playerID int, containe
 		SpecialistFractionPct:    cfg.OptionalInt("specialist_fraction_pct", tradingCmd.DefaultSpecialistFractionPct),
 		FatLaneMultiplePct:       cfg.OptionalInt("fat_lane_multiple_pct", tradingCmd.DefaultFatLaneMultiplePct),
 		SpecialistCadenceMinutes: cfg.OptionalInt("specialist_cadence_minutes", tradingCmd.DefaultSpecialistCadenceMinutes),
+		MVTJumpFeeMaxSharePct:    cfg.OptionalInt("mvt_jump_fee_max_share_pct", tradingCmd.DefaultMVTJumpFeeMaxSharePct),
 	}
 }
 
@@ -666,6 +667,9 @@ func buildTourCoordinatorCommand(cfg *configReader, playerID int, containerID st
 		YieldRateSpanFloorMinutes: cfg.OptionalInt("yield_rate_span_floor_minutes", tradingCmd.DefaultYieldRateSpanFloorMinutes),
 		// A rescue landing on ground drained in transit gets one more move; 1 is the shipped bound.
 		MVTRescueJumpsPerEpisode: cfg.OptionalInt("mvt_rescue_jumps_per_episode", tradingCmd.DefaultMVTRescueJumpsPerEpisode),
+		// The claim's fee ceiling is always ARMED; an absent key is the shipped 20% share.
+		MVTJumpFeeMaxSharePct:  cfg.OptionalInt("mvt_jump_fee_max_share_pct", tradingCmd.DefaultMVTJumpFeeMaxSharePct),
+		MVTRecentlyLeftMinutes: cfg.OptionalInt("mvt_recently_left_minutes", tradingCmd.DefaultMVTRecentlyLeftMinutes),
 		// sp-uf64 reposition reach (always-broaden discovery + deadhead-decay ranking + anti-herd).
 		// OptionalBool/OptionalInt yield zero values for absent keys — the exact default-OFF dormancy
 		// the Placement*/Reposition* knobs use: reposition_reach_enabled absent ⇒ false ⇒ the legacy

@@ -218,3 +218,29 @@ func TestRank_TiesBreakOnHopsThenSystem(t *testing.T) {
 		t.Fatalf("got %+v", got)
 	}
 }
+
+// The jump-fee guard prices a crossing against what the load is worth, so Rank must expose
+// the two absolutes it already charged: the WHOLE gate fee for the crossing (hops × the fee
+// out of the hull's system) and the credits one load at the target is expected to make. The
+// hull's own system is never a jump, so both are zero there.
+func TestRank_ExposesGateFeeAndExpectedLoadCredits(t *testing.T) {
+	hull := Hull{Symbol: "H1", System: "X1-A", CargoCapacity: 40, CreditsPerSec: 1}
+	got := Rank(hull, []Candidate{
+		{System: "X1-A", Hops: 0, YieldCredits: 8000, DepthUnits: 40},
+		{System: "X1-B", Hops: 2, YieldCredits: 20000, DepthUnits: 40},
+	}, Costs{GateFeeFromCurrent: 10_000})
+
+	by := map[string]ScoredSystem{}
+	for _, s := range got {
+		by[s.System] = s
+	}
+	if b := by["X1-B"]; b.GateFee != 20_000 {
+		t.Fatalf("X1-B gate fee = %d, want 2 hops × 10k", b.GateFee)
+	}
+	if b := by["X1-B"]; b.ExpectedLoadCredits != b.ExpectedPerUnit*40 || b.ExpectedLoadCredits != 20_000 {
+		t.Fatalf("X1-B load credits = %v (per-unit %v), want expected × cap = 20000", b.ExpectedLoadCredits, b.ExpectedPerUnit)
+	}
+	if a := by["X1-A"]; a.GateFee != 0 || a.ExpectedLoadCredits != 0 {
+		t.Fatalf("current system = %+v, want no fee and no load credits", a)
+	}
+}

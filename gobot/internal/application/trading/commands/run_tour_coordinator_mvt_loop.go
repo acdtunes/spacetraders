@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
@@ -75,6 +76,59 @@ func mvtEpisodeSpent(episode *repositionEpisode, limit int) bool {
 	return episode.rescues >= limit
 }
 
+// mvtJumpFeeMaxShare is the share of a load's expected credits a jump's gate fee may spend.
+func mvtJumpFeeMaxShare(cmd *RunTourCoordinatorCommand) int {
+	if cmd.MVTJumpFeeMaxSharePct > 0 {
+		return cmd.MVTJumpFeeMaxSharePct
+	}
+	return DefaultMVTJumpFeeMaxSharePct
+}
+
+// mvtJumpFeeGuard drops every candidate whose gate fee eats more than mvt_jump_fee_max_share_pct
+// of the credits the ranker expects the hull's next load there to make, and reports whether the
+// hull is left with nowhere better than where it stands.
+//
+// A MONEY GUARD IN SHAPE: it only ever refuses. The ranker prices a crossing per unit against a
+// yield estimate, so a gate charging 300k still ranked first behind a rich enough estimate — and
+// a load that turns out empty on arrival pays the fee anyway. A candidate the ranker expects to
+// earn NOTHING fails the guard rather than dividing by a yield that is not there. The refusal
+// runs BEFORE the claim upsert and the persisted reposition, so nothing survives it but the log
+// and the transition row. current is kept whatever its fee: standing still crosses no gate.
+func (h *RunTourCoordinatorHandler) mvtJumpFeeGuard(ctx context.Context, cmd *RunTourCoordinatorCommand, ranked []mvt.ScoredSystem, current string) ([]mvt.ScoredSystem, bool) {
+	share := mvtJumpFeeMaxShare(cmd)
+	kept := make([]mvt.ScoredSystem, 0, len(ranked))
+	dropped := false
+	for _, s := range ranked {
+		if s.System == current || (s.ExpectedLoadCredits > 0 && float64(s.GateFee) <= float64(share)/100*s.ExpectedLoadCredits) {
+			kept = append(kept, s)
+			continue
+		}
+		dropped = true
+		common.LoggerFromContext(ctx).Log("INFO", "MVT CLAIM: jump fee guard refused", map[string]interface{}{
+			"hull": cmd.ShipSymbol, "system": s.System, "gate_fee": s.GateFee,
+			"expected_load_credits": s.ExpectedLoadCredits, "share_pct": share})
+	}
+	if !dropped {
+		return ranked, false
+	}
+	if len(kept) == 0 {
+		return ranked, true
+	}
+	if kept[0].System != current {
+		return kept, false
+	}
+	// The head is where the hull stands, but a survivor behind it may still be the better move
+	// — the recently-left preference sinks ground the hull drained however it scored, and
+	// idling on top of an unaffordable gate is not what the guard is for. Only a survivor the
+	// ranker scores ABOVE standing still is taken, so a refusal never widens a jump.
+	for _, s := range kept[1:] {
+		if s.System != current && s.Score > kept[0].Score {
+			return append([]mvt.ScoredSystem{s}, mvtOthers(kept, s.System)...), false
+		}
+	}
+	return ranked, true
+}
+
 // mvtOthers is ranked without current.
 func mvtOthers(ranked []mvt.ScoredSystem, current string) []mvt.ScoredSystem {
 	others := make([]mvt.ScoredSystem, 0, len(ranked))
@@ -122,6 +176,11 @@ func (h *RunTourCoordinatorHandler) mvtTravelTo(ctx context.Context, cmd *RunTou
 			stayReason = mvt.ReasonNoAlternative
 		}
 		return h.mvtStay(ctx, cmd, current, 0, mvt.ScoredSystem{}, stayReason)
+	}
+
+	ranked, refused := h.mvtJumpFeeGuard(ctx, cmd, ranked, current)
+	if refused {
+		return h.mvtStay(ctx, cmd, current, yieldHere, mvt.ScoredSystem{}, mvtReasonJumpFeeGuard)
 	}
 
 	target := ranked[0]
@@ -191,6 +250,11 @@ func (h *RunTourCoordinatorHandler) mvtTravelTo(ctx context.Context, cmd *RunTou
 	st.yield.Reset()
 	st.basis = map[string][]mvtLot{}
 	st.travelFailures = 0
+	// The ground just departed, so the ranker can prefer somewhere the hull has not drained.
+	if st.leftAt == nil {
+		st.leftAt = map[string]time.Time{}
+	}
+	st.leftAt[current] = now
 	st.mu.Unlock()
 	h.mvtRecord(ctx, cmd, mvt.StateTravel, mvt.StateTrade, target.System, 0, target.Score, target.TravelPerUnit, mvtReasonArrived)
 	return true, nil

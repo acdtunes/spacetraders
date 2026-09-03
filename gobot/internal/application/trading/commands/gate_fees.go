@@ -33,8 +33,9 @@ import (
 // error on rarely-crossed gates. It does the opposite: a gate is in the table only if we have
 // actually flown it, so anything rare is ABSENT and falls back to the flat charge — exactly
 // what it was priced at before. Coverage is traffic-weighted by construction. The residual
-// error sits on a few heavily-crossed, genuinely variable gates, which is why this reader
-// averages a 7-day window rather than trusting a single observation.
+// error sits on a few heavily-crossed gates whose fee TRENDS with our own traffic, which is
+// why the reader now serves the latest observation in the window rather than its mean
+// (sp-htzl1.5).
 
 // GateFeeReader supplies the per-departure-system fee table a tour is planned against.
 //
@@ -51,13 +52,12 @@ const gateFeeLookbackWindow = 7 * 24 * time.Hour
 
 // gateFeeCacheTTL is how long a learned table is reused before it is re-read.
 //
-// GENEROUS ON PURPOSE. A gate's fee is a constant of the map, not a market price, so a
-// stale table is not a wrong one — the only thing staleness costs is that a gate crossed
-// for the first time within the last TTL is still priced at the flat fallback. Set against
-// that, a tour solve happens many times a minute per hull, and re-running a grouped
-// aggregate over a week of ledger rows on every solve would be a self-inflicted load
-// problem on a box that is already oversubscribed.
-const gateFeeCacheTTL = 30 * time.Minute
+// FIVE MINUTES, down from thirty (sp-htzl1.5). A gate's fee is not the constant this cache
+// was first sized against: it climbed 66k → 300k within hours on the pair six hulls shuttled,
+// and thirty minutes of that is a whole leg of the climb read as cheap. The read is one
+// indexed scan bounded by the lookback window, so the extra refreshes are affordable where
+// mispricing a live jump is not.
+const gateFeeCacheTTL = 5 * time.Minute
 
 // LedgerGateFeeReader learns the table from recorded jumps and caches it.
 //
@@ -115,8 +115,8 @@ func (r *LedgerGateFeeReader) GateFees(ctx context.Context, playerID int) map[st
 	fees, err := r.repo.PerOriginGateFees(ctx, pid, now.Add(-gateFeeLookbackWindow))
 	if err != nil {
 		// A read that failed proves nothing about gate prices. Serve the last good table
-		// if we still hold one — it is a table of constants, so an expired copy is a
-		// better estimate than none — and otherwise fall back to the flat charge.
+		// if we still hold one — a stale price is a better estimate than none — and
+		// otherwise fall back to the flat charge.
 		if ok {
 			return snap.fees
 		}

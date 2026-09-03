@@ -278,6 +278,8 @@ type TradeFleetConfig struct {
 	SpecialistCadenceMinutes  int `mapstructure:"specialist_cadence_minutes"`
 	YieldRateSpanFloorMinutes int `mapstructure:"yield_rate_span_floor_minutes"`
 	MVTRescueJumpsPerEpisode  int `mapstructure:"mvt_rescue_jumps_per_episode"`
+	MVTJumpFeeMaxSharePct     int `mapstructure:"mvt_jump_fee_max_share_pct"`
+	MVTRecentlyLeftMinutes    int `mapstructure:"mvt_recently_left_minutes"`
 }
 
 // defaultSinkFreshnessMaxMinutes is the sink-freshness clause's boot floor, applied when
