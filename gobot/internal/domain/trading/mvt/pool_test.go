@@ -22,13 +22,13 @@ func TestPoolSize_ScaleAxis(t *testing.T) {
 
 func TestIsFatLane(t *testing.T) {
 	// intra baseline 1000/tranche, multiple 2.0 → net must exceed 2000; fee share 20%
-	if !IsFatLane(5000, 600, 2, 500, 1000, 200, 20) { // 5000 - (1200 + 500) = 3300 > 2000
+	if !IsFatLane(5000, 600, 2, 500, 1000, 0, 200, 20) { // 5000 - (1200 + 500) = 3300 > 2000
 		t.Fatal("lane clearing 2× intra after jump cost is fat")
 	}
-	if IsFatLane(3600, 600, 2, 500, 1000, 200, 20) { // 3600 - 1700 = 1900 ≤ 2000
+	if IsFatLane(3600, 600, 2, 500, 1000, 0, 200, 20) { // 3600 - 1700 = 1900 ≤ 2000
 		t.Fatal("lane below 2× intra is not fat")
 	}
-	if IsFatLane(1e9, 0, 0, 0, 0, 200, 20) {
+	if IsFatLane(1e9, 0, 0, 0, 0, 0, 200, 20) {
 		t.Fatal("no intra baseline → never fat (fail toward no specialists)")
 	}
 }
@@ -39,13 +39,25 @@ func TestIsFatLane(t *testing.T) {
 func TestIsFatLane_FeeShareOfMargin(t *testing.T) {
 	// 5000/tranche against a 1000 intra baseline at 2.0: net of a 1500 fee it still clears
 	// 2000, but 1500 is 30% of the margin the lane makes.
-	if IsFatLane(5000, 0, 0, 1500, 1000, 200, 20) {
+	if IsFatLane(5000, 0, 0, 1500, 1000, 0, 200, 20) {
 		t.Fatal("a fee above 20% of the lane's margin per tranche is not a fat lane")
 	}
-	if !IsFatLane(5000, 0, 0, 1000, 1000, 200, 20) { // exactly 20% — refuse only ABOVE the share
+	if !IsFatLane(5000, 0, 0, 1000, 1000, 0, 200, 20) { // exactly 20% — refuse only ABOVE the share
 		t.Fatal("a fee at the share is still fat")
 	}
-	if !IsFatLane(5000, 0, 0, 1500, 1000, 200, 40) { // the knob is monotone
+	if !IsFatLane(5000, 0, 0, 1500, 1000, 0, 200, 40) { // the knob is monotone
 		t.Fatal("a wider share admits the same lane")
+	}
+}
+
+// One tranche is not what a specialist earns from a visit either: the fee is measured against
+// the larger of the lane's own margin and what an average system visit realises fleet-wide, so
+// an ordinary gate stops disqualifying a lane the fleet demonstrably works profitably.
+func TestIsFatLane_FeeShareUsesTheFleetVisitMarginWhenItIsLarger(t *testing.T) {
+	if !IsFatLane(30_000, 0, 0, 10_000, 1000, 200_000, 200, 20) { // 10k ≤ 20% of the 200k visit
+		t.Fatal("a fee inside the share of what a visit earns keeps the lane fat")
+	}
+	if IsFatLane(30_000, 0, 0, 10_000, 1000, 0, 200, 20) { // 10k > 20% of 30k
+		t.Fatal("with no fleet visit margin the lane's own tranche is the basis, as before")
 	}
 }

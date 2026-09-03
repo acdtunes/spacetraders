@@ -218,15 +218,15 @@ func (h *RunTradeFleetCoordinatorHandler) reconcileSpecialists(ctx context.Conte
 	if fraction <= 0 {
 		fraction = DefaultSpecialistFractionPct
 	}
-	// The same fee ceiling the MVT claim guard applies: a lane whose gate has grown to eat a
-	// fifth of its own margin per tranche is not ground to dedicate a hull to.
+	// The same fee ceiling the MVT claim guard applies, on the same visit-scaled basis: a lane
+	// whose gate eats a fifth of what the crossing earns is not ground to dedicate a hull to.
 	share := cmd.MVTJumpFeeMaxSharePct
 	if share <= 0 {
 		share = DefaultMVTJumpFeeMaxSharePct
 	}
 	var fat []mvt.LaneStat
 	for _, l := range stats.Lanes {
-		if mvt.IsFatLane(l.MarginPerTranche, l.MeanTransitSeconds, stats.CreditsPerHullSec, fees[l.Source], stats.IntraMarginPerTranche, multiple, share) {
+		if mvt.IsFatLane(l.MarginPerTranche, l.MeanTransitSeconds, stats.CreditsPerHullSec, fees[l.Source], stats.IntraMarginPerTranche, stats.MeanMarginPerSystemVisit, multiple, share) {
 			fat = append(fat, l)
 		}
 	}

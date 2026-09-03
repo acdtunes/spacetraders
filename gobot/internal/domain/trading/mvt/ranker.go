@@ -37,17 +37,18 @@ type Costs struct {
 	FleetCreditsPerSec float64
 }
 
-// ScoredSystem is a ranked candidate in credits per unit of the hull's next load; GateFee and
-// ExpectedLoadCredits are the crossing's absolutes, and zero for the hull's own system.
+// ScoredSystem is a ranked candidate in credits per unit of the hull's next load; GateFee, one
+// load's credits and a visit's (max of that load, FleetDrawPerVisit) are 0 at the hull's system.
 type ScoredSystem struct {
-	System              string
-	Hops                int
-	ExpectedPerUnit     float64
-	TravelPerUnit       float64
-	Score               float64
-	EntryWaypoint       string
-	GateFee             int64
-	ExpectedLoadCredits float64
+	System               string
+	Hops                 int
+	ExpectedPerUnit      float64
+	TravelPerUnit        float64
+	Score                float64
+	EntryWaypoint        string
+	GateFee              int64
+	ExpectedLoadCredits  float64
+	ExpectedVisitCredits float64
 }
 
 const (
@@ -179,15 +180,16 @@ func Rank(hull Hull, cands []Candidate, costs Costs) []ScoredSystem {
 		w := credits / float64(c.DepthUnits)
 		load := math.Min(float64(c.DepthUnits), cap)
 		expected := load * w / cap
-		travel, gateFee, loadCredits := 0.0, int64(0), 0.0
+		travel, gateFee, loadCredits, visitCredits := 0.0, int64(0), 0.0, 0.0
 		if c.System != hull.System {
 			hops := float64(c.Hops)
 			travel = (hops*float64(costs.TollSecondsPerHop)*rate + hops*float64(costs.GateFeeFromCurrent)) / cap
 			gateFee, loadCredits = int64(c.Hops)*costs.GateFeeFromCurrent, expected*cap
+			visitCredits = math.Max(loadCredits, costs.FleetDrawPerVisit)
 		}
 		out = append(out, ScoredSystem{System: c.System, Hops: c.Hops, ExpectedPerUnit: expected,
 			TravelPerUnit: travel, Score: expected - travel, EntryWaypoint: c.EntryWaypoint,
-			GateFee: gateFee, ExpectedLoadCredits: loadCredits})
+			GateFee: gateFee, ExpectedLoadCredits: loadCredits, ExpectedVisitCredits: visitCredits})
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Score != out[j].Score {

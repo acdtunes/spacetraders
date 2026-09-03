@@ -199,8 +199,8 @@ type RunTradeFleetCoordinatorCommand struct {
 	SpecialistFractionPct    int
 	FatLaneMultiplePct       int
 	SpecialistCadenceMinutes int
-	// MVTJumpFeeMaxSharePct is the claim guard's fee ceiling, applied here to lane
-	// qualification. 0/absent → DefaultMVTJumpFeeMaxSharePct.
+	// MVTJumpFeeMaxSharePct is the claim guard's fee ceiling on the same visit basis, applied
+	// here to lane qualification; a share near 100 makes it inert. 0/absent → the default (20).
 	MVTJumpFeeMaxSharePct int
 }
 

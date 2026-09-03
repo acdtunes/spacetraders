@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/trading/mvt"
 )
 
@@ -106,9 +107,14 @@ func TestMVTTravelTo_JumpFeeGuardPicksTheNextCandidateWhenTheBestFailsTheGuard(t
 	ctx := common.WithLogger(context.Background(), logger)
 	cmd := mvtCmd(t)
 	cmd.MVTJumpFeeMaxSharePct = 20
+	// Rank never scores a load without a visit worth at least as much, so a hand-built ranking
+	// carries both: the guard reads the visit, and a bare load estimate is not a ranking Rank
+	// could have produced (sp-htzl1.7).
 	ranked := []mvt.ScoredSystem{
-		{System: "X1-S9", Hops: 1, EntryWaypoint: "X1-S9-SRC", Score: 9, GateFee: 300_000, ExpectedLoadCredits: 500_000},
-		{System: "X1-S2", Hops: 1, EntryWaypoint: "X1-S2-SRC", Score: 1, GateFee: 5_000, ExpectedLoadCredits: 500_000},
+		{System: "X1-S9", Hops: 1, EntryWaypoint: "X1-S9-SRC", Score: 9, GateFee: 300_000,
+			ExpectedLoadCredits: 500_000, ExpectedVisitCredits: 500_000},
+		{System: "X1-S2", Hops: 1, EntryWaypoint: "X1-S2-SRC", Score: 1, GateFee: 5_000,
+			ExpectedLoadCredits: 500_000, ExpectedVisitCredits: 500_000},
 	}
 
 	moved, err := h.mvtTravelTo(ctx, cmd, &RunTourCoordinatorResponse{}, nil, map[string]int{}, ranked, mvtReasonBootstrap, 0, tourPlanBudget{})
@@ -223,6 +229,79 @@ func TestMVTClaimAndTravel_JumpFeeGuardNeverWidensBelowStandingStill(t *testing.
 	}
 	if got := trans.last(t); got.Reason != mvtReasonJumpFeeGuard {
 		t.Fatalf("last transition = %+v, want %s", got, mvtReasonJumpFeeGuard)
+	}
+}
+
+// mvtVisitLegs is one hull's realised buy/sell inside ONE system, so ComputeFleetStats sees a
+// single system visit worth margin credits. rfSeed's legs carry no waypoint at all, which is why
+// every other MVT fixture reports no visits and so no fleet visit basis.
+func mvtVisitLegs(margin int) []trading.TourLegTelemetry {
+	base := time.Now().Add(-time.Hour)
+	return []trading.TourLegTelemetry{
+		{TourID: "visit", ShipSymbol: "TOUR-MVT", PlayerID: 1, Waypoint: "X1-S1-A", IsBuy: true,
+			RealizedUnits: 100, RealizedUnitPrice: 1000, RealizedAt: base},
+		{TourID: "visit", ShipSymbol: "TOUR-MVT", PlayerID: 1, Waypoint: "X1-S1-B", IsBuy: false,
+			RealizedUnits: 100, RealizedUnitPrice: 1000 + margin/100, RealizedAt: base.Add(time.Minute)},
+	}
+}
+
+// mvtVisitBasisHandler is the live incident's shape: an unpriced home, a THIN X1-S2 one hop out
+// carrying 6 units at a 4751 spread (one load worth 28,506 — the live median), the gate out
+// charging fee, and the fleet telemetry given.
+func mvtVisitBasisHandler(t *testing.T, fx *tourFixture, fee int64, rows []trading.TourLegTelemetry) (*RunTourCoordinatorHandler, *mvtFakeClaims, *mvtFakeTransitions) {
+	t.Helper()
+	h := newTourHandler(t, fx, rateFloorPlanner(feasiblePlan(600000, 600000)), &seededTelemetry{rows: rows})
+	claims, trans := newMVTFakeClaims(), &mvtFakeTransitions{}
+	h.SetMVTPorts(claims, &mvtFakeDepth{lanes: map[string][]mvt.LaneDepth{
+		"X1-S2": mvtLane("X1-S2", "IRON", 6, 100, 4851, time.Now()),
+	}}, trans)
+	h.SetJumpTollReader(mvtFakeTolls{seconds: 1})
+	h.SetGateFeeReader(mvtFakeFees{fees: map[string]int64{"X1-S1": fee}})
+	h.SetRankerAgeCaps(mvtCaps())
+	h.SetGateGraph(mvtTravelGraph())
+	return h, claims, trans
+}
+
+// THE MIS-SCALED BASIS. One matched load at the target is worth 28,506, but a whole visit earns
+// the fleet 200,000 as the market replenishes — so an ordinary 10,524 gate is 5% of what the
+// crossing buys, not 37%. At the shipped 20% share the old one-load basis refused it (17 hulls
+// held 105 times in an hour); the visit basis admits it and still refuses the 300k shuttle fee.
+// With no fleet stats at all the load estimate is the whole basis, exactly as it was.
+func TestMVTTravelTo_JumpFeeGuardUsesVisitBasis(t *testing.T) {
+	cases := []struct {
+		name  string
+		fee   int64
+		share int
+		rows  []trading.TourLegTelemetry
+		want  bool
+	}{
+		{"ordinary gate against a 200k visit", 10_524, 20, mvtVisitLegs(200_000), true},
+		{"shuttle fee against a 200k visit", 300_000, 20, mvtVisitLegs(200_000), false},
+		{"no fleet stats, shipped share", 10_524, 20, rfSeed("TOUR-MVT", 100000), false},
+		{"no fleet stats, emergency share", 10_524, 100, rfSeed("TOUR-MVT", 100000), true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			fx := repositionFixture()
+			h, claims, trans := mvtVisitBasisHandler(t, fx, c.fee, c.rows)
+			ctx := common.WithLogger(context.Background(), &metaCapturingLogger{})
+			cmd := mvtCmd(t)
+			cmd.MVTJumpFeeMaxSharePct = c.share
+
+			moved, err := h.mvtClaimAndTravel(ctx, cmd, &RunTourCoordinatorResponse{}, &repositionEpisode{}, map[string]int{}, mvtReasonBootstrap, tourPlanBudget{})
+			if err != nil || moved != c.want {
+				t.Fatalf("moved=%v err=%v, want moved=%v", moved, err, c.want)
+			}
+			if !c.want {
+				if got := trans.last(t); got.Reason != mvtReasonJumpFeeGuard {
+					t.Fatalf("last transition = %+v, want %s", got, mvtReasonJumpFeeGuard)
+				}
+				return
+			}
+			if c, ok, _ := claims.Get(ctx, 1, "TOUR-MVT"); !ok || c.System != "X1-S2" {
+				t.Fatalf("claim = %+v ok=%v, want X1-S2", c, ok)
+			}
+		})
 	}
 }
 

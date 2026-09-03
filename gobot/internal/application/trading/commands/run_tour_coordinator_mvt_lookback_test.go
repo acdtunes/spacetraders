@@ -27,7 +27,8 @@ func mvtLookbackFixture() *tourFixture {
 
 // mvtLookbackRanked is the one X1-S2 candidate, priced past the jump-fee guard.
 func mvtLookbackRanked() []mvt.ScoredSystem {
-	return []mvt.ScoredSystem{{System: "X1-S2", Hops: 1, EntryWaypoint: "X1-S2-SRC", Score: 7, TravelPerUnit: 2, ExpectedLoadCredits: 50_000}}
+	return []mvt.ScoredSystem{{System: "X1-S2", Hops: 1, EntryWaypoint: "X1-S2-SRC", Score: 7, TravelPerUnit: 2,
+		ExpectedLoadCredits: 50_000, ExpectedVisitCredits: 50_000}}
 }
 
 // mvtLoggedManifest reports whether the loaded-manifest line was logged, and the units it named.

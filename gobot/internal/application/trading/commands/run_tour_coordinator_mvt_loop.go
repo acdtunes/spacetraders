@@ -76,7 +76,7 @@ func mvtEpisodeSpent(episode *repositionEpisode, limit int) bool {
 	return episode.rescues >= limit
 }
 
-// mvtJumpFeeMaxShare is the share of a load's expected credits a jump's gate fee may spend.
+// mvtJumpFeeMaxShare is the share of a visit's expected credits a jump's gate fee may spend.
 func mvtJumpFeeMaxShare(cmd *RunTourCoordinatorCommand) int {
 	if cmd.MVTJumpFeeMaxSharePct > 0 {
 		return cmd.MVTJumpFeeMaxSharePct
@@ -85,28 +85,29 @@ func mvtJumpFeeMaxShare(cmd *RunTourCoordinatorCommand) int {
 }
 
 // mvtJumpFeeGuard drops every candidate whose gate fee eats more than mvt_jump_fee_max_share_pct
-// of the credits the ranker expects the hull's next load there to make, and reports whether the
-// hull is left with nowhere better than where it stands.
+// of the credits the ranker expects a VISIT there to make, and reports whether the hull is left
+// with nowhere better than where it stands.
 //
 // A MONEY GUARD IN SHAPE: it only ever refuses. The ranker prices a crossing per unit against a
 // yield estimate, so a gate charging 300k still ranked first behind a rich enough estimate — and
-// a load that turns out empty on arrival pays the fee anyway. A candidate the ranker expects to
-// earn NOTHING fails the guard rather than dividing by a yield that is not there. The refusal
-// runs BEFORE the claim upsert and the persisted reposition, so nothing survives it but the log
-// and the transition row. current is kept whatever its fee: standing still crosses no gate.
+// a visit that turns out empty on arrival pays the fee anyway. A candidate with no load estimate
+// AND no fleet visit stats fails the guard rather than dividing by a yield that is not there. The
+// refusal runs BEFORE the claim upsert and the persisted reposition, so nothing survives it but
+// the log and the transition row. current is kept whatever its fee: standing still crosses no gate.
 func (h *RunTourCoordinatorHandler) mvtJumpFeeGuard(ctx context.Context, cmd *RunTourCoordinatorCommand, ranked []mvt.ScoredSystem, current string) ([]mvt.ScoredSystem, bool) {
 	share := mvtJumpFeeMaxShare(cmd)
 	kept := make([]mvt.ScoredSystem, 0, len(ranked))
 	dropped := false
 	for _, s := range ranked {
-		if s.System == current || (s.ExpectedLoadCredits > 0 && float64(s.GateFee) <= float64(share)/100*s.ExpectedLoadCredits) {
+		if s.System == current || (s.ExpectedVisitCredits > 0 && float64(s.GateFee) <= float64(share)/100*s.ExpectedVisitCredits) {
 			kept = append(kept, s)
 			continue
 		}
 		dropped = true
 		common.LoggerFromContext(ctx).Log("INFO", "MVT CLAIM: jump fee guard refused", map[string]interface{}{
 			"hull": cmd.ShipSymbol, "system": s.System, "gate_fee": s.GateFee,
-			"expected_load_credits": s.ExpectedLoadCredits, "share_pct": share})
+			"expected_load_credits": s.ExpectedLoadCredits, "expected_visit_credits": s.ExpectedVisitCredits,
+			"share_pct": share})
 	}
 	if !dropped {
 		return ranked, false

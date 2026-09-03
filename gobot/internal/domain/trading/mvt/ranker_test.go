@@ -244,3 +244,39 @@ func TestRank_ExposesGateFeeAndExpectedLoadCredits(t *testing.T) {
 		t.Fatalf("current system = %+v, want no fee and no load credits", a)
 	}
 }
+
+// A gate fee buys a SYSTEM, not one hold: the market replenishes while the hull works it, so a
+// visit realises far more than the one matched load the ledger can see. ExpectedVisitCredits is
+// therefore at least the fleet's mean margin per visit, and a target the ranker expects to
+// out-earn that average keeps its own larger estimate.
+func TestRank_ExpectedVisitCreditsIsTheLargerOfLoadAndFleetVisit(t *testing.T) {
+	hull := Hull{Symbol: "H1", System: "X1-A", CargoCapacity: 100}
+	cands := []Candidate{
+		{System: "X1-A", Hops: 0, YieldCredits: 9_000, DepthUnits: 100},
+		{System: "X1-B", Hops: 1, YieldCredits: 28_506, DepthUnits: 100},
+		{System: "X1-C", Hops: 1, YieldCredits: 500_000, DepthUnits: 100},
+	}
+	rank := func(costs Costs) map[string]ScoredSystem {
+		by := map[string]ScoredSystem{}
+		for _, s := range Rank(hull, cands, costs) {
+			by[s.System] = s
+		}
+		return by
+	}
+
+	got := rank(Costs{FleetDrawPerVisit: 200_000})
+	if b := got["X1-B"]; b.ExpectedLoadCredits != 28_506 || b.ExpectedVisitCredits != 200_000 {
+		t.Fatalf("X1-B = load %v visit %v, want the 200k fleet mean over the 28506 load", b.ExpectedLoadCredits, b.ExpectedVisitCredits)
+	}
+	if c := got["X1-C"]; c.ExpectedVisitCredits != 500_000 {
+		t.Fatalf("X1-C visit credits = %v, want the richer 500000 load estimate kept", c.ExpectedVisitCredits)
+	}
+	if a := got["X1-A"]; a.ExpectedVisitCredits != 0 {
+		t.Fatalf("current system visit credits = %v, want 0 — standing still crosses no gate", a.ExpectedVisitCredits)
+	}
+
+	noStats := rank(Costs{})
+	if b := noStats["X1-B"]; b.ExpectedVisitCredits != 28_506 {
+		t.Fatalf("no fleet stats: X1-B visit credits = %v, want the load estimate", b.ExpectedVisitCredits)
+	}
+}
