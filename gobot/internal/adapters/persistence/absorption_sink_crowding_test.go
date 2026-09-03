@@ -39,9 +39,6 @@ func sinkOneHull(
 	t.Helper()
 	ctx := context.Background()
 	capUnits := replayACapTranches * replayTrancheSize
-	if capUnits < units {
-		capUnits = units
-	}
 	_, ok, err := ledger.Reserve(ctx, playerID, container, "tour",
 		[]absorption.ReserveEntry{sellEntry(key.Waypoint, key.Good, units, capUnits, time.Hour)})
 	require.NoError(t, err)
@@ -140,7 +137,8 @@ func TestSinkCrowding_BroadHubStillAbsorbsMoreThanAMicroMarket(t *testing.T) {
 	hub := countSinkAdmitted(t, 40, sinkHubListings)
 
 	require.Greater(t, hub, micro, "breadth must keep discounting a sale's claim on a hub")
-	require.Equal(t, replayACapTranches, micro, "a micro-market closes at its own measured depth")
+	require.Equal(t, replayACapTranches+1, micro,
+		"a micro-market closes at its measured depth: the dumps that fill it, plus the one that finds their shadows a hair under the cap (sp-6zqza)")
 }
 
 // Crowding is MANY ordinary sales, which is why the pool is floored once rather than row by

@@ -335,6 +335,30 @@ func TestTourAbsorption_MultiTrancheSinkShadowsFullCrush(t *testing.T) {
 	}
 }
 
+// The cap bounds OTHER containers' depth, so an entry's CapUnits is two tranches of the lane's
+// trade_volume whatever the plan's own size (sp-6zqza). Raising it to the plan's units made a
+// 490-unit bulk plan's admission "is anybody else here?" and refused it on any shadow.
+func TestBuildTourReserveEntries_CapIsTwoTranchesRegardlessOfPlanSize(t *testing.T) {
+	h := &RunTourCoordinatorHandler{}
+	plan := &routing.TourPlan{Feasible: true, Legs: []routing.TourLeg{
+		leg("X1-S1-B", "X1-S1", sell("G1", 490, 200), sell("G2", 60, 150)),
+	}}
+	snapshot := []routing.TourGoodSnapshot{
+		{Waypoint: "X1-S1-B", Good: "G1", TradeVolume: 70, Bid: 200},
+		{Waypoint: "X1-S1-B", Good: "G2", TradeVolume: 70, Bid: 150},
+	}
+
+	entries := h.buildTourReserveEntries(plan, snapshot)
+
+	require.Len(t, entries, 2)
+	require.Equal(t, 490, entries[0].Units)
+	require.Equal(t, 60, entries[1].Units)
+	for _, e := range entries {
+		require.Equalf(t, tourACapTranches*70, e.CapUnits,
+			"%s: the cap is two tranches of trade_volume, never the plan's own %d units", e.Good, e.Units)
+	}
+}
+
 // Q3 (REPORT-ONLY): every accepted plan logs projected_recovery_burden — the sum over its
 // SELL sinks of units × the fitted recovery half-life (minutes) of the sink's tier. It is
 // the analyst's experiment-bar metric; it must be greppable and structured, and it must

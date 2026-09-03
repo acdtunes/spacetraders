@@ -348,8 +348,10 @@ func (h *RunTourCoordinatorHandler) allowContendedHolderLog(containerID string) 
 
 // buildTourReserveEntries aggregates a plan's planned units per (waypoint, good, side) —
 // skipping DEPOSIT tranches, whose synthetic warehouse sink has no market depth to reserve
-// — and sizes each entry: CapUnits = tourACapTranches × trade_volume (the fleet-wide
-// ceiling), Tier = the sink's live activity tier (so a converted shadow decays on the
+// — and sizes each entry: CapUnits = tourACapTranches × trade_volume, the ceiling on OTHER
+// containers' outstanding depth on the lane — the plan's own size is irrelevant to its
+// admission and never raises the cap (raising it refused every bulk plan on any shadow,
+// sp-6zqza); Tier = the sink's live activity tier (so a converted shadow decays on the
 // right curve), QuotedPrice = the side's live quote (telemetry), TTL = 2× projected tour
 // seconds + slack. The entry order is deterministic (plan/leg/trade order) so reservation
 // IDs line up with the plan.
@@ -384,13 +386,6 @@ func (h *RunTourCoordinatorHandler) buildTourReserveEntries(plan *routing.TourPl
 	entries := make([]absorption.ReserveEntry, 0, len(order))
 	for _, k := range order {
 		s := snap[wg{k.wp, k.good}]
-		capUnits := tourACapTranches * s.TradeVolume
-		if capUnits < units[k] {
-			// Defensive: a missing snapshot row (tv 0) or a plan somehow above the A-cap
-			// must never self-breach the plan's OWN reservation — floor the cap at the
-			// planned units, which degrades to binary exclusion against OTHER containers.
-			capUnits = units[k]
-		}
 		quoted := s.Bid
 		if k.side == absorption.SideBuy {
 			quoted = s.Ask
@@ -400,7 +395,7 @@ func (h *RunTourCoordinatorHandler) buildTourReserveEntries(plan *routing.TourPl
 			Good:        k.good,
 			Side:        k.side,
 			Units:       units[k],
-			CapUnits:    capUnits,
+			CapUnits:    tourACapTranches * s.TradeVolume,
 			Tier:        s.Activity,
 			QuotedPrice: quoted,
 			TTL:         ttl,
@@ -465,8 +460,8 @@ func planDispositions(plan *routing.TourPlan) tourGoodDispositions {
 //     (saturated by others / dropped on a re-plan), a buy with no sell disposition at all,
 //     or an unreadable ledger. The caller buys nothing on spec (fail-closed, RULINGS #4).
 //   - a positive value: the firm reserved sell-depth still held, summed across the good's
-//     sinks. By the ledger's cap invariant this is ≤ CapUnits − others' outstanding, so a
-//     deep freshly-reserved sink returns ≥ the planned tranche and the gate is a no-op.
+//     sinks. A freshly-reserved sink holds the full planned units (the ledger admits a plan
+//     on others' depth, never its own size), so the gate is a no-op there.
 func (h *RunTourCoordinatorHandler) firmSinkUnits(ctx context.Context, cmd *RunTourCoordinatorCommand, good string, disp tourGoodDispositions) int {
 	if h.absorptionLedger == nil || cmd.ContainerID == "" {
 		return -1

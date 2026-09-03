@@ -23,8 +23,12 @@ const (
 	crowdACapTranches = 2
 	// One hull's load, under half a tranche so no single purchase trips the pool.
 	crowdHullLoad = 40
-	// Loads of crowdHullLoad that crowdACapTranches × crowdTrancheSize of depth admits.
-	crowdAdmittedLoads = 5
+	// Loads of crowdHullLoad that fill crowdACapTranches × crowdTrancheSize of depth.
+	crowdFillingLoads = 5
+	// Loads the source admits before it closes. The cap bounds OTHERS' depth, never a
+	// load's own size (sp-6zqza), and decayed shadows sit a hair under their nominal
+	// units, so the load that arrives once the depth is nominally full still gets in.
+	crowdAdmittedLoads = crowdFillingLoads + 1
 )
 
 func buyEntry(wp, good string, units, capUnits int, ttl time.Duration) absorption.ReserveEntry {
@@ -50,9 +54,6 @@ func sourceOneHull(
 	t.Helper()
 	ctx := context.Background()
 	capUnits := crowdACapTranches * trancheSize
-	if capUnits < units {
-		capUnits = units
-	}
 	_, ok, err := ledger.Reserve(ctx, playerID, container, "tour",
 		[]absorption.ReserveEntry{buyEntry(key.Waypoint, key.Good, units, capUnits, time.Hour)})
 	require.NoError(t, err)
@@ -96,7 +97,7 @@ func TestSourceCrowding_HullsCannotAllQueueOntoOneSource(t *testing.T) {
 	admitted := countAdmitted(t, 12, crowdTrancheSize)
 
 	require.Less(t, admitted, 12, "the fleet must not be able to queue every hull onto one source")
-	require.Equal(t, crowdAdmittedLoads, admitted, "the source admits exactly its measured depth, then closes")
+	require.Equal(t, crowdAdmittedLoads, admitted, "the source admits its measured depth and the load that tops it, then closes")
 }
 
 // A healthy small fleet never meets the bound: the same source under the same rules is
@@ -177,7 +178,7 @@ func TestSourceCrowding_BoundScalesWithMarketDepth(t *testing.T) {
 	deep := countAdmitted(t, 30, 3*crowdTrancheSize)
 
 	require.Equal(t, crowdAdmittedLoads, shallow)
-	require.Equal(t, 3*crowdAdmittedLoads, deep, "three times the depth admits three times the loads")
+	require.Equal(t, 3*crowdFillingLoads+1, deep, "three times the depth carries three times the loads, plus the one that tops it")
 }
 
 // A purchase too small to matter cannot embargo a source on its own: the pool's floor is

@@ -72,7 +72,9 @@ func TestTourSourceCrowding_TheFleetCannotAllSourceOneMarket(t *testing.T) {
 	ctx := context.Background()
 	artifact := writeTourArtifact(t)
 
-	// Source trade_volume 40, so the fleet-wide A-cap admits 2 tranches — two hulls' loads.
+	// Source trade_volume 40: the A-cap is 80 units of OTHERS' depth. Two hulls' loads fill
+	// it, the third finds their shadows a hair under it and is admitted on that — its own
+	// load is not the question (sp-6zqza) — and every hull after is refused.
 	completed := 0
 	for i := 0; i < 6; i++ {
 		h := newTourHandler(t, thinSourceFixture(40), &tourFakeRoutingClient{plans: []*routing.TourPlan{arbPlan()}}, &tourFakeTelemetry{})
@@ -87,7 +89,7 @@ func TestTourSourceCrowding_TheFleetCannotAllSourceOneMarket(t *testing.T) {
 		}
 	}
 
-	require.Equal(t, 2, completed,
+	require.Equal(t, 3, completed,
 		"the source serves the hulls its depth carries and refuses the rest of the fleet")
 }
 
@@ -112,8 +114,9 @@ func TestTourSourceCrowding_DisplacedHullRePlansOntoItsNextBestSource(t *testing
 		leg("X1-S1-B", "X1-S1", sell("G1", 40, 200)),
 	}}
 
-	// Two hulls take the thin source's whole depth.
-	for i := 0; i < 2; i++ {
+	// Three hulls take the thin source past its depth: two fill it, the third is admitted on
+	// their shadows a hair under the cap (sp-6zqza).
+	for i := 0; i < 3; i++ {
 		h := newTourHandler(t, fixture(), &tourFakeRoutingClient{plans: []*routing.TourPlan{arbPlan()}}, &tourFakeTelemetry{})
 		h.SetAbsorptionLedger(ledger, 0)
 		resp, err := h.Handle(ctx, &RunTourCoordinatorCommand{
@@ -124,12 +127,12 @@ func TestTourSourceCrowding_DisplacedHullRePlansOntoItsNextBestSource(t *testing
 		require.True(t, tourResponse(t, resp).Completed)
 	}
 
-	// The third hull ranks the taken source best, is refused, and re-plans onto C.
+	// The fourth hull ranks the taken source best, is refused, and re-plans onto C.
 	planner := &tourFakeRoutingClient{plans: []*routing.TourPlan{arbPlan(), viaC}}
 	h := newTourHandler(t, fixture(), planner, &tourFakeTelemetry{})
 	h.SetAbsorptionLedger(ledger, 0)
 	resp, err := h.Handle(ctx, &RunTourCoordinatorCommand{
-		ShipSymbol: "TOUR-C", PlayerID: 1, ContainerID: "ctr-C", ModelArtifactPath: artifact,
+		ShipSymbol: "TOUR-D", PlayerID: 1, ContainerID: "ctr-D", ModelArtifactPath: artifact,
 	})
 	require.NoError(t, err)
 

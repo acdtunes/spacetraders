@@ -125,8 +125,9 @@ func TestAbsorptionLedger_BinaryExclusion_SecondBreachesAndRollsBack(t *testing.
 	require.Equal(t, int64(1), countAbsorption(t, db), "the breaching plan is rolled back, only A remains")
 }
 
-// Tour semantics: a tranche cap (A-cap × trade_volume) lets tranches lawfully STACK
-// up to the cap and rejects the one that would exceed it — the fleet-wide A-cap.
+// Tour semantics: a tranche cap (A-cap × trade_volume) bounds OTHER containers' outstanding
+// depth. Tranches stack while others' depth is under the cap — the newcomer's own size never
+// decides (sp-6zqza) — and the one that finds others' depth at the cap parks.
 func TestAbsorptionLedger_TrancheCap_StacksToCapThenBreaches(t *testing.T) {
 	ledger, _ := setupAbsorptionLedger(t, nil)
 	ctx := context.Background()
@@ -142,11 +143,18 @@ func TestAbsorptionLedger_TrancheCap_StacksToCapThenBreaches(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, ok2, "a second tranche within the depth cap must stack")
 
-	// A third 250-unit tranche would push outstanding to 450 > 400 → breach.
+	// A 250-unit tranche finds others at 200 < 400 and stacks too; the old check counted
+	// its own units and parked it at 450 > 400.
 	_, ok3, err := ledger.Reserve(ctx, 1, "ctr-C", "tour",
 		[]absorption.ReserveEntry{sellEntry("WP-1", "IRON", 250, 400, time.Hour)})
 	require.NoError(t, err)
-	require.False(t, ok3, "the tranche that would exceed the depth cap must park")
+	require.True(t, ok3, "a tranche whose OTHERS are under the cap must stack whatever its own size")
+
+	// The next finds others at 450 ≥ 400 → breach.
+	_, ok4, err := ledger.Reserve(ctx, 1, "ctr-D", "tour",
+		[]absorption.ReserveEntry{sellEntry("WP-1", "IRON", 100, 400, time.Hour)})
+	require.NoError(t, err)
+	require.False(t, ok4, "the tranche that finds others' depth at the cap must park")
 }
 
 // All-or-nothing: a multi-sink plan is rejected WHOLE when any one sink breaches —
@@ -204,6 +212,72 @@ func TestAbsorptionLedger_ConcurrentBinaryReserve_ExactlyOneProceeds(t *testing.
 
 	require.Equal(t, 1, proceed, "exactly one of two concurrent co-dumps into one sink may proceed")
 	require.Equal(t, int64(1), countAbsorption(t, db), "only the winner's reservation persists")
+}
+
+// The cap bounds OTHER containers' outstanding depth on a lane; the plan's own size never
+// decides its admission (sp-6zqza). Counting the plan's own rows — with the cap raised to its
+// size — refused a 490-unit bulk plan on any shadow. Lane trade_volume 70 → cap 140.
+func TestReserve_CapCountsOnlyOtherContainersDepth(t *testing.T) {
+	const bulk, tranche, capUnits = 490, 70, 140
+	key := absorption.LaneKey{Waypoint: "WP-BULK", Good: "IRON", Side: absorption.SideSell}
+	bulkPlan := func(wp string) []absorption.ReserveEntry {
+		return []absorption.ReserveEntry{sellEntry(wp, "IRON", bulk, capUnits, time.Hour)}
+	}
+	reserve := func(t *testing.T, ledger *persistence.AbsorptionLedgerGORM, container string, entries []absorption.ReserveEntry) bool {
+		t.Helper()
+		_, ok, err := ledger.Reserve(context.Background(), 1, container, "tour", entries)
+		require.NoError(t, err)
+		return ok
+	}
+	shadow := func(t *testing.T, db *gorm.DB, container string, k absorption.LaneKey, units int) {
+		insertExecutedBy(t, db, container, k, units, tranche, "WEAK", time.Minute, 12*time.Hour)
+	}
+
+	t.Run("another container under the cap admits the bulk plan", func(t *testing.T) {
+		ledger, db := setupAbsorptionLedger(t, nil)
+		shadow(t, db, "ctr-other", key, 100)
+		require.True(t, reserve(t, ledger, "ctr-bulk", bulkPlan(key.Waypoint)),
+			"100 of a 140-unit cap held by someone else leaves the lane open; the plan's own 490 is not the question")
+	})
+	t.Run("another container over the cap refuses it and is named", func(t *testing.T) {
+		ledger, db := setupAbsorptionLedger(t, nil)
+		shadow(t, db, "ctr-other", key, 200)
+		require.False(t, reserve(t, ledger, "ctr-bulk", bulkPlan(key.Waypoint)))
+		holders, err := ledger.HoldersForKeys(context.Background(), 1, []absorption.LaneKey{key})
+		require.NoError(t, err)
+		require.Len(t, holders[key], 1)
+		require.Equal(t, "ctr-other", holders[key][0].ContainerID, "the refusal attributes to the container holding the depth")
+	})
+	t.Run("an empty lane admits it", func(t *testing.T) {
+		ledger, _ := setupAbsorptionLedger(t, nil)
+		require.True(t, reserve(t, ledger, "ctr-bulk", bulkPlan(key.Waypoint)),
+			"a plan larger than the cap breaches nothing on its own")
+	})
+	t.Run("the reserver's own earlier shadow still counts", func(t *testing.T) {
+		ledger, db := setupAbsorptionLedger(t, nil)
+		shadow(t, db, "ctr-bulk", key, 300)
+		require.False(t, reserve(t, ledger, "ctr-bulk", bulkPlan(key.Waypoint)),
+			"a hull does not grind its own market: only THIS call's rows are netted out (sp-c4e1h)")
+	})
+	t.Run("the reserver's own earlier PLANNED hold still counts", func(t *testing.T) {
+		ledger, _ := setupAbsorptionLedger(t, nil)
+		require.True(t, reserve(t, ledger, "ctr-bulk", []absorption.ReserveEntry{sellEntry(key.Waypoint, "IRON", 200, capUnits, time.Hour)}))
+		require.False(t, reserve(t, ledger, "ctr-bulk", bulkPlan(key.Waypoint)),
+			"an unreleased earlier reservation is outstanding depth like anyone else's")
+	})
+	t.Run("others exactly at the cap close the lane", func(t *testing.T) {
+		ledger, _ := setupAbsorptionLedger(t, nil)
+		require.True(t, reserve(t, ledger, "ctr-other", []absorption.ReserveEntry{sellEntry(key.Waypoint, "IRON", capUnits, capUnits, time.Hour)}))
+		require.False(t, reserve(t, ledger, "ctr-bulk", bulkPlan(key.Waypoint)),
+			"others holding the full A-cap is a full lane: fail closed at the boundary (RULINGS #4)")
+	})
+	t.Run("one contended lane refuses the whole call and leaves no PLANNED row", func(t *testing.T) {
+		ledger, db := setupAbsorptionLedger(t, nil)
+		contended := absorption.LaneKey{Waypoint: "WP-FULL", Good: "IRON", Side: absorption.SideSell}
+		shadow(t, db, "ctr-other", contended, 200)
+		require.False(t, reserve(t, ledger, "ctr-bulk", append(bulkPlan(key.Waypoint), bulkPlan(contended.Waypoint)...)))
+		require.Equal(t, int64(0), plannedCountFor(t, db, "ctr-bulk"), "all-or-nothing: the clean lane's row rolled back with the contended one")
+	})
 }
 
 // Release frees a hold: a leg that breached while an earlier reservation was in
@@ -710,9 +784,15 @@ func TestAbsorptionLedger_ReleaseByContainerExcept_EmptyKeepReleasesAll(t *testi
 // exercised against real wall-clock deterministically.
 func insertExecuted(t *testing.T, db *gorm.DB, key absorption.LaneKey, units, tranche int, tier string, age time.Duration, hardCap time.Duration) {
 	t.Helper()
+	insertExecutedBy(t, db, "dead", key, units, tranche, tier, age, hardCap)
+}
+
+// insertExecutedBy is insertExecuted with a chosen owning container.
+func insertExecutedBy(t *testing.T, db *gorm.DB, containerID string, key absorption.LaneKey, units, tranche int, tier string, age, hardCap time.Duration) {
+	t.Helper()
 	executedAt := time.Now().Add(-age)
 	require.NoError(t, db.Create(&persistence.MarketAbsorptionLedgerModel{
-		ID: uuid.NewString(), PlayerID: 1, ContainerID: "dead", Engine: "idle-arb",
+		ID: uuid.NewString(), PlayerID: 1, ContainerID: containerID, Engine: "idle-arb",
 		Waypoint: key.Waypoint, Good: key.Good, Side: key.Side,
 		State: "EXECUTED", Units: units, TrancheSize: tranche, TierAtWrite: tier,
 		CreatedAt: executedAt, ExecutedAt: &executedAt, ExpiresAt: executedAt.Add(hardCap),

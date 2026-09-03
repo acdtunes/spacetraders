@@ -38,10 +38,10 @@ type KeyOccupancy struct {
 }
 
 // ReserveEntry is one sink a plan wants to absorb into. CapUnits is the fleet-wide
-// ceiling for the key: idle-arb passes its own Units for BINARY exclusion (any other
-// outstanding leg breaches), a tour passes A-cap × trade_volume so tranches may
-// lawfully stack up to the depth cap. TTL bounds the PLANNED row's life (2× projected
-// flight + slack) so a wedged container cannot hold depth forever.
+// ceiling on OTHER containers' outstanding depth for the key — a tour passes A-cap ×
+// trade_volume, so others' tranches may lawfully stack up to it and the reserving
+// plan's own size never decides its admission. TTL bounds the PLANNED row's life (2×
+// projected flight + slack) so a wedged container cannot hold depth forever.
 type ReserveEntry struct {
 	Waypoint    string
 	Good        string

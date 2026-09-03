@@ -88,8 +88,8 @@ const (
 )
 
 // errAbsorptionBreach is a sentinel returned inside the reserve transaction to roll
-// back the just-inserted plan when any sink's decayed outstanding + this plan would
-// exceed its cap. It never escapes Reserve — it becomes (ok=false, err=nil), keeping
+// back the just-inserted plan when others' decayed outstanding on any of its sinks has
+// reached the cap. It never escapes Reserve — it becomes (ok=false, err=nil), keeping
 // a lawful cap breach distinct from a real database error (RULINGS #4: the money
 // guard fails CLOSED — a breach parks the plan, it does not error the daemon).
 var errAbsorptionBreach = errors.New("absorption reservation would breach a sink's depth cap")
@@ -170,10 +170,10 @@ func NewAbsorptionLedger(db *gorm.DB, recoveryArtifactPath string, cfg Absorptio
 
 // Reserve records a plan's PLANNED absorption and reports whether every sink still
 // clears its depth cap: for each entry's (waypoint, good, side), decayed outstanding
-// across ALL states and containers (including the rows just inserted) + this plan
-// ≤ CapUnits. It is all-or-nothing (any breach rolls back the WHOLE plan) and
-// serialized per player, so the snapshot→accept race that a co-dump exploits is
-// closed exactly as the spend ledger closes check→buy.
+// across ALL states and containers EXCLUDING the rows this call inserts must be under
+// CapUnits — the cap bounds others' depth. It is all-or-nothing (any breach rolls back
+// the WHOLE plan) and serialized per player, so the snapshot→accept race that a co-dump
+// exploits is closed exactly as the spend ledger closes check→buy.
 //
 // On ok==true the returned reservationIDs (one per entry, in order) identify the
 // PLANNED rows the caller must Release or Convert. On ok==false the plan is rolled
@@ -232,22 +232,24 @@ func (r *AbsorptionLedgerGORM) Reserve(
 			}
 		}
 
-		// Check each DISTINCT sink once (a plan may name a sink twice; aggregate its
-		// requested units). CapUnits is the max across entries for the key — the
-		// tightest ceiling the caller asked for.
+		// Check each DISTINCT sink once against OTHER containers' outstanding depth: this
+		// call's own rows are netted back out, so a plan's size never decides its admission
+		// (sp-6zqza); the reserver's earlier rows and own shadows still count. Cap = max per key.
 		caps := map[absorption.LaneKey]int{}
+		own := map[absorption.LaneKey]int{}
 		for _, entry := range entries {
 			k := laneKeyOf(entry)
 			if entry.CapUnits > caps[k] || caps[k] == 0 {
 				caps[k] = entry.CapUnits
 			}
+			own[k] += entry.Units
 		}
 		for k, capUnits := range caps {
 			occupied, e := r.occupiedDepthTx(tx, playerID, k, now)
 			if e != nil {
 				return e
 			}
-			if occupied > float64(capUnits) {
+			if occupied-float64(own[k]) >= float64(capUnits) {
 				return errAbsorptionBreach
 			}
 		}
@@ -650,8 +652,8 @@ func (r *AbsorptionLedgerGORM) sweepReturningTx(tx *gorm.DB, playerID int, now t
 
 // occupiedDepthTx sums a sink's outstanding depth within tx: PLANNED units (full,
 // in-flight) plus EXECUTED residual decayed to now and floored (a shadow recovered
-// past the floor contributes nothing). This is what the reserve cap check compares
-// against CapUnits.
+// past the floor contributes nothing). The reserve cap check compares this, less the
+// reserving call's own rows, against CapUnits.
 func (r *AbsorptionLedgerGORM) occupiedDepthTx(tx *gorm.DB, playerID int, key absorption.LaneKey, now time.Time) (float64, error) {
 	var rows []MarketAbsorptionLedgerModel
 	if err := tx.Where(
