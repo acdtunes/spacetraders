@@ -860,6 +860,287 @@
       "type": "timeseries"
     },
     {
+      "type": "timeseries",
+      "id": 115,
+      "title": "Realised Margin per Hour - LOT-MATCHED (the number to quote)",
+      "description": "Each purchase matched FIFO on (hull, good) to the sale that closed it, margin booked in the hour the position CLOSED. Identical to `spacetraders ledger positions --bucket 1h`. The naive line is the cash-flow series the panels above use (sells minus buys by the hour each leg landed): it books an hour of selling old inventory as profit and an hour of buying as loss, so it swings with leg placement, not economics. The last bucket is a partial hour.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 18,
+        "x": 0,
+        "y": 30
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "showPoints": "auto",
+            "pointSize": 5,
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "locale",
+          "decimals": 0,
+          "noValue": "no closes in this window"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "lot-matched"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#73BF69"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 3
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "naive (defective)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#8e8e8e"
+                }
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    6,
+                    4
+                  ]
+                }
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "mean",
+            "last"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "13.1.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "WITH cargo AS (\n  SELECT t.created_at AS at, t.metadata->>'ship_symbol' AS hull, t.metadata->>'good_symbol' AS good,\n         (t.metadata->>'units')::numeric AS units, t.transaction_type AS typ, ABS(t.amount)::numeric AS amount\n    FROM transactions t\n   WHERE t.player_id = $player AND t.transaction_type IN ('PURCHASE_CARGO','SELL_CARGO')\n     AND COALESCE(t.metadata->>'ship_symbol','') <> '' AND (t.metadata->>'units')::numeric > 0),\nbuys AS (\n  SELECT hull, good, at, units, amount / units AS unit_cost,\n         SUM(units) OVER (PARTITION BY hull, good ORDER BY at, amount) AS hi\n    FROM cargo WHERE typ = 'PURCHASE_CARGO'),\nsells AS (\n  SELECT hull, good, at, units, amount AS revenue, amount / units AS unit_rev,\n         SUM(units) OVER (PARTITION BY hull, good ORDER BY at, amount) AS hi\n    FROM cargo WHERE typ = 'SELL_CARGO'),\nmatched AS (\n  SELECT s.at, LEAST(s.hi, b.hi) - GREATEST(s.hi - s.units, b.hi - b.units) AS m,\n         s.unit_rev - b.unit_cost AS spread\n    FROM sells s JOIN buys b ON b.hull = s.hull AND b.good = s.good\n     AND b.hi - b.units < s.hi AND b.hi > s.hi - s.units)\nSELECT $__timeGroupAlias(at, 1h), 'lot-matched' AS metric, ROUND(SUM(m * spread))::bigint AS v\n  FROM matched WHERE $__timeFilter(at) GROUP BY 1\nUNION ALL\nSELECT $__timeGroupAlias(t.created_at, 1h), 'naive (defective)' AS metric, ROUND(SUM(t.amount))::bigint AS v\n  FROM transactions t\n WHERE t.player_id = $player AND t.transaction_type IN ('PURCHASE_CARGO','SELL_CARGO')\n   AND COALESCE(t.metadata->>'ship_symbol','') <> '' AND $__timeFilter(t.created_at)\n GROUP BY 1\nORDER BY 1;",
+          "editorMode": "code"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "id": 116,
+      "title": "Lot-matched, last complete hour",
+      "description": "Realised margin of positions closed in the last complete clock hour (FIFO lot-matched). Ignores the time picker.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 30
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#d03b3b",
+                "value": null
+              },
+              {
+                "color": "#73BF69",
+                "value": 0
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "noValue": "no closes",
+          "unit": "locale",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "auto",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "pluginVersion": "13.1.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH cargo AS (\n  SELECT t.created_at AS at, t.metadata->>'ship_symbol' AS hull, t.metadata->>'good_symbol' AS good,\n         (t.metadata->>'units')::numeric AS units, t.transaction_type AS typ, ABS(t.amount)::numeric AS amount\n    FROM transactions t\n   WHERE t.player_id = $player AND t.transaction_type IN ('PURCHASE_CARGO','SELL_CARGO')\n     AND COALESCE(t.metadata->>'ship_symbol','') <> '' AND (t.metadata->>'units')::numeric > 0),\nbuys AS (\n  SELECT hull, good, at, units, amount / units AS unit_cost,\n         SUM(units) OVER (PARTITION BY hull, good ORDER BY at, amount) AS hi\n    FROM cargo WHERE typ = 'PURCHASE_CARGO'),\nsells AS (\n  SELECT hull, good, at, units, amount AS revenue, amount / units AS unit_rev,\n         SUM(units) OVER (PARTITION BY hull, good ORDER BY at, amount) AS hi\n    FROM cargo WHERE typ = 'SELL_CARGO'),\nmatched AS (\n  SELECT s.at, LEAST(s.hi, b.hi) - GREATEST(s.hi - s.units, b.hi - b.units) AS m,\n         s.unit_rev - b.unit_cost AS spread\n    FROM sells s JOIN buys b ON b.hull = s.hull AND b.good = s.good\n     AND b.hi - b.units < s.hi AND b.hi > s.hi - s.units)\nSELECT ROUND(SUM(m * spread))::bigint AS \"last complete hour\"\n  FROM matched\n WHERE at >= date_trunc('hour', NOW()) - interval '1 hour' AND at < date_trunc('hour', NOW());",
+          "editorMode": "code"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "id": 117,
+      "title": "Lot-matched, 24h average per hour",
+      "description": "Realised margin of positions closed in the trailing 24 hours, divided by 24. Ignores the time picker.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 34
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#d03b3b",
+                "value": null
+              },
+              {
+                "color": "#73BF69",
+                "value": 0
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "noValue": "no closes",
+          "unit": "locale",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "auto",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "pluginVersion": "13.1.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH cargo AS (\n  SELECT t.created_at AS at, t.metadata->>'ship_symbol' AS hull, t.metadata->>'good_symbol' AS good,\n         (t.metadata->>'units')::numeric AS units, t.transaction_type AS typ, ABS(t.amount)::numeric AS amount\n    FROM transactions t\n   WHERE t.player_id = $player AND t.transaction_type IN ('PURCHASE_CARGO','SELL_CARGO')\n     AND COALESCE(t.metadata->>'ship_symbol','') <> '' AND (t.metadata->>'units')::numeric > 0),\nbuys AS (\n  SELECT hull, good, at, units, amount / units AS unit_cost,\n         SUM(units) OVER (PARTITION BY hull, good ORDER BY at, amount) AS hi\n    FROM cargo WHERE typ = 'PURCHASE_CARGO'),\nsells AS (\n  SELECT hull, good, at, units, amount AS revenue, amount / units AS unit_rev,\n         SUM(units) OVER (PARTITION BY hull, good ORDER BY at, amount) AS hi\n    FROM cargo WHERE typ = 'SELL_CARGO'),\nmatched AS (\n  SELECT s.at, LEAST(s.hi, b.hi) - GREATEST(s.hi - s.units, b.hi - b.units) AS m,\n         s.unit_rev - b.unit_cost AS spread\n    FROM sells s JOIN buys b ON b.hull = s.hull AND b.good = s.good\n     AND b.hi - b.units < s.hi AND b.hi > s.hi - s.units)\nSELECT ROUND(SUM(m * spread) / 24.0)::bigint AS \"24h avg per hour\"\n  FROM matched WHERE at >= NOW() - interval '24 hours';",
+          "editorMode": "code"
+        }
+      ]
+    },
+    {
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -889,7 +1170,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 30
+        "y": 38
       },
       "id": 109,
       "options": {
@@ -937,7 +1218,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 38
+        "y": 46
       },
       "id": 12,
       "panels": [],
@@ -978,7 +1259,7 @@
         "h": 4,
         "w": 4,
         "x": 0,
-        "y": 39
+        "y": 47
       },
       "id": 13,
       "options": {
@@ -1049,7 +1330,7 @@
         "h": 4,
         "w": 4,
         "x": 0,
-        "y": 43
+        "y": 51
       },
       "id": 14,
       "options": {
@@ -1112,7 +1393,7 @@
         "h": 8,
         "w": 10,
         "x": 4,
-        "y": 39
+        "y": 47
       },
       "id": 15,
       "options": {
@@ -1183,7 +1464,7 @@
         "h": 8,
         "w": 10,
         "x": 14,
-        "y": 39
+        "y": 47
       },
       "id": 16,
       "options": {
@@ -1242,7 +1523,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 47
+        "y": 55
       },
       "id": 100,
       "panels": [],
@@ -1283,7 +1564,7 @@
         "h": 4,
         "w": 4,
         "x": 0,
-        "y": 48
+        "y": 56
       },
       "id": 101,
       "options": {
@@ -1354,7 +1635,7 @@
         "h": 4,
         "w": 4,
         "x": 0,
-        "y": 52
+        "y": 60
       },
       "id": 102,
       "options": {
@@ -1417,7 +1698,7 @@
         "h": 8,
         "w": 10,
         "x": 4,
-        "y": 48
+        "y": 56
       },
       "id": 103,
       "options": {
@@ -1500,7 +1781,7 @@
         "h": 8,
         "w": 10,
         "x": 14,
-        "y": 48
+        "y": 56
       },
       "id": 104,
       "options": {
@@ -1560,7 +1841,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 56
+        "y": 64
       },
       "id": 106,
       "panels": [],
@@ -1597,7 +1878,7 @@
         "h": 5,
         "w": 6,
         "x": 0,
-        "y": 57
+        "y": 65
       },
       "id": 107,
       "options": {
@@ -1689,7 +1970,7 @@
         "h": 5,
         "w": 6,
         "x": 6,
-        "y": 57
+        "y": 65
       },
       "id": 108,
       "options": {
@@ -1804,5 +2085,5 @@
   "timezone": "browser",
   "title": "SpaceTraders - Financial & Trading",
   "uid": "spacetraders-financial",
-  "version": 1
+  "version": 2
 }
