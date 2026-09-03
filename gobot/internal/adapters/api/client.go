@@ -91,6 +91,10 @@ type APIMetricsRecorder interface {
 	// metrics.RateLimitHeaderAbsent; sawHeaders says whether ANY x-ratelimit-* header
 	// arrived, which is what distinguishes a garbled server from a silent one.
 	RecordRateLimitHeaders(kind string, perSecond, burst, remaining, resetSeconds float64, sawHeaders bool)
+	// SetRateLimiterTarget reports the rate the limiter is CURRENTLY running at —
+	// the governor's target, or RateLimitPerSecond while a 429 hold is in force.
+	SetRateLimiterTarget(rps float64)
+	RecordRateGovernorTrip(endpoint string)
 }
 
 // SpaceTradersClient implements the APIClient interface
@@ -164,6 +168,11 @@ type SpaceTradersClient struct {
 	// scheduler guarantees no low-priority call is starved. Constructed once at
 	// client creation; read on the hot path of every request.
 	scheduler *priorityScheduler
+
+	// governor owns the limiter's LIMIT: it raises it to the configured target and
+	// retreats to RateLimitPerSecond on a 429 (see rate_governor.go). Unset knob =>
+	// target RateLimitPerSecond, so the limiter never moves.
+	governor *rateGovernor
 }
 
 // NewSpaceTradersClient creates a new SpaceTraders API client with default settings
@@ -216,6 +225,7 @@ func NewSpaceTradersClientWithConfig(
 		limiterPressure:  NewLimiterPressure(defaultLimiterPressureHalfLife),
 	}
 	client.scheduler = newPriorityScheduler(rateLimiter.Wait, clock, defaultPriorityAgingWindow)
+	client.governor = newRateGovernor(rateLimiter)
 
 	return client
 }

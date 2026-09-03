@@ -40,4 +40,9 @@ type DaemonConfig struct {
 
 	// 0/unset = default; see SpaceTradersClient.SetFleetIsolationProbeBudget (RULINGS #5).
 	FleetIsolationProbeBudget int `mapstructure:"fleet_isolation_probe_budget"`
+
+	// The API limiter's sustained rate; 0/unset = api.RateLimitPerSecond, clamped to
+	// api.RateGovernorMaxReqPerSec, dropped to 2.0 by a 429 for the cooldown below.
+	APITargetReqPerSec         float64 `mapstructure:"api_target_req_per_sec"`
+	APIGovernorCooldownMinutes int     `mapstructure:"api_governor_cooldown_minutes"`
 }

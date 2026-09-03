@@ -29,6 +29,8 @@ type recordingMetrics struct {
 	requestStatuses  []int
 	rateLimiterCalls int
 	rateLimitHeaders []rateLimitHeaderObservation
+	limiterTargets   []float64
+	governorTrips    []string
 }
 
 func (r *recordingMetrics) RecordAPIRequest(method string, endpoint string, statusCode int, duration float64) {
@@ -56,6 +58,14 @@ func (r *recordingMetrics) RecordRateLimitHeaders(kind string, perSecond, burst,
 		resetSeconds: resetSeconds,
 		sawHeaders:   sawHeaders,
 	})
+}
+
+func (r *recordingMetrics) SetRateLimiterTarget(rps float64) {
+	r.limiterTargets = append(r.limiterTargets, rps)
+}
+
+func (r *recordingMetrics) RecordRateGovernorTrip(endpoint string) {
+	r.governorTrips = append(r.governorTrips, endpoint)
 }
 
 func newRetryTestClient(serverURL string, maxRetries int) (*SpaceTradersClient, *shared.MockClock) {

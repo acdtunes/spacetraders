@@ -580,6 +580,9 @@ func run(cfg *config.Config) error {
 	apiClient.SetLimiterPressureHalfLife(time.Duration(cfg.Daemon.LimiterPressureHalfLifeSeconds) * time.Second)
 	apiClient.SetFleetIsolationAbortStreak(cfg.Daemon.FleetIsolationAbortStreak)
 	apiClient.SetFleetIsolationProbeBudget(cfg.Daemon.FleetIsolationProbeBudget)
+	// 0/unset -> 2.0 req/s and the built-in cooldown: the pre-governor client, unchanged.
+	apiClient.SetTargetRate(cfg.Daemon.APITargetReqPerSec)
+	apiClient.SetGovernorCooldown(time.Duration(cfg.Daemon.APIGovernorCooldownMinutes) * time.Minute)
 	fmt.Println("API client initialized")
 
 	// Declared as the interface up here and assigned below, once graphService —

@@ -157,6 +157,8 @@ func (c *SpaceTradersClient) doWithRetry(ctx context.Context, call apiRequest, o
 		}
 		rateLimitWait := time.Since(rateLimitStart)
 		c.limiterPressure.Observe(rateLimitWait, time.Now())
+		// Throttled to once a second: releases an expired 429 hold, and heals the gauge.
+		c.governor.maybeRelease(c.clock.Now(), c.getMetricsCollector())
 		if collector := c.getMetricsCollector(); collector != nil {
 			collector.RecordRateLimitWait(call.method, endpoint, rateLimitWait.Seconds())
 			collector.SetRateLimiterTokens(c.rateLimiter.Tokens())
@@ -180,6 +182,12 @@ func (c *SpaceTradersClient) doWithRetry(ctx context.Context, call apiRequest, o
 			hull := extractShipSymbol(call.path)
 			purpose := classifyPurpose(call.method, attempt)
 			tracker.Record(hull, purpose, sourceFromContext(ctx), outcome.statusCode == http.StatusTooManyRequests, rateLimitWait)
+		}
+
+		// Retreat BEFORE the retry sleep, so the backoff is already paid at 2.0 req/s.
+		// Classification, Retry-After and the ladder itself are untouched by this.
+		if outcome.statusCode == http.StatusTooManyRequests {
+			c.governor.trip(c.clock.Now(), endpoint, c.getMetricsCollector())
 		}
 
 		decision := outcome.classify()

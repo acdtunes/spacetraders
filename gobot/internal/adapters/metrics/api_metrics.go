@@ -28,6 +28,11 @@ type APIMetricsCollector struct {
 	apiRateLimitServerRemaining *prometheus.GaugeVec
 	apiRateLimitServerReset     *prometheus.GaugeVec
 	apiRateLimitHeadersObserved *prometheus.CounterVec
+
+	// What OUR limiter is running at, and how often a 429 forced it back down —
+	// the pair that says whether a raised target is holding (sp-g7jep).
+	apiRateLimiterEffective prometheus.Gauge
+	apiRateGovernorTrips    *prometheus.CounterVec
 }
 
 // NewAPIMetricsCollector creates a new API metrics collector
@@ -104,6 +109,17 @@ func NewAPIMetricsCollector() *APIMetricsCollector {
 			"Responses by whether they carried any x-ratelimit-* header",
 			"present",
 		),
+
+		apiRateLimiterEffective: newGauge(
+			"api_rate_limiter_effective_req_per_sec",
+			"Sustained rate the client's own limiter is currently running at",
+		),
+
+		apiRateGovernorTrips: newCounterVec(
+			"api_rate_governor_trips_total",
+			"Times a 429 forced the rate governor back to the 2.0 req/s floor",
+			"endpoint",
+		),
 	}
 }
 
@@ -123,6 +139,8 @@ func (c *APIMetricsCollector) Register() error {
 		c.apiRateLimitServerRemaining,
 		c.apiRateLimitServerReset,
 		c.apiRateLimitHeadersObserved,
+		c.apiRateLimiterEffective,
+		c.apiRateGovernorTrips,
 	)
 }
 
@@ -212,6 +230,26 @@ func (c *APIMetricsCollector) RecordRateLimitHeaders(
 	setRateLimitHeaderGauge(c.apiRateLimitServerBurst, kind, burst)
 	setRateLimitHeaderGauge(c.apiRateLimitServerRemaining, kind, remaining)
 	setRateLimitHeaderGauge(c.apiRateLimitServerReset, kind, resetSeconds)
+}
+
+// SetRateLimiterTarget records the rate OUR limiter is running at, which is the
+// governor's target except while a 429 hold has it back at the floor. Distinct from the
+// api_ratelimit_server_* gauges, which report what the SERVER says its limit is.
+func (c *APIMetricsCollector) SetRateLimiterTarget(rps float64) {
+	if c == nil || c.apiRateLimiterEffective == nil {
+		return // Recording is best-effort; never panic the request path.
+	}
+
+	c.apiRateLimiterEffective.Set(rps)
+}
+
+// RecordRateGovernorTrip counts one 429-driven retreat to the floor.
+func (c *APIMetricsCollector) RecordRateGovernorTrip(endpoint string) {
+	if c == nil || c.apiRateGovernorTrips == nil {
+		return // Recording is best-effort; never panic the request path.
+	}
+
+	c.apiRateGovernorTrips.WithLabelValues(endpoint).Inc()
 }
 
 func setRateLimitHeaderGauge(gauge *prometheus.GaugeVec, kind string, value float64) {

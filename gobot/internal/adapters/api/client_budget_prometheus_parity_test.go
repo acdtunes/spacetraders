@@ -41,6 +41,8 @@ func (c *countingAPIRecorder) RecordAPIRetry(_ string, _ string, _ string)      
 func (c *countingAPIRecorder) RecordRateLimitWait(_ string, _ string, _ float64)           {}
 func (c *countingAPIRecorder) SetRateLimiterTokens(_ float64)                              {}
 func (c *countingAPIRecorder) RecordRateLimitHeaders(_ string, _, _, _, _ float64, _ bool) {}
+func (c *countingAPIRecorder) SetRateLimiterTarget(_ float64)                              {}
+func (c *countingAPIRecorder) RecordRateGovernorTrip(_ string)                             {}
 
 // ON CLEAN TRAFFIC THE TWO COUNTS ARE EQUAL, and the tracker's utilization equals the Grafana
 // panel's own formula recomputed here from the same count.
