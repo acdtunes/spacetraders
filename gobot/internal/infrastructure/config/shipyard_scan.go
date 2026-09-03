@@ -1,5 +1,7 @@
 package config
 
+import "time"
+
 // shipyard_scan.go carries the fleet's ONE shipyard-read budget: the
 // total request rate every shipyard reader in the daemon shares, and how much more
 // attention the yards the fleet is buying from may earn than the ones it is not.
@@ -10,7 +12,7 @@ package config
 // count and stop being a budget. An absent section resolves to the armed defaults,
 // so the budget is enforced whether or not anyone writes a config stanza.
 
-// ShipyardScanConfig holds the shipyard-read budget's two knobs.
+// ShipyardScanConfig holds the shipyard-read budget's knobs.
 type ShipyardScanConfig struct {
 	// BudgetReqPerSec is the TOTAL shipyard-read rate shared by every reader in
 	// the daemon: the parked yard rotation, the scout tour's piggybacked scans,
@@ -47,6 +49,14 @@ type ShipyardScanConfig struct {
 	// case in the same proportion. 1 flattens the weighting entirely; 0 → the
 	// armed default.
 	ValueClampR int `mapstructure:"value_clamp_r"`
+
+	// RescanTTLMinutes is the recency window between live reads of ONE yard — the floor the
+	// budget may not scan past, sized against the CONSUMERS of the stored purchase_price
+	// (the reachable-yard ranking, the autosizer's heavy-price signal) rather than the hulls
+	// that pass a yard. While nobody is buying hulls the discretionary read buys nothing, so
+	// hours is honest; shorten it again before fleet growth is re-armed. 0/absent →
+	// scouting.shipyard_rescan_ttl_seconds, absent there too → the 15-minute default (RULINGS #5).
+	RescanTTLMinutes int `mapstructure:"rescan_ttl_minutes"`
 }
 
 // Shipyard-read budget defaults (config package locals: they size a request
@@ -71,6 +81,19 @@ func (c ShipyardScanConfig) ResolvedBudgetReqPerSec() float64 {
 		return c.BudgetReqPerSec
 	}
 	return defaultShipyardScanBudgetReqPerSec
+}
+
+// ResolvedRescanTTL returns the per-yard recency window this section sets, falling back to the
+// older scouting-section knob (in seconds) and then to 0 — the scanner's cue to arm its own
+// default. Precedence lives here so both knobs resolve in ONE place rather than at each caller.
+func (c ShipyardScanConfig) ResolvedRescanTTL(scoutingTTLSeconds int) time.Duration {
+	if c.RescanTTLMinutes > 0 {
+		return time.Duration(c.RescanTTLMinutes) * time.Minute
+	}
+	if scoutingTTLSeconds > 0 {
+		return time.Duration(scoutingTTLSeconds) * time.Second
+	}
+	return 0
 }
 
 // ResolvedValueClampR returns the configured clamp or the armed default. 1 is a

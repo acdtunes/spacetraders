@@ -360,6 +360,25 @@ func TestShipyardScanner_ScannedBeyondWindow_ScansAgain(t *testing.T) {
 	require.Equal(t, 1, api.gets, "a yard older than the window must be re-read")
 }
 
+// A configured window LONGER than the default is the whole point of the knob: the same yard,
+// read three hours ago, is a scan under the 15-minute default and a skip under a 12-hour one.
+func TestShipyardScanner_ConfiguredLongWindow_SkipsWhatTheDefaultWouldScan(t *testing.T) {
+	yard := "X1-AA-Y1"
+	lastScan := time.Now().Add(-3 * time.Hour)
+
+	s, api, inventory, _ := recencyFixture(t, yard, 12*time.Hour)
+	inventory.lastScanned = lastScan
+	inventory.lastScannedOK = true
+	require.NoError(t, s.ScanAndSaveShipyard(scanCtx(), 1, yard))
+	require.Zero(t, api.gets, "a yard inside the configured window must not spend a shipyard read")
+
+	sDefault, apiDefault, inventoryDefault, _ := recencyFixture(t, yard, DefaultShipyardRescanTTL)
+	inventoryDefault.lastScanned = lastScan
+	inventoryDefault.lastScannedOK = true
+	require.NoError(t, sDefault.ScanAndSaveShipyard(scanCtx(), 1, yard))
+	require.Equal(t, 1, apiDefault.gets, "the same read is outside the default window, so the knob is what saved the call")
+}
+
 // Skipping is the optimization, so an unproven "we already have this" is not
 // one: an unreadable recency stamp must fall through to a scan. Both cases
 // return an adversarially FRESH timestamp alongside the failure signal, so a

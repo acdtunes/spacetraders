@@ -56,6 +56,12 @@ func (h *RunConstructionCoordinatorHandler) reconcilePipelinesFromSite(ctx conte
 		return
 	}
 	for _, site := range distinctConstructionSites(tasks) {
+		if h.siteFullyDeliveredLocally(ctx, site.pipelineID) {
+			logger.Log("DEBUG", "Construction drain: site fully delivered locally; live reconcile skipped", map[string]interface{}{
+				"pipeline_id": site.pipelineID, "construction_site": site.waypoint,
+			})
+			continue
+		}
 		live, err := h.siteSource.FindByWaypoint(ctx, site.waypoint, playerID)
 		if err != nil || live == nil {
 			logger.Log("WARNING", fmt.Sprintf("Construction drain: could not read live construction site %s to reconcile delivered counters (this tick sizes buys off the cached row): %v", site.waypoint, err), nil)
@@ -63,6 +69,29 @@ func (h *RunConstructionCoordinatorHandler) reconcilePipelinesFromSite(ctx conte
 		}
 		h.applySiteTruth(ctx, site.pipelineID, live)
 	}
+}
+
+// siteFullyDeliveredLocally reports whether every material this pipeline carries already reads
+// delivered >= target locally. applySiteTruth is raise-only, so such a pipeline's counters cannot be
+// moved by a live reading — the site read is pure API cost and is skipped. Anything unreadable (load
+// error, missing pipeline, no materials) reports false so the read fires exactly as before.
+func (h *RunConstructionCoordinatorHandler) siteFullyDeliveredLocally(ctx context.Context, pipelineID string) bool {
+	h.recordMu.Lock()
+	defer h.recordMu.Unlock()
+	pipeline, err := h.pipelineRepo.FindByID(ctx, pipelineID)
+	if err != nil || pipeline == nil {
+		return false
+	}
+	materials := pipeline.Materials()
+	if len(materials) == 0 {
+		return false
+	}
+	for _, material := range materials {
+		if material.DeliveredQuantity() < material.TargetQuantity() {
+			return false
+		}
+	}
+	return true
 }
 
 // applySiteTruth folds one live site reading into one pipeline's material counters and persists it.

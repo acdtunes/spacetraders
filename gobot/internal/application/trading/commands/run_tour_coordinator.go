@@ -1351,9 +1351,6 @@ func (h *RunTourCoordinatorHandler) executePlan(
 			arrivesAt = *at
 		}
 		flowfeed.Publish(buildTourFlow(cmd, plan, legIdx, legDepartedAt, arrivesAt, shipCargoItems(ship), publishedAt))
-		if err := h.legs.dock(ctx, ship, cmd.PlayerID); err != nil {
-			return false, fmt.Errorf("dock at leg %d (%s) failed: %w", legIdx, leg.Waypoint, err)
-		}
 		legDedupBracket = h.legs.confirmScanDedupArrival(legDedupBracket)
 
 		legDegraded := false

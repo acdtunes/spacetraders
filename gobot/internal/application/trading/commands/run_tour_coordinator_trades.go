@@ -580,8 +580,8 @@ func (h *RunTourCoordinatorHandler) executeDeposit(
 	return true, nil
 }
 
-// ensureDockedForTrade restores the leg's docked state, which a deposit breaks by
-// orbiting the hull to match the warehouse anchor. No-op when already docked.
+// ensureDockedForTrade is the leg's ONLY dock: arrival leaves the hull in orbit and a deposit
+// re-orbits it, so each trade docks here rather than on arrival. No-op when already docked.
 func (h *RunTourCoordinatorHandler) ensureDockedForTrade(ctx context.Context, playerID int, ship *navigation.Ship) error {
 	if ship.IsDocked() {
 		return nil

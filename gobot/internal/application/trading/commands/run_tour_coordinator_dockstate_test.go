@@ -8,6 +8,82 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/routing"
 )
 
+// The arrival issues no Dock: the first trade docks, so an all-skipped leg pays none at all.
+func TestTour_LegWithAllTradesSkipped_DoesNotDock(t *testing.T) {
+	fx := &tourFixture{
+		cargo: map[string]int{}, location: "X1-S1-A", cargoCap: 100,
+		markets: map[string][]string{"X1-S1": {"X1-S1-A", "X1-S1-B"}},
+		bid:     map[string]map[string]int{"X1-S1-A": {"G": 90}, "X1-S1-B": {"G": 130}},
+		ask:     map[string]map[string]int{"X1-S1-A": {"G": 100}, "X1-S1-B": {"G": 140}},
+		tv:      map[string]map[string]int{"X1-S1-A": {"G": 1000}, "X1-S1-B": {"G": 1000}},
+	}
+	planner := &tourFakeRoutingClient{plans: []*routing.TourPlan{
+		{Feasible: true, Legs: []routing.TourLeg{
+			leg("X1-S1-B", "X1-S1", buy("G", 40, 100)), // planned 100, live ask 140 → 40% past tolerance
+		}},
+		{Feasible: false, InfeasibleReason: "no tour"},
+	}}
+	h := newTourHandler(t, fx, planner, &tourFakeTelemetry{})
+
+	if _, err := h.Handle(context.Background(), &RunTourCoordinatorCommand{
+		ShipSymbol: "TOUR-1", PlayerID: 1, ContainerID: "ctr-1", ReplanLimit: 1, ModelArtifactPath: writeTourArtifact(t),
+	}); err != nil {
+		t.Fatalf("tour returned error: %v", err)
+	}
+
+	fx.mu.Lock()
+	docks, buys := fx.docks, fx.buys
+	fx.mu.Unlock()
+	if buys != 0 {
+		t.Fatalf("the tolerance gate must have skipped the only trade, got %d buy(s)", buys)
+	}
+	if docks != 0 {
+		t.Fatalf("a leg that trades nothing must issue no Dock, got %d", docks)
+	}
+}
+
+// The dock a trading leg does need is issued once, by its FIRST trade; later trades no-op.
+func TestTour_FirstTradeDocksOnce(t *testing.T) {
+	fx := &tourFixture{
+		cargo: map[string]int{"G1": 20, "G2": 20}, location: "X1-S1-A", cargoCap: 100,
+		markets: map[string][]string{"X1-S1": {"X1-S1-A", "X1-S1-B"}},
+		bid:     map[string]map[string]int{"X1-S1-B": {"G1": 200, "G2": 300}},
+		ask: map[string]map[string]int{
+			"X1-S1-A": {"G1": 100, "G2": 150},
+			"X1-S1-B": {"G1": 210, "G2": 310}},
+		tv: map[string]map[string]int{
+			"X1-S1-A": {"G1": 1000, "G2": 1000},
+			"X1-S1-B": {"G1": 1000, "G2": 1000}},
+	}
+	planner := &tourFakeRoutingClient{plans: []*routing.TourPlan{{
+		Feasible: true, Legs: []routing.TourLeg{
+			leg("X1-S1-B", "X1-S1", sell("G1", 20, 200), sell("G2", 20, 300)),
+		},
+	}}}
+	h := newTourHandler(t, fx, planner, &tourFakeTelemetry{})
+
+	resp, err := h.Handle(context.Background(), &RunTourCoordinatorCommand{
+		ShipSymbol: "TOUR-2", PlayerID: 1, ContainerID: "ctr-2", ModelArtifactPath: writeTourArtifact(t),
+	})
+	if err != nil {
+		t.Fatalf("tour returned error: %v", err)
+	}
+	r := tourResponse(t, resp)
+
+	fx.mu.Lock()
+	docks, sells := fx.docks, fx.sells
+	fx.mu.Unlock()
+	if sells != 2 {
+		t.Fatalf("both sells must execute (an undocked trade is refused outright), got %d", sells)
+	}
+	if docks != 1 {
+		t.Fatalf("a trading leg docks exactly once, at its first trade, got %d", docks)
+	}
+	if r.TotalRevenue != 20*200+20*300 {
+		t.Fatalf("revenue = %d, want %d", r.TotalRevenue, 20*200+20*300)
+	}
+}
+
 // A warehouse deposit orbits the hull to match the warehouse anchor, and deposits sort
 // ahead of buys, so a market trade sharing the stop must re-dock before it trades.
 func TestTour_MarketTradeAfterDepositAtSameStop_RedocksAndTrades(t *testing.T) {

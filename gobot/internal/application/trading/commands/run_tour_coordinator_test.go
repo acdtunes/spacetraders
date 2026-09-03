@@ -127,9 +127,10 @@ type tourFixture struct {
 	shipUnreadableAfterUnloads int
 	unloads                    int
 
-	// navStatus is the hull's live nav state, moved by the dock/transfer seams below.
-	// Empty means DOCKED, the state every pre-existing test's hull starts and stays in.
+	// navStatus is the hull's live nav state, moved by the navigate/dock/transfer seams below.
+	// Empty means DOCKED, the state every hull starts in before it has flown anywhere.
 	navStatus navigation.NavStatus
+	docks     int
 
 	// sellFloorPartial is the units a floor-aborted dispatch reports as ALREADY SOLD, per
 	// good — the shape a CHUNKED sale returns when the bid collapses part-way through the
@@ -293,6 +294,8 @@ func (m *tourFakeMediator) Send(ctx context.Context, request common.Request) (co
 		// gate — the route reports "arrived" but the persisted position lags at the origin,
 		// so the hull does NOT move here; only an authoritative resync reveals the truth.
 		// Guarded, so every existing navigate moves synchronously exactly as before.
+		// A hull arrives IN ORBIT; a fixture left DOCKED would pass an undocked trade.
+		m.fx.navStatus = navigation.NavStatusInOrbit
 		if m.fx.departureHopNavStall && strings.HasSuffix(cmd.Destination, "-GATE") {
 			m.fx.stalledGateDest = cmd.Destination
 		} else {
@@ -384,6 +387,7 @@ func (m *tourFakeMediator) Send(ctx context.Context, request common.Request) (co
 	case *shipTypes.DockShipCommand:
 		m.fx.mu.Lock()
 		m.fx.navStatus = navigation.NavStatusDocked
+		m.fx.docks++
 		m.fx.mu.Unlock()
 		return &shipTypes.DockShipResponse{Status: "docked"}, nil
 	case *shipQueries.GetJumpGateConnectionsQuery:

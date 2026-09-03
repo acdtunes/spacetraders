@@ -85,7 +85,7 @@ func newShipyardScanner(
 	scanner := ship.NewShipyardScanner(
 		apiClient, inventoryRepo, waypointRepo, events,
 		heavyShipTypes,
-		time.Duration(scoutCfg.ShipyardRescanTTLSeconds)*time.Second,
+		scanCfg.ResolvedRescanTTL(scoutCfg.ShipyardRescanTTLSeconds),
 	)
 	budget := ship.NewYardScanBudget(
 		scanCfg.ResolvedBudgetReqPerSec(),

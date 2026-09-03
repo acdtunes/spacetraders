@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -210,6 +211,86 @@ func TestConstructionDrain_ReconcileConcurrentWithDelivery_LosesNoUnits(t *testi
 	if got := pipeline.GetMaterial("FAB_MATS").DeliveredQuantity(); got < 80 {
 		t.Fatalf("a concurrent reconcile dropped delivered units: got %d, the 80 delivered must always survive", got)
 	}
+}
+
+// sp-12k38 — the correction is raise-only, so a pipeline whose every material already reads
+// delivered >= target cannot be moved by a live reading: the Get Construction is pure API cost
+// (measured 87/h against a gate whose bill was fully paid). These three pin the whole predicate —
+// skip only when nothing is outstanding, and fail toward reading live otherwise.
+func TestConstructionDrain_FullyDeliveredPipeline_SkipsTheLiveSiteRead(t *testing.T) {
+	pipeline := newDrainPipeline(t, "FAB_MATS", 400)
+	if err := pipeline.RecordMaterialDelivery("FAB_MATS", 400); err != nil {
+		t.Fatalf("seed delivered: %v", err)
+	}
+	task := readyConstructionTask(t, pipeline, "FAB_MATS")
+	pipelineRepo := &drainStubPipelineRepo{pipelines: map[string]*manufacturing.ManufacturingPipeline{pipeline.ID(): pipeline}}
+	site := liveSite("FAB_MATS", 400, 400)
+
+	handler := newReconcileHandler(pipelineRepo, site)
+	handler.reconcilePipelinesFromSite(context.Background(), []*manufacturing.ManufacturingTask{task}, 1)
+
+	if site.readCount() != 0 {
+		t.Fatalf("a fully delivered pipeline must not spend a live site read (raise-only cannot change it), got %d read(s)", site.readCount())
+	}
+}
+
+func TestConstructionDrain_MaterialStillShort_ReadsTheLiveSite(t *testing.T) {
+	pipeline := manufacturing.NewConstructionPipeline(constructionSiteWP, 1, 1, 1)
+	for _, material := range []*manufacturing.ConstructionMaterialTarget{
+		manufacturing.NewConstructionMaterialTarget("FAB_MATS", 400),
+		manufacturing.NewConstructionMaterialTarget("ADVANCED_CIRCUITRY", 100),
+	} {
+		if err := pipeline.AddMaterial(material); err != nil {
+			t.Fatalf("AddMaterial: %v", err)
+		}
+	}
+	if err := pipeline.Start(); err != nil {
+		t.Fatalf("pipeline.Start: %v", err)
+	}
+	if err := pipeline.RecordMaterialDelivery("FAB_MATS", 400); err != nil {
+		t.Fatalf("seed delivered: %v", err)
+	}
+	task := readyConstructionTask(t, pipeline, "FAB_MATS")
+	pipelineRepo := &drainStubPipelineRepo{pipelines: map[string]*manufacturing.ManufacturingPipeline{pipeline.ID(): pipeline}}
+	site := liveSite("ADVANCED_CIRCUITRY", 100, 40)
+
+	handler := newReconcileHandler(pipelineRepo, site)
+	handler.reconcilePipelinesFromSite(context.Background(), []*manufacturing.ManufacturingTask{task}, 1)
+
+	if site.readCount() != 1 {
+		t.Fatalf("one material below target must still reconcile against the server, got %d read(s)", site.readCount())
+	}
+	if got := pipeline.GetMaterial("ADVANCED_CIRCUITRY").DeliveredQuantity(); got != 40 {
+		t.Fatalf("the live reading must still be applied to the short material, got %d delivered", got)
+	}
+}
+
+func TestConstructionDrain_PipelineLoadFailure_ReadsTheLiveSite(t *testing.T) {
+	pipeline := newDrainPipeline(t, "FAB_MATS", 400)
+	task := readyConstructionTask(t, pipeline, "FAB_MATS")
+	site := liveSite("FAB_MATS", 400, 0)
+
+	handler := newReconcileHandler(&unreadablePipelineRepo{}, site)
+	handler.reconcilePipelinesFromSite(context.Background(), []*manufacturing.ManufacturingTask{task}, 1)
+
+	if site.readCount() != 1 {
+		t.Fatalf("an unreadable pipeline must fall back to today's live read, got %d read(s)", site.readCount())
+	}
+}
+
+// unreadablePipelineRepo fails every load, the "fail toward the current behaviour" branch.
+type unreadablePipelineRepo struct {
+	manufacturing.PipelineRepository
+}
+
+func (r *unreadablePipelineRepo) FindByID(context.Context, string) (*manufacturing.ManufacturingPipeline, error) {
+	return nil, errors.New("pipeline row unavailable")
+}
+
+func newReconcileHandler(pipelineRepo manufacturing.PipelineRepository, site *fakeConstructionSiteSource) *RunConstructionCoordinatorHandler {
+	handler := NewRunConstructionCoordinatorHandler(&drainStubTaskRepo{}, pipelineRepo, newDrainShipRepo(), &fakeConstructionProducer{}, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
+	handler.SetConstructionSiteSource(site)
+	return handler
 }
 
 // An unwired site source must be LOUD, not silent: a cache that only drifts one way and is never
