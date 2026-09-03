@@ -664,6 +664,8 @@ func buildTourCoordinatorCommand(cfg *configReader, playerID int, containerID st
 		SpecialistCadenceMinutes: cfg.OptionalInt("specialist_cadence_minutes", tradingCmd.DefaultSpecialistCadenceMinutes),
 		// Below this span the fleet rate stands in for the hull's own; 0/absent ⇒ the spec default.
 		YieldRateSpanFloorMinutes: cfg.OptionalInt("yield_rate_span_floor_minutes", tradingCmd.DefaultYieldRateSpanFloorMinutes),
+		// A rescue landing on ground drained in transit gets one more move; 1 is the shipped bound.
+		MVTRescueJumpsPerEpisode: cfg.OptionalInt("mvt_rescue_jumps_per_episode", tradingCmd.DefaultMVTRescueJumpsPerEpisode),
 		// sp-uf64 reposition reach (always-broaden discovery + deadhead-decay ranking + anti-herd).
 		// OptionalBool/OptionalInt yield zero values for absent keys — the exact default-OFF dormancy
 		// the Placement*/Reposition* knobs use: reposition_reach_enabled absent ⇒ false ⇒ the legacy

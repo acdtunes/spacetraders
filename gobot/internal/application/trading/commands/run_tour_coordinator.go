@@ -988,7 +988,9 @@ func (h *RunTourCoordinatorHandler) resumeInFlightReposition(ctx context.Context
 		return repositionEpisode{}, rerr // resumable — the persisted in-progress flag stays set so a re-restart retries the resume
 	}
 	h.persistReposition(ctx, cmd, RepositionEpisode{InProgress: false})
-	return repositionEpisode{repositioned: true, toSystem: cmd.RepositionTargetSystem}, nil
+	// rescues 1 so the MVT loop's cap still binds across the restart: the flight just resumed
+	// IS the episode's first rescue, not a free one.
+	return repositionEpisode{repositioned: true, rescues: 1, toSystem: cmd.RepositionTargetSystem}, nil
 }
 
 // afterProductiveTour returns the relocation-offer deadline the loop must honour before it

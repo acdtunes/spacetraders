@@ -552,6 +552,9 @@ type fakeGateGraph struct {
 	repositionPath    []string
 	repositionPathErr error
 	repositionBound   int
+	// repositionBounds is every bound in call order, for a run that resolves more than one
+	// flight and must assert the bound of a particular one rather than of the last.
+	repositionBounds []int
 
 	// pathWithinResult / pathWithinErr, when set, are what PathWithinJumps returns — the STRICT
 	// large-bound resolver the long-haul heavy reposition rides (sp-e059j); unset, PathWithinJumps
@@ -589,18 +592,30 @@ type fakeGateGraph struct {
 	// connCalls records every Connections(system) call in order, so a test can assert how much
 	// FETCH-THROUGH topology a path reads — the cost that becomes live API requests in production.
 	connCalls []string
+	// pathByPair, when it holds "from>to", answers that flight instead of the single canned
+	// path — so ONE graph can serve consecutive flights that start in different systems.
+	pathByPair map[string][]string
+}
+
+// pathFor is pathByPair's answer for this flight, or the canned path when it has none.
+func (f *fakeGateGraph) pathFor(from, to string) ([]string, error) {
+	if p, ok := f.pathByPair[from+">"+to]; ok {
+		return p, nil
+	}
+	return f.path, f.pathErr
 }
 
 func (f *fakeGateGraph) Path(ctx context.Context, from, to string, playerID int) ([]string, error) {
-	return f.path, f.pathErr
+	return f.pathFor(from, to)
 }
 
 func (f *fakeGateGraph) RepositionPath(ctx context.Context, from, to string, maxJumps int) ([]string, error) {
 	f.repositionBound = maxJumps
+	f.repositionBounds = append(f.repositionBounds, maxJumps)
 	if f.repositionPath != nil || f.repositionPathErr != nil {
 		return f.repositionPath, f.repositionPathErr
 	}
-	return f.path, f.pathErr
+	return f.pathFor(from, to)
 }
 
 func (f *fakeGateGraph) PathWithinJumps(ctx context.Context, from, to string, playerID, maxJumps int) ([]string, error) {

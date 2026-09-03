@@ -72,12 +72,17 @@ func TestBuildTourCoordinatorCommand_MVTLoopReadsTheSelectorAndKnobDefaults(t *t
 	require.Equal(t, tradingCmd.DefaultRankerMinSpreadPerUnit, off.RankerMinSpreadPerUnit)
 	require.Equal(t, tradingCmd.DefaultSpecialistCadenceMinutes, off.SpecialistCadenceMinutes)
 	require.Equal(t, tradingCmd.DefaultYieldRateSpanFloorMinutes, off.YieldRateSpanFloorMinutes)
+	require.Equal(t, tradingCmd.DefaultMVTRescueJumpsPerEpisode, off.MVTRescueJumpsPerEpisode)
+	require.Equal(t, 2, off.MVTRescueJumpsPerEpisode, "an absent mvt_rescue_jumps_per_episode allows the second rescue")
 
 	tuned := build(map[string]interface{}{"ship_symbol": "HULL-1", "yield_rate_span_floor_minutes": 5})
 	require.Equal(t, 5, tuned.YieldRateSpanFloorMinutes, "a configured floor rides through to the command")
 
 	spread := build(map[string]interface{}{"ship_symbol": "HULL-1", "ranker_min_spread_per_unit": 350})
 	require.Equal(t, 350, spread.RankerMinSpreadPerUnit, "a configured spread floor rides through to the command")
+
+	capped := build(map[string]interface{}{"ship_symbol": "HULL-1", "mvt_rescue_jumps_per_episode": 1})
+	require.Equal(t, 1, capped.MVTRescueJumpsPerEpisode, "a configured rescue cap rides through to the command")
 }
 
 // The MVT knobs are stamped into the launch config only when the captain set them, so an
@@ -87,13 +92,15 @@ func TestAddTradeFleetTourKnobs_WritesTheMVTKnobsOnlyWhenConfigured(t *testing.T
 	unset := map[string]interface{}{}
 	(&DaemonServer{}).addTradeFleetTourKnobs(unset)
 	for _, key := range []string{"yield_window_sells", "yield_min_sells", "claim_reach_hops",
-		"specialist_cadence_minutes", "yield_rate_span_floor_minutes", "ranker_min_spread_per_unit"} {
+		"specialist_cadence_minutes", "yield_rate_span_floor_minutes", "ranker_min_spread_per_unit",
+		"mvt_rescue_jumps_per_episode"} {
 		_, present := unset[key]
 		require.Falsef(t, present, "an unset %s must not be written", key)
 	}
 
 	set := map[string]interface{}{}
-	(&DaemonServer{tradeFleetConfig: config.TradeFleetConfig{YieldRateSpanFloorMinutes: 45, RankerMinSpreadPerUnit: 350}}).addTradeFleetTourKnobs(set)
+	(&DaemonServer{tradeFleetConfig: config.TradeFleetConfig{YieldRateSpanFloorMinutes: 45, RankerMinSpreadPerUnit: 350, MVTRescueJumpsPerEpisode: 3}}).addTradeFleetTourKnobs(set)
 	require.Equal(t, 45, set["yield_rate_span_floor_minutes"])
 	require.Equal(t, 350, set["ranker_min_spread_per_unit"])
+	require.Equal(t, 3, set["mvt_rescue_jumps_per_episode"])
 }

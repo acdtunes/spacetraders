@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -314,12 +315,13 @@ func TestMVTRecover_UnarrivedClaimWithoutResumeReleasesThenBootstraps(t *testing
 
 // A hull re-adopted mid-jump resumes through the old path's persisted episode, which carries no
 // MVT hop bound, so the resume rides the old-path knob's default; recovery then closes the
-// TRAVEL with the arrival on the claim the jump was flown for. The resumed jump spends the
-// episode, so the dead ground it lands on cannot be left again before a productive tour.
+// TRAVEL with the arrival on the claim the jump was flown for. The resumed flight counts as the
+// episode's FIRST rescue, so the dead ground it lands on may be left exactly once more.
 func TestMVTRecover_ReadoptedMidJumpRidesOldPathBoundThenArrives(t *testing.T) {
 	fx := repositionFixture()
 	h, claims, trans := mvtHandler(t, fx, mvtDeadPlanner(), 10, 500)
 	g := mvtTravelGraph()
+	g.pathByPair = map[string][]string{"X1-S2>X1-S1": {"X1-S2", "X1-S1"}}
 	h.SetGateGraph(g)
 	h.SetRepositionPersister(&fakeRepositionPersister{})
 	ctx := common.WithLogger(context.Background(), &tradeCaptureLogger{})
@@ -329,11 +331,11 @@ func TestMVTRecover_ReadoptedMidJumpRidesOldPathBoundThenArrives(t *testing.T) {
 	if _, err := h.Handle(ctx, cmd); err != nil {
 		t.Fatalf("handle: %v", err)
 	}
-	if len(fx.jumps) != 1 || fx.jumps[0] != "X1-S2" {
-		t.Fatalf("the resume must complete the one jump, got %v", fx.jumps)
+	if len(fx.jumps) != 2 || fx.jumps[0] != "X1-S2" || fx.jumps[1] != "X1-S1" {
+		t.Fatalf("jumps = %v, want the resume then the episode's one remaining rescue", fx.jumps)
 	}
-	if g.repositionBound != repositionJumpBoundDefault {
-		t.Fatalf("resume bound = %d, want the old-path default %d", g.repositionBound, repositionJumpBoundDefault)
+	if len(g.repositionBounds) == 0 || g.repositionBounds[0] != repositionJumpBoundDefault {
+		t.Fatalf("resume bound = %v, want the old-path default %d first", g.repositionBounds, repositionJumpBoundDefault)
 	}
 	seen := mvtSeen(trans.rows)
 	if want := "TRAVEL>TRADE:" + mvtReasonArrived + "@X1-S2"; len(seen) == 0 || seen[0] != want {
@@ -345,8 +347,181 @@ func TestMVTRecover_ReadoptedMidJumpRidesOldPathBoundThenArrives(t *testing.T) {
 		}
 	}
 	c, ok, _ := claims.Get(ctx, 1, "TOUR-MVT")
+	if !ok || c.System != "X1-S1" || c.ArrivedAt == nil {
+		t.Fatalf("claim = %+v ok=%v, want the second rescue's X1-S1 arrived", c, ok)
+	}
+}
+
+// The knob is the whole bound: at 1 the loop is byte-for-byte what it shipped with — the empty
+// exit rescues once and the death at the destination exits starvation.
+func TestMVTTravelTo_RescueLimitOneIsToday(t *testing.T) {
+	fx := repositionFixture()
+	h, claims, trans := mvtHandler(t, fx, mvtDeadPlanner(), 500, 10)
+	h.SetGateGraph(mvtTravelGraph())
+	ctx := common.WithLogger(context.Background(), &tradeCaptureLogger{})
+	cmd := mvtCmd(t)
+	cmd.MVTRescueJumpsPerEpisode = 1
+	resp, err := h.Handle(ctx, cmd)
+	if err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+	if len(fx.jumps) != 1 || fx.jumps[0] != "X1-S2" {
+		t.Fatalf("jumps = %v, want exactly one jump to X1-S2", fx.jumps)
+	}
+	c, ok, _ := claims.Get(ctx, 1, "TOUR-MVT")
 	if !ok || c.System != "X1-S2" || c.ArrivedAt == nil {
 		t.Fatalf("claim = %+v ok=%v, want X1-S2 arrived", c, ok)
+	}
+	r := tourResponse(t, resp)
+	if r.ExitReason != tourExitStarvation {
+		t.Fatalf("exit = %q, want %s after the bounded episode", r.ExitReason, tourExitStarvation)
+	}
+	if !strings.Contains(r.ExitDetail, "repositioned X1-S1 -> X1-S2 this episode but margins died there too") {
+		t.Fatalf("exit detail = %q, want the one-rescue wording", r.ExitDetail)
+	}
+	seen := mvtSeen(trans.rows)
+	want := []string{
+		"CLAIM>TRADE:" + mvt.ReasonStay + "@X1-S1",
+		"TRADE>CLAIM:" + mvtReasonEmpty + "@X1-S1",
+		"CLAIM>TRAVEL:" + mvtReasonClaim + "@X1-S2",
+		"TRAVEL>TRADE:" + mvtReasonArrived + "@X1-S2",
+		"CLAIM>TRADE:" + mvtReasonEpisodeSpent + "@X1-S2",
+	}
+	if len(seen) != len(want) {
+		t.Fatalf("transitions = %v, want %v", seen, want)
+	}
+	for i := range want {
+		if seen[i] != want[i] {
+			t.Fatalf("transition %d = %s, want %s (all: %v)", i, seen[i], want[i], seen)
+		}
+	}
+}
+
+// A resumed mid-flight jump IS the episode's first rescue, so the cap binds across a restart
+// instead of handing the hull a fresh allowance every time the daemon bounces.
+func TestMVTRecover_ResumedJumpCountsAsFirstRescue(t *testing.T) {
+	fx := repositionFixture()
+	h, _, _ := mvtHandler(t, fx, mvtDeadPlanner(), 10, 500)
+	h.SetGateGraph(mvtTravelGraph())
+	h.SetRepositionPersister(&fakeRepositionPersister{})
+	logger := &tradeCaptureLogger{}
+	ctx := common.WithLogger(context.Background(), logger)
+	cmd := mvtCmd(t)
+	cmd.RepositionInProgress, cmd.RepositionTargetSystem, cmd.RepositionTargetWaypoint = true, "X1-S2", "X1-S2-SRC"
+	episode, err := h.resumeInFlightReposition(ctx, cmd, logger)
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if !episode.repositioned || episode.rescues != 1 || episode.toSystem != "X1-S2" {
+		t.Fatalf("resumed episode = %+v, want the flight counted as rescue 1 toward X1-S2", episode)
+	}
+	if mvtEpisodeSpent(&episode, 1) != true || mvtEpisodeSpent(&episode, 2) != false {
+		t.Fatalf("resumed episode spent at limit 1 = %v, at limit 2 = %v, want true then false",
+			mvtEpisodeSpent(&episode, 1), mvtEpisodeSpent(&episode, 2))
+	}
+}
+
+// A mover that is not an MVT rescue — the offload rung, the disposal ladder — marks only
+// repositioned, and that still spends the WHOLE episode at any cap. Reading the cap alone would
+// hand those hulls a fresh rescue allowance the brief never asked for.
+func TestMVTEpisodeSpent_NonRescueMoverSpendsTheWholeEpisode(t *testing.T) {
+	cases := []struct {
+		name    string
+		episode repositionEpisode
+		limit   int
+		want    bool
+	}{
+		{"offloaded, cap 1", repositionEpisode{repositioned: true}, 1, true},
+		{"offloaded, cap 2", repositionEpisode{repositioned: true}, 2, true},
+		{"offloaded, cap 5", repositionEpisode{repositioned: true}, 5, true},
+		{"untouched, cap 1", repositionEpisode{}, 1, false},
+		{"untouched, cap 2", repositionEpisode{}, 2, false},
+		{"one rescue, cap 1", repositionEpisode{repositioned: true, rescues: 1}, 1, true},
+		{"one rescue, cap 2", repositionEpisode{repositioned: true, rescues: 1}, 2, false},
+		{"two rescues, cap 2", repositionEpisode{repositioned: true, rescues: 2}, 2, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ep := tc.episode
+			if got := mvtEpisodeSpent(&ep, tc.limit); got != tc.want {
+				t.Fatalf("mvtEpisodeSpent(%+v, %d) = %v, want %v", ep, tc.limit, got, tc.want)
+			}
+		})
+	}
+}
+
+// End to end down the rescue ladder: an episode already moved by the offload rung declines the
+// rung a second time and then refuses the rotation as episode_spent, even at the default cap of
+// two — the offload jump was not a rescue, but it still closed the episode.
+func TestMVTRescue_OffloadedEpisodeGetsNoFreshRescueAllowance(t *testing.T) {
+	spent := repositionEpisode{repositioned: true, fromSystem: "X1-S0", toSystem: "X1-S1"}
+	fx := repositionFixture()
+	h, _, trans := mvtHandler(t, fx, mvtDeadPlanner(), 10, 500)
+	h.SetGateGraph(mvtTravelGraph())
+	ctx := common.WithLogger(context.Background(), &tradeCaptureLogger{})
+	cmd := mvtCmd(t)
+	moved, err := h.rescueStarvedGround(ctx, cmd, &RunTourCoordinatorResponse{}, &spent, nil, tourPlanBudget{}, true)
+	if err != nil || moved || len(fx.jumps) != 0 {
+		t.Fatalf("moved=%v err=%v jumps=%v, want a stay with no flight", moved, err, fx.jumps)
+	}
+	if spent.rescues != 0 {
+		t.Fatalf("rescues = %d, want the offloaded episode still at 0", spent.rescues)
+	}
+	if got := trans.last(t); got.Reason != mvtReasonEpisodeSpent || got.System != "X1-S1" {
+		t.Fatalf("last transition = %+v, want %s at X1-S1", got, mvtReasonEpisodeSpent)
+	}
+
+	// Control: the same ground, the same rich X1-S2, an episode nothing has moved yet — the
+	// rotation really does fly, so the refusal above is the spent episode and not a dead fixture.
+	fresh := repositionEpisode{}
+	fx2 := repositionFixture()
+	h2, _, _ := mvtHandler(t, fx2, mvtDeadPlanner(), 10, 500)
+	h2.SetGateGraph(mvtTravelGraph())
+	h2.SetRepositionPersister(&fakeRepositionPersister{})
+	moved, err = h2.rescueStarvedGround(ctx, cmd, &RunTourCoordinatorResponse{}, &fresh, nil, tourPlanBudget{}, true)
+	if err != nil || !moved || len(fx2.jumps) != 1 || fx2.jumps[0] != "X1-S2" {
+		t.Fatalf("moved=%v err=%v jumps=%v, want the rescue flown to X1-S2", moved, err, fx2.jumps)
+	}
+}
+
+// The second rescue never returns to the ground the first one left, however richly that ground
+// still scores: with nowhere else to go the hull stays put rather than ping-ponging.
+func TestMVTClaimAndTravel_SecondRescueNeverReturnsToOrigin(t *testing.T) {
+	fx := mvtRescueChainFixture()
+	fx.location = "X1-S2-A"
+	h, claims, trans := mvtRescueChainHandler(t, fx, mvtDeadPlanner(), map[string]int{"X1-S1": 500, "X1-S3": 300})
+	logger := &metaCapturingLogger{}
+	ctx := common.WithLogger(context.Background(), logger)
+	cmd := mvtCmd(t)
+	episode := repositionEpisode{repositioned: true, rescues: 1, fromSystem: "X1-S1", toSystem: "X1-S2"}
+	moved, err := h.mvtClaimAndTravel(ctx, cmd, &RunTourCoordinatorResponse{}, &episode, mvtReasonEmpty, tourPlanBudget{})
+	if err != nil || !moved {
+		t.Fatalf("moved=%v err=%v, want the second rescue flown", moved, err)
+	}
+	if len(fx.jumps) != 1 || fx.jumps[0] != "X1-S3" {
+		t.Fatalf("jumps = %v, want the one hop to X1-S3 and never back to X1-S1", fx.jumps)
+	}
+	if c, ok, _ := claims.Get(ctx, 1, "TOUR-MVT"); !ok || c.System != "X1-S3" {
+		t.Fatalf("claim = %+v ok=%v, want X1-S3", c, ok)
+	}
+	if episode.rescues != 2 || episode.fromSystem != "X1-S2" || episode.toSystem != "X1-S3" {
+		t.Fatalf("episode = %+v, want the second rescue recorded X1-S2 -> X1-S3", episode)
+	}
+	if got := mvtSecondRescueLogs(logger); len(got) != 1 || got[0] != "X1-S1@1" {
+		t.Fatalf("second-rescue lines = %v, want exactly one excluding X1-S1", got)
+	}
+
+	// Only the origin is left in the ranking: the guard drops it and the hull has nowhere to go.
+	alone := mvtRescueChainFixture()
+	alone.location = "X1-S2-A"
+	h, _, trans = mvtRescueChainHandler(t, alone, mvtDeadPlanner(), map[string]int{"X1-S1": 500})
+	stuck := repositionEpisode{repositioned: true, rescues: 1, fromSystem: "X1-S1", toSystem: "X1-S2"}
+	moved, err = h.mvtClaimAndTravel(ctx, cmd, &RunTourCoordinatorResponse{}, &stuck, mvtReasonEmpty, tourPlanBudget{})
+	if err != nil || moved || len(alone.jumps) != 0 {
+		t.Fatalf("moved=%v err=%v jumps=%v, want a stay", moved, err, alone.jumps)
+	}
+	if got := trans.last(t); got.Reason != mvt.ReasonNoAlternative || got.System != "X1-S2" {
+		t.Fatalf("last transition = %+v, want no_alternative at X1-S2", got)
 	}
 }
 
@@ -718,27 +893,86 @@ func TestMVTBootstrap_LiveTreasuryAtTheReserveDeniesTheJump(t *testing.T) {
 	}
 }
 
+// mvtRescueChainFixture is repositionFixture with a third system X1-S3 priced like X1-S2, so a
+// hull whose FIRST rescue lands on ground that is empty too still has somewhere else to be.
+func mvtRescueChainFixture() *tourFixture {
+	fx := repositionFixture()
+	fx.markets["X1-S3"] = []string{"X1-S3-A", "X1-S3-B"}
+	fx.bid["X1-S3-B"] = map[string]int{"H": 300}
+	fx.ask["X1-S3-A"] = map[string]int{"H": 100}
+	fx.ask["X1-S3-B"] = map[string]int{"H": 300}
+	fx.tv["X1-S3-A"] = map[string]int{"H": 1000}
+	fx.tv["X1-S3-B"] = map[string]int{"H": 1000}
+	fx.neighbors["X1-S2"] = []string{"X1-S1", "X1-S3"}
+	return fx
+}
+
+// mvtRescueChainHandler wires the stored X1-S1—X1-S2—X1-S3 chain with the given credits of
+// fresh depth per system, and a resolver that answers each pair's own hops — so two rescues
+// flown in a row from different origins each reach the ground they claimed.
+func mvtRescueChainHandler(t *testing.T, fx *tourFixture, planner *tourFakeRoutingClient, depths map[string]int) (*RunTourCoordinatorHandler, *mvtFakeClaims, *mvtFakeTransitions) {
+	t.Helper()
+	h, claims, trans := mvtHandler(t, fx, planner, 0, 0)
+	now := time.Now()
+	lanes := map[string][]mvt.LaneDepth{}
+	for sys, d := range depths {
+		lanes[sys] = mvtRichLane(sys, d, now)
+	}
+	h.SetMVTPorts(claims, &mvtFakeDepth{lanes: lanes}, trans)
+	g := mvtStoredGraph([2]string{"X1-S1", "X1-S2"}, [2]string{"X1-S2", "X1-S3"})
+	g.pathByPair = map[string][]string{
+		"X1-S1>X1-S2": {"X1-S1", "X1-S2"},
+		"X1-S2>X1-S1": {"X1-S2", "X1-S1"},
+		"X1-S2>X1-S3": {"X1-S2", "X1-S3"},
+		"X1-S3>X1-S1": {"X1-S3", "X1-S2", "X1-S1"},
+	}
+	h.SetGateGraph(g)
+	return h, claims, trans
+}
+
+// mvtSecondRescueLogs renders every "second rescue" line the run wrote as excluded@rescues.
+func mvtSecondRescueLogs(l *metaCapturingLogger) []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := []string{}
+	for _, e := range l.entries {
+		if strings.Contains(e.message, "second rescue") {
+			out = append(out, fmt.Sprintf("%v@%v", e.metadata["excluded"], e.metadata["rescues"]))
+		}
+	}
+	return out
+}
+
 // Home outranks the neighbour on ledger depth, yet three no-plan tours have proven it dead:
 // the empty exit must leave for the neighbour, not re-elect the ground the solver refused.
-// The second death, at the neighbour, is bounded by the episode: one rescue jump per run.
+// The neighbour is drained on arrival too, so the episode spends its SECOND rescue — on the
+// best ground that is NOT the one it just left, though home still outranks it — and only the
+// death after that exits starvation, naming the whole chain.
 func TestMVTEmptyExit_LeavesSolverDeadGroundThatOutranksTheNeighbour(t *testing.T) {
-	fx := repositionFixture()
-	h, claims, trans := mvtHandler(t, fx, mvtDeadPlanner(), 500, 10)
-	h.SetGateGraph(mvtTravelGraph())
-	ctx := common.WithLogger(context.Background(), &tradeCaptureLogger{})
+	fx := mvtRescueChainFixture()
+	h, claims, trans := mvtRescueChainHandler(t, fx, mvtDeadPlanner(), map[string]int{"X1-S1": 500, "X1-S2": 400, "X1-S3": 300})
+	logger := &metaCapturingLogger{}
+	ctx := common.WithLogger(context.Background(), logger)
 	resp, err := h.Handle(ctx, mvtCmd(t))
 	if err != nil {
 		t.Fatalf("handle: %v", err)
 	}
-	if len(fx.jumps) != 1 || fx.jumps[0] != "X1-S2" {
-		t.Fatalf("jumps = %v, want exactly one jump to X1-S2", fx.jumps)
+	if len(fx.jumps) != 2 || fx.jumps[0] != "X1-S2" || fx.jumps[1] != "X1-S3" {
+		t.Fatalf("jumps = %v, want the two rescues X1-S2 then X1-S3", fx.jumps)
 	}
 	c, ok, _ := claims.Get(ctx, 1, "TOUR-MVT")
-	if !ok || c.System != "X1-S2" || c.ArrivedAt == nil {
-		t.Fatalf("claim = %+v ok=%v, want X1-S2 arrived", c, ok)
+	if !ok || c.System != "X1-S3" || c.ArrivedAt == nil {
+		t.Fatalf("claim = %+v ok=%v, want X1-S3 arrived", c, ok)
 	}
-	if r := tourResponse(t, resp); r.ExitReason != tourExitStarvation {
-		t.Fatalf("exit = %q, want %s after the bounded episode", r.ExitReason, tourExitStarvation)
+	r := tourResponse(t, resp)
+	if r.ExitReason != tourExitStarvation {
+		t.Fatalf("exit = %q, want %s after the capped episode", r.ExitReason, tourExitStarvation)
+	}
+	if !strings.Contains(r.ExitDetail, "X1-S2 -> X1-S3 -> (here)") || !strings.Contains(r.ExitDetail, "(2 rescues)") {
+		t.Fatalf("exit detail = %q, want the rescue chain named", r.ExitDetail)
+	}
+	if got := mvtSecondRescueLogs(logger); len(got) != 1 || got[0] != "X1-S1@1" {
+		t.Fatalf("second-rescue lines = %v, want exactly one excluding X1-S1 at rescues 1", got)
 	}
 	seen := mvtSeen(trans.rows)
 	want := []string{
@@ -746,7 +980,10 @@ func TestMVTEmptyExit_LeavesSolverDeadGroundThatOutranksTheNeighbour(t *testing.
 		"TRADE>CLAIM:" + mvtReasonEmpty + "@X1-S1",
 		"CLAIM>TRAVEL:" + mvtReasonClaim + "@X1-S2",
 		"TRAVEL>TRADE:" + mvtReasonArrived + "@X1-S2",
-		"CLAIM>TRADE:" + mvtReasonEpisodeSpent + "@X1-S2",
+		"TRADE>CLAIM:" + mvtReasonEmpty + "@X1-S2",
+		"CLAIM>TRAVEL:" + mvtReasonClaim + "@X1-S3",
+		"TRAVEL>TRADE:" + mvtReasonArrived + "@X1-S3",
+		"CLAIM>TRADE:" + mvtReasonEpisodeSpent + "@X1-S3",
 	}
 	if len(seen) != len(want) {
 		t.Fatalf("transitions = %v, want %v", seen, want)

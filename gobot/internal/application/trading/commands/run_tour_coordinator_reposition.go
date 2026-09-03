@@ -153,6 +153,11 @@ type repositionEpisode struct {
 	repositioned bool
 	fromSystem   string
 	toSystem     string
+	// rescues counts the MVT LOOP's rescue jumps this episode (sp-htzl1.2), which the loop
+	// caps at mvt_rescue_jumps_per_episode rather than at one: a rescue that lands on ground
+	// drained in transit left the hull stuck for a median 32 min with no second move. Zero on
+	// every legacy-path episode, whose one-action bound still reads repositioned alone.
+	rescues int
 	// dispersalTried marks that the crowded-ground nudge has already asked the reposition
 	// engine this episode. Bounding it to one attempt keeps the solver fan-out a ranking
 	// costs from being paid on every breathing retry; the confirmed margins-death rescue
@@ -1267,6 +1272,9 @@ func logRepositionRanking(logger common.ContainerLogger, shipSymbol, fromSystem 
 func starvationExitDetail(episode repositionEpisode, base string) string {
 	if !episode.repositioned {
 		return base
+	}
+	if episode.rescues >= 2 {
+		return fmt.Sprintf("%s; repositioned %s -> %s -> (here) this episode (%d rescues) but margins died everywhere", base, episode.fromSystem, episode.toSystem, episode.rescues)
 	}
 	if episode.fromSystem != "" {
 		return fmt.Sprintf("%s; repositioned %s -> %s this episode but margins died there too", base, episode.fromSystem, episode.toSystem)

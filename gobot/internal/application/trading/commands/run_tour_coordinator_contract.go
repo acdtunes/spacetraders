@@ -229,6 +229,10 @@ type RunTourCoordinatorCommand struct {
 	// ClaimReachMaxHops caps how far a CLAIM widens its reach when the ranking at
 	// ClaimReachHops offers the hull nothing; equal to ClaimReachHops means no escalation.
 	ClaimReachMaxHops int
+	// MVTRescueJumpsPerEpisode caps how many rescue jumps one margins-death episode may fly
+	// before the loop stays put. 0/absent → DefaultMVTRescueJumpsPerEpisode; 1 is the
+	// one-per-episode bound the loop shipped with.
+	MVTRescueJumpsPerEpisode int
 	// RankerMinSpreadPerUnit is the credits-per-unit floor under which a market pair is not
 	// depth the MVT ranker counts. 0/absent → DefaultRankerMinSpreadPerUnit.
 	RankerMinSpreadPerUnit   int
@@ -286,6 +290,7 @@ const (
 	DefaultYieldMinSells             = 3
 	DefaultClaimReachHops            = 2
 	DefaultClaimReachMaxHops         = 4
+	DefaultMVTRescueJumpsPerEpisode  = 2
 	DefaultRankerMinSpreadPerUnit    = 200 // pairs below this carried 53% of units for 8% of credits
 	DefaultSpecialistFractionPct     = 10  // specialist_fraction 0.10
 	DefaultFatLaneMultiplePct        = 200 // fat_lane_multiple 2.0

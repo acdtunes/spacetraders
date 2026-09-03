@@ -43,8 +43,36 @@ func (h *RunTourCoordinatorHandler) mvtClaimAndTravel(ctx context.Context, cmd *
 	}
 	if reason == mvtReasonEmpty {
 		ranked = mvtOthers(ranked, current)
+		// A later rescue must never fly back to the ground the previous one just left: that
+		// ping-pong burns the cap on a system this episode already gave up on. Skipped once the
+		// episode is spent, where the ranking only names the alternative the refusal records.
+		if episode != nil && episode.rescues >= 1 && episode.fromSystem != "" && !mvtEpisodeSpent(episode, mvtRescueLimit(cmd)) {
+			ranked = mvtOthers(ranked, episode.fromSystem)
+			if len(ranked) > 0 {
+				common.LoggerFromContext(ctx).Log("INFO", "MVT CLAIM: second rescue", map[string]interface{}{
+					"hull": cmd.ShipSymbol, "rescues": episode.rescues, "excluded": episode.fromSystem})
+			}
+		}
 	}
 	return h.mvtTravelTo(ctx, cmd, response, episode, ranked, reason, 0, budget)
+}
+
+// mvtRescueLimit is how many rescue jumps one margins-death episode may fly.
+func mvtRescueLimit(cmd *RunTourCoordinatorCommand) int {
+	if cmd.MVTRescueJumpsPerEpisode > 0 {
+		return cmd.MVTRescueJumpsPerEpisode
+	}
+	return DefaultMVTRescueJumpsPerEpisode
+}
+
+// mvtEpisodeSpent reports whether this episode may fly no further rescue. A mover that is
+// NOT an MVT rescue (the disposal ladder, the offload rung) marks only repositioned, and it
+// still spends the whole episode exactly as it does today.
+func mvtEpisodeSpent(episode *repositionEpisode, limit int) bool {
+	if episode.rescues == 0 {
+		return episode.repositioned
+	}
+	return episode.rescues >= limit
 }
 
 // mvtOthers is ranked without current.
@@ -73,7 +101,7 @@ func (h *RunTourCoordinatorHandler) mvtStay(ctx context.Context, cmd *RunTourCoo
 // is a stay that re-stamps presence in the registry. Unwired ports make it a no-op.
 // yieldHere is the departing hull's realised estimate, carried on the TRADE→CLAIM line.
 // A move is refused — as a stay — under the operator kill-switch, with no spend headroom,
-// once this episode has already spent its one rescue jump (nil episode: no bound), or while
+// once this episode has spent its rescue jumps (mvt_rescue_jumps_per_episode; nil: no bound), or while
 // the hull is laden: the disposal ladder discharges first and the next tour end re-evaluates.
 func (h *RunTourCoordinatorHandler) mvtTravelTo(ctx context.Context, cmd *RunTourCoordinatorCommand, response *RunTourCoordinatorResponse, episode *repositionEpisode, ranked []mvt.ScoredSystem, reason string, yieldHere float64, budget tourPlanBudget) (bool, error) {
 	if h.mvt.claims == nil {
@@ -102,7 +130,7 @@ func (h *RunTourCoordinatorHandler) mvtTravelTo(ctx context.Context, cmd *RunTou
 		return h.mvtStay(ctx, cmd, current, yieldHere, target, mvtReasonRepositionDisabled)
 	case h.budgetDeniesEverySpend(cmd, budget):
 		return h.mvtStay(ctx, cmd, current, yieldHere, target, mvtReasonBudgetDenied)
-	case episode != nil && episode.repositioned:
+	case episode != nil && mvtEpisodeSpent(episode, mvtRescueLimit(cmd)):
 		return h.mvtStay(ctx, cmd, current, yieldHere, target, mvtReasonEpisodeSpent)
 	case isLadenForOffload(ship.CargoUnits(), ship.CargoCapacity()):
 		return h.mvtStay(ctx, cmd, current, yieldHere, target, mvtReasonLaden)
@@ -154,6 +182,7 @@ func (h *RunTourCoordinatorHandler) mvtTravelTo(ctx context.Context, cmd *RunTou
 	response.Repositions++
 	if episode != nil {
 		episode.repositioned = true
+		episode.rescues++
 		episode.fromSystem = current
 		episode.toSystem = target.System
 	}

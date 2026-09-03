@@ -213,6 +213,9 @@ func (s *DaemonServer) addTradeFleetTourKnobs(config map[string]interface{}) {
 	if v := s.tradeFleetConfig.YieldRateSpanFloorMinutes; v > 0 {
 		config["yield_rate_span_floor_minutes"] = v
 	}
+	if v := s.tradeFleetConfig.MVTRescueJumpsPerEpisode; v > 0 {
+		config["mvt_rescue_jumps_per_episode"] = v
+	}
 }
 
 // TourRepositionConfigPersister backs the tour coordinator's
