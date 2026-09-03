@@ -1518,12 +1518,208 @@
       "type": "timeseries"
     },
     {
+      "type": "timeseries",
+      "id": 118,
+      "title": "Tour runs per hour - productive vs no-sale",
+      "description": "Every tour container started in the hour, split by whether the hull sold a single unit during the run. A no-sale run is a plan the absorption guard refused until the run gave up, or a starved system. Fleet-wide this was 90% of runs on 2026-09-02 (sp-6zqza).",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 16,
+        "x": 0,
+        "y": 55
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "bars",
+            "lineWidth": 1,
+            "fillOpacity": 75,
+            "gradientMode": "none",
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "short",
+          "decimals": 0,
+          "noValue": "no tour runs in this window"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "productive"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#73BF69"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "no sale (refused / starved)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#F2495C"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "sum"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "13.1.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "WITH r AS (\n  SELECT c.id, c.started_at, COALESCE(c.stopped_at, NOW()) AS ended,\n         regexp_replace(c.id, '^tour-run-(TORWIND-[0-9A-Z]+)-.*$', '\\1') AS hull\n    FROM containers c\n   WHERE c.player_id = $player AND c.command_type = 'tour_run' AND $__timeFilter(c.started_at)),\ns AS (\n  SELECT r.*, EXISTS (SELECT 1 FROM tour_leg_telemetry l\n                       WHERE l.player_id = $player AND l.ship_symbol = r.hull AND NOT l.is_buy\n                         AND l.realized_units > 0 AND l.realized_at BETWEEN r.started_at AND r.ended) AS sold\n    FROM r)\nSELECT $__timeGroupAlias(started_at, 1h), CASE WHEN sold THEN 'productive' ELSE 'no sale (refused / starved)' END AS metric,\n       COUNT(*)::bigint AS v\n  FROM s GROUP BY 1, 2 ORDER BY 1;",
+          "editorMode": "code"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "id": 119,
+      "title": "Wasted hull time (window)",
+      "description": "Share of tour-run hull-hours spent in runs that never sold, and share of runs that never sold. Both should sit near zero; 35% / 90% was the 2026-09-02 state.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 55
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#73BF69",
+                "value": null
+              },
+              {
+                "color": "#FF9830",
+                "value": 15
+              },
+              {
+                "color": "#F2495C",
+                "value": 30
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "noValue": "no runs",
+          "unit": "percent",
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "value_and_name",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "pluginVersion": "13.1.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH r AS (\n  SELECT c.id, c.started_at, COALESCE(c.stopped_at, NOW()) AS ended,\n         regexp_replace(c.id, '^tour-run-(TORWIND-[0-9A-Z]+)-.*$', '\\1') AS hull\n    FROM containers c\n   WHERE c.player_id = $player AND c.command_type = 'tour_run' AND $__timeFilter(c.started_at)),\ns AS (\n  SELECT r.*, EXISTS (SELECT 1 FROM tour_leg_telemetry l\n                       WHERE l.player_id = $player AND l.ship_symbol = r.hull AND NOT l.is_buy\n                         AND l.realized_units > 0 AND l.realized_at BETWEEN r.started_at AND r.ended) AS sold\n    FROM r)\nSELECT ROUND(100.0 * SUM(EXTRACT(epoch FROM (ended - started_at))) FILTER (WHERE NOT sold)\n             / NULLIF(SUM(EXTRACT(epoch FROM (ended - started_at))), 0), 1) AS \"hull-hours in no-sale runs %\",\n       ROUND(100.0 * COUNT(*) FILTER (WHERE NOT sold) / NULLIF(COUNT(*), 0), 1) AS \"no-sale runs %\"\n  FROM s;",
+          "editorMode": "code"
+        }
+      ]
+    },
+    {
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 55
+        "y": 63
       },
       "id": 100,
       "panels": [],
@@ -1564,7 +1760,7 @@
         "h": 4,
         "w": 4,
         "x": 0,
-        "y": 56
+        "y": 64
       },
       "id": 101,
       "options": {
@@ -1635,7 +1831,7 @@
         "h": 4,
         "w": 4,
         "x": 0,
-        "y": 60
+        "y": 68
       },
       "id": 102,
       "options": {
@@ -1698,7 +1894,7 @@
         "h": 8,
         "w": 10,
         "x": 4,
-        "y": 56
+        "y": 64
       },
       "id": 103,
       "options": {
@@ -1781,7 +1977,7 @@
         "h": 8,
         "w": 10,
         "x": 14,
-        "y": 56
+        "y": 64
       },
       "id": 104,
       "options": {
@@ -1841,7 +2037,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 64
+        "y": 72
       },
       "id": 106,
       "panels": [],
@@ -1878,7 +2074,7 @@
         "h": 5,
         "w": 6,
         "x": 0,
-        "y": 65
+        "y": 73
       },
       "id": 107,
       "options": {
@@ -1970,7 +2166,7 @@
         "h": 5,
         "w": 6,
         "x": 6,
-        "y": 65
+        "y": 73
       },
       "id": 108,
       "options": {
@@ -2085,5 +2281,5 @@
   "timezone": "browser",
   "title": "SpaceTraders - Financial & Trading",
   "uid": "spacetraders-financial",
-  "version": 2
+  "version": 3
 }
