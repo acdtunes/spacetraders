@@ -57,8 +57,7 @@ func twoEraMarketDB(t *testing.T, openEra bool) *gorm.DB {
 		}
 	}
 
-	// The dead era priced X1-AA; the live era prices X1-BB. Two waypoints in the live system so
-	// the per-(player, system) dedupe is exercised rather than assumed.
+	// The dead era priced X1-AA; the live era prices X1-BB.
 	rows := []scopeTestMarketRow{
 		{PlayerID: 1, WaypointSymbol: "X1-AA-D40", GoodSymbol: "ALUMINUM"},
 		{PlayerID: 7, WaypointSymbol: "X1-BB-D40", GoodSymbol: "ALUMINUM"},
@@ -72,51 +71,37 @@ func twoEraMarketDB(t *testing.T, openEra bool) *gorm.DB {
 	return db
 }
 
-func scopeKeys(scopes []marketScope) []string {
-	out := make([]string, 0, len(scopes))
-	for _, s := range scopes {
-		out = append(out, s.playerIDLabel+"|"+s.system)
-	}
-	sort.Strings(out)
-	return out
-}
-
-func assertScopes(t *testing.T, got, want []string, msg string) {
+func assertPlayers(t *testing.T, got, want []int, msg string) {
 	t.Helper()
+	sort.Ints(got)
 	if len(got) != len(want) {
-		t.Fatalf("activeScopes = %v, want %v — %s", got, want, msg)
+		t.Fatalf("playersToPoll = %v, want %v — %s", got, want, msg)
 	}
 	for i := range want {
 		if got[i] != want[i] {
-			t.Fatalf("activeScopes = %v, want %v — %s", got, want, msg)
+			t.Fatalf("playersToPoll = %v, want %v — %s", got, want, msg)
 		}
 	}
 }
 
-// Two defects in one assertion (sp-hrko6).
-//
-// THE CROSS PRODUCT: the old code returned a set of players and a set of systems and the caller
-// multiplied them, so {7, X1-AA} — a pair that has never held a single row — was polled with four
-// SQL queries per tick and registered its own Prometheus label series.
-//
-// THE DEAD ERA: market_data is not pruned on a rollover, so player 1 stayed in the label set
-// forever. That is not only cost — the market dashboards aggregate with an unqualified
-// `sum(market_coverage_fresh) / sum(market_coverage_total)`, so a closed era contributes a
-// permanent, never-fresh denominator and drags the coverage panel down for good.
-func TestActiveScopes_ExcludesDeadErasAndNeverInventsAPair(t *testing.T) {
+// TestPlayersToPoll_ExcludesDeadErasAndReturnsOnlyTheOpenEraPlayer pins the era-scoping rule
+// sp-hrko6 established for the old per-scope enumeration and sp-3hdsk.4 carried into the
+// single-query redesign: player 1's era is CLOSED, so it must not be polled even though its
+// market_data rows are still on disk (a universe rollover does not prune them) — only player 7,
+// the OPEN era, comes back.
+func TestPlayersToPoll_ExcludesDeadErasAndReturnsOnlyTheOpenEraPlayer(t *testing.T) {
 	c := NewMarketMetricsCollector(twoEraMarketDB(t, true))
 
-	assertScopes(t, scopeKeys(c.activeScopes()), []string{"7|X1-BB"},
-		`a "1|..." entry means a closed era is still emitting series and diluting the coverage panel; `+
-			`a "7|X1-AA" entry means the cross product is back, a pair with no rows polled four times per tick`)
+	assertPlayers(t, c.playersToPoll(), []int{7}, "a closed era's player must not be polled")
 }
 
-// FAIL-OPEN: with no open era — a database predating the eras table, or one caught mid-rollover —
-// the collector must report a superset rather than go dark. Silent zero series are harder to
-// diagnose than noisy ones, and this is observability, not a money guard.
-func TestActiveScopes_FallsBackToEveryPlayerWhenNoEraIsOpen(t *testing.T) {
+// TestPlayersToPoll_FallsBackToEveryPlayerWhenNoEraIsOpen pins the FAIL-OPEN rule: with no open
+// era resolvable (a database predating the eras table, or one caught mid-rollover), the collector
+// must report every player market_data holds rather than go dark. This is observability, not a
+// money guard — silent zero series are harder to diagnose than noisy ones.
+func TestPlayersToPoll_FallsBackToEveryPlayerWhenNoEraIsOpen(t *testing.T) {
 	c := NewMarketMetricsCollector(twoEraMarketDB(t, false))
 
-	assertScopes(t, scopeKeys(c.activeScopes()), []string{"1|X1-AA", "7|X1-BB"},
+	assertPlayers(t, c.playersToPoll(), []int{1, 7},
 		"with no open era the collector must report every player rather than emit nothing")
 }
