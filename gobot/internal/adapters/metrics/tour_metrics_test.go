@@ -447,6 +447,7 @@ func TestTourMetrics_RegisterAndExport(t *testing.T) {
 	c.SetFactoryGoodAcquisitionCost(1, "CLOTHING", "stock", 100)
 	c.ObservePlanRate(1, "projected", 12345)
 	c.ObserveLegPriceDrift("buy", PlanBasisSolver, 1000, 1100)
+	c.SetAPISaturationPermille(1, 980)
 
 	families, err := Registry.Gather()
 	if err != nil {
@@ -469,6 +470,7 @@ func TestTourMetrics_RegisterAndExport(t *testing.T) {
 		"spacetraders_daemon_tour_leg_price_drift_over_plan_pct_total",
 		"spacetraders_daemon_tour_leg_price_drift_under_plan_pct_total",
 		"spacetraders_daemon_tour_leg_price_drift_legs_total",
+		"spacetraders_daemon_tour_api_saturation_permille",
 	} {
 		if !got[want] {
 			t.Errorf("metric %q registered but not exported on the registry", want)
@@ -510,6 +512,44 @@ func TestTourMetrics_FactoryGoodAcquisitionCost(t *testing.T) {
 	if stock != 110 {
 		t.Fatalf("expected stock series to update to 110, got %v", stock)
 	}
+}
+
+// An absent series and a zero one mean opposite things here, so the disarming 0 must EXPORT.
+func TestTourMetrics_APISaturationPermille(t *testing.T) {
+	prev := Registry
+	t.Cleanup(func() { Registry = prev })
+	Registry = prometheus.NewRegistry()
+
+	c := NewTourMetricsCollector()
+	if err := c.Register(); err != nil {
+		t.Fatalf("Register() error: %v", err)
+	}
+
+	const name = "spacetraders_daemon_tour_api_saturation_permille"
+	c.SetAPISaturationPermille(7, 980)
+	armed, ok := gatherGauge(t, Registry, name, map[string]string{"player_id": "7"})
+	if !ok || armed != 980 {
+		t.Fatalf("expected saturation 980, got %v (ok=%v)", armed, ok)
+	}
+
+	c.SetAPISaturationPermille(7, 0) // a fleet back on headroom must SHOW the 0
+	inert, ok := gatherGauge(t, Registry, name, map[string]string{"player_id": "7"})
+	if !ok || inert != 0 {
+		t.Fatalf("expected the disarming 0 to export, got %v (ok=%v)", inert, ok)
+	}
+
+	c.SetAPISaturationPermille(9, 640) // players do not share a reading
+	other, ok := gatherGauge(t, Registry, name, map[string]string{"player_id": "9"})
+	if !ok || other != 640 {
+		t.Fatalf("expected player 9 at 640, got %v (ok=%v)", other, ok)
+	}
+}
+
+func TestTourMetrics_APISaturationPermille_NilSafe(t *testing.T) {
+	var c *TourMetricsCollector
+	c.SetAPISaturationPermille(1, 500) // nil receiver
+	(&TourMetricsCollector{}).SetAPISaturationPermille(1, 500)
+	SetTourAPISaturationPermille(1, 500) // nil global
 }
 
 // A nil collector and nil gauge must never panic (best-effort, RULINGS #4).

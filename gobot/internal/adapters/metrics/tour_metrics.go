@@ -137,6 +137,11 @@ type TourMetricsCollector struct {
 	legPriceDriftOverPlanPct  *prometheus.CounterVec
 	legPriceDriftUnderPlanPct *prometheus.CounterVec
 	legPriceDriftLegs         *prometheus.CounterVec
+
+	// apiSaturationPermille is the API-budget saturation the tour planner sent to the solver.
+	// Every call-pricing term there is MULTIPLIED by it and 0 disarms them all exactly, so
+	// without this series an operator cannot tell an armed fleet from a silently unarmed one.
+	apiSaturationPermille *prometheus.GaugeVec
 }
 
 // The basis label vocabulary for the leg price-drift series. Defined here, beside the Help
@@ -257,6 +262,12 @@ func NewTourMetricsCollector() *TourMetricsCollector {
 			"side",
 			"basis",
 		),
+
+		apiSaturationPermille: newGaugeVec(
+			"tour_api_saturation_permille",
+			"API request-budget saturation (0-1000 permille) as most recently resolved by the tour planner and sent to the solver. Every call-pricing term (selection surcharge, stage-1 depth charge) is scaled by it, so 0 means they are all inert — an unwired estimator, a window too thin to read, or real headroom (sp-htzl1.13)",
+			"player_id",
+		),
 	}
 }
 
@@ -280,6 +291,7 @@ func (c *TourMetricsCollector) Register() error {
 		c.legPriceDriftOverPlanPct,
 		c.legPriceDriftUnderPlanPct,
 		c.legPriceDriftLegs,
+		c.apiSaturationPermille,
 	)
 }
 
@@ -342,6 +354,15 @@ func (c *TourMetricsCollector) SetResolvedMaxSpend(playerID int, maxSpend int64)
 		return // Recording is best-effort; never panic a trade path (RULINGS #4).
 	}
 	c.resolvedMaxSpend.WithLabelValues(strconv.Itoa(playerID)).Set(float64(maxSpend))
+}
+
+// SetAPISaturationPermille records the saturation just resolved (0-1000). 0 is a REAL
+// reading, not a skip: it is exactly the value that disarms every call-pricing term.
+func (c *TourMetricsCollector) SetAPISaturationPermille(playerID int, permille int) {
+	if c == nil || c.apiSaturationPermille == nil {
+		return // Recording is best-effort; never panic a trade path (RULINGS #4).
+	}
+	c.apiSaturationPermille.WithLabelValues(strconv.Itoa(playerID)).Set(float64(permille))
 }
 
 // SetFactoryGoodAcquisitionCost records the per-unit price a tour paid to acquire
@@ -492,6 +513,13 @@ func ObserveTourDuration(playerID int, seconds float64) {
 func SetTourResolvedMaxSpend(playerID int, maxSpend int64) {
 	if globalTourCollector != nil {
 		globalTourCollector.SetResolvedMaxSpend(playerID, maxSpend)
+	}
+}
+
+// SetTourAPISaturationPermille records the saturation globally; no-op when metrics are off.
+func SetTourAPISaturationPermille(playerID int, permille int) {
+	if globalTourCollector != nil {
+		globalTourCollector.SetAPISaturationPermille(playerID, permille)
 	}
 }
 

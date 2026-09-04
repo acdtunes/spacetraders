@@ -523,7 +523,7 @@ func (h *RunTourCoordinatorHandler) loadLookbackManifest(
 	// plan leg traded at. Sourcing there costs no movement bundle, so it is the one stop the
 	// manifest gets for free, and every other source is priced against the request budget's
 	// live pressure.
-	saturation := h.tourAPISaturation(ctx)
+	saturation := h.tourAPISaturation(ctx, cmd)
 	sourcing := lookbackSourcing{
 		StandWaypoint: ship.CurrentLocation().Symbol,
 		VisitCharge:   lookbackVisitCharge(cmd, saturation),

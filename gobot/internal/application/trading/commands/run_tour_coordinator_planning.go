@@ -54,15 +54,43 @@ func (h *RunTourCoordinatorHandler) tourPerHopToll(
 // tourAPISaturation resolves how hard the shared API request budget is binding for this
 // plan. 0 IS THE FAIL-OPEN VALUE that every non-reading lands on — unwired estimator, thin
 // window, real headroom, and a negative reading the objective must never see.
-func (h *RunTourCoordinatorHandler) tourAPISaturation(ctx context.Context) int {
-	if h.apiSaturation == nil {
-		return 0
+//
+// EVERY READ IS PUBLISHED, on the gauge and on one DEBUG line. This scalar MULTIPLIES every
+// call-pricing term the solver has, so 0 disarms all of them exactly — and the plans that
+// come back look normal either way. Publishing the reading is what lets an operator tell an
+// armed fleet from a silently unarmed one; `wired` separates the two ways 0 arises (no
+// estimator port at all vs. an estimator with nothing to report). Observation only: the
+// value returned is unchanged (RULINGS #4).
+func (h *RunTourCoordinatorHandler) tourAPISaturation(
+	ctx context.Context, cmd *RunTourCoordinatorCommand,
+) int {
+	permille, wired := 0, h.apiSaturation != nil
+	if wired {
+		if measured := h.apiSaturation.SaturationPermille(ctx); measured > 0 {
+			permille = measured
+		}
 	}
-	permille := h.apiSaturation.SaturationPermille(ctx)
-	if permille <= 0 {
-		return 0
+	playerID := 0
+	if cmd != nil {
+		playerID = cmd.PlayerID
 	}
+	metrics.SetTourAPISaturationPermille(playerID, permille)
+	common.LoggerFromContext(ctx).Log("DEBUG",
+		fmt.Sprintf("Tour: API saturation %d permille (call-pricing terms %s)",
+			permille, armedWord(permille)),
+		map[string]interface{}{
+			"action": "tour_api_saturation", "permille": permille, "wired": wired,
+		})
 	return permille
+}
+
+// armedWord renders the one fact the DEBUG line exists to carry: whether the reading is
+// arming the solver's call-pricing terms or zeroing them.
+func armedWord(permille int) string {
+	if permille > 0 {
+		return "armed"
+	}
+	return "inert"
 }
 
 // planForState assembles the market snapshot + era-scoped coordinates over allowedSystems
@@ -206,7 +234,7 @@ func (h *RunTourCoordinatorHandler) buildTourPlanRequest(
 		InterSystemTravelPerHopSeconds: h.tourPerHopToll(ctx, cmd),
 		// The second resource a tour spends. 0 (nil reader / headroom / a thin window)
 		// leaves the solver ranking on credits per hour.
-		APISaturationPermille: h.tourAPISaturation(ctx),
+		APISaturationPermille: h.tourAPISaturation(ctx, cmd),
 	}
 	return &tourPlanRequest{
 		shipState: shipState, snapshot: snapshot, waypoints: waypoints,
