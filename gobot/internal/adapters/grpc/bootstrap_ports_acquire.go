@@ -184,11 +184,12 @@ func (a *bootstrapAcquirer) Buy(ctx context.Context, playerID int, shipType, yar
 	return a.buyWith(ctx, playerID, shipType, yard, "")
 }
 
-// buyWith purchases ONE shipType at yard using `purchaser` as the purchasing hull. purchaser=="" keeps
-// the legacy behavior (scan for any idle hull); a set value PINS the purchaser — the first-hauler
-// pivot and every subsequent cold-start buy pass the exclusive purchasing frigate, so the buy is
-// deterministic rather than dependent on an incidentally-idle hull. The batch path still enforces the
-// sp-e7je money-integrity type guard and navigates the purchaser to the yard.
+// buyWith purchases ONE shipType at yard using `purchaser` as the purchasing hull. purchaser=="" runs
+// the pickPurchaser cascade; a set value PINS the purchaser — the first-hauler pivot and every
+// subsequent cold-start buy pass the exclusive purchasing frigate, so the buy is deterministic rather
+// than dependent on an incidentally-idle hull — until another writer owns that hull, when the cascade's
+// UNDIVERTED steps answer instead (see the ownership gate). The batch path still enforces the sp-e7je
+// money-integrity type guard and navigates the purchaser to the yard.
 func (a *bootstrapAcquirer) buyWith(ctx context.Context, playerID int, shipType, yard, purchaser string) (bootstrapCmd.BuyResult, error) {
 	pid, err := shared.NewPlayerID(playerID)
 	if err != nil {
@@ -200,33 +201,11 @@ func (a *bootstrapAcquirer) buyWith(ctx context.Context, playerID int, shipType,
 	if err != nil {
 		return bootstrapCmd.BuyResult{}, err
 	}
-	// Non-empty only for the yard sentinel — the one purchaser the ownership gate must not judge.
-	sentinel := ""
+	named := purchaser
+	// True only for the yard sentinel — the one purchaser the ownership gate must not judge.
+	sentinelExempt := false
 	if purchaser == "" {
-		// PREFER the exclusive purchasing ship (the pivoted command frigate) when it is idle, so
-		// every cold-start + scaling buy runs through the deterministic, protected buy ship rather than an
-		// incidentally-idle hull. Fall back to any idle hull before the pivot exists (e.g. the probe
-		// buy) or if the purchasing ship is momentarily busy.
-		for _, s := range ships {
-			if s.IsIdle() && s.DedicatedFleet() == navigation.PurchasingFleet {
-				purchaser = s.ShipSymbol()
-				break
-			}
-		}
-		// Then the yard sentinel, but ONLY while already docked at THIS yard — ahead of the idle
-		// search because a hull at the counter buys with no flight, no fuel and nothing interrupted.
-		if purchaser == "" {
-			sentinel = yardSentinelAtYard(ships, yard)
-			purchaser = sentinel
-		}
-		if purchaser == "" {
-			for _, s := range ships {
-				if s.IsIdle() {
-					purchaser = s.ShipSymbol()
-					break
-				}
-			}
-		}
+		purchaser, sentinelExempt = pickPurchaser(ships, yard)
 		if purchaser == "" {
 			return bootstrapCmd.BuyResult{}, fmt.Errorf("no idle hull available to execute the purchase")
 		}
@@ -253,9 +232,30 @@ func (a *bootstrapAcquirer) buyWith(ctx context.Context, playerID int, shipType,
 	// The yard sentinel is the one exemption: the assignment the gate would read is bootstrap's OWN
 	// captain reservation, and the hull is already at the target yard, so the buy issues no navigate and
 	// no dock. yardSentinelAtYard's reason + same-waypoint match keeps every other held hull out.
-	if sentinel == "" {
-		if err := ownedByAnotherContainer(ships, purchaser); err != nil {
-			return bootstrapCmd.BuyResult{}, err
+	//
+	// A refused NAMED purchaser FALLS BACK to the cascade's UNDIVERTED steps rather than ending the
+	// buy: the pivot names the command frigate, which is also the fleet's only earner, so it is
+	// re-claimed within seconds. The refusal is untouched — the contested hull is never flown.
+	if !sentinelExempt {
+		ownErr := ownedByAnotherContainer(ships, purchaser)
+		if ownErr != nil && named != "" {
+			if sub := fallbackPurchaser(ships, yard, named); sub != "" {
+				owner := containerHolding(ships, named)
+				common.LoggerFromContext(ctx).Log("INFO", fmt.Sprintf("Bootstrap purchaser %s is owned by container %q — falling back to %s to execute the %s buy at %s", named, owner, sub, shipType, yard), map[string]interface{}{
+					"action":     "bootstrap_purchaser_fallback",
+					"purchaser":  named,
+					"owner":      owner,
+					"substitute": sub,
+					"ship_type":  shipType,
+					"yard":       yard,
+				})
+				purchaser, ownErr = sub, nil
+			} else {
+				ownErr = fmt.Errorf("%w, and no unowned hull was standing at %s to buy in its place", ownErr, yard)
+			}
+		}
+		if ownErr != nil {
+			return bootstrapCmd.BuyResult{}, ownErr
 		}
 	}
 
@@ -276,6 +276,105 @@ func (a *bootstrapAcquirer) buyWith(ctx context.Context, playerID int, shipType,
 	}
 	bought := batch.PurchasedShips[0]
 	return bootstrapCmd.BuyResult{ShipSymbol: bought.ShipSymbol(), Price: int64(batch.TotalCost)}, nil
+}
+
+// pickPurchaser runs the FULL cascade, reporting the hull to buy with and whether it is the
+// ownership-gate-exempt yard sentinel. Its last step DIVERTS a hull (PurchaseShipCommand navigates
+// whatever purchaser it is handed), so only the ANONYMOUS buy, with nothing else to fall back on, runs it.
+func pickPurchaser(ships []*navigation.Ship, yard string) (string, bool) {
+	if sub, sentinelExempt := undivertedPurchaser(ships, yard); sub != "" {
+		return sub, sentinelExempt
+	}
+	// Last, any idle hull: before the pivot exists (e.g. the probe buy), or while the purchasing ship
+	// is momentarily busy. This one is FLOWN to the yard.
+	for _, s := range ships {
+		if s != nil && s.IsIdle() {
+			return s.ShipSymbol(), false
+		}
+	}
+	return "", false
+}
+
+// undivertedPurchaser is the cascade's first three steps: the dedicated buy ship, whose job this is,
+// and hulls already standing at the counter. Nothing it names is taken off other work, which is why a
+// refused NAMED purchaser falls back on it and never on the flying last step.
+func undivertedPurchaser(ships []*navigation.Ship, yard string) (string, bool) {
+	// PREFER the exclusive purchasing ship (the pivoted command frigate) when it is idle: the
+	// deterministic, protected buy ship, and buying IS its dedication, so sending it diverts nothing.
+	for _, s := range ships {
+		if s != nil && s.IsIdle() && s.DedicatedFleet() == navigation.PurchasingFleet {
+			return s.ShipSymbol(), false
+		}
+	}
+	// Then a hull ALREADY DOCKED AT THIS YARD — the sentinel first, then any unowned hull — ahead of
+	// the idle search because a hull at the counter buys with no flight, no fuel and nothing interrupted.
+	if sentinel := yardSentinelAtYard(ships, yard); sentinel != "" {
+		return sentinel, true
+	}
+	return unassignedHullAtYard(ships, yard), false
+}
+
+// unassignedHullAtYard names a hull of ours ALREADY DOCKED at exactly `yard` that no other writer owns
+// — yardSentinelAtYard widened past the captain-reservation reason our ordinary scouts do not carry.
+// !IsAssigned() still keeps every container-claimed AND captain-reserved hull out. SAME-WAYPOINT ONLY:
+// this path flies nothing, so it spends no fuel and interrupts no worker. All candidates buy equally
+// well, so it takes the cheapest to borrow: a scout, then an UNTAGGED hull, and a fleet-dedicated one
+// only when nothing else is standing there.
+func unassignedHullAtYard(ships []*navigation.Ship, yard string) string {
+	if yard == "" {
+		return ""
+	}
+	untagged, dedicated := "", ""
+	for _, s := range ships {
+		if s == nil || !s.IsDocked() || s.IsAssigned() {
+			continue
+		}
+		loc := s.CurrentLocation()
+		if loc == nil || loc.Symbol != yard {
+			continue
+		}
+		switch {
+		case s.IsScoutType():
+			return s.ShipSymbol()
+		case s.DedicatedFleet() == "":
+			if untagged == "" {
+				untagged = s.ShipSymbol()
+			}
+		case dedicated == "":
+			dedicated = s.ShipSymbol()
+		}
+	}
+	if untagged != "" {
+		return untagged
+	}
+	return dedicated
+}
+
+// fallbackPurchaser answers a NAMED purchaser the ownership gate refused, and "" when it finds nothing,
+// the refused hull itself, or a hull that would fail the same gate. UNDIVERTED steps only: the
+// anonymous buy's last resort FLIES the hull it finds, and with a purchaser already named the answer to
+// "nothing is at the counter" is to refuse and retry, not to pull a working hull off its job. It only
+// ever SUBSTITUTES a free hull — no claim is overridden or cleared (RULINGS #3/#7).
+func fallbackPurchaser(ships []*navigation.Ship, yard, refused string) string {
+	sub, sentinelExempt := undivertedPurchaser(ships, yard)
+	if sub == "" || sub == refused {
+		return ""
+	}
+	// Belt and braces, not dead code: it holds if a step above ever stops excluding an owned hull.
+	if !sentinelExempt && ownedByAnotherContainer(ships, sub) != nil {
+		return ""
+	}
+	return sub
+}
+
+// containerHolding names the container claiming symbol — the owner the fallback log line reports.
+func containerHolding(ships []*navigation.Ship, symbol string) string {
+	for _, s := range ships {
+		if s != nil && s.ShipSymbol() == symbol {
+			return s.ContainerID()
+		}
+	}
+	return ""
 }
 
 // yardSentinelAtYard names the yard sentinel when it is DOCKED at exactly `yard`, and "" otherwise — a
