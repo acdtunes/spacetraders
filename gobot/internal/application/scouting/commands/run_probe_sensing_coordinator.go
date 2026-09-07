@@ -516,7 +516,7 @@ func (h *RunProbeSensingCoordinatorHandler) ReconcileOnce(ctx context.Context, c
 		}
 	}
 
-	screened, serr := h.screenSweep(ctx, cyc)
+	screenRep, serr := h.screenSweep(ctx, cyc, budgets.screen)
 	if serr != nil {
 		failures = append(failures, serr)
 	}
@@ -618,7 +618,7 @@ func (h *RunProbeSensingCoordinatorHandler) ReconcileOnce(ctx context.Context, c
 		brake:       budget.BrakeFactor,
 		scans:       scans,
 		cutover:     cutover,
-		screened:    screened,
+		screen:      screenRep,
 		adopt:       adoptRep,
 		dispatched:  dispatchedOrphans,
 		surged:      surged,
@@ -637,7 +637,7 @@ func (h *RunProbeSensingCoordinatorHandler) ReconcileOnce(ctx context.Context, c
 	// already produced, so nothing here can influence what the tick did.
 	h.observeStall(ctx, cmd, sensingStallCoordinator, sensingTickVerdict(sensingTickTally{
 		cutover:    cutover,
-		screened:   screened,
+		screened:   screenRep.Screened,
 		adopted:    adoptRep.Adopted,
 		dispatched: dispatchedOrphans,
 		surged:     surged,

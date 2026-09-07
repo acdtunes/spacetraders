@@ -29,7 +29,7 @@ func knownSystems(systems []ExpandSystem) map[string]bool {
 //
 // Propagating through unjudged systems does not widen the API budget. Marking a
 // neighbour PENDING is a ledger write, the screening sweep that consumes those
-// rows is bounded to screenSweepBatch systems per tick however many wait, and
+// rows is bounded by its own paced per-tick budget however many wait, and
 // both stores read to expand — the gate adjacency here and the yard catalog in
 // stagingYardFor — are local reads costing no request token at all.
 //

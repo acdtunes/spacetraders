@@ -25,7 +25,10 @@ type APISaturationReader interface {
 type sensingBudgets struct {
 	// permille is the reading, carried for the heartbeat so an operator can see the
 	// input beside the budgets it produced.
-	permille   int
+	permille int
+	// screen paces how many PENDING systems one tick JUDGES. It reaches no verdict rule
+	// and no whitelist: a system past the budget is still PENDING, still first in line.
+	screen     int
 	gate       int
 	expand     int
 	place      int
@@ -53,6 +56,7 @@ func resolveSensingBudgets(permille, headroomMultiple int) sensingBudgets {
 	paced := func(base int) int { return parkedsensing.PacedBudget(base, permille, headroomMultiple) }
 	return sensingBudgets{
 		permille: permille,
+		screen:   paced(screenSweepBatch),
 		gate:     paced(parkedsensing.MaxGateReads),
 		expand:   paced(parkedsensing.MaxExpansionActions),
 		place:    paced(parkedsensing.DefaultMaxPlacementActions),

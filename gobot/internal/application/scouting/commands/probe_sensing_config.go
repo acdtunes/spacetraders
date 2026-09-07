@@ -101,11 +101,12 @@ const (
 	// number rather than a zero. 1 restores the pre-scaling pacing exactly.
 	defaultExpansionHeadroomMultiple = parkedsensing.ExpansionHeadroomMultiple
 
-	// screenSweepBatch bounds how many PENDING systems one tick screens. A plain
-	// constant, deliberately not a knob: it paces API bursts (an unresolved
-	// market costs a remote fetch, and a catalog-unknown system costs a
-	// paginated waypoint sweep), not economics. The backlog is not lost — it is
-	// worked over more ticks, and every system left over is still PENDING.
+	// screenSweepBatch bounds how many PENDING systems one tick screens AT THE REQUEST
+	// CEILING, and is the BASE parkedsensing.PacedBudget scales off the idle request
+	// budget. Deliberately not a knob: it paces API bursts (an unresolved market costs a
+	// remote fetch, a catalog-unknown system a paginated waypoint sweep), not economics.
+	// Held BELOW the ceiling it is charting thrown away — an unjudged system earns no
+	// placement, crew or place in the buy queue.
 	screenSweepBatch = 5
 
 	// budgetWindow is the trailing window the API budget is measured over. It

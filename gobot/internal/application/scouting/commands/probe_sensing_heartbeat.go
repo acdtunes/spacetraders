@@ -62,7 +62,9 @@ type heartbeat struct {
 	pacerRate   float64
 	brake       float64
 	cutover     int
-	screened    int
+	// screen is the sweep's accounting: systems judged beside the budget they were charged
+	// against, so "was the screen the cap that bound this tick?" is answerable, not inferred.
+	screen screenReport
 	// adopt is the adoption pass's accounting: stranded scout probes recorded this
 	// tick, beside the burst budget it was charged against. The budget matters now
 	// that a bulk buy can leave a hundred hulls waiting — see adoptReport.
@@ -116,6 +118,7 @@ type passBudget struct {
 
 // The pass labels, named because both the cycle line and the gauge key off them.
 const (
+	passBudgetScreen   = "screen"
 	passBudgetGate     = "gate"
 	passBudgetExpand   = "expand"
 	passBudgetPlace    = "place"
@@ -141,6 +144,7 @@ const (
 // the coordinator's intent here would report a number the engine did not use.
 func passBudgets(hb heartbeat) []passBudget {
 	return []passBudget{
+		{passBudgetScreen, hb.screen.Screened, hb.screen.Limit},
 		{passBudgetGate, hb.expand.GatesRead + hb.expand.GatesUnreadable + hb.expand.GatesFailed, hb.expand.GateReadLimit},
 		{passBudgetExpand, hb.expand.Actions, hb.expand.ActionLimit},
 		{passBudgetPlace, hb.place.Actions, hb.place.ActionLimit},
@@ -219,7 +223,7 @@ func (h *RunProbeSensingCoordinatorHandler) heartbeat(ctx context.Context, cmd *
 
 	common.LoggerFromContext(ctx).Log("INFO", fmt.Sprintf(
 		"Parked sensing cycle: %.3f req/s pacer (%.3f residual, brake %.2f), %d parked, %s, screened %d, yards read %d of %d outstanding, bought %d reused %d queued %d (%d attempts%s%s), reaped %d adopted %d idle-reused %d surged %d, dispatched %d docking %d parked %d, expansion %s, budgets=%s at %d‰ saturation",
-		hb.pacerRate, hb.sensingRate, hb.brake, hb.rotation, scanSummary(hb.scans), hb.screened,
+		hb.pacerRate, hb.sensingRate, hb.brake, hb.rotation, scanSummary(hb.scans), hb.screen.Screened,
 		hb.yard.Read, hb.yard.Outstanding,
 		hb.buy.Bought, hb.buy.Reused, hb.buy.Queued, hb.buy.Attempts, heldSuffix(held), refusalSuffix(hb.buy.Refusals),
 		hb.reap.Reaped, hb.adopt.Adopted, hb.dispatched, hb.surged,
@@ -233,7 +237,7 @@ func (h *RunProbeSensingCoordinatorHandler) heartbeat(ctx context.Context, cmd *
 			"brake":                 hb.brake,
 			"probe_cap":             cfg.ProbeCap,
 			"rotation_slots":        hb.rotation,
-			"screened":              hb.screened,
+			"screened":              hb.screen.Screened,
 			"cutover_posts_removed": hb.cutover,
 
 			// pacer_rate is what was ISSUED; scans_landed what the fleet budget admitted.

@@ -10,8 +10,14 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/parkedsensing"
 )
 
-// screenSweep re-screens the PENDING systems, bounded to screenSweepBatch per
-// tick.
+// screenReport is one tick's screening accounting, in the used/limit shape every other paced pass reports. Screened counts TURNS TAKEN, which is what the budget charges.
+type screenReport struct {
+	Screened int
+	Limit    int
+}
+
+// screenSweep re-screens the PENDING systems, bounded by the tick's screen
+// budget.
 //
 // PENDING is the ONLY verdict re-screened, and that is the whole cost model: a
 // system judged IN_SCOPE has its placements and never needs judging again, and
@@ -23,15 +29,22 @@ import (
 // as a fully-examined barren one — the same reading, opposite meaning — and the
 // verdict it would record is durable AND makes the system a frontier propagation
 // origin, so one wrong write-off walks outward across the map. The sweep is a
-// paginated multi-call read metered under the charting envelope; it is bounded
-// here by the batch above and happens once per system, and the pacer concedes
-// charting's measured rate out of its own share (budgetInputs), so the spend is
-// accounted rather than merely tolerated.
-func (h *RunProbeSensingCoordinatorHandler) screenSweep(ctx context.Context, cyc sensingCycle) (int, error) {
+// paginated multi-call read metered under the charting envelope, bounded here by
+// the tick's screen budget and paid ONCE PER SYSTEM — which is what makes a scaled
+// budget safe — and the pacer concedes charting's measured rate out of its own
+// share (budgetInputs), so the spend is accounted rather than merely tolerated.
+func (h *RunProbeSensingCoordinatorHandler) screenSweep(ctx context.Context, cyc sensingCycle, limit int) (screenReport, error) {
+	// A non-positive budget is the caller's "use your documented default" sentinel,
+	// resolved here so this pass keeps owning its own base, like every paced pass.
+	if limit <= 0 {
+		limit = screenSweepBatch
+	}
+	rep := screenReport{Limit: limit}
+
 	playerID := cyc.cmd.PlayerID.Value()
 	pending, err := cyc.ports.Ledger.SystemsByVerdict(ctx, playerID, parkedsensing.VerdictPending)
 	if err != nil {
-		return 0, fmt.Errorf("failed to list systems awaiting screening: %w", err)
+		return rep, fmt.Errorf("failed to list systems awaiting screening: %w", err)
 	}
 	// LEAST-RECENTLY-SCREENED FIRST. This ordering is the whole fairness
 	// property, because the batch below is a fixed cap over a queue that DOES
@@ -69,13 +82,12 @@ func (h *RunProbeSensingCoordinatorHandler) screenSweep(ctx context.Context, cyc
 	})
 
 	screen := cyc.ports.screenPorts()
-	screened := 0
 	var failures []error
 	for _, system := range pending {
-		if screened >= screenSweepBatch {
+		if rep.Screened >= limit {
 			break
 		}
-		screened++
+		rep.Screened++
 
 		known, kerr := cyc.ports.Waypoints.CatalogKnown(ctx, system.System)
 		if kerr != nil {
@@ -98,7 +110,7 @@ func (h *RunProbeSensingCoordinatorHandler) screenSweep(ctx context.Context, cyc
 			failures = append(failures, serr)
 		}
 	}
-	return screened, errors.Join(failures...)
+	return rep, errors.Join(failures...)
 }
 
 // cutover retires the touring sensing model, once, on the first reconcile that

@@ -163,6 +163,10 @@ func TestScreenSweep_PendingOnly_AndBounded(t *testing.T) {
 		verdicts[s] = parkedsensing.VerdictPending
 	}
 	world := steadyWorld(t, verdicts)
+	// Read a FULLY COMMITTED request budget, the regime the base was sized for, so
+	// the bound this test names is a number rather than whatever the idle-budget
+	// scaling resolved to.
+	world.handler.SetAPISaturationReader(saturatedReader())
 
 	// Give every system a market the cache can answer for, so screening is free
 	// and what the test measures is WHICH systems were looked at.
@@ -207,6 +211,9 @@ func stillChartingWorld(t *testing.T, systems []string) *cutoverWorld {
 		verdicts[s] = parkedsensing.VerdictPending
 	}
 	world := steadyWorld(t, verdicts)
+	// The rotation is only observable while the batch is smaller than the queue, so
+	// the fixture pins the budget at its ceiling-era base.
+	world.handler.SetAPISaturationReader(saturatedReader())
 	for i, s := range systems {
 		// One uncharted waypoint is enough to hold the verdict at PENDING.
 		world.catalog.uncharted[s] = []string{s + "-UNCHARTED"}
