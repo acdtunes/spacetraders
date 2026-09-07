@@ -23,9 +23,8 @@ func (r *SensingLedgerRepository) SpareHulls(ctx context.Context, playerID int) 
 	return models, nil
 }
 
-// UpsertSpareHull records one probe as a reserve where it stands. Keyed on the
-// HULL, so re-recording a probe that moved UPDATES its waypoint rather than adding
-// a row — which is what makes it idempotent under a per-tick pass.
+// UpsertSpareHull records one probe as a reserve where it stands. Keyed on the HULL,
+// so re-recording a probe that moved UPDATES its waypoint rather than adding a row.
 func (r *SensingLedgerRepository) UpsertSpareHull(ctx context.Context, playerID int, shipSymbol, waypoint, system string) error {
 	model := SensingSpareHullModel{
 		PlayerID:       playerID,
@@ -51,7 +50,7 @@ func (r *SensingLedgerRepository) UpsertSpareHull(ctx context.Context, playerID 
 //
 // ADDRESSED BY HULL AND BY NOTHING ELSE, the money guard this table exists for
 // (RULINGS #4): "the SPARE row at this waypoint" names a SET once several reserves
-// stand at one yard. A missing row is NOT an error, and the delete is era-AGNOSTIC.
+// stand at one yard. A missing row is not an error; the delete is era-AGNOSTIC.
 func (r *SensingLedgerRepository) DeleteSpareHull(ctx context.Context, playerID int, shipSymbol string) error {
 	if err := r.db.WithContext(ctx).
 		Where("player_id = ? AND ship_symbol = ?", playerID, shipSymbol).

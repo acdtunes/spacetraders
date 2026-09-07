@@ -1,9 +1,7 @@
 package parkedsensing
 
 // expansion_reserve_pool_test.go covers the charting crew's side of the RESERVE
-// pool: hull-keyed probes we own that hold no placement. Ten hulls standing at one
-// yard — the ordinary shape of a bulk buy — cannot all be placement rows, and the
-// whole point of recording them is that a crew can draw on them.
+// pool: hull-keyed probes we own that hold no placement, and that a crew draws on.
 
 import (
 	"errors"
@@ -37,7 +35,7 @@ func TestAdvanceExpansion_ReserveHullIsClaimedAsASeedWithoutBuying(t *testing.T)
 	}
 }
 
-// THE RELEASE IS BY HULL, AND THAT IS THE MONEY GUARD (RULINGS #4).
+// THE RELEASE IS BY HULL — the money guard (RULINGS #4).
 //
 // MUTANT THIS KILLS: releasing a claimed reserve through DeleteSlot, addressed by
 // (waypoint, kind). Two reserves stand at one yard here, so a waypoint-wide release
@@ -102,6 +100,85 @@ func TestSlotBook_AReserveDoesNotOccupyTheWaypointItStandsOn(t *testing.T) {
 		if !spare.Reserve {
 			t.Fatalf("%s must be marked Reserve, or its release is routed to the placement delete", spare.AssignedShip)
 		}
+	}
+}
+
+// THE TORN HANDOVER, WHICH IS WHY THE DEDUPE EXISTS: the two-write move out of the
+// pool has a best-effort release half, so a failure leaves a hull named by BOTH.
+// Left claimable it is sent charting while its live placement still names it and
+// still scans — two writers on one hull (RULINGS #3).
+func TestSlotBook_AHullNamedByBothAPlacementAndAReserve_IsClaimableFromNeither(t *testing.T) {
+	book := newSlotBook(
+		[]QueuedSlot{{
+			Waypoint: "X1-A-M1", System: "X1-A", Kind: SlotKindMarket,
+			State: SlotStateParked, AssignedShip: "PROBE-7",
+		}},
+		[]SpareHull{{Ship: "PROBE-7", Waypoint: "X1-A-YARD", System: "X1-A"}},
+		nil,
+	)
+
+	if len(book.parkedSpares) != 0 {
+		t.Fatalf("parkedSpares = %v, want none — PROBE-7 is doing a placement's job", book.parkedSpares)
+	}
+	for _, spare := range book.spares {
+		if spare.Reserve {
+			t.Fatalf("the stale reserve must not reach the supply pool either, got %v", spare)
+		}
+	}
+}
+
+// The same shape one layer up: no charting errand is stamped on a placed hull.
+func TestAdvanceExpansion_ATornHandoverProducesNoErrandOnAPlacedHull(t *testing.T) {
+	h := newExpandHarness()
+	h.ledger.systems = []ExpandSystem{
+		{System: "X1-A", Verdict: VerdictInScope},
+		{System: "X1-B", Verdict: VerdictPending, UnchartedCount: 3},
+	}
+	h.gates.adjacency = map[string][]string{"X1-A": {"X1-B"}}
+	h.ledger.slots = []QueuedSlot{{
+		Waypoint: "X1-A-M1", System: "X1-A", Kind: SlotKindMarket,
+		State: SlotStateInTransit, AssignedShip: "PROBE-7",
+	}}
+	h.ledger.spareHulls = []SpareHull{{Ship: "PROBE-7", Waypoint: "X1-A-YARD", System: "X1-A"}}
+
+	rep, err := h.run(t, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if rep.SeedsClaimed != 0 {
+		t.Fatalf("SeedsClaimed = %d, want 0 — PROBE-7 is already flying to a placement", rep.SeedsClaimed)
+	}
+	if len(h.ledger.setSeeds) != 0 {
+		t.Fatalf("seed writes = %v, want none: a second writer on a hull mid-flight", h.ledger.setSeeds)
+	}
+	if len(h.ledger.deletedSpares) != 0 {
+		t.Fatalf("and nothing is released either, got %v", h.ledger.deletedSpares)
+	}
+}
+
+// dropSpare addresses a PLACEMENT and reserves share the slice it scans, so it must
+// match on more than the waypoint. newSlotBook appends reserves last today, which
+// hides the defect behind an ordering nothing guarantees — hence the hand-built
+// book with the reserve first, testing the unit rather than the accident.
+func TestSlotBook_DropSpareRemovesThePlacementAndNotACoLocatedReserve(t *testing.T) {
+	book := &slotBook{
+		state: map[slotKey]string{{"X1-A-YARD", SlotKindSpare}: SlotStateParked},
+		spares: []QueuedSlot{
+			{Waypoint: "X1-A-YARD", System: "X1-A", Kind: SlotKindSpare,
+				State: SlotStateParked, AssignedShip: "PROBE-RESERVE", Reserve: true},
+			{Waypoint: "X1-A-YARD", System: "X1-A", Kind: SlotKindSpare,
+				State: SlotStateParked, AssignedShip: "PROBE-PLACED"},
+		},
+	}
+
+	book.dropSpare("X1-A-YARD")
+
+	if len(book.spares) != 1 {
+		t.Fatalf("spares = %v, want exactly one left", book.spares)
+	}
+	if !book.spares[0].Reserve || book.spares[0].AssignedShip != "PROBE-RESERVE" {
+		t.Fatalf("spares = %v, want the RESERVE kept and the placement dropped", book.spares)
 	}
 }
 

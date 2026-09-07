@@ -39,7 +39,7 @@ const SensingParkedFleetTag = "sensing_parked"
 // operation_type is read off a Grafana legend and typed by hand into ad-hoc SQL.
 const SensingCoverageOperationType = "sensing coverage"
 
-// maxDrainAttempts bounds how many purchase ATTEMPTS one drain tick may make — not
+// MaxDrainAttempts bounds how many purchase ATTEMPTS one drain tick may make — not
 // how many succeed. Every trip through the buy path costs one, whether it ends in a
 // hull, an unpriceable yard or a counter that refused, because each attempt opens
 // with a LIVE, uncached shipyard price read: a budget decremented only on success
@@ -47,9 +47,11 @@ const SensingCoverageOperationType = "sensing coverage"
 // degraded. The cost is that a run of failing placements at the head of the
 // depth-ordered queue delays the ones behind them, bounded by those failures being
 // transient — the one systematic repeat-failure source, a hull we cannot claim, is
-// excluded at selection time instead (see ParkedShipReader). A plain constant,
-// deliberately not a knob: a rate limit on API bursts, not an economic lever.
-const maxDrainAttempts = 6
+// excluded at selection time instead (see ParkedShipReader). A rate limit on API
+// bursts, not an economic lever — which is exactly why it is SCALED rather than
+// tuned: BuyKnobs.MaxAttempts is this constant sized against the request budget
+// nobody is queued on (pacing.go), never under it, and no money guard reads either.
+const MaxDrainAttempts = 6
 
 // cargoSpendLookback names the shared window for call-site readability. Two money guards measuring
 // one fleet's outflow over two windows would reserve against two measurements of one quantity.
@@ -348,7 +350,18 @@ type BuyKnobs struct {
 	// CoverageReserve holds back this many FILL attempts per tick for the best
 	// placement in a system the fleet has never entered. Zero (the default)
 	// leaves the saturate-first order in drainorder.go untouched.
+	//
+	// AN ABSOLUTE NUMBER OF ATTEMPTS, unscaled: it is the operator's own figure, and
+	// silently multiplying a number somebody typed would leave them reading a reserve
+	// they did not set. It is still carved out of the SCALED fill budget below, so a
+	// wider tick widens the fills' share and never the reserve's.
 	CoverageReserve int
+	// MaxAttempts is this tick's purchase-attempt BURST budget: MaxDrainAttempts scaled
+	// by the request budget nobody is queued on (PacedBudget), zero meaning the
+	// constant. NOT ECONOMIC — no purchase gate, buy floor, working-capital reserve or
+	// probe cap reads it, and it can only ever raise the number of attempts a tick may
+	// make, never what any one of them is allowed to pay (RULINGS #4).
+	MaxAttempts int
 	// WalkAwayMult is how many times the fleet's cheapest fresh ask a counter may
 	// charge before the queue refuses to buy there at all.
 	WalkAwayMult int

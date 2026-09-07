@@ -27,7 +27,6 @@ func TestSensingLedger_TwoReservesAtOneWaypointCoexist(t *testing.T) {
 	require.Equal(t, "X1-AA", pool[0].SystemSymbol)
 }
 
-// Re-recording a probe that MOVED updates its row rather than adding a second.
 func TestSensingLedger_ReRecordingAReserveMovesItRatherThanDuplicatingIt(t *testing.T) {
 	db := newSensingLedgerDB(t)
 	repo := persistence.NewSensingLedgerRepository(db)
@@ -42,7 +41,6 @@ func TestSensingLedger_ReRecordingAReserveMovesItRatherThanDuplicatingIt(t *test
 	require.Equal(t, "X1-BB-YARD", pool[0].WaypointSymbol, "and it carries the hull's current waypoint")
 }
 
-// A waypoint-scoped delete would take the siblings with it (RULINGS #4).
 func TestSensingLedger_DeleteSpareHull_LeavesTheCoLocatedSiblingsAlone(t *testing.T) {
 	db := newSensingLedgerDB(t)
 	repo := persistence.NewSensingLedgerRepository(db)
@@ -61,7 +59,6 @@ func TestSensingLedger_DeleteSpareHull_LeavesTheCoLocatedSiblingsAlone(t *testin
 	require.NoError(t, repo.DeleteSpareHull(ctx, 1, "ORION-1"))
 }
 
-// THE PROBE CAP COUNTS THE POOL (RULINGS #4): left out, a bulk buy reads as zero.
 func TestSensingLedger_CountOwnedProbes_CountsReserveHulls(t *testing.T) {
 	db := newSensingLedgerDB(t)
 	repo := persistence.NewSensingLedgerRepository(db)

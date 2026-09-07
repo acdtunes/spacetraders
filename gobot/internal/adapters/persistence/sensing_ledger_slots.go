@@ -389,8 +389,7 @@ func (r *SensingLedgerRepository) TransitionSlot(
 // re-buying it. A hull on an ERRAND holds no slot row (states.go), so BOTH errand
 // tables — a system's first charting hull in sensing_systems, the rest of its crew
 // in sensing_seed_hulls — are unioned in and DEDUPED on the hull.
-// sensing_spare_hulls is unioned in for the same reason, and the UNION dedupes on
-// the hull, so a probe named by both a reserve and a placement counts once.
+// sensing_spare_hulls is unioned in likewise, and the UNION dedupes on the hull.
 func (r *SensingLedgerRepository) CountOwnedProbes(ctx context.Context, playerID int) (int64, error) {
 	var count int64
 	if err := r.db.WithContext(ctx).Raw(`

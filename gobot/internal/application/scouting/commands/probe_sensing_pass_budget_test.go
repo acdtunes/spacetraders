@@ -71,6 +71,9 @@ func TestSensingBudgets_EveryPacedPassScalesOffTheOneReading(t *testing.T) {
 	require.Equal(t, 45, got.yards)
 	require.Equal(t, 11, got.presence)
 	require.Equal(t, 114, got.reap)
+	// A base of one truncates hardest: the grant rate steps down a hull per 20% committed.
+	require.Equal(t, 34, got.buy, "6 purchase attempts a tick becomes 34 — the budget that funds charting seeds")
+	require.Equal(t, 5, got.chartGrant, "the per-system grant rate scales off the same reading")
 }
 
 // A saturated budget resolves to the engine's own constants, exactly.
@@ -87,6 +90,8 @@ func TestSensingBudgets_AFullyBoundBudgetResolvesToTheShippedConstants(t *testin
 	require.Equal(t, parkedsensing.MaxYardPresenceDispatches, got.presence)
 	require.Equal(t, parkedsensing.DefaultMaxReaps, got.reap)
 	require.Equal(t, DefaultMaxAdoptions, got.adopt)
+	require.Equal(t, parkedsensing.MaxDrainAttempts, got.buy)
+	require.Equal(t, parkedsensing.MaxChartGrantsPerSystem, got.chartGrant)
 }
 
 // The knob binds through the resolved config: a multiple of one is the operator's way back
@@ -103,6 +108,8 @@ func TestSensingBudgets_AHeadroomMultipleOfOneRestoresTheShippedPacing(t *testin
 	require.Equal(t, parkedsensing.MaxYardPresenceDispatches, got.presence)
 	require.Equal(t, parkedsensing.DefaultMaxReaps, got.reap)
 	require.Equal(t, DefaultMaxAdoptions, got.adopt)
+	require.Equal(t, parkedsensing.MaxDrainAttempts, got.buy)
+	require.Equal(t, parkedsensing.MaxChartGrantsPerSystem, got.chartGrant)
 }
 
 // --- the report ---------------------------------------------------------------------
@@ -116,11 +123,13 @@ func exhaustedPlacementTick() heartbeat {
 		expand: parkedsensing.ExpandReport{
 			Actions: 12, ActionLimit: 20,
 			GatesRead: 3, GateReadLimit: 3,
+			ChartGrantUsed: 2, ChartGrantLimit: 6,
 		},
 		yard:     parkedsensing.YardCatalogReport{Read: 0, ReadLimit: 8},
 		presence: parkedsensing.YardPresenceReport{Dispatched: 1, DispatchLimit: 2},
 		reap:     parkedsensing.ReapReport{Reaped: 4, ReapLimit: 20},
 		adopt:    adoptReport{Adopted: 2, Attempts: 3, Limit: 15},
+		buy:      parkedsensing.BuyReport{Attempts: 6, AttemptLimit: 6},
 	}
 }
 
@@ -128,7 +137,7 @@ func exhaustedPlacementTick() heartbeat {
 // reads: place at its limit, expand below it.
 func TestBudgetSummary_NamesTheBudgetThatBoundTheTick(t *testing.T) {
 	require.Equal(t,
-		"gate 3/3 expand 12/20 place 10/10 place_refused 4/30 yards 0/8 presence 1/2 reap 4/20 adopt 3/15",
+		"gate 3/3 expand 12/20 place 10/10 place_refused 4/30 yards 0/8 presence 1/2 reap 4/20 adopt 3/15 buy 6/6 chart_grant 2/6",
 		budgetSummary(exhaustedPlacementTick()))
 }
 
@@ -153,17 +162,21 @@ func TestBudgetSummary_TheRefusalBudgetIsAPassOfItsOwn(t *testing.T) {
 // passes just as happily against a report that never carried a limit at all.
 func TestBudgetSummary_EachLimitIsThePassesOwnAndNotItsSpend(t *testing.T) {
 	quiet := heartbeat{
-		budgets:  resolveSensingBudgets(0, parkedsensing.ExpansionHeadroomMultiple),
-		place:    parkedsensing.PlacementReport{Actions: 1, ActionLimit: 57, Failures: 9, FailureLimit: 171},
-		expand:   parkedsensing.ExpandReport{Actions: 2, ActionLimit: 114, GatesRead: 4, GateReadLimit: 17},
+		budgets: resolveSensingBudgets(0, parkedsensing.ExpansionHeadroomMultiple),
+		place:   parkedsensing.PlacementReport{Actions: 1, ActionLimit: 57, Failures: 9, FailureLimit: 171},
+		expand: parkedsensing.ExpandReport{
+			Actions: 2, ActionLimit: 114, GatesRead: 4, GateReadLimit: 17,
+			ChartGrantUsed: 3, ChartGrantLimit: 13,
+		},
 		yard:     parkedsensing.YardCatalogReport{Read: 5, ReadLimit: 45},
 		presence: parkedsensing.YardPresenceReport{Dispatched: 6, DispatchLimit: 11},
 		reap:     parkedsensing.ReapReport{Reaped: 7, ReapLimit: 114},
 		adopt:    adoptReport{Adopted: 8, Attempts: 8, Limit: 60},
+		buy:      parkedsensing.BuyReport{Attempts: 8, AttemptLimit: 36},
 	}
 
 	require.Equal(t,
-		"gate 4/17 expand 2/114 place 1/57 place_refused 9/171 yards 5/45 presence 6/11 reap 7/114 adopt 8/60",
+		"gate 4/17 expand 2/114 place 1/57 place_refused 9/171 yards 5/45 presence 6/11 reap 7/114 adopt 8/60 buy 8/36 chart_grant 3/13",
 		budgetSummary(quiet))
 }
 
@@ -186,12 +199,16 @@ func TestCycleLine_CarriesThePerPassBudgets(t *testing.T) {
 	require.Equal(t, 600, log.fields[0]["api_saturation_permille"])
 	rows, ok := log.fields[0]["pass_budgets"].([]map[string]interface{})
 	require.True(t, ok, "the payload carries the pairs as queryable rows")
-	require.Len(t, rows, 8, "every paced pass is written, including the ones at zero")
+	require.Len(t, rows, 10, "every paced pass is written, including the ones at zero")
 	require.Equal(t, map[string]interface{}{"pass": passBudgetPlace, "used": 10, "limit": 10}, rows[2])
 	require.Equal(t, map[string]interface{}{"pass": passBudgetPlaceRefused, "used": 4, "limit": 30}, rows[3])
 	require.Equal(t, map[string]interface{}{"pass": passBudgetYards, "used": 0, "limit": 8}, rows[4])
 	require.Equal(t, map[string]interface{}{"pass": passBudgetAdopt, "used": 3, "limit": 15}, rows[7],
 		"adoption is a paced pass now, so it reports used/limit like the rest (sp-v7mtk)")
+	require.Equal(t, map[string]interface{}{"pass": passBudgetBuy, "used": 6, "limit": 6}, rows[8],
+		"the purchase-attempt burst reports used/limit too (sp-2gjpf)")
+	require.Equal(t, map[string]interface{}{"pass": passBudgetChartGrant, "used": 2, "limit": 6}, rows[9],
+		"the crew-grant rate reports used/limit too, its limit per system and its used the deepest draw")
 }
 
 // USED IS ATTEMPTS, not successes, wherever the pass charges attempts: a gate the API
@@ -231,7 +248,7 @@ func TestPublishPassBudgets_EveryPassReachesTheGaugeEveryTick(t *testing.T) {
 	h.publishPassBudgets(testPlayerID, exhaustedPlacementTick())
 
 	published, writes := rec.recordedPassBudgets()
-	require.Equal(t, 8, writes, "every paced pass is published on every tick, zeros included")
+	require.Equal(t, 10, writes, "every paced pass is published on every tick, zeros included")
 	require.Equal(t, recordedPassBudget{used: 4, limit: 30}, published[passBudgetPlaceRefused],
 		"the refusal budget is its own series — it ends ticks the accepted-command one does not")
 	require.Equal(t, recordedPassBudget{used: 10, limit: 10}, published[passBudgetPlace],

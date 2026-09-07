@@ -100,10 +100,13 @@ func placementReadEvent() string {
 // lowest waypoint — reuse scans the system's rows in ledger order, and the claim
 // breaks its equal-hop tie on the same order), so the outcome says which ran
 // first.
+//
+// THE POOL IS ONE DEEPER THAN THE CREW IS ENTITLED TO: two hulls, assembled in ONE tick.
 func TestReconcile_ChartQueueOpen_CrewClaimOutranksStationFill(t *testing.T) {
 	world := crewFillWorld(t, map[string]string{
 		"X1-IN1-A1": "PROBE-SPARE-1",
 		"X1-IN1-B2": "PROBE-SPARE-2",
+		"X1-IN1-C3": "PROBE-SPARE-3",
 	})
 	darkSystem(world, "X1-DARK")
 	world.gates.link("X1-IN1", "X1-DARK")
@@ -114,14 +117,16 @@ func TestReconcile_ChartQueueOpen_CrewClaimOutranksStationFill(t *testing.T) {
 	require.Equal(t, "PROBE-SPARE-1", dark.SeedShip,
 		"the crew claim picks first, so the contested spare charts the dark system instead of becoming a station")
 	require.Equal(t, parkedsensing.SeedStateDispatched, dark.SeedState)
+	require.Len(t, dark.ExtraSeeds, 1, "and the crew it is entitled to arrives on the same tick")
+	require.Equal(t, "PROBE-SPARE-2", dark.ExtraSeeds[0].Ship)
 	_, held := world.ledger.slots[psSlotKey{"X1-IN1-A1", parkedsensing.SlotKindSpare}]
 	require.False(t, held, "the claimed spare's row is released to the errand")
 
 	market := world.ledger.slots[psSlotKey{"X1-IN1-M9", parkedsensing.SlotKindMarket}]
 	require.Equal(t, parkedsensing.SlotStateInTransit, market.State,
 		"the fill machine still fills its placement on this same tick")
-	require.Equal(t, "PROBE-SPARE-2", market.AssignedShip,
-		"…from the spare the crew declined")
+	require.Equal(t, "PROBE-SPARE-3", market.AssignedShip,
+		"…from the spare the crew's entitlement left behind")
 
 	requireExpansionBeforeDrain(t, world)
 }

@@ -569,13 +569,11 @@ func occupantSummary(holds ledgerHolds, waypoint string) string {
 	return strings.Join(parts, ", ")
 }
 
-// releaseReserve hands a hull out of the reserve pool once a placement names it.
-//
-// CALLED AFTER THE PLACEMENT WRITE, NEVER BEFORE — the money guard every other
-// two-row handover here keeps (RULINGS #4). Between the writes the hull is named by
-// BOTH, an over-count that only buys FEWER probes; releasing first leaves a window
-// where a crash leaves it named by NEITHER and the cap re-buys it. A hull that was
-// never a reserve is a no-op, so callers need not test the pool themselves.
+// releaseReserve hands a hull out of the reserve pool once a placement names it,
+// AFTER the placement write and never before — the money guard every two-row
+// handover here keeps (RULINGS #4). Between the writes it is named by BOTH, an
+// over-count that buys FEWER probes; releasing first leaves a crash window where it
+// is named by NEITHER. A hull that was never a reserve is a no-op.
 func releaseReserve(ctx context.Context, ports SensingEnginePorts, playerID int, hull string, holds ledgerHolds, failures *[]error) {
 	if !holds.reserves[hull] {
 		return

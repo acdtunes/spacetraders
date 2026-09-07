@@ -44,7 +44,10 @@ import (
 // carve out BuyKnobs.CoverageReserve — the same read the saturation tier below
 // already priced, so a caller that also wants "is this system held" spends no
 // second query on it.
-func drainCandidates(ctx context.Context, p BuyPorts, playerID int) ([]QueuedSlot, yardOrder, coverageSurface, map[string]int, error) {
+// maxAttempts is this tick's resolved burst budget, used ONLY to size the reporting
+// window yardOrder.atHead measures — a window fixed at the constant would under-report
+// the head of the queue a scaled tick can actually reach.
+func drainCandidates(ctx context.Context, p BuyPorts, playerID int, maxAttempts int) ([]QueuedSlot, yardOrder, coverageSurface, map[string]int, error) {
 	slots, err := p.Ledger.SlotsByState(ctx, playerID, SlotStateWanted, SlotStateQueued)
 	if err != nil {
 		return nil, yardOrder{}, coverageSurface{}, nil, fmt.Errorf("failed to list unfilled sensing slots: %w", err)
@@ -116,7 +119,7 @@ func drainCandidates(ctx context.Context, p BuyPorts, playerID int) ([]QueuedSlo
 			continue
 		}
 		yards.queued++
-		if position < maxDrainAttempts {
+		if position < maxAttempts {
 			yards.atHead++
 		}
 	}

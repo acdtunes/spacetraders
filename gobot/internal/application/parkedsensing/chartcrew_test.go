@@ -89,7 +89,7 @@ func TestChartHulls_TheAssemblyBoundStopsAShortWalkFromBuyingAnUnboundedCrew(t *
 		uncharted, want int
 		assembled       bool
 	}{
-		{1, 1, false}, {5, 3, false}, {14, 7, true}, {20, 9, true}, {57, maxChartCrew, true},
+		{1, 1, false}, {5, 3, false}, {14, 7, true}, {20, 9, true}, {57, 15, true}, {92, 19, true},
 	} {
 		got := hulls.budgetFor(tc.uncharted, walkOf(1))
 		if got != tc.want {
@@ -102,22 +102,155 @@ func TestChartHulls_TheAssemblyBoundStopsAShortWalkFromBuyingAnUnboundedCrew(t *
 	}
 }
 
-// ON A WHOLLY DARK SYSTEM IT IS THE CEILING THAT BINDS, NOT THE ASSEMBLY BOUND.
-// The bound rises with the outstanding count, so a system whose entire catalog is
-// still uncharted clears it at every rank the ladder reaches and maxChartCrew is
-// the only thing left holding the crew down. That is why the ceiling stands on its
-// own rather than as a derivation of the bound, and this is what would notice it
-// quietly becoming inert.
-func TestChartHulls_TheCeilingBindsWhenAWholeCatalogIsDark(t *testing.T) {
+// THE CEILING IS A BACKSTOP ABOVE THE MAP, AND THE ASSEMBLY BOUND IS WHAT ANSWERS.
+//
+// It used to be the other way round, and that was the bug: at 15 the ceiling held a
+// wholly dark 92-waypoint system to a quarter-crew that the assembly bound would have
+// let reach 19, so the remainder waited for later rounds while charting gated the
+// search for a bulk-freighter yard (sp-vpf8t). The ceiling now sits past the largest
+// system anyone has measured, so no real count reaches it.
+//
+// IT IS STILL REACHABLE, which is the other half: a ceiling nothing can reach is a
+// clamp that has quietly become dead code, and the second half of this test is what
+// would notice that.
+func TestChartHulls_TheCeilingSitsAboveTheMapAndTheAssemblyBoundAnswers(t *testing.T) {
 	hulls := resolveChartHulls(ExpandKnobs{})
-	wholeCatalog := 200 // larger than any one system's waypoint list
 
-	if got := hulls.budgetFor(wholeCatalog, walkOf(1)); got != maxChartCrew {
-		t.Fatalf("a wholly dark system one hop out earned %d hulls, want the ceiling %d", got, maxChartCrew)
+	// Era 11's largest system. The assembly bound stops the ladder here, so the answer
+	// rests on the measurement rather than on a fitted constant.
+	const largestSystem = 92
+	if got := hulls.budgetFor(largestSystem, walkOf(1)); got != 19 {
+		t.Fatalf("the largest system observed earned %d hulls one hop out, want the 19 the assembly bound allows", got)
 	}
-	if !arrivesToWork(wholeCatalog, maxChartCrew+1) {
-		t.Fatalf("the assembly bound still stops rank %d on a %d-waypoint system, so this test is inert and the ceiling is not what binds",
-			maxChartCrew+1, wholeCatalog)
+	if arrivesToWork(largestSystem, 20) {
+		t.Fatalf("the assembly bound no longer stops rank 20 on a %d-waypoint system — the sizing ladder moved", largestSystem)
+	}
+	if hulls.budgetFor(largestSystem, walkOf(1)) >= maxChartCrew {
+		t.Fatalf("the ceiling %d is binding on a real system again, which is the constraint this bead removed", maxChartCrew)
+	}
+
+	// Past the map the ceiling is the only thing left holding the crew down. This is
+	// the smallest count the assembly bound clears at the full crew.
+	beyondTheMap := maxChartCrew*(maxChartCrew-1)/4 + 1
+	if !arrivesToWork(beyondTheMap, maxChartCrew) {
+		t.Fatalf("the assembly bound still stops rank %d at %d outstanding, so the ceiling could never bind at all",
+			maxChartCrew, beyondTheMap)
+	}
+	if got := hulls.budgetFor(beyondTheMap, walkOf(1)); got != maxChartCrew {
+		t.Fatalf("a %d-waypoint dark system one hop out earned %d hulls, want the ceiling %d", beyondTheMap, got, maxChartCrew)
+	}
+}
+
+// THE OPERATOR'S CAP IS HONOURED ABOVE THE OLD FIFTEEN, and every rank it now
+// advertises is one the sizing can actually reach.
+//
+// This is the chart_hull_cap trap (sp-y31lm) checked in the ENGINE rather than in the
+// bound table: a registry that advertised 100 while resolveChartHulls went on clamping
+// to 15 would accept the tune, persist it, show it back and change nothing.
+func TestChartHulls_ACapAboveFifteenIsHonouredAndBinds(t *testing.T) {
+	// A one-hop walk earns 19 hulls on era 11's largest system, so every cap below
+	// that must bind AT its own number — including all the ranks the old ceiling made
+	// unreachable.
+	const largestSystem, earned = 92, 19
+	for capped := 1; capped <= maxChartCrew; capped++ {
+		hulls := resolveChartHulls(ExpandKnobs{ChartHullCap: capped})
+		if hulls.cap != capped {
+			t.Fatalf("a cap of %d resolved to %d — the operator's own value must survive inside the range", capped, hulls.cap)
+		}
+		want := capped
+		if want > earned {
+			want = earned
+		}
+		if got := hulls.budgetFor(largestSystem, walkOf(1)); got != want {
+			t.Fatalf("a cap of %d over a %d-hull system gave %d, want %d", capped, earned, got, want)
+		}
+	}
+
+	// The old ceiling is now an ordinary setting rather than the edge of the range: it
+	// still binds when asked for, and leaving it unset no longer imposes it.
+	if got := resolveChartHulls(ExpandKnobs{ChartHullCap: 15}).budgetFor(largestSystem, walkOf(1)); got != 15 {
+		t.Fatalf("a cap of 15 gave %d on the largest system, want 15 — the old ceiling must stay settable", got)
+	}
+	if got := resolveChartHulls(ExpandKnobs{}).budgetFor(largestSystem, walkOf(1)); got != earned {
+		t.Fatalf("the shipped ceiling gave %d on the largest system, want the %d the walk and the assembly bound earn",
+			got, earned)
+	}
+}
+
+// A CAP ABOVE THE CEILING STILL CLAMPS, AND A NON-POSITIVE ONE STILL REVERTS TO IT.
+//
+// Raising the ceiling MOVED that boundary; it did not remove it. The bound table is
+// not on the path a STORED value or a boot config takes, so the engine is what keeps
+// the advertised range true — including for a row written while the ceiling was 15.
+func TestChartHulls_TheCeilingClampsAboveItAndANonPositiveCapRevertsToIt(t *testing.T) {
+	for _, above := range []int{maxChartCrew + 1, maxChartCrew + 1_000, 1_000_000, math.MaxInt32} {
+		if got := resolveChartHulls(ExpandKnobs{ChartHullCap: above}).cap; got != maxChartCrew {
+			t.Fatalf("a stored cap of %d resolved to %d, want the ceiling %d", above, got, maxChartCrew)
+		}
+	}
+	if got := resolveChartHulls(ExpandKnobs{ChartHullCap: maxChartCrew}).cap; got != maxChartCrew {
+		t.Fatalf("the ceiling itself resolved to %d — it is a reachable setting, not one past the edge", got)
+	}
+	// 0 is the fleet-wide revert verb and a negative can only come from a hand-edited
+	// row; both mean the ceiling, which is the engine deferring to the measured walk.
+	for _, nonPositive := range []int{0, -1, -15, math.MinInt32} {
+		if got := resolveChartHulls(ExpandKnobs{ChartHullCap: nonPositive}).cap; got != maxChartCrew {
+			t.Fatalf("a cap of %d resolved to %d, want the documented default %d", nonPositive, got, maxChartCrew)
+		}
+	}
+}
+
+// NOTHING BUT THE CEILING MOVED. Replaying the whole ladder against the old ceiling of
+// 15 must reproduce the shipped answer everywhere the old constant was not itself what
+// stopped it — so a change to paysItsWalk, arrivesToWork or a threshold floor smuggled
+// in beside the ceiling shows up here rather than on the fleet. A hull must still only
+// be sent where its walk pays.
+func TestChartHulls_RaisingTheCeilingMovedNothingElseInTheLadder(t *testing.T) {
+	const oldCeiling = 15
+	shipped := resolveChartHulls(ExpandKnobs{})
+	before := resolveChartHulls(ExpandKnobs{ChartHullCap: oldCeiling})
+
+	for hops := 0; hops <= 20; hops++ {
+		for uncharted := 0; uncharted <= 600; uncharted++ {
+			was := before.budgetFor(uncharted, walkOf(hops))
+			now := shipped.budgetFor(uncharted, walkOf(hops))
+			if now < was {
+				t.Fatalf("budgetFor(%d) at %d hops fell from %d to %d — raising a ceiling may only ever add hulls",
+					uncharted, hops, was, now)
+			}
+			if was < oldCeiling && now != was {
+				t.Fatalf("budgetFor(%d) at %d hops moved from %d to %d and the old ceiling was not what stopped it — the sizing ladder changed",
+					uncharted, hops, was, now)
+			}
+		}
+	}
+
+	// And the economics are pinned outright at their own boundaries, so the property
+	// above cannot pass by both sides moving together.
+	if !paysItsWalk(20, 13, 1) || paysItsWalk(20, 14, 1) {
+		t.Fatal("the break-even moved: a 20-waypoint system one hop out pays for exactly 13 ranks")
+	}
+	if !arrivesToWork(20, 9) || arrivesToWork(20, 10) {
+		t.Fatal("the assembly bound moved: a 20-waypoint system assembles exactly 9 hulls")
+	}
+	if got := shipped.floorFor(2); got != defaultSecondChartHullAt {
+		t.Fatalf("floorFor(2) = %d, want the documented second-hull floor %d", got, defaultSecondChartHullAt)
+	}
+	if got := shipped.floorFor(9); got != defaultThirdChartHullAt+6*defaultChartHullTier {
+		t.Fatalf("floorFor(9) = %d, want the third-hull floor stepped six times at the documented tier", got)
+	}
+}
+
+// THE CEILING IS MIRRORED, NOT IMPORTED. maxChartCrew is unexported and the layers
+// above cannot be imported downward, so scouting/commands keeps its own
+// defaultChartHullCap and the tune registry advertises that as chart_hull_cap's Max.
+// A drift between the three IS the failure this bead fixed — a constant fitted to an
+// older map going on binding under a wider label — so the number is pinned here with
+// the mirrors it has to move with named.
+func TestChartHulls_TheCeilingIsPinnedWithItsMirrors(t *testing.T) {
+	if maxChartCrew != 100 {
+		t.Fatalf("maxChartCrew = %d: move commands.defaultChartHullCap and the chart_hull_cap bound's "+
+			"Max in adapters/grpc/container_ops_tune.go with it, then this pin", maxChartCrew)
 	}
 }
 
@@ -237,14 +370,17 @@ func TestChartHulls_TheCapIsAHardOverrideOverTheMeasuredAnswer(t *testing.T) {
 			t.Fatalf("a cap of %d over a 9-hull walk gave %d, want %d", capped, got, want)
 		}
 	}
-	for _, stale := range []int{maxChartCrew + 1, 100, 1_000} {
+	for _, stale := range []int{maxChartCrew + 1, 1_000, 100_000} {
 		if got := resolveChartHulls(ExpandKnobs{ChartHullCap: stale}).cap; got != maxChartCrew {
 			t.Fatalf("a stored cap of %d resolved to %d, want the derived ceiling %d", stale, got, maxChartCrew)
 		}
 	}
-	// NOTHING exceeds the ceiling, whatever the walk and the work say.
+	// NOTHING exceeds the ceiling, whatever the walk and the work say. The counts have
+	// to sit past the map for the ceiling to be the binding rule at all — on a real
+	// system the assembly bound answers first (see
+	// TestChartHulls_TheCeilingSitsAboveTheMapAndTheAssemblyBoundAnswers).
 	hulls := resolveChartHulls(ExpandKnobs{})
-	for _, uncharted := range []int{100, 1_000, 100_000} {
+	for _, uncharted := range []int{2_476, 100_000, 1_000_000} {
 		if got := hulls.budgetFor(uncharted, walkOf(0)); got != maxChartCrew {
 			t.Fatalf("budgetFor(%d) = %d, want the ceiling %d — nothing may exceed it", uncharted, got, maxChartCrew)
 		}

@@ -42,8 +42,10 @@ func TestScrubEraDeletesWipeClassRowsOfDeadPlayerOnly(t *testing.T) {
 	require.NoError(t, db.Create(&persistence.ManufacturingFactoryStateModel{FactorySymbol: "F1", OutputGood: "G", PlayerID: 1, PipelineID: "p", RequiredInputs: "{}", CreatedAt: time.Now()}).Error)
 	require.NoError(t, db.Create(&persistence.GasOperationModel{ID: "g1", PlayerID: 1, GasGiant: "GG", CreatedAt: time.Now(), UpdatedAt: time.Now()}).Error)
 	require.NoError(t, db.Create(&persistence.StorageOperationModel{ID: "so1", PlayerID: 1, WaypointSymbol: "W", OperationType: "GAS_SIPHON", CreatedAt: time.Now(), UpdatedAt: time.Now()}).Error)
+	require.NoError(t, db.Create(&persistence.SensingSpareHullModel{PlayerID: 1, ShipSymbol: "S1", WaypointSymbol: "W", SystemSymbol: "X1-AA"}).Error)
 
 	require.NoError(t, db.Create(&persistence.ShipModel{ShipSymbol: "S2", PlayerID: 2}).Error)
+	require.NoError(t, db.Create(&persistence.SensingSpareHullModel{PlayerID: 2, ShipSymbol: "S2", WaypointSymbol: "W", SystemSymbol: "X1-AA"}).Error)
 	require.NoError(t, db.Create(&persistence.TransactionModel{ID: "t1", PlayerID: 1, Timestamp: time.Now(), TransactionType: "SALE", Category: "TRADING", Amount: 1, BalanceAfter: 1, CreatedAt: time.Now()}).Error)
 	require.NoError(t, db.Create(&persistence.ContractModel{ID: "c1", PlayerID: 1, FactionSymbol: "COSMIC", Type: "PROCUREMENT", DeadlineToAccept: "x", Deadline: "x", DeliveriesJSON: "[]", LastUpdated: "x"}).Error)
 
@@ -67,8 +69,11 @@ func TestScrubEraDeletesWipeClassRowsOfDeadPlayerOnly(t *testing.T) {
 	assertCount(&persistence.ManufacturingFactoryStateModel{}, "player_id = ?", []interface{}{1}, 0)
 	assertCount(&persistence.GasOperationModel{}, "player_id = ?", []interface{}{1}, 0)
 	assertCount(&persistence.StorageOperationModel{}, "player_id = ?", []interface{}{1}, 0)
+	// Read era-scoped, counted era-agnostically: a survivor holds the cap high.
+	assertCount(&persistence.SensingSpareHullModel{}, "player_id = ?", []interface{}{1}, 0)
 
 	assertCount(&persistence.ShipModel{}, "player_id = ?", []interface{}{2}, 1)
+	assertCount(&persistence.SensingSpareHullModel{}, "player_id = ?", []interface{}{2}, 1)
 	assertCount(&persistence.TransactionModel{}, "", nil, 1)
 	assertCount(&persistence.ContractModel{}, "", nil, 1)
 }

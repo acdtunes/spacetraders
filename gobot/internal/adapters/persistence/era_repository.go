@@ -178,6 +178,10 @@ func (r *EraRepository) ScrubEra(ctx context.Context, name string) (*ScrubReport
 		{"manufacturing_factory_states", &ManufacturingFactoryStateModel{}},
 		{"gas_operations", &GasOperationModel{}},
 		{"storage_operations", &StorageOperationModel{}},
+		// The RESERVE pool must be wiped or a rollover leaves the probe cap reading the
+		// new universe permanently high (RULINGS #4): the READ is era-scoped, the cap's
+		// count era-AGNOSTIC on purpose. Era-scoping that count instead under-counts.
+		{"sensing_spare_hulls", &SensingSpareHullModel{}},
 	}
 
 	err = r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {

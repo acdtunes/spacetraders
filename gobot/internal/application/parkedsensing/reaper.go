@@ -25,7 +25,7 @@ import (
 // sensing_ledger_repository.go).
 
 // DefaultMaxReaps bounds how many claims one pass may release. Like
-// maxDrainAttempts it paces a burst of writes rather than expressing an economic
+// MaxDrainAttempts it paces a burst of writes rather than expressing an economic
 // preference. A backlog is not lost: the rows left over are still QUEUED and still
 // first in line next tick.
 // The coordinator hands it scaled by the idle request budget (pacing.go), which can

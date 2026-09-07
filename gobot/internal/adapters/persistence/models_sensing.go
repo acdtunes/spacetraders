@@ -145,14 +145,13 @@ func (SensingSeedHullModel) TableName() string {
 	return "sensing_seed_hulls"
 }
 
-// SensingSpareHullModel is ONE probe held in RESERVE: a hull we own, belonging to
+// SensingSpareHullModel is ONE probe held in RESERVE: a hull we own that belongs to
 // no placement.
 //
-// KEYED ON THE HULL, which is why it is not a sensing_slots row. A placement is a
-// CLAIM ON A WAYPOINT and keyed as one; a reserve's waypoint is incidental and
+// KEYED ON THE HULL, which is why it is not a sensing_slots row: a placement is a
+// CLAIM ON A WAYPOINT and keyed as one, while a reserve's waypoint is incidental and
 // several share it. As placements the second write rewrites the first's
-// assigned_ship and the displaced hull is left named by no row: invisible to
-// CountOwnedProbes, and re-bought (RULINGS #4).
+// assigned_ship and that hull is left named by no row — re-bought (RULINGS #4).
 type SensingSpareHullModel struct {
 	PlayerID       int    `gorm:"primaryKey;column:player_id"`
 	ShipSymbol     string `gorm:"primaryKey;column:ship_symbol;size:50"`

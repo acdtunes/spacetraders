@@ -127,6 +127,11 @@ const (
 	// ends the tick independently: a wall of refused moves spends it while `place` still
 	// reads under its limit, and the pair alone would name no binding budget at all.
 	passBudgetPlaceRefused = "place_refused"
+	// buy is the purchase-attempt burst limit: full beside a live treasury is a bound the held reason cannot name.
+	passBudgetBuy = "buy"
+	// chart_grant is the crew-grant RATE, its limit PER SYSTEM where every other row is per
+	// tick — used is the deepest single-system draw, so used == limit names an under-crewed one.
+	passBudgetChartGrant = "chart_grant"
 )
 
 // passBudgets pairs each pass's spend with the budget it was charged against.
@@ -144,6 +149,8 @@ func passBudgets(hb heartbeat) []passBudget {
 		{passBudgetPresence, hb.presence.Dispatched, hb.presence.DispatchLimit},
 		{passBudgetReap, hb.reap.Reaped + hb.reap.Skipped, hb.reap.ReapLimit},
 		{passBudgetAdopt, hb.adopt.Attempts, hb.adopt.Limit},
+		{passBudgetBuy, hb.buy.Attempts, hb.buy.AttemptLimit},
+		{passBudgetChartGrant, hb.expand.ChartGrantUsed, hb.expand.ChartGrantLimit},
 	}
 }
 
@@ -532,7 +539,7 @@ func refusalPayload(refusals []parkedsensing.BuyRefusal) []map[string]interface{
 }
 
 // maxLoggedRefusals bounds how many distinct refusals reach the cycle line. The
-// drain can try at most maxDrainAttempts counters per tick so the list is
+// drain can try at most MaxDrainAttempts counters per tick so the list is
 // already short, but the bound is explicit because this line is emitted every
 // ~30s forever and a summary that can grow without limit is its own defect.
 const maxLoggedRefusals = 3

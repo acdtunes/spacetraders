@@ -76,8 +76,10 @@ type BuyReport struct {
 	// several gate steps away, counting against the probe cap the whole time.
 	Ferried int
 	// Attempts counts every trip through the buy path, successful or not, against
-	// maxDrainAttempts.
-	Attempts int
+	// this tick's budget. AttemptLimit is that budget — MaxDrainAttempts scaled by the
+	// idle request budget — stamped before any read that can end the tick, because a
+	// buy 0/0 on the cycle line reads as the queue having bound a tick it never opened.
+	Attempts, AttemptLimit int
 	// Refusals is why the counters that refused this tick refused, one row per distinct
 	// refusal. A tick with Attempts > 0 and Bought == 0 and no Refusals is a
 	// contradiction — every path that burns an attempt without buying records one.
@@ -132,7 +134,7 @@ type BuyReport struct {
 	//   - YardsQueued: candidate placements standing on a shipyard whose price the
 	//     fleet cannot see — the rows the ordering was CONSULTED on.
 	//   - YardsAtHead: how many of those the ordering delivered into the first
-	//     maxDrainAttempts places, the window this tick's budget can reach. High
+	//     AttemptLimit places, the window this tick's budget can reach. High
 	//     YardsQueued beside a persistent zero here is the ordering failing.
 	//   - YardsFilled: how many of the placements FUNDED this tick — by reuse,
 	//     foothold or purchase — stood on one. The only one of the three that costs

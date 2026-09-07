@@ -114,11 +114,11 @@ func TestDrain_CoverageReserveDoesNotChangeOrderWhenDisarmedOrNothingToAdvanceTo
 			if err != nil {
 				t.Fatalf("DrainBuyQueue returned error: %v", err)
 			}
-			if rep.Attempts != maxDrainAttempts {
-				t.Fatalf("spent %d attempts, want the full %d — an inert reserve must not idle the budget", rep.Attempts, maxDrainAttempts)
+			if rep.Attempts != MaxDrainAttempts {
+				t.Fatalf("spent %d attempts, want the full %d — an inert reserve must not idle the budget", rep.Attempts, MaxDrainAttempts)
 			}
-			if len(pur.buys) != maxDrainAttempts {
-				t.Fatalf("bought %d probes, want %d: %v", len(pur.buys), maxDrainAttempts, pur.buys)
+			if len(pur.buys) != MaxDrainAttempts {
+				t.Fatalf("bought %d probes, want %d: %v", len(pur.buys), MaxDrainAttempts, pur.buys)
 			}
 			for _, b := range pur.buys {
 				if b.yard != "X1-HELD-Y1" {
@@ -131,7 +131,7 @@ func TestDrain_CoverageReserveDoesNotChangeOrderWhenDisarmedOrNothingToAdvanceTo
 
 func TestDrain_CoverageReserveArmed_DarkYardStillOutranksNeverEnteredSystem(t *testing.T) {
 	// X1-HELD offers FIVE dark yards — more than the reduced coverage budget
-	// (maxDrainAttempts=6, reserve=2 -> 4) — so if the reserve reached into the
+	// (MaxDrainAttempts=6, reserve=2 -> 4) — so if the reserve reached into the
 	// yard tier, the 5th and 6th would be skipped for X1-NEW. The Admiral's
 	// directive is unconditional: dark shipyards outrank everything.
 	led := &fakeBuyLedger{

@@ -64,8 +64,12 @@ func newSlotBook(rows []QueuedSlot, reserves []SpareHull, onErrand map[string]bo
 		wanted:  make(map[string][]QueuedSlot),
 		staffed: make(map[string]bool),
 	}
-	b.addReserves(reserves, onErrand)
+	// Every hull a PLACEMENT row names — see addReserves for what it is for.
+	placed := make(map[string]bool, len(rows))
 	for _, row := range rows {
+		if row.AssignedShip != "" {
+			placed[row.AssignedShip] = true
+		}
 		b.state[slotKey{row.Waypoint, row.Kind}] = row.State
 		if row.State == SlotStateWanted {
 			b.wanted[row.System] = append(b.wanted[row.System], row)
@@ -103,6 +107,7 @@ func newSlotBook(rows []QueuedSlot, reserves []SpareHull, onErrand map[string]bo
 		// staging, and the loop above is the only thing that can hand it to a deleter.
 		b.errandSpares = append(b.errandSpares, row)
 	}
+	b.addReserves(reserves, placed, onErrand)
 	return b
 }
 
@@ -111,17 +116,24 @@ func newSlotBook(rows []QueuedSlot, reserves []SpareHull, onErrand map[string]bo
 // duplicate order) and `parkedSpares` (being claimable is the entire reason these
 // hulls are recorded), under the same errand filter the placement spares get.
 //
-// OUT of `state`, and that is the whole shape of this change: `state` answers "is
-// there a placement OF MY KIND here", and a reserve is a hull standing somewhere,
-// not a claim on the waypoint. In it, a reserve would shadow the yard it stands
-// on — seed.go and staging.go both refuse a waypoint carrying a SPARE — so adopted
-// hulls would lock their yards out of staging and strangle the expansion this
-// exists to feed. OUT of `staffed` for the conservative half of that: staffing is
-// what lets a yard stage a seed, and staging leads to spend (RULINGS #4). Nothing
-// is lost, since staffedAt falls back to DockedProbeAt and the ships table sees the
-// very hull. OUT of `wanted`: a reserve is a hull, never an unfilled intent.
-func (b *slotBook) addReserves(reserves []SpareHull, onErrand map[string]bool) {
+// OUT of `state`, and that is the whole shape of this change: a reserve is a hull
+// standing somewhere, not a claim on the waypoint, and in `state` it would shadow
+// the yard it stands on — seed.go and staging.go both refuse a waypoint carrying a
+// SPARE — locking adopted yards out of staging. OUT of `staffed` for the
+// conservative half of that (staffing leads to spend, RULINGS #4), and nothing is
+// lost since staffedAt falls back to DockedProbeAt. OUT of `wanted`: never an intent.
+//
+// A RESERVE NAMING A HULL A PLACEMENT ALREADY NAMES IS DROPPED, a single-writer
+// guard rather than tidiness (RULINGS #3). The handover out of the pool is two
+// writes with a best-effort release half, so a failure leaves a hull named by BOTH;
+// left claimable, claimSpares sends it charting while its live placement still names
+// it and still scans. The placement is authoritative, so the reserve yields —
+// count-neutral, and live again by itself if the placement is ever reaped.
+func (b *slotBook) addReserves(reserves []SpareHull, placed, onErrand map[string]bool) {
 	for _, reserve := range reserves {
+		if placed[reserve.Ship] {
+			continue
+		}
 		row := QueuedSlot{
 			Waypoint:     reserve.Waypoint,
 			System:       reserve.System,
@@ -256,10 +268,12 @@ func (b *slotBook) addSpare(system, waypoint, state string) {
 // spent. Only the SPARE half is dropped, mirroring the kind-scoped DeleteSlot this
 // shadows — forgetting the whole waypoint would let the tick's later writes
 // re-declare a MARKET placement that is still very much on the books.
+// The Reserve test keeps it addressing a PLACEMENT: reserves share this slice, and
+// one at the same yard would otherwise be dropped in place of the released row.
 func (b *slotBook) dropSpare(waypoint string) {
 	delete(b.state, slotKey{waypoint, SlotKindSpare})
 	for i, spare := range b.spares {
-		if spare.Waypoint == waypoint {
+		if !spare.Reserve && spare.Waypoint == waypoint {
 			b.spares = append(b.spares[:i], b.spares[i+1:]...)
 			return
 		}

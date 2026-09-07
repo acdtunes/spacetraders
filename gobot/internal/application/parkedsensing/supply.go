@@ -165,12 +165,11 @@ func (t *expandTick) releaseErrandSpares(ctx context.Context) error {
 	return nil
 }
 
-// releaseSpare takes a claimed spare off the books through THE STORE THAT HOLDS
-// IT, and the routing is a money guard rather than plumbing (RULINGS #4). A
-// placement is addressed by (waypoint, kind), which the ledger's key makes name one
-// row; a RESERVE is addressed by its HULL, because several share a waypoint by
-// design — so releasing one the placement way takes down every hull standing
-// beside it, and the cap then re-buys them.
+// releaseSpare takes a claimed spare off the books through THE STORE THAT HOLDS IT,
+// a money guard rather than plumbing (RULINGS #4): a placement is addressed by
+// (waypoint, kind), which the key makes name one row, while a RESERVE is addressed
+// by its HULL because several share a waypoint by design — released the placement
+// way it takes down every hull standing beside it, and the cap re-buys them.
 func (t *expandTick) releaseSpare(ctx context.Context, spare QueuedSlot) error {
 	if spare.Reserve {
 		return t.p.Ledger.DeleteSpareHull(ctx, t.playerID, spare.AssignedShip)
@@ -195,6 +194,10 @@ func (t *expandTick) dropSpare(spare QueuedSlot) {
 // re-task — an errand it could never complete would hold the hull out of the probe
 // cap while charting nothing.
 //
+// A SYSTEM IS CREWED TOWARD ITS ENTITLEMENT, NOT BY ONE HULL A TICK. What size a crew it
+// earns is budgetFor's answer, untouched here; this paces how long it waits — ChartGrantLimit
+// hulls a tick, so a fully committed budget hands out the single grant this pass always did.
+//
 // THE WRITE ORDER IS A MONEY GUARD. One hull is named by two rows for an instant,
 // and choosing which instant decides which way a crash miscounts. The errand is
 // stamped FIRST, so a failure between the writes leaves the hull named by both the
@@ -206,40 +209,78 @@ func (t *expandTick) claimSpares(ctx context.Context) error {
 		if t.covered[target.System] {
 			continue
 		}
-		spare, found, err := t.takeReachableSpare(ctx, target.System)
+		granted, err := t.crewSystem(ctx, target)
 		if err != nil {
 			return err
 		}
-		if !found {
+		if granted == 0 {
 			continue
 		}
-		if err := t.stampErrand(ctx, target.System, spare.AssignedShip, SeedStateDispatched); err != nil {
-			return fmt.Errorf("failed to send spare %s to chart %q: %w", spare.AssignedShip, target.System, err)
-		}
-		// The hull now belongs to the errand rather than to the ledger, so its
-		// placement row goes away. It is invisible to the probe-cap count until the
-		// seed parks again — an UNDER-count, and the one place this engine accepts
-		// one. It is bounded (a seed exists only while an errand runs, and errands are
-		// capped per tick) and self-healing (every terminal branch of a tour ends in a
-		// placement row naming the hull again), and the alternative — a stale spare
-		// row left behind — has the buy queue re-task a hull that has already left.
-		//
-		// RELEASED BY KIND, not by waypoint. The spare was very likely staged AT A YARD
-		// that is also a parked market — that co-location is the entire point of the
-		// wider key — and a waypoint-wide delete would take the MARKET row with it,
-		// dropping the probe scanning there out of the cap while it is still on
-		// station. This engine's under-count is deliberate and bounded; that one is
-		// neither.
-		if err := t.releaseSpare(ctx, spare); err != nil {
-			return fmt.Errorf(
-				"spare %s sent to chart %q but its placement %s was not released (hull now double-counted, probe cap reads high): %w",
-				spare.AssignedShip, target.System, spare.Waypoint, err)
-		}
-		t.dropSpare(spare)
 		t.covered[target.System] = true
-		t.rep.SeedsClaimed++
+		if granted > t.rep.ChartGrantUsed {
+			t.rep.ChartGrantUsed = granted
+		}
 	}
 	return nil
+}
+
+// crewSystem grants one dark system as much of its entitled crew as the tick's per-system
+// budget and the parked spares allow, and reports how many hulls it stamped.
+//
+// EVERY HULL IS PRICED AT THE RANK IT WOULD TAKE, because the loop re-reads the LIVE roster
+// against budgetFor — the ladder admitting a rank only once it clears paysItsWalk,
+// arrivesToWork and the operator's floor. Several hulls in one tick moves none of them past
+// either test; it only stops the system idling a tick per rank.
+func (t *expandTick) crewSystem(ctx context.Context, target ExpandSystem) (int, error) {
+	walk, err := t.walks.forSystem(ctx, target.System)
+	if err != nil {
+		return 0, err
+	}
+	entitled := t.hulls.budgetFor(target.UnchartedCount, walk)
+	granted := 0
+	for granted < t.rep.ChartGrantLimit && t.roster.size(target.System) < entitled {
+		claimed, err := t.claimOneSpare(ctx, target.System)
+		if err != nil || !claimed {
+			return granted, err
+		}
+		granted++
+	}
+	return granted, nil
+}
+
+// claimOneSpare puts one parked spare on a system's crew, in the write order above.
+func (t *expandTick) claimOneSpare(ctx context.Context, system string) (bool, error) {
+	spare, found, err := t.takeReachableSpare(ctx, system)
+	if err != nil || !found {
+		return false, err
+	}
+	if err := t.stampErrand(ctx, system, spare.AssignedShip, SeedStateDispatched); err != nil {
+		return false, fmt.Errorf("failed to send spare %s to chart %q: %w", spare.AssignedShip, system, err)
+	}
+	// The hull now belongs to the errand rather than to the ledger, so its
+	// placement row goes away. It is invisible to the probe-cap count until the
+	// seed parks again — an UNDER-count, and the one place this engine accepts
+	// one. It is bounded (a seed exists only while an errand runs, and no system
+	// holds more errands than its crew budget) and self-healing (every terminal
+	// branch of a tour ends in a placement row naming the hull again), and the
+	// alternative — a stale spare row left behind — has the buy queue re-task a
+	// hull that has already left. A FASTER grant rate does not deepen it: its size
+	// is the live errand count, which the crew budget bounds (RULINGS #4).
+	//
+	// RELEASED BY KIND, not by waypoint. The spare was very likely staged AT A YARD
+	// that is also a parked market — that co-location is the entire point of the
+	// wider key — and a waypoint-wide delete would take the MARKET row with it,
+	// dropping the probe scanning there out of the cap while it is still on
+	// station. This engine's under-count is deliberate and bounded; that one is
+	// neither.
+	if err := t.releaseSpare(ctx, spare); err != nil {
+		return true, fmt.Errorf(
+			"spare %s sent to chart %q but its placement %s was not released (hull now double-counted, probe cap reads high): %w",
+			spare.AssignedShip, system, spare.Waypoint, err)
+	}
+	t.dropSpare(spare)
+	t.rep.SeedsClaimed++
+	return true, nil
 }
 
 // takeReachableSpare removes and returns the parked spare NEAREST to target, among

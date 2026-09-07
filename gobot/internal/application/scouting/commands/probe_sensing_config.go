@@ -91,7 +91,7 @@ const (
 	// worked by, and the outstanding-count floors its second and third hull clear on top
 	// of the walk the engine measures each tick. Mirrors of the engine's own defaults
 	// (parkedsensing.chartcrew), so the tune registry publishes a number, not a zero.
-	defaultChartHullCap      = 15
+	defaultChartHullCap      = 100
 	defaultSecondChartHullAt = 3
 	defaultThirdChartHullAt  = 4
 
@@ -381,7 +381,7 @@ func (h *RunProbeSensingCoordinatorHandler) liveSnapshot(ctx context.Context, cm
 // `expansion_enabled` and not this one is precisely what let 25 probes and 907,545
 // credits go out while the switch read off — a correct gate, shipped unreached
 // (sp-com1h). See sensing_expand_wiring_test.go.
-func buyKnobs(cfg sensingConfig) parkedsensing.BuyKnobs {
+func buyKnobs(cfg sensingConfig, budgets sensingBudgets) parkedsensing.BuyKnobs {
 	return parkedsensing.BuyKnobs{
 		SpendEnabled:    cfg.ProbeSpend,
 		ProbeCap:        cfg.ProbeCap,
@@ -392,6 +392,8 @@ func buyKnobs(cfg sensingConfig) parkedsensing.BuyKnobs {
 		WalkAwayMult:       cfg.WalkAwayMult,
 		JumpPenaltyCredits: cfg.JumpPenaltyCredits,
 		AskFreshness:       cfg.QuartermasterCadence * askFreshnessCadences,
+		// The tick's burst budget; zero is the engine's own constant. Not an economic knob.
+		MaxAttempts: budgets.buy,
 	}
 }
 
@@ -413,7 +415,8 @@ func expandKnobs(cfg sensingConfig, budgets sensingBudgets) parkedsensing.Expand
 		// The tick's two burst budgets, resolved from the live saturation reading.
 		// Zero would be the engine's own constants, so a caller that forgot them paces
 		// as before rather than stalling.
-		MaxActions:   budgets.expand,
-		MaxGateReads: budgets.gate,
+		MaxActions:     budgets.expand,
+		MaxGateReads:   budgets.gate,
+		MaxChartGrants: budgets.chartGrant,
 	}
 }

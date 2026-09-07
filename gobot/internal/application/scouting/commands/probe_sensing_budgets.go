@@ -25,14 +25,17 @@ type APISaturationReader interface {
 type sensingBudgets struct {
 	// permille is the reading, carried for the heartbeat so an operator can see the
 	// input beside the budgets it produced.
-	permille int
-	gate     int
-	expand   int
-	place    int
-	yards    int
-	presence int
-	reap     int
-	adopt    int
+	permille   int
+	gate       int
+	expand     int
+	place      int
+	yards      int
+	presence   int
+	reap       int
+	adopt      int
+	chartGrant int
+	// buy paces the drain's purchase ATTEMPTS — bursts only, every guard behind it untouched (RULINGS #4).
+	buy int
 }
 
 // resolveSensingBudgets scales every paced pass off one saturation reading.
@@ -62,6 +65,9 @@ func resolveSensingBudgets(permille, headroomMultiple int) sensingBudgets {
 		// a hundred stranded hulls is exactly the backlog the base of 10 was never sized
 		// for.
 		adopt: paced(DefaultMaxAdoptions),
+		buy:   paced(parkedsensing.MaxDrainAttempts),
+		// Spends no request of its own: it stamps rows for hulls already bought and parked.
+		chartGrant: paced(parkedsensing.MaxChartGrantsPerSystem),
 	}
 }
 

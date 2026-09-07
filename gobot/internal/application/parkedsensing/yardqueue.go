@@ -57,7 +57,7 @@ type yardOrder struct {
 	// queued counts the candidate fills standing on such a yard — the rows the
 	// terms below were CONSULTED on this tick.
 	queued int
-	// atHead counts how many of those landed in the first maxDrainAttempts places
+	// atHead counts how many of those landed in the first maxAttempts places
 	// of the ordered queue: the window this tick's budget can reach. Paired with
 	// queued it is what tells a losing coordinator from an idle one.
 	atHead int

@@ -49,6 +49,15 @@ func DrainBuyQueue(
 	if clock == nil {
 		clock = shared.NewRealClock()
 	}
+	// Resolved and stamped BEFORE the wave read, which can end the tick: a report
+	// carrying 0/0 reads as "the buy queue bound this tick" on exactly the ticks it
+	// never opened. A non-positive budget is the shipped constant, so a coordinator
+	// that hands none paces as it always did.
+	maxAttempts := k.MaxAttempts
+	if maxAttempts <= 0 {
+		maxAttempts = MaxDrainAttempts
+	}
+	rep.AttemptLimit = maxAttempts
 
 	// The WAVE is read FIRST, ahead of every gate, so rep.Wave is populated on EVERY return path —
 	// including the ones that stop before a floor is built. It is published beside the growth
@@ -63,7 +72,7 @@ func DrainBuyQueue(
 
 	// Cheapest-first gate order: the ledger reads are local, the treasury and
 	// price reads are network. A tick with nothing to buy must not cost an API call.
-	candidates, yards, surface, covered, err := drainCandidates(ctx, p, playerID)
+	candidates, yards, surface, covered, err := drainCandidates(ctx, p, playerID, maxAttempts)
 	// PUBLISHED BEFORE THE EMPTY-QUEUE RETURN, so an empty queue reports a zero it
 	// measured rather than leaving the last tick's value standing. The error path
 	// publishes nothing: an unread surface is not a small one.
@@ -113,7 +122,7 @@ func DrainBuyQueue(
 	}
 
 	t := &drainTick{
-		p: p, playerID: playerID, k: k, mayBuy: mayBuy, st: &st, rep: &rep,
+		p: p, playerID: playerID, k: k, mayBuy: mayBuy, maxAttempts: maxAttempts, st: &st, rep: &rep,
 		// One memo per TICK, never longer: a refusal is re-learned from scratch next
 		// tick, so a counter merely having a bad minute is retried, not blacklisted.
 		memo: newRefusalMemo(&rep),
@@ -130,9 +139,11 @@ func DrainBuyQueue(
 	}
 
 	// The attempts the FILLS may spend before standing aside for queued seeds — the
-	// whole budget when none is outstanding. It SPLITS maxDrainAttempts, never adds
-	// to it. See seedshare.go.
-	fillBudget := fillAttemptBudget(candidates)
+	// whole budget when none is outstanding. It SPLITS this tick's budget, never adds
+	// to it, and is computed from the SCALED budget the loop below actually spends:
+	// split off the constant instead, a wider tick would hand every extra attempt to
+	// the fills and the frontier would be exactly as starved as before. See seedshare.go.
+	fillBudget := fillAttemptBudget(candidates, maxAttempts)
 
 	// The share of the fill budget an already-held placement may spend before
 	// standing aside for BuyKnobs.CoverageReserve. Computed only when armed, so
@@ -143,7 +154,7 @@ func DrainBuyQueue(
 	}
 
 	for _, slot := range candidates {
-		if rep.Attempts >= maxDrainAttempts {
+		if rep.Attempts >= maxAttempts {
 			break
 		}
 		if mayBuy && st.owned >= st.probeCap {
@@ -336,7 +347,7 @@ func openDrainBudget(
 // its nearest yard is the unreliable one.
 //
 // Every yard tried costs an attempt, including the ones that fail. See
-// maxDrainAttempts for why failure must not be the cheap path.
+// MaxDrainAttempts for why failure must not be the cheap path.
 func (t *drainTick) fillSlot(ctx context.Context, slot QueuedSlot, buys []purchaseCandidate) (bool, error) {
 	for _, candidate := range buys {
 		// A counter that already refused THIS TICK is not asked again: the refusal
@@ -346,7 +357,7 @@ func (t *drainTick) fillSlot(ctx context.Context, slot QueuedSlot, buys []purcha
 		if t.memo.blocks(candidate.yard, candidate.buyer) {
 			continue
 		}
-		if t.rep.Attempts >= maxDrainAttempts {
+		if t.rep.Attempts >= t.maxAttempts {
 			return true, nil
 		}
 		t.rep.Attempts++
@@ -498,7 +509,10 @@ type drainTick struct {
 	// mayBuy is the tick's ONE purchase verdict — the operator's switch AND the wave, resolved
 	// once at the top. Carried rather than re-derived so the loop's paused branch and the gate
 	// that set rep.SpendingPaused cannot answer differently.
-	mayBuy      bool
+	mayBuy bool
+	// maxAttempts is this tick's resolved burst budget, carried so the loop and the
+	// per-yard retry below cannot bound themselves against two different numbers.
+	maxAttempts int
 	st          *drainState
 	rep         *BuyReport
 	memo        *refusalMemo

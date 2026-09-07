@@ -366,6 +366,9 @@ type ExpandKnobs struct {
 	// constant. NEITHER IS ECONOMIC — no purchase, floor or reserve reads them.
 	MaxActions   int
 	MaxGateReads int
+	// MaxChartGrants is the third and is PER SYSTEM: how many hulls one dark system may be
+	// granted in one tick, paced off MaxChartGrantsPerSystem. The RATE, never the size.
+	MaxChartGrants int
 }
 
 // SkippedBudget is what ExpandReport.Skipped carries when the budget gate held the
@@ -404,6 +407,10 @@ type ExpandReport struct {
 	CountersStaffed int
 	// SeedsClaimed counts parked spares turned into charting errands.
 	SeedsClaimed int
+	// ChartGrantUsed and ChartGrantLimit are the crew-grant used/limit pair. The budget is
+	// PER SYSTEM, so Used is the DEEPEST SINGLE-SYSTEM draw and not the tick's total
+	// (SeedsClaimed is that): Used == Limit names a system still short of its crew.
+	ChartGrantUsed, ChartGrantLimit int
 	// SpareGhostsReleased counts SPARE rows deleted because the hull they named was
 	// already on an errand. A standing non-zero value is that invariant re-breaking.
 	SpareGhostsReleased int
@@ -478,12 +485,16 @@ func AdvanceExpansion(
 	rep := ExpandReport{
 		BudgetRate: budgetRate, MinBudgetRate: k.MinBudgetRate,
 		ActionLimit: k.MaxActions, GateReadLimit: k.MaxGateReads,
+		ChartGrantLimit: k.MaxChartGrants,
 	}
 	if rep.ActionLimit <= 0 {
 		rep.ActionLimit = MaxExpansionActions
 	}
 	if rep.GateReadLimit <= 0 {
 		rep.GateReadLimit = MaxGateReads
+	}
+	if rep.ChartGrantLimit <= 0 {
+		rep.ChartGrantLimit = MaxChartGrantsPerSystem
 	}
 	if budgetRate < k.MinBudgetRate {
 		rep.Skipped = SkippedBudget
@@ -561,9 +572,13 @@ func AdvanceExpansion(
 	// claim and the request sit below the spend pause, the counter loan below that, the
 	// retarget refuses on its own. Sizing a crew costs gate walks, so a shut gate must
 	// not pay for a list nothing can act on.
+	//
+	// THE WALK MEMO IS THE TICK'S, shared by the sizing here and the claim below: both price
+	// the same marginal hull, and a second could size a crew one way and fill it another.
+	walks := newChartWalks(reach, book.heldSystems())
 	var targets []ExpandSystem
 	if k.SeedsEnabled {
-		targets, err = seedlessTargets(ctx, systems, hulls, newChartWalks(reach, book.heldSystems()))
+		targets, err = seedlessTargets(ctx, systems, hulls, walks)
 		if err != nil {
 			return rep, err
 		}
@@ -577,7 +592,7 @@ func AdvanceExpansion(
 	t := &expandTick{
 		p: p, playerID: playerID, k: k,
 		book: book, reach: reach,
-		roster: roster, hulls: hulls, shares: newShareBook(),
+		roster: roster, hulls: hulls, walks: walks, shares: newShareBook(),
 		probeYards: probeYards,
 		staffed:    map[string]bool{},
 		listings:   map[string]probeStock{},
@@ -669,6 +684,7 @@ type expandTick struct {
 	// a system from being crewed past its budget within one tick.
 	roster *seedRoster
 	hulls  chartHulls
+	walks  *chartWalks
 	// shares is the tick's view of the stored crew partitions: read lazily on the
 	// first crewed system, and re-solved only where the crew it was solved for no
 	// longer matches the roster above.

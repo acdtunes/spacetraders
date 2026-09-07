@@ -1,14 +1,10 @@
 package commands
 
 // run_probe_sensing_bulk_buy_test.go covers the shape a bulk probe buy leaves on
-// the fleet, and the shape the adoption pass could not absorb before sp-v7mtk:
-// many idle hulls standing at ONE waypoint that is already watched.
-//
-// THE LIVE FAILURE. 100 probes were bought in one wave across ten shipyards, ten
-// per yard. Every yard already carried the MARKET placement of the probe scanning
-// there, so adoption's occupancy guard refused all of them, on every tick, for
-// ever: 108 hulls and 5.4M credits idle and outside the probe cap, while the cap
-// under-read by 108 and went on authorising replacements.
+// the fleet, and the one adoption could not absorb: many idle hulls at ONE waypoint
+// that is already watched. Every yard carries the MARKET placement of the probe
+// scanning it, so the occupancy guard refused the whole wave on every tick, for
+// ever — outside the probe cap, while the cap under-read and re-bought.
 
 import (
 	"fmt"
@@ -24,16 +20,13 @@ import (
 
 // THE HEADLINE CASE. Ten orphans at one yard that already carries a MARKET
 // placement: every one of them is adopted, and the placement is untouched.
-//
 // MUTANT THIS KILLS: restoring the occupancy refusal. With it, adopted is zero
 // and ten paid-for hulls stay invisible to the probe cap.
 //
-// MUTANT IT ALSO KILLS: writing the reserves as SPARE PLACEMENT rows at the
-// waypoint. The ledger holds one placement per (waypoint, kind), so the tenth
-// write would re-point the row nine times over and nine hulls would end up tagged
-// with no row anywhere — the exact under-count RULINGS #4 forbids. The market
-// assertions below are what catch a write that lands on the placement table at
-// all.
+// MUTANT IT ALSO KILLS: writing the reserves as SPARE PLACEMENT rows. One placement
+// per (waypoint, kind) means the tenth write re-points the row nine times over and
+// nine hulls end up tagged with no row — the under-count RULINGS #4 forbids. The
+// market assertions catch a write that lands on the placement table at all.
 func TestAdoption_TenOrphansAtOneWatchedYard_AreAllAdoptedAndTheMarketSlotIsUntouched(t *testing.T) {
 	const yard = "X1-KP23-A2"
 	world := steadyWorld(t, map[string]string{"X1-KP23": parkedsensing.VerdictInScope})
@@ -74,8 +67,7 @@ func TestAdoption_TenOrphansAtOneWatchedYard_AreAllAdoptedAndTheMarketSlotIsUnto
 		"the probe cap sees the watcher and all ten adopted hulls; an under-count here re-buys probes we own")
 }
 
-// A SECOND RESERVE AT ONE WAYPOINT DOES NOT EVICT THE FIRST, asserted on the pool
-// itself rather than through a tick's totals.
+// A SECOND RESERVE AT ONE WAYPOINT DOES NOT EVICT THE FIRST.
 //
 // MUTANT THIS KILLS: keying the reserve on the waypoint instead of the hull —
 // exactly what the placement table does, and exactly why the reserve could not
@@ -105,9 +97,7 @@ func TestAdoption_ASecondReserveAtOneWaypointDoesNotEvictTheFirst(t *testing.T) 
 	require.Len(t, world.ledger.spareHulls, 2, "two reserves, one waypoint, two rows")
 }
 
-// THE BURST IS BOUNDED, and the bound is reported. A backlog of a hundred hulls is
-// a hundred ledger writes if nothing holds it down, and the cycle line is where an
-// operator sees whether the backlog is draining or the budget is binding.
+// THE BURST IS BOUNDED, and the bound is reported on the cycle line.
 //
 // MUTANT THIS KILLS: ignoring the cap. Without it the first tick adopts the whole
 // backlog and `adopt used/limit` never reports a bound pass.
@@ -143,6 +133,38 @@ func TestAdoption_BurstIsBoundedAndReportedOnTheCycleLine(t *testing.T) {
 	require.NoError(t, world.handler.ReconcileOnce(world.ctx, world.cmd))
 	require.Len(t, world.ledger.spareHulls, DefaultMaxAdoptions+4,
 		"and the next tick picks up the remainder — nothing is lost, only paced")
+}
+
+// THE CUTOVER'S RESERVE ARM IS BOUNDED AND DEDUPED, like its standing sibling. It
+// fires once per era, and the placement writes beside it are one per free waypoint;
+// this arm can take every co-located hull at once, which on a bulk-bought fleet is
+// hundreds of row locks on the one irreversible tick.
+func TestCutover_ReserveAdoptionIsBoundedAndSkipsHullsAlreadyOnTheBooks(t *testing.T) {
+	const yard = testHomeSystem + "-A1"
+	world := newCutoverWorld(t)
+	world.ledger.slots[psSlotKey{yard, parkedsensing.SlotKindMarket}] = parkedsensing.QueuedSlot{
+		Waypoint: yard, System: testHomeSystem, Kind: parkedsensing.SlotKindMarket,
+		State: parkedsensing.SlotStateParked, AssignedShip: "PROBE-WATCHER",
+	}
+	// One hull already in the pool: it must cost no write at all.
+	world.ledger.spareHulls = map[string]parkedsensing.SpareHull{
+		"PROBE-KNOWN": {Ship: "PROBE-KNOWN", Waypoint: yard, System: testHomeSystem},
+	}
+	world.fleet.ships = []*navigation.Ship{
+		probeWithFleet(t, "PROBE-WATCHER", yard, parkedsensing.SensingParkedFleetTag),
+		scoutProbe(t, "PROBE-KNOWN", yard),
+	}
+	for i := 0; i < DefaultMaxAdoptions+5; i++ {
+		world.fleet.ships = append(world.fleet.ships, scoutProbe(t, fmt.Sprintf("PROBE-BULK-%02d", i), yard))
+	}
+
+	require.NoError(t, world.handler.ReconcileOnce(world.ctx, world.cmd))
+
+	require.Len(t, world.ledger.spareHulls, DefaultMaxAdoptions+1,
+		"the cap holds the burst down, and the hull already recorded cost no write")
+	require.Contains(t, world.ledger.spareHulls, "PROBE-KNOWN")
+	require.NotContains(t, world.tagger.tagged, "PROBE-KNOWN",
+		"a hull already on the books is skipped outright, not re-recorded and re-tagged")
 }
 
 // THE REFUSALS ARE UNCHANGED. Widening the occupancy skip may only ADD adoptions,

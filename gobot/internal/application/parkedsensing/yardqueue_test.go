@@ -20,12 +20,12 @@ import (
 // the tier instead of gating entry to it.
 //
 // WHAT THE FIXTURES HAVE TO DO, because a fixture that does not do it produces a
-// test that passes with the feature deleted. The drain works maxDrainAttempts = 6
+// test that passes with the feature deleted. The drain works MaxDrainAttempts = 6
 // placements a tick out of 8,930 outstanding ones, so an ordering term is only
 // load-bearing when demand EXCEEDS the head it competes for. Every fixture below
 // therefore saturates the queue with ordinary non-yard placements that would
 // otherwise fill the head on their own, and asserts on membership of the first
-// maxDrainAttempts — never merely on relative order in a list where everything
+// MaxDrainAttempts — never merely on relative order in a list where everything
 // fits. saturatedQueue is where that saturation is built and asserted.
 
 // fakeYard is one shipyard as the read budget knows it: what it sells, whether we
@@ -133,13 +133,13 @@ func yardQueuePorts(slots []QueuedSlot, systems []ScreenedSystem, demand YardDem
 	return BuyPorts{Ledger: led, YardDemand: demand}, led
 }
 
-// head returns the waypoints of the first maxDrainAttempts candidates — the only
+// head returns the waypoints of the first MaxDrainAttempts candidates — the only
 // part of the queue a tick can reach, and therefore the only part an ordering
 // claim may be made about.
 func head(candidates []QueuedSlot) []string {
-	out := make([]string, 0, maxDrainAttempts)
+	out := make([]string, 0, MaxDrainAttempts)
 	for i, slot := range candidates {
-		if i >= maxDrainAttempts {
+		if i >= MaxDrainAttempts {
 			break
 		}
 		out = append(out, slot.Waypoint)
@@ -218,13 +218,13 @@ func saturatedQueue() ([]QueuedSlot, []ScreenedSystem, *fakeYardDemand) {
 func assertFixtureSaturates(t *testing.T, slots []QueuedSlot, systems []ScreenedSystem, waypoint string) {
 	t.Helper()
 	ports, _ := yardQueuePorts(slots, systems, nil) // nil demand: the yard-blind ordering
-	blind, _, _, _, err := drainCandidates(context.Background(), ports, testPlayerID)
+	blind, _, _, _, err := drainCandidates(context.Background(), ports, testPlayerID, MaxDrainAttempts)
 	if err != nil {
 		t.Fatalf("drainCandidates returned error building the blind baseline: %v", err)
 	}
-	if len(blind) <= maxDrainAttempts {
+	if len(blind) <= MaxDrainAttempts {
 		t.Fatalf("FIXTURE IS NOT SATURATED: %d candidates against a head of %d, so every placement fits and "+
-			"no ordering term can be load-bearing", len(blind), maxDrainAttempts)
+			"no ordering term can be load-bearing", len(blind), MaxDrainAttempts)
 	}
 	if inHead(blind, waypoint) {
 		t.Fatalf("FIXTURE IS NOT SATURATED: %s already reaches the head at position %d with the yard term "+
@@ -250,7 +250,7 @@ func TestDrainCandidates_ADarkHeavyYardReachesTheHeadOfASaturatedQueue(t *testin
 	assertFixtureSaturates(t, slots, systems, "X1-DARK-Y1")
 
 	ports, _ := yardQueuePorts(slots, systems, demand)
-	got, _, _, _, err := drainCandidates(context.Background(), ports, testPlayerID)
+	got, _, _, _, err := drainCandidates(context.Background(), ports, testPlayerID, MaxDrainAttempts)
 	if err != nil {
 		t.Fatalf("drainCandidates returned error: %v", err)
 	}
@@ -293,7 +293,7 @@ func TestDrainCandidates_ADarkYardTakesItsSystemsFirstPlacement(t *testing.T) {
 	ports, _ := yardQueuePorts(slots, systems, &fakeYardDemand{
 		yards: []fakeYard{darkYard("X1-DEEP-Y1", "X1-DEEP", true)},
 	})
-	got, _, _, _, err := drainCandidates(context.Background(), ports, testPlayerID)
+	got, _, _, _, err := drainCandidates(context.Background(), ports, testPlayerID, MaxDrainAttempts)
 	if err != nil {
 		t.Fatalf("drainCandidates returned error: %v", err)
 	}
@@ -331,7 +331,7 @@ func TestDrainCandidates_ADarkYardOutranksADeeperSystemAtEqualCoverage(t *testin
 	ports, _ := yardQueuePorts(slots, systems, &fakeYardDemand{
 		yards: []fakeYard{darkYard("X1-POOR-Y1", "X1-POOR", true)},
 	})
-	got, _, _, _, err := drainCandidates(context.Background(), ports, testPlayerID)
+	got, _, _, _, err := drainCandidates(context.Background(), ports, testPlayerID, MaxDrainAttempts)
 	if err != nil {
 		t.Fatalf("drainCandidates returned error: %v", err)
 	}
@@ -377,7 +377,7 @@ func TestDrainCandidates_AHeavyYardOutranksAProbeOnlyYardInsideTheTier(t *testin
 		darkYard("X1-AAA-A1", "X1-AAA", false), // probes only
 		darkYard("X1-ZZZ-Z9", "X1-ZZZ", true),  // heavy freighters
 	}})
-	got, _, _, _, err := drainCandidates(context.Background(), ports, testPlayerID)
+	got, _, _, _, err := drainCandidates(context.Background(), ports, testPlayerID, MaxDrainAttempts)
 	if err != nil {
 		t.Fatalf("drainCandidates returned error: %v", err)
 	}
@@ -440,7 +440,7 @@ func TestDrainCandidates_EveryYardOfAMultiYardSystemIsPromoted(t *testing.T) {
 	}
 
 	ports, _ := yardQueuePorts(slots, systems, &fakeYardDemand{yards: yardFacts})
-	got, _, _, _, err := drainCandidates(context.Background(), ports, testPlayerID)
+	got, _, _, _, err := drainCandidates(context.Background(), ports, testPlayerID, MaxDrainAttempts)
 	if err != nil {
 		t.Fatalf("drainCandidates returned error: %v", err)
 	}
@@ -494,7 +494,7 @@ func TestDrainCandidates_TheYardTierDoesNotConcentrateOnOneSystem(t *testing.T) 
 	systems = append(systems, rivalSys...)
 
 	ports, _ := yardQueuePorts(slots, systems, &fakeYardDemand{yards: yardFacts})
-	got, _, _, _, err := drainCandidates(context.Background(), ports, testPlayerID)
+	got, _, _, _, err := drainCandidates(context.Background(), ports, testPlayerID, MaxDrainAttempts)
 	if err != nil {
 		t.Fatalf("drainCandidates returned error: %v", err)
 	}
@@ -539,7 +539,7 @@ func TestDrainCandidates_APricedYardIsNotPromoted(t *testing.T) {
 	}}}
 
 	ports, _ := yardQueuePorts(slots, systems, priced)
-	got, _, _, _, err := drainCandidates(context.Background(), ports, testPlayerID)
+	got, _, _, _, err := drainCandidates(context.Background(), ports, testPlayerID, MaxDrainAttempts)
 	if err != nil {
 		t.Fatalf("drainCandidates returned error: %v", err)
 	}
@@ -564,7 +564,7 @@ func TestDrainCandidates_AnUnknownYardIsNotPromoted(t *testing.T) {
 	}}}
 
 	ports, _ := yardQueuePorts(slots, systems, unknown)
-	got, _, _, _, err := drainCandidates(context.Background(), ports, testPlayerID)
+	got, _, _, _, err := drainCandidates(context.Background(), ports, testPlayerID, MaxDrainAttempts)
 	if err != nil {
 		t.Fatalf("drainCandidates returned error: %v", err)
 	}
@@ -631,7 +631,7 @@ func TestDrainCandidates_ADarkYardAtHighCoverageStillBeatsEveryMarketAtZero(t *t
 	ports, _ := yardQueuePorts(slots, systems, &fakeYardDemand{
 		yards: []fakeYard{darkYard("X1-COVERED-Y1", "X1-COVERED", true)},
 	})
-	got, _, _, _, err := drainCandidates(context.Background(), ports, testPlayerID)
+	got, _, _, _, err := drainCandidates(context.Background(), ports, testPlayerID, MaxDrainAttempts)
 	if err != nil {
 		t.Fatalf("drainCandidates returned error: %v", err)
 	}
@@ -679,7 +679,7 @@ func TestDrainCandidates_TheMarketTierIsOrderedSaturationFirst(t *testing.T) {
 	ports, _ := yardQueuePorts(slots, systems, &fakeYardDemand{
 		yards: []fakeYard{darkYard("X1-LONE-Y1", "X1-LONE", true)},
 	})
-	got, _, _, _, err := drainCandidates(context.Background(), ports, testPlayerID)
+	got, _, _, _, err := drainCandidates(context.Background(), ports, testPlayerID, MaxDrainAttempts)
 	if err != nil {
 		t.Fatalf("drainCandidates returned error: %v", err)
 	}
@@ -715,7 +715,7 @@ func TestDrainCandidates_TheMarketTierIsOrderedSaturationFirst(t *testing.T) {
 func TestDrainCandidates_APromotedYardDoesNotBringItsSystemAlong(t *testing.T) {
 	slots, systems, demand := saturatedQueue()
 	ports, _ := yardQueuePorts(slots, systems, demand)
-	got, _, _, _, err := drainCandidates(context.Background(), ports, testPlayerID)
+	got, _, _, _, err := drainCandidates(context.Background(), ports, testPlayerID, MaxDrainAttempts)
 	if err != nil {
 		t.Fatalf("drainCandidates returned error: %v", err)
 	}
@@ -751,7 +751,7 @@ func TestDrainCandidates_AnUnwiredYardDemandOrdersExactlyAsBefore(t *testing.T) 
 	systems := []ScreenedSystem{{System: "X1-AA", DepthCredits: 100}, {System: "X1-BB", DepthCredits: 9_000}}
 
 	ports, _ := yardQueuePorts(slots, systems, nil)
-	got, yards, _, _, err := drainCandidates(context.Background(), ports, testPlayerID)
+	got, yards, _, _, err := drainCandidates(context.Background(), ports, testPlayerID, MaxDrainAttempts)
 	if err != nil {
 		t.Fatalf("drainCandidates returned error: %v", err)
 	}
@@ -787,7 +787,7 @@ func TestDrainCandidates_AnUnreachableDarkYardIsNotPromoted(t *testing.T) {
 	})
 	ports.YardDemand = &fakeYardDemand{yards: []fakeYard{darkYard("X1-FAR-Y1", "X1-FAR", true)}}
 
-	got, yards, _, _, err := drainCandidates(context.Background(), ports, testPlayerID)
+	got, yards, _, _, err := drainCandidates(context.Background(), ports, testPlayerID, MaxDrainAttempts)
 	if err != nil {
 		t.Fatalf("drainCandidates returned error: %v", err)
 	}
@@ -831,7 +831,7 @@ func TestDrainCandidates_ReportsWhatTheOrderingDid(t *testing.T) {
 	}
 
 	ports, _ := yardQueuePorts(slots, systems, &fakeYardDemand{yards: yardFacts})
-	got, yards, _, _, err := drainCandidates(context.Background(), ports, testPlayerID)
+	got, yards, _, _, err := drainCandidates(context.Background(), ports, testPlayerID, MaxDrainAttempts)
 	if err != nil {
 		t.Fatalf("drainCandidates returned error: %v", err)
 	}
@@ -839,9 +839,9 @@ func TestDrainCandidates_ReportsWhatTheOrderingDid(t *testing.T) {
 		t.Fatalf("queued=%d, want 10 — every dark yard with an outstanding placement is a row the "+
 			"ordering was consulted on", yards.queued)
 	}
-	if yards.atHead != maxDrainAttempts {
+	if yards.atHead != MaxDrainAttempts {
 		t.Fatalf("atHead=%d, want %d: ten dark yards compete for six places and all six should be theirs. head=%v",
-			yards.atHead, maxDrainAttempts, head(got))
+			yards.atHead, MaxDrainAttempts, head(got))
 	}
 }
 
@@ -962,7 +962,7 @@ func TestDrainCandidates_AParkedMarketIsNeverACandidate(t *testing.T) {
 	ports, _ := yardQueuePorts(slots, systems, &fakeYardDemand{
 		yards: []fakeYard{darkYard("X1-OLD-Y1", "X1-OLD", true)},
 	})
-	got, _, _, _, err := drainCandidates(context.Background(), ports, testPlayerID)
+	got, _, _, _, err := drainCandidates(context.Background(), ports, testPlayerID, MaxDrainAttempts)
 	if err != nil {
 		t.Fatalf("drainCandidates returned error: %v", err)
 	}

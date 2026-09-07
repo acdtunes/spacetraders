@@ -23,7 +23,8 @@ func coverageReserveActive(candidates []QueuedSlot, covered map[string]int, yard
 
 // coverageFillBudget is how many of the fill budget's attempts an
 // already-held, ordinary placement may spend before standing aside for the
-// reserve.
+// reserve. fillBudget arrives ALREADY SCALED (seedshare.go), so this split
+// tracks the tick's real budget without reading it a second time.
 func coverageFillBudget(fillBudget, reserve int, active bool) int {
 	if !active || reserve <= 0 {
 		return fillBudget

@@ -14,7 +14,7 @@ import (
 // was survivable only while it did not actually starve anything.
 //
 // Two live facts make it starve now. There are more genuinely FUNDABLE fills
-// than maxDrainAttempts, so the budget is consumed before the loop ever reaches
+// than MaxDrainAttempts, so the budget is consumed before the loop ever reaches
 // a seed — and unfundable placements cost no attempts (see drainskip_test.go),
 // so nothing about them clears the queue either. Meanwhile every seed alive
 // today was acquired by re-tasking an already-parked spare, not by purchase, and
@@ -28,7 +28,7 @@ var seedShareClock = fixedClock{time.Unix(1_700_000_000, 0)}
 // self-funding system so every one of them genuinely costs an attempt, and
 // optionally one SPARE seed — also fundable — which sorts LAST by construction.
 //
-// The fill count deliberately exceeds maxDrainAttempts: a reserve that is never
+// The fill count deliberately exceeds MaxDrainAttempts: a reserve that is never
 // reached proves nothing, so the fixture must supply demand past the bound.
 func fundableFillPorts(fills int, withSeed bool) (BuyPorts, *fakePurchaser) {
 	led := &fakeBuyLedger{}
@@ -77,9 +77,9 @@ func TestDrain_ASeedIsReachedEvenBehindMoreFillsThanTheBudget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DrainBuyQueue returned error: %v", err)
 	}
-	if rep.Attempts > maxDrainAttempts {
+	if rep.Attempts > MaxDrainAttempts {
 		t.Fatalf("spent %d attempts, over the %d budget — the reserve must SPLIT the budget, never extend it",
-			rep.Attempts, maxDrainAttempts)
+			rep.Attempts, MaxDrainAttempts)
 	}
 
 	seedBought := false
@@ -105,11 +105,11 @@ func TestDrain_FillsKeepTheWholeBudgetWithNoSeedsOutstanding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DrainBuyQueue returned error: %v", err)
 	}
-	if rep.Attempts != maxDrainAttempts {
-		t.Fatalf("spent %d attempts with no seed outstanding, want the full %d", rep.Attempts, maxDrainAttempts)
+	if rep.Attempts != MaxDrainAttempts {
+		t.Fatalf("spent %d attempts with no seed outstanding, want the full %d", rep.Attempts, MaxDrainAttempts)
 	}
-	if rep.Bought != maxDrainAttempts {
-		t.Fatalf("bought %d probes, want %d — an unused reserve must not idle the budget", rep.Bought, maxDrainAttempts)
+	if rep.Bought != MaxDrainAttempts {
+		t.Fatalf("bought %d probes, want %d — an unused reserve must not idle the budget", rep.Bought, MaxDrainAttempts)
 	}
 }
 
@@ -132,7 +132,7 @@ func TestDrain_FillsStillOutrankSeedsWithinTheirShare(t *testing.T) {
 			fillBuys++
 		}
 	}
-	if want := maxDrainAttempts - seedAttemptReserve; fillBuys != want {
+	if want := MaxDrainAttempts - seedAttemptReserve; fillBuys != want {
 		t.Fatalf("fills took %d of %d attempts, want %d — the reserve must hold back exactly %d",
 			fillBuys, rep.Attempts, want, seedAttemptReserve)
 	}
@@ -169,7 +169,7 @@ func TestDrain_ASeedAloneDoesNotStrandTheBudget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DrainBuyQueue returned error: %v", err)
 	}
-	if rep.Attempts != maxDrainAttempts {
-		t.Fatalf("seeds alone spent %d attempts, want the full %d", rep.Attempts, maxDrainAttempts)
+	if rep.Attempts != MaxDrainAttempts {
+		t.Fatalf("seeds alone spent %d attempts, want the full %d", rep.Attempts, MaxDrainAttempts)
 	}
 }

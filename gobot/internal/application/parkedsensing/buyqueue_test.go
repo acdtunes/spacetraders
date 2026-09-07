@@ -1156,8 +1156,8 @@ func TestDrain_BoundsAttemptsNotOnlyPurchases(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DrainBuyQueue returned error: %v", err)
 	}
-	if len(pur.quotes) > maxDrainAttempts {
-		t.Fatalf("made %d live price reads for 20 failing placements, want at most %d", len(pur.quotes), maxDrainAttempts)
+	if len(pur.quotes) > MaxDrainAttempts {
+		t.Fatalf("made %d live price reads for 20 failing placements, want at most %d", len(pur.quotes), MaxDrainAttempts)
 	}
 	// All 20 placements share ONE yard, so they all meet the SAME counter. The
 	// bound this test exists to defend is on LIVE READS, and re-asking one
@@ -1168,8 +1168,8 @@ func TestDrain_BoundsAttemptsNotOnlyPurchases(t *testing.T) {
 	if len(pur.quotes) != 1 {
 		t.Fatalf("made %d live price reads of the SAME counter, want 1 (the refusal is the counter's, not each placement's)", len(pur.quotes))
 	}
-	if rep.Attempts > maxDrainAttempts {
-		t.Fatalf("report says Attempts=%d, want at most the budget %d", rep.Attempts, maxDrainAttempts)
+	if rep.Attempts > MaxDrainAttempts {
+		t.Fatalf("report says Attempts=%d, want at most the budget %d", rep.Attempts, MaxDrainAttempts)
 	}
 	if rep.Bought != 0 {
 		t.Fatalf("report says Bought=%d against an unpriceable yard, want 0", rep.Bought)
@@ -1222,16 +1222,16 @@ func TestDrain_CapsAttemptsWhenEveryCounterIsADifferentOne(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DrainBuyQueue returned error: %v", err)
 	}
-	if len(pur.quotes) != maxDrainAttempts {
+	if len(pur.quotes) != MaxDrainAttempts {
 		t.Fatalf("made %d live price reads across %d distinct dead yards, want exactly the budget %d",
-			len(pur.quotes), yards, maxDrainAttempts)
+			len(pur.quotes), yards, MaxDrainAttempts)
 	}
-	if rep.Attempts != maxDrainAttempts {
-		t.Fatalf("report says Attempts=%d, want the full budget %d spent on distinct counters", rep.Attempts, maxDrainAttempts)
+	if rep.Attempts != MaxDrainAttempts {
+		t.Fatalf("report says Attempts=%d, want the full budget %d spent on distinct counters", rep.Attempts, MaxDrainAttempts)
 	}
-	if len(rep.Refusals) != maxDrainAttempts {
+	if len(rep.Refusals) != MaxDrainAttempts {
 		t.Fatalf("recorded %d refusals for %d distinct refusing counters, want %d",
-			len(rep.Refusals), maxDrainAttempts, maxDrainAttempts)
+			len(rep.Refusals), MaxDrainAttempts, MaxDrainAttempts)
 	}
 }
 
@@ -1244,8 +1244,8 @@ func TestDrain_BoundsAttemptsWhenEveryCounterRefuses(t *testing.T) {
 	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{SpendEnabled: true, ProbeCap: 100}, fixedClock{time.Now()}); err != nil {
 		t.Fatalf("DrainBuyQueue returned error: %v", err)
 	}
-	if len(pur.buys) > maxDrainAttempts {
-		t.Fatalf("made %d purchase attempts, want at most %d", len(pur.buys), maxDrainAttempts)
+	if len(pur.buys) > MaxDrainAttempts {
+		t.Fatalf("made %d purchase attempts, want at most %d", len(pur.buys), MaxDrainAttempts)
 	}
 }
 

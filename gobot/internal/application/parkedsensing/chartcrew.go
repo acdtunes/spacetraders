@@ -37,10 +37,12 @@ import (
 // off the same gate walker claimSpares draws through.
 const (
 	// maxChartCrew is the widest crew the sizing can hand ONE system, and therefore the
-	// largest chart_hull_cap worth advertising. It is a CEILING, not a derivation of the
-	// assembly bound below: that bound rises with the outstanding count, so a system
-	// whose whole catalog is dark clears it and only this holds the crew down.
-	maxChartCrew = 15
+	// largest chart_hull_cap worth advertising. It is a BACKSTOP ABOVE THE MAP, not a
+	// sizing input: it is set past the largest system anyone has measured so that the
+	// walk and the assembly bound below are what answer, and it only ever catches a
+	// number no real system can produce. Set it past the largest system on the map:
+	// below that it stops being a backstop and silently becomes the binding rule.
+	maxChartCrew = 100
 	// The operator ladder's documented defaults, which are the break-even at the
 	// SHORTEST walk stored adjacency can report — one gate hop. They therefore sit at
 	// or below the measured answer at every rank and impose nothing until raised.
@@ -48,6 +50,13 @@ const (
 	defaultThirdChartHullAt  = 4
 	defaultChartHullTier     = 1
 )
+
+// MaxChartGrantsPerSystem is how many hulls ONE system may be granted in ONE tick at the
+// request ceiling, the base ExpandKnobs.MaxChartGrants paces off (pacing.go). IT IS A RATE,
+// NEVER A SIZE: every hull it admits is still earned rank by rank through paysItsWalk,
+// arrivesToWork and the operator's floor, and all it bounds is how long a system waits for
+// the crew it is ALREADY entitled to.
+const MaxChartGrantsPerSystem = 1
 
 // chartWalk is the gate distance the next charting hull would fly to reach one dark
 // system. UNMEASURED IS NOT ZERO: nothing we hold can reach the system, so there is
@@ -166,11 +175,13 @@ func paysItsWalk(uncharted, rank, hops int) bool {
 }
 
 // arrivesToWork is the ASSEMBLY BOUND, and it is what stops a short walk buying an
-// arbitrarily large crew. claimSpares grants one hull per system per tick and
-// advanceSeeds moves each of them one step per tick, so rank c is granted around the
-// c-th tick, by which time the ranks before it have taken c*(c-1)/2 of the system's 2U
-// steps; past that it is granted to a system whose work is gone. Charged against the
-// WALKLESS rate no real crew reaches, so it bounds the crew rather than forecasting it.
+// arbitrarily large crew. At the SLOWEST rate — one hull per system per tick — rank c is
+// granted around the c-th tick and advanceSeeds moves each hull one step per tick, so by
+// then the ranks before it have taken c*(c-1)/2 of the system's 2U steps; past that it is
+// granted to a system whose work is gone. Charged against the WALKLESS rate no real crew
+// reaches, so it bounds the crew rather than forecasting it. A FASTER RATE ONLY TIGHTENS
+// IT (MaxChartGrantsPerSystem): rank c arrives earlier, so less of the tour is spent by
+// the time it does and the bound is more conservative than its arithmetic, never less.
 func arrivesToWork(uncharted, rank int) bool {
 	return rank*(rank-1)/2 < 2*uncharted
 }

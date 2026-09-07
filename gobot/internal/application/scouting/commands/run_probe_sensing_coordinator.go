@@ -596,7 +596,7 @@ func (h *RunProbeSensingCoordinatorHandler) ReconcileOnce(ctx context.Context, c
 		advanceExpansion()
 	}
 
-	buyRep, berr := parkedsensing.DrainBuyQueue(ctx, ports.buyPorts(cmd.ContainerID, h.postRepo), playerID, buyKnobs(cfg), h.clock)
+	buyRep, berr := parkedsensing.DrainBuyQueue(ctx, ports.buyPorts(cmd.ContainerID, h.postRepo), playerID, buyKnobs(cfg, budgets), h.clock)
 	if berr != nil {
 		failures = append(failures, berr)
 	}
@@ -830,7 +830,7 @@ func (h *RunProbeSensingCoordinatorHandler) adoptOrphanProbes(ctx context.Contex
 		return 0
 	}
 
-	adopted := 0
+	adopted, reserved := 0, 0
 	for _, ship := range ships {
 		if !ship.IsScoutType() || ship.DedicatedFleet() != freshnessScoutFleetTag {
 			continue
@@ -838,6 +838,12 @@ func (h *RunProbeSensingCoordinatorHandler) adoptOrphanProbes(ctx context.Contex
 		hull := ship.ShipSymbol()
 		if manned[hull] {
 			continue // still manning the home post the cutover kept
+		}
+		if holds.hulls[hull] || holds.reserves[hull] {
+			// Already on the books. This pass fires on a ledger the era scope reports
+			// as empty, but rows can legitimately exist within it, and re-writing one
+			// buys nothing.
+			continue
 		}
 		location := ship.CurrentLocation()
 		if location == nil || location.Symbol == "" {
@@ -871,11 +877,19 @@ func (h *RunProbeSensingCoordinatorHandler) adoptOrphanProbes(ctx context.Contex
 		//
 		// sp-v7mtk retires the skip without touching any of that. The displacement it
 		// fears is a SECOND SPARE ROW at one waypoint; the reserve pool is keyed on the
-		// HULL and lives in its own table, so nothing at this waypoint is rewritten and
-		// the MARKET or YARD placement standing here keeps its own probe. Ten hulls at
-		// one yard is the ordinary shape of a bulk buy, and skipping them left every one
-		// outside the probe cap.
+		// HULL and lives in its own table, so nothing here is rewritten and the MARKET
+		// or YARD placement keeps its own probe. Skipping left a whole bulk buy — ten
+		// hulls at each of ten yards — outside the probe cap.
+		//
+		// BOUNDED, unlike the placement writes beside it: those are one per free
+		// waypoint, while this arm can take every co-located hull in the fleet at once
+		// on the one irreversible tick. The overflow is not lost — the standing retry
+		// runs from the very next tick at its own paced budget.
 		if holds.occupiedAt(location.Symbol) {
+			if reserved >= DefaultMaxAdoptions {
+				continue
+			}
+			reserved++
 			if recordAsReserve(ctx, cyc.ports, playerID, hull, location.Symbol, location.SystemSymbol, holds, failures) {
 				adopted++
 			}
