@@ -796,7 +796,7 @@ func (h *RunProbeSensingCoordinatorHandler) budgetInputs(cyc sensingCycle) domai
 // adoptOrphanProbes takes ownership of the probes the retired posts were
 // manning, as parked SPARE slots where each hull already stands.
 //
-// A scout-tagged hull that no surviving post names is otherwise stranded: no
+// An orphan hull that no surviving post names is otherwise stranded: no
 // coordinator drives it, and — the part that costs money — the probe cap counts
 // hulls through the ledger, so an unrecorded probe makes the fleet read SMALLER
 // than it is and authorises buying a replacement for a hull we already own.
@@ -832,7 +832,20 @@ func (h *RunProbeSensingCoordinatorHandler) adoptOrphanProbes(ctx context.Contex
 
 	adopted, reserved := 0, 0
 	for _, ship := range ships {
-		if !ship.IsScoutType() || ship.DedicatedFleet() != freshnessScoutFleetTag {
+		// THE SAME ALLOWLIST THE STANDING RETRY USES (adoptableFleetTag), shared rather
+		// than restated. A single-tag gate here refused OUR OWN sensing tag, so a hull
+		// left tagged with no ledger row had no way back on the one tick where this pass
+		// is the only adoption that runs — the standing pass is suppressed for exactly as
+		// long as the cutover is pending. A hull already on the books is still refused,
+		// by the holdings index below.
+		if !ship.IsScoutType() || !adoptableFleetTag(ship.DedicatedFleet()) {
+			continue
+		}
+		// PAIRED WITH THE WIDENING, not separable from it (RULINGS #3). The tags now
+		// admitted are worn by hulls a live container may be driving, and recording one
+		// here would let the placement machine re-task it mid-errand. The standing retry
+		// carries the identical guard for the identical set.
+		if !ship.IsIdle() {
 			continue
 		}
 		hull := ship.ShipSymbol()
@@ -852,30 +865,22 @@ func (h *RunProbeSensingCoordinatorHandler) adoptOrphanProbes(ctx context.Contex
 		// THE OCCUPANCY GUARD. UpsertSpareSlot's conflict set carries
 		// assigned_ship, so a write at a waypoint that already holds a SPARE row
 		// does not fail — it silently re-points that row at this hull. The hull it
-		// displaced then holds the sensing tag with NO row anywhere, which is
-		// UNRECOVERABLE: every adoption filter skips sensing_parked-tagged hulls,
-		// the spare re-task and the seed claim both read FROM the ledger, and
-		// DockedProbeAt will use such a hull as a purchasing buyer but never writes
-		// a row naming it. It is invisible to CountOwnedProbes for good, so the cap
-		// under-reads and buys a replacement for a probe we own (RULINGS #4) — with
-		// no error and a healthy heartbeat. Two co-located idle probes at the home
-		// shipyard is all it takes, on the one irreversible tick this pass ever
-		// runs.
+		// displaced then holds the sensing tag with NO row anywhere: the spare re-task
+		// and the seed claim both read FROM the ledger, and DockedProbeAt will use such
+		// a hull as a purchasing buyer but never writes a row naming it. It is invisible
+		// to CountOwnedProbes, so the cap under-reads and buys a replacement for a probe
+		// we own (RULINGS #4) — with no error and a healthy heartbeat. Two co-located
+		// idle probes at the home shipyard is all it takes.
 		//
-		// Skipping is the right answer: the displaced hull would be lost, while a
-		// skipped one stays untagged, unrecorded and therefore still recoverable.
+		// It is no longer PERMANENT — both adoption filters now share an allowlist that
+		// admits our own tag, so a tagged-but-unrecorded hull is picked up again — but a
+		// displacement still costs coverage until then.
 		//
-		// STILL KIND-BLIND after the key widened (sp-dpfp8), and deliberately: this
-		// is the ONE irreversible tick, so it keeps the widest guard available and
-		// leaves every judgement call to the passes that retry. See occupiedAt.
+		// STILL KIND-BLIND after the key widened, and deliberately: this is the ONE
+		// irreversible tick, so it keeps the widest guard available and leaves every
+		// judgement call to the passes that retry. See occupiedAt.
 		//
-		// sp-0eufi softened one clause above: adoption's filter is now an ALLOWLIST that INCLUDES
-		// sensing_parked, so a tagged-but-unrecorded hull is no longer unrecoverable — the standing
-		// pass picks it up. The displacement is still not worth risking here, and this remains a
-		// plain skip: this is the ONE irreversible tick, while the standing pass retries every tick
-		// and, unlike this path, knows how to fill a hull-less placement in place.
-		//
-		// sp-v7mtk retires the skip without touching any of that. The displacement it
+		// The skip is retired without touching any of that. The displacement it
 		// fears is a SECOND SPARE ROW at one waypoint; the reserve pool is keyed on the
 		// HULL and lives in its own table, so nothing here is rewritten and the MARKET
 		// or YARD placement keeps its own probe. Skipping left a whole bulk buy — ten
@@ -901,10 +906,9 @@ func (h *RunProbeSensingCoordinatorHandler) adoptOrphanProbes(ctx context.Contex
 		// Recorded-but-untagged leaves a hull the probe cap COUNTS (it just is
 		// not yet claimed by this fleet), and the placement machine re-asserts
 		// the tag idempotently the first time the spare is used. Tagged-but-
-		// unrecorded is the opposite and is unrecoverable here: the tag makes the
-		// hull skip the adoption filter on every retry, so it would stay
-		// invisible to the cap forever and authorise buying a replacement for a
-		// probe we already own.
+		// unrecorded is the worse half: the cap cannot see the hull, so it
+		// authorises buying a replacement for a probe we already own until an
+		// adoption pass records it.
 		if uerr := cyc.ports.Ledger.UpsertSpareSlot(ctx, playerID, parkedsensing.SlotRecord{
 			Waypoint:     location.Symbol,
 			System:       location.SystemSymbol,

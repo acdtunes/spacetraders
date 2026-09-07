@@ -694,12 +694,12 @@ func TestCutover_EveryScreenFails_RecoversThroughTheSweepNotARefire(t *testing.T
 // sensing_slots is keyed on (player, waypoint) and UpsertSpareSlot's conflict set
 // carries assigned_ship, so the second of two co-located orphans silently
 // re-points the row at itself. The first hull then holds the sensing tag with NO
-// row anywhere, and that is UNRECOVERABLE: both adoption passes skip
-// sensing_parked-tagged hulls, reuseSpareHull and the seed claim read FROM the
-// ledger, and DockedProbeAt will use the hull as a purchasing buyer but never
-// writes a row naming it. So it is invisible to CountOwnedProbes forever, the cap
-// under-reads, and a replacement is bought for a probe we own — with no error, no
-// parked_sensing_adopt_tag_failed (the tag SUCCEEDED), and a healthy heartbeat.
+// row anywhere: reuseSpareHull and the seed claim read FROM the ledger, and
+// DockedProbeAt will use the hull as a purchasing buyer but never writes a row
+// naming it. So it is invisible to CountOwnedProbes until an adoption pass records
+// it again, the cap under-reads meanwhile, and a replacement is bought for a probe
+// we own — with no error, no parked_sensing_adopt_tag_failed (the tag SUCCEEDED),
+// and a healthy heartbeat.
 //
 // It fires on the irreversible first EXPANSION tick, and several idle probes at
 // the home shipyard is an ordinary fleet shape.
