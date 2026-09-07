@@ -74,7 +74,7 @@ func (w *flyingWorld) DockedBuyerAt(_ context.Context, _ int, _ string) (string,
 	return "", false, nil
 }
 
-func (w *flyingWorld) LendableHulls(_ context.Context, _ int, _ int) ([]LendableHull, error) {
+func (w *flyingWorld) LendableHulls(_ context.Context, _ int, _ int, _ []string) ([]LendableHull, error) {
 	return nil, nil
 }
 

@@ -202,23 +202,45 @@ func TestDockedBuyerAt_PrefersAFreeSignerOverABorrowedOne(t *testing.T) {
 
 // --- LendableHulls ------------------------------------------------------------
 
-// PROBES ARE NOT LENDABLE, and that is the point of the pass rather than an
-// optimisation: the deadlock it serves is "no probe is free to put at a probe
-// counter", so a probe answer would be either impossible or already served by the
-// paths that move probes.
-func TestLendableHulls_ExcludesProbes(t *testing.T) {
+// PROBES ARE LENDABLE AND ARE OFFERED FIRST. A probe is the cheapest signer the
+// fleet owns, so on a grown fleet the escape should never be waiting on a trade
+// hull. Which probe is a LEDGER question this port cannot answer, so role is simply
+// not the filter — the caller names the committed hulls instead.
+func TestLendableHulls_AdmitsProbesAndOffersThemAheadOfTradeHulls(t *testing.T) {
 	db := newShipPortsDB(t)
+	createHull(t, db, hullRow("TORWIND-9", "X1-AA-A1", "HAULER")) // sorts first by symbol
 	createHull(t, db, hullRow("TORWIND-PROBE", "X1-AA-A1", "SATELLITE"))
-	createHull(t, db, hullRow("TORWIND-9", "X1-AA-A1", "HAULER"))
 
 	port := adapterSensing.NewShipPositionPort(db)
-	hulls, err := port.LendableHulls(context.Background(), testPlayerID, 8)
+	hulls, err := port.LendableHulls(context.Background(), testPlayerID, 8, nil)
 	require.NoError(t, err)
-	require.Len(t, hulls, 1)
-	require.Equal(t, "TORWIND-9", hulls[0].ShipSymbol)
+	require.Len(t, hulls, 2, "a probe standing idle is a candidate; excluding it left the escape waiting on a hauler")
+	require.Equal(t, "TORWIND-PROBE", hulls[0].ShipSymbol, "a trade hull was offered while a probe stood beside it")
 	require.Equal(t, "X1-AA-A1", hulls[0].Waypoint)
 	require.Equal(t, "X1-AA", hulls[0].System)
 	require.False(t, hulls[0].InTransit)
+	require.Equal(t, "TORWIND-9", hulls[1].ShipSymbol)
+}
+
+// THE SKIP LIST IS APPLIED, which is what keeps the bounded page meaning "the best
+// candidates" rather than "the first rows" on a fleet whose probes are nearly all
+// committed. It is a paging aid, never the guard — the caller re-tests what it gets.
+func TestLendableHulls_SkipsTheHullsTheCallerNamesAsEngaged(t *testing.T) {
+	db := newShipPortsDB(t)
+	createHull(t, db, hullRow("TORWIND-BUSY", "X1-AA-A1", "SATELLITE"))
+	createHull(t, db, hullRow("TORWIND-FREE", "X1-AA-A1", "SATELLITE"))
+
+	port := adapterSensing.NewShipPositionPort(db)
+	hulls, err := port.LendableHulls(context.Background(), testPlayerID, 8, []string{"TORWIND-BUSY"})
+	require.NoError(t, err)
+	require.Len(t, hulls, 1)
+	require.Equal(t, "TORWIND-FREE", hulls[0].ShipSymbol)
+
+	// An empty list is "skip nothing", never "skip everything" — a fleet with no
+	// committed hull at all must still get its candidates.
+	all, err := port.LendableHulls(context.Background(), testPlayerID, 8, nil)
+	require.NoError(t, err)
+	require.Len(t, all, 2)
 }
 
 // THE SAME CLAIM FILTER AS DockedBuyerAt. A hull the claim path would refuse is not
@@ -240,7 +262,7 @@ func TestLendableHulls_ExcludesEveryHullTheClaimPathWouldRefuse(t *testing.T) {
 	createHull(t, db, reserved)
 
 	port := adapterSensing.NewShipPositionPort(db)
-	hulls, err := port.LendableHulls(context.Background(), testPlayerID, 8)
+	hulls, err := port.LendableHulls(context.Background(), testPlayerID, 8, nil)
 	require.NoError(t, err)
 	require.Empty(t, hulls, "offered a hull that is loaded, claimed or reserved — none of them is ours to lend")
 }
@@ -258,7 +280,7 @@ func TestLendableHulls_LendsAnIdleHullFromADedicatedFleet(t *testing.T) {
 			require.NoError(t, db.Save(&model).Error)
 
 			port := adapterSensing.NewShipPositionPort(db)
-			hulls, err := port.LendableHulls(context.Background(), testPlayerID, 8)
+			hulls, err := port.LendableHulls(context.Background(), testPlayerID, 8, nil)
 			require.NoError(t, err)
 			require.Len(t, hulls, 1, "a fully-dedicated fleet has no way out of the deadlock if its idle hulls are unlendable")
 			require.Equal(t, "TORWIND-9", hulls[0].ShipSymbol)
@@ -277,7 +299,7 @@ func TestLendableHulls_RefusesADedicatedHullWithCargoAboard(t *testing.T) {
 	createHull(t, db, loaded)
 
 	port := adapterSensing.NewShipPositionPort(db)
-	hulls, err := port.LendableHulls(context.Background(), testPlayerID, 8)
+	hulls, err := port.LendableHulls(context.Background(), testPlayerID, 8, nil)
 	require.NoError(t, err)
 	require.Empty(t, hulls, "a single unit aboard is still a job in progress")
 }
@@ -297,7 +319,7 @@ func TestLendableHulls_ExcludesAClaimedHullWhateverItsFleet(t *testing.T) {
 				createHull(t, db, model)
 
 				port := adapterSensing.NewShipPositionPort(db)
-				hulls, err := port.LendableHulls(context.Background(), testPlayerID, 8)
+				hulls, err := port.LendableHulls(context.Background(), testPlayerID, 8, nil)
 				require.NoError(t, err)
 				require.Empty(t, hulls, "a hull under a live claim is being driven by whoever holds it")
 			})
@@ -305,12 +327,32 @@ func TestLendableHulls_ExcludesAClaimedHullWhateverItsFleet(t *testing.T) {
 	}
 }
 
-// A SATELLITE IS NEVER LENDABLE, and this pins it against a probe that now clears
-// every OTHER admission the widening opened: idle, empty-handed, and tagged to a
-// working fleet. Only the role exclusion stands between it and the borrow list, and a
-// probe cannot staff a counter it is the point of buying.
-func TestLendableHulls_NeverLendsASatelliteHoweverItIsTagged(t *testing.T) {
-	for _, fleet := range []string{"", appSensing.SensingParkedFleetTag, navigation.TradeFleetMVT} {
+// AN ACTIVE ASSIGNMENT STILL EXCLUDES A PROBE, whatever it is tagged. Dropping the
+// role filter widened WHO may be considered and nothing else: a probe a container
+// holds or the captain has reserved is still being driven by somebody.
+func TestLendableHulls_ExcludesAClaimedProbeHoweverItIsTagged(t *testing.T) {
+	for _, fleet := range []string{"", appSensing.SensingParkedFleetTag, "scout", navigation.TradeFleetMVT} {
+		t.Run(fleet, func(t *testing.T) {
+			db := newShipPortsDB(t)
+			model := hullRow("TORWIND-PROBE", "X1-AA-A1", "SATELLITE")
+			model.DedicatedFleet = fleet
+			model.AssignmentStatus = "active"
+			model.AssignmentOwner = string(navigation.AssignmentOwnerContainer)
+			createHull(t, db, model)
+
+			port := adapterSensing.NewShipPositionPort(db)
+			hulls, err := port.LendableHulls(context.Background(), testPlayerID, 8, nil)
+			require.NoError(t, err)
+			require.Empty(t, hulls, "a probe under a live claim is being driven by whoever holds it")
+		})
+	}
+}
+
+// THE FLEET TAG IS NOT THE TEST, and this pins it against the tag the fleet happens
+// to be wearing today. A probe is a candidate on the strength of standing idle and
+// being named by no placement row — a rule that survives the tag being renamed.
+func TestLendableHulls_AdmitsAnIdleProbeWhateverItIsTagged(t *testing.T) {
+	for _, fleet := range []string{"", appSensing.SensingParkedFleetTag, "scout"} {
 		t.Run(fleet, func(t *testing.T) {
 			db := newShipPortsDB(t)
 			model := hullRow("TORWIND-PROBE", "X1-AA-A1", "SATELLITE")
@@ -318,9 +360,10 @@ func TestLendableHulls_NeverLendsASatelliteHoweverItIsTagged(t *testing.T) {
 			createHull(t, db, model)
 
 			port := adapterSensing.NewShipPositionPort(db)
-			hulls, err := port.LendableHulls(context.Background(), testPlayerID, 8)
+			hulls, err := port.LendableHulls(context.Background(), testPlayerID, 8, nil)
 			require.NoError(t, err)
-			require.Empty(t, hulls)
+			require.Len(t, hulls, 1)
+			require.Equal(t, "TORWIND-PROBE", hulls[0].ShipSymbol)
 		})
 	}
 }
@@ -337,7 +380,7 @@ func TestLendableHulls_PrefersAFreeHullOverOneBorrowedFromAWorkingFleet(t *testi
 	createHull(t, db, hullRow("TORWIND-8", "X1-AA-A1", "HAULER"))
 
 	port := adapterSensing.NewShipPositionPort(db)
-	hulls, err := port.LendableHulls(context.Background(), testPlayerID, 8)
+	hulls, err := port.LendableHulls(context.Background(), testPlayerID, 8, nil)
 	require.NoError(t, err)
 	require.Len(t, hulls, 2)
 	require.Equal(t, "TORWIND-8", hulls[0].ShipSymbol, "a working fleet's hull was offered ahead of a free one standing beside it")
@@ -355,7 +398,7 @@ func TestLendableHulls_StillRanksTheCommandFrigateBehindABorrowedHauler(t *testi
 	createHull(t, db, borrowed)
 
 	port := adapterSensing.NewShipPositionPort(db)
-	hulls, err := port.LendableHulls(context.Background(), testPlayerID, 8)
+	hulls, err := port.LendableHulls(context.Background(), testPlayerID, 8, nil)
 	require.NoError(t, err)
 	require.Len(t, hulls, 2)
 	require.Equal(t, "TORWIND-8", hulls[0].ShipSymbol, "the flagship was drafted while an ordinary hull could do the job")
@@ -374,7 +417,7 @@ func TestLendableHulls_FlagsAnInTransitDedicatedHullSoItsCounterIsStruckOut(t *t
 	createHull(t, db, flying)
 
 	port := adapterSensing.NewShipPositionPort(db)
-	hulls, err := port.LendableHulls(context.Background(), testPlayerID, 8)
+	hulls, err := port.LendableHulls(context.Background(), testPlayerID, 8, nil)
 	require.NoError(t, err)
 	require.Len(t, hulls, 1)
 	require.True(t, hulls[0].InTransit, "a borrowed hull under way was reported as standing still")
@@ -393,7 +436,7 @@ func TestLendableHulls_ReturnsInTransitHullsFlagged(t *testing.T) {
 	createHull(t, db, flying)
 
 	port := adapterSensing.NewShipPositionPort(db)
-	hulls, err := port.LendableHulls(context.Background(), testPlayerID, 8)
+	hulls, err := port.LendableHulls(context.Background(), testPlayerID, 8, nil)
 	require.NoError(t, err)
 	require.Len(t, hulls, 1)
 	require.True(t, hulls[0].InTransit, "a hull under way was reported as standing still and would be commanded again")
@@ -408,7 +451,7 @@ func TestLendableHulls_RanksTheCommandFrigateLast(t *testing.T) {
 	createHull(t, db, hullRow("TORWIND-8", "X1-AA-A1", "HAULER"))
 
 	port := adapterSensing.NewShipPositionPort(db)
-	hulls, err := port.LendableHulls(context.Background(), testPlayerID, 8)
+	hulls, err := port.LendableHulls(context.Background(), testPlayerID, 8, nil)
 	require.NoError(t, err)
 	require.Len(t, hulls, 2)
 	require.Equal(t, "TORWIND-8", hulls[0].ShipSymbol, "the flagship was offered ahead of an ordinary hauler")
@@ -425,11 +468,11 @@ func TestLendableHulls_HonoursItsBoundAndRefusesAnUnsetOne(t *testing.T) {
 	}
 
 	port := adapterSensing.NewShipPositionPort(db)
-	hulls, err := port.LendableHulls(context.Background(), testPlayerID, 2)
+	hulls, err := port.LendableHulls(context.Background(), testPlayerID, 2, nil)
 	require.NoError(t, err)
 	require.Len(t, hulls, 2)
 
-	none, err := port.LendableHulls(context.Background(), testPlayerID, 0)
+	none, err := port.LendableHulls(context.Background(), testPlayerID, 0, nil)
 	require.NoError(t, err)
 	require.Empty(t, none)
 }
@@ -443,7 +486,7 @@ func TestLendableHulls_IsScopedToThePlayer(t *testing.T) {
 	createHull(t, db, theirs)
 
 	port := adapterSensing.NewShipPositionPort(db)
-	hulls, err := port.LendableHulls(context.Background(), testPlayerID, 8)
+	hulls, err := port.LendableHulls(context.Background(), testPlayerID, 8, nil)
 	require.NoError(t, err)
 	require.Empty(t, hulls)
 }

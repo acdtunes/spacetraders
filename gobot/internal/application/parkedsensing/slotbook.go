@@ -53,6 +53,10 @@ type slotBook struct {
 	// and cannot be bought through, and a PARKED row with no ship is a torn row,
 	// so either read the other way stages a purchase that can never happen.
 	staffed map[string]bool
+	// commitments names every hull the ledger accounts for — a placement row in ANY kind
+	// and state, the reserve pool, or out charting. THE COUNTER-STAFFING GUARD: stricter
+	// than surplusPool, which may give up a REDUNDANT observer where this gives up none.
+	commitments map[string]bool
 }
 
 // newSlotBook builds the tick's view of the placement ledger. onErrand names the
@@ -60,15 +64,22 @@ type slotBook struct {
 // ONE HULL TO ONE ERRAND across ticks — see the parkedSpares filter below.
 func newSlotBook(rows []QueuedSlot, reserves []SpareHull, onErrand map[string]bool) *slotBook {
 	b := &slotBook{
-		state:   make(map[slotKey]string, len(rows)),
-		wanted:  make(map[string][]QueuedSlot),
-		staffed: make(map[string]bool),
+		state:       make(map[slotKey]string, len(rows)),
+		wanted:      make(map[string][]QueuedSlot),
+		staffed:     make(map[string]bool),
+		commitments: make(map[string]bool, len(rows)),
+	}
+	for ship, out := range onErrand {
+		if out {
+			b.commitments[ship] = true
+		}
 	}
 	// Every hull a PLACEMENT row names — see addReserves for what it is for.
 	placed := make(map[string]bool, len(rows))
 	for _, row := range rows {
 		if row.AssignedShip != "" {
 			placed[row.AssignedShip] = true
+			b.commitments[row.AssignedShip] = true // named at all, unlike the pools below
 		}
 		b.state[slotKey{row.Waypoint, row.Kind}] = row.State
 		if row.State == SlotStateWanted {
@@ -131,6 +142,8 @@ func newSlotBook(rows []QueuedSlot, reserves []SpareHull, onErrand map[string]bo
 // count-neutral, and live again by itself if the placement is ever reaped.
 func (b *slotBook) addReserves(reserves []SpareHull, placed, onErrand map[string]bool) {
 	for _, reserve := range reserves {
+		// Committed even when the row below is dropped: a reserve is a recorded spare.
+		b.commitments[reserve.Ship] = true
 		if placed[reserve.Ship] {
 			continue
 		}
@@ -161,6 +174,21 @@ func (b *slotBook) dropReserve(ship string) {
 			return
 		}
 	}
+}
+
+// engaged reports whether the ledger accounts for ship. THE GUARD, asked of every
+// candidate immediately before it is commanded.
+func (b *slotBook) engaged(ship string) bool { return b.commitments[ship] }
+
+// engagedHulls lists them in symbol order so the bounded ships read can skip them — AN
+// OPTIMISATION, NEVER THE GUARD: it only stops parked probes filling the page.
+func (b *slotBook) engagedHulls() []string {
+	out := make([]string, 0, len(b.commitments))
+	for ship := range b.commitments {
+		out = append(out, ship)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // occupied reports whether a waypoint already carries a placement row OF THIS KIND.

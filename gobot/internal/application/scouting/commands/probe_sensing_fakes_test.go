@@ -907,7 +907,7 @@ func (f *fakeShipPositions) DockedBuyerAt(_ context.Context, _ int, waypoint str
 	return ship, ok, nil
 }
 
-func (f *fakeShipPositions) LendableHulls(_ context.Context, _ int, limit int) ([]parkedsensing.LendableHull, error) {
+func (f *fakeShipPositions) LendableHulls(_ context.Context, _ int, limit int, _ []string) ([]parkedsensing.LendableHull, error) {
 	if limit <= 0 || len(f.lendable) <= limit {
 		return f.lendable, nil
 	}

@@ -23,9 +23,10 @@ import (
 //     candidate whose goods lose their last observer, so a fleet with one probe per
 //     system releases nothing either.
 //
-// Every route assumes spare PROBES already exist. The escape is a NON-PROBE hull
-// standing at the counter as a BUYER — SpaceTraders sells a hull wherever one of
-// ours is docked and does not care which.
+// Every route assumes a probe the LEDGER ALREADY PLACES. The escape is any idle hull
+// standing at the counter as a BUYER — SpaceTraders sells a hull wherever one of ours
+// is docked and does not care which — and on a grown fleet the first choice is a probe
+// no placement row names, which nothing else in the engine can move.
 
 // coldFleet is the fixture the deadlock needs, and it is built so the old rule and
 // the new one DISAGREE: there is not one parked probe anywhere, and the only
@@ -571,4 +572,207 @@ func advanceExpansionPaused(t *testing.T, p ExpandPorts, h *expandHarness) (Expa
 	return AdvanceExpansion(context.Background(), p, 1, ExpandKnobs{
 		SeedsEnabled: false, MinBudgetRate: 0.05, Whitelist: h.whitelist,
 	}, 1.0)
+}
+
+// --- the unplaced probe ------------------------------------------------------
+
+// probeFleet is coldFleet with the escape's FIRST choice standing by instead of a
+// trade hull: a probe the placement ledger names in no row at all. Nothing else in
+// the engine can move such a hull — surplusPool is built from PARKED MARKET rows,
+// and foothold and yard presence both draw from it — so before this it sat idle
+// while the fleet waited on a borrowed hauler.
+func probeFleet() (*expandHarness, *fakeListingMemo) {
+	h, memo := coldFleet()
+	h.ships.lendable = []LendableHull{
+		{ShipSymbol: "TORWIND-P3", Waypoint: "X1-HOME-A1", System: "X1-HOME"},
+	}
+	return h, memo
+}
+
+// refuseHarness asserts the pass ran, found the deadlock, and still commanded
+// nothing — the shape every committed-hull refusal takes.
+func refuseHarness(t *testing.T, h *expandHarness, memo *fakeListingMemo, because string) {
+	t.Helper()
+	rep, err := h.runWithMemo(t, memo)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if rep.SeedsUnstaged == 0 {
+		t.Fatalf("SeedsUnstaged = 0, so the pass never ran and this proves nothing about %s", because)
+	}
+	if rep.CountersStaffed != 0 {
+		t.Fatalf("CountersStaffed = %d, want 0 — %s", rep.CountersStaffed, because)
+	}
+	if n := len(h.seed.calls); n != 0 {
+		t.Fatalf("commands issued = %v, want none — %s", h.seed.calls, because)
+	}
+}
+
+// TIER A, AND IT IS FREE. A probe standing on the counter is ORBITING it — staffedAt
+// reads DOCKED and answers no — so one dock opens the counter with no flight, no fuel
+// and no waiting. The pass must reach for this before it moves anything.
+func TestAdvanceExpansion_BerthsAnUnplacedProbeAlreadyStandingOnTheCounter(t *testing.T) {
+	h, memo := probeFleet()
+	h.ships.lendable[0].Waypoint = "X1-HOME-YARD"
+
+	rep, err := h.runWithMemo(t, memo)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if rep.CountersStaffed != 1 {
+		t.Fatalf("CountersStaffed = %d, want 1 — a probe was orbiting the counter and one dock would open it",
+			rep.CountersStaffed)
+	}
+	calls := h.seed.calls
+	if len(calls) != 1 || calls[0].verb != "dock" || calls[0].ship != "TORWIND-P3" {
+		t.Fatalf("commands issued = %v, want exactly one dock of TORWIND-P3 — berthing where it stands costs "+
+			"no movement, and flying it anywhere else spends fuel to reach a counter it was already on", calls)
+	}
+}
+
+// TIER B. With no counter under it, the probe is sent one hop to one in its OWN
+// system — the same single in-system dispatch the borrow has always been bounded to.
+func TestAdvanceExpansion_SendsAnUnplacedProbeToACounterInItsOwnSystem(t *testing.T) {
+	h, memo := probeFleet()
+
+	rep, err := h.runWithMemo(t, memo)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if rep.CountersStaffed != 1 {
+		t.Fatalf("CountersStaffed = %d, want 1", rep.CountersStaffed)
+	}
+	calls := h.seed.calls
+	if len(calls) != 1 || calls[0].verb != "navigate" || calls[0].ship != "TORWIND-P3" || calls[0].arg != "X1-HOME-YARD" {
+		t.Fatalf("commands issued = %v, want exactly one navigate of TORWIND-P3 to X1-HOME-YARD", calls)
+	}
+}
+
+// A PROBE WATCHING A MARKET IS NEVER TAKEN. It is the work this engine exists to do,
+// and its goods lose their observer the moment it leaves — the cost doctrine puts
+// far above any charting this could buy.
+func TestAdvanceExpansion_RefusesAProbeHoldingAParkedMarketPlacement(t *testing.T) {
+	h, memo := probeFleet()
+	h.ledger.slots = []QueuedSlot{{
+		Waypoint: "X1-HOME-M1", System: "X1-HOME", Kind: SlotKindMarket,
+		State: SlotStateParked, AssignedShip: "TORWIND-P3",
+	}}
+
+	refuseHarness(t, h, memo, "TORWIND-P3 is parked on a market and lending it takes that market's observer away")
+}
+
+// A PROBE HOLDING A CLAIMED SPARE IS NEVER TAKEN: the seed it was bought for is
+// already on order, and a second job would be stamped on a hull that can fly one.
+// The row is IN_TRANSIT rather than PARKED on purpose — the claimable-spare pools
+// require PARKED, so only a test that reads EVERY state catches this one.
+//
+// The spare sits in a system no target is routable from, which is what keeps it out
+// of the supply test one layer up: a spare that counted as supply would suppress the
+// seed request and the pass under test would never run at all.
+func TestAdvanceExpansion_RefusesAProbeHoldingAClaimedSpare(t *testing.T) {
+	h, memo := probeFleet()
+	h.ledger.systems = append(h.ledger.systems, ExpandSystem{System: "X1-ISLE", Verdict: VerdictInScope})
+	h.gates.adjacency["X1-ISLE"] = nil
+	h.ledger.slots = []QueuedSlot{{
+		Waypoint: "X1-ISLE-YARD", System: "X1-ISLE", Kind: SlotKindSpare,
+		State: SlotStateInTransit, AssignedShip: "TORWIND-P3",
+	}}
+
+	refuseHarness(t, h, memo, "TORWIND-P3 is already spoken for by a spare placement")
+}
+
+// A PROBE OUT ON A CHARTING ERRAND IS NEVER TAKEN, and the roster is what says so
+// even when no placement row still names the hull: the claim stamps the errand first
+// and releases the row second, so a row-only test calls a flying probe free.
+func TestAdvanceExpansion_RefusesAProbeOutOnAChartingErrand(t *testing.T) {
+	h, memo := probeFleet()
+	h.ledger.systems = append(h.ledger.systems, ExpandSystem{
+		System: "X1-FAR", Verdict: VerdictInScope,
+		SeedShip: "TORWIND-P3", SeedState: SeedStateCharting,
+	})
+
+	refuseHarness(t, h, memo, "TORWIND-P3 is already out charting and cannot fly a second errand")
+}
+
+// AN IN-TRANSIT HULL IS NEVER DISPATCHED, however uncommitted it is. It is returned
+// by the read only so the counter it is bound for can be struck out.
+func TestAdvanceExpansion_RefusesAnInTransitProbe(t *testing.T) {
+	h, memo := probeFleet()
+	h.ships.lendable[0].InTransit = true
+
+	refuseHarness(t, h, memo, "TORWIND-P3 is under way and commanding it again would fight the flight it is on")
+}
+
+// THE SKIP LIST IS HANDED DOWN, so a fleet whose probes are nearly all committed does
+// not spend its bounded page on rows the guard would refuse one by one. It is an
+// optimisation and the refusals above prove the guard stands without it.
+func TestAdvanceExpansion_TellsTheReadWhichHullsAreAlreadyCommitted(t *testing.T) {
+	h, memo := probeFleet()
+	h.ledger.slots = []QueuedSlot{{
+		Waypoint: "X1-HOME-M1", System: "X1-HOME", Kind: SlotKindMarket,
+		State: SlotStateParked, AssignedShip: "TORWIND-BUSY",
+	}}
+
+	if _, err := h.runWithMemo(t, memo); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var named bool
+	for _, ship := range h.ships.lendableEngaged {
+		if ship == "TORWIND-BUSY" {
+			named = true
+		}
+	}
+	if !named {
+		t.Fatalf("engaged = %v, want it to name TORWIND-BUSY — a page filled with committed hulls is a borrow "+
+			"list that reads empty for a reason the read cannot see", h.ships.lendableEngaged)
+	}
+}
+
+// THE PER-TICK BOUND HOLDS FOR PROBES TOO. A fleet holding hundreds of idle probes
+// must not empty its bench on one tick's picture of the world.
+func TestAdvanceExpansion_LendsOneProbePerTickHoweverManyAreFree(t *testing.T) {
+	h, memo := probeFleet()
+	h.ledger.systems = append(h.ledger.systems, ExpandSystem{System: "X1-ALT", Verdict: VerdictInScope})
+	h.gates.adjacency["X1-ALT"] = []string{"X1-DARK"}
+	h.yards.bySystem["X1-ALT"] = []string{"X1-ALT-YARD"}
+	memo.sells["X1-ALT-YARD"] = true
+	memo.scannedAt["X1-ALT-YARD"] = time.Now()
+	h.ships.lendable = append(h.ships.lendable,
+		LendableHull{ShipSymbol: "TORWIND-P4", Waypoint: "X1-ALT-A1", System: "X1-ALT"})
+
+	if _, err := h.runWithMemo(t, memo); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if n := len(h.seed.calls); n != 1 {
+		t.Fatalf("commands issued = %v, want exactly 1 — two counters were open and two probes were free, "+
+			"and a tick that spends both is one picture of the fleet emptying the bench", h.seed.calls)
+	}
+}
+
+// THE IDEMPOTENCE KEY HOLDS FOR PROBES TOO: a probe already flying to a counter
+// strikes that counter out, so the next tick does not send a second one after it.
+func TestAdvanceExpansion_DoesNotSendASecondProbeToACounterOneIsFlyingTo(t *testing.T) {
+	h, memo := probeFleet()
+	h.ships.lendable = append(h.ships.lendable,
+		LendableHull{ShipSymbol: "TORWIND-P4", Waypoint: "X1-HOME-A2", System: "X1-HOME"})
+
+	if _, err := h.runWithMemo(t, memo); err != nil {
+		t.Fatalf("unexpected error on the first tick: %v", err)
+	}
+	if n := h.seed.countOf("navigate"); n != 1 {
+		t.Fatalf("first tick issued %d navigates, want exactly 1", n)
+	}
+
+	// TORWIND-P3 is now under way to the counter; TORWIND-P4 is still standing by.
+	h.ships.lendable[0] = LendableHull{
+		ShipSymbol: "TORWIND-P3", Waypoint: "X1-HOME-YARD", System: "X1-HOME", InTransit: true,
+	}
+
+	if _, err := h.runWithMemo(t, memo); err != nil {
+		t.Fatalf("unexpected error on the second tick: %v", err)
+	}
+	if n := h.seed.countOf("navigate"); n != 1 {
+		t.Fatalf("issued %d navigates across two ticks, want 1 — a probe is already inbound to X1-HOME-YARD "+
+			"and a second one spends a hull to arrive at a counter that is already being opened", n)
+	}
 }

@@ -192,7 +192,7 @@ func (stubShipReader) DockedBuyerAt(context.Context, int, string) (string, bool,
 	return "", false, nil
 }
 
-func (stubShipReader) LendableHulls(context.Context, int, int) ([]appSensing.LendableHull, error) {
+func (stubShipReader) LendableHulls(context.Context, int, int, []string) ([]appSensing.LendableHull, error) {
 	return nil, nil
 }
 

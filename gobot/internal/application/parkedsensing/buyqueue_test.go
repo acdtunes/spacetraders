@@ -325,7 +325,7 @@ func (f *fakeShipReader) DockedBuyerAt(_ context.Context, _ int, waypoint string
 	return s, ok, nil
 }
 
-func (f *fakeShipReader) LendableHulls(_ context.Context, _ int, _ int) ([]LendableHull, error) {
+func (f *fakeShipReader) LendableHulls(_ context.Context, _ int, _ int, _ []string) ([]LendableHull, error) {
 	return nil, nil
 }
 

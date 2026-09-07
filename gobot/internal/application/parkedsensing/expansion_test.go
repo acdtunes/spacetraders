@@ -553,6 +553,11 @@ type fakeExpandShips struct {
 	// lendableCalls counts the borrow read, which is how a test proves a tick that
 	// staged everything it wanted never asked for a hull at all.
 	lendableCalls int
+	// lendableEngaged records the skip list the pass handed down. THE FAKE ITSELF
+	// IGNORES IT, deliberately: the ledger test is the guard and the skip list only a
+	// paging aid, so answering with a committed hull anyway is what proves the pass
+	// refuses it on its own rather than because the read hid it.
+	lendableEngaged []string
 }
 
 func (f *fakeExpandShips) DockedProbeAt(_ context.Context, _ int, waypoint string) (string, bool, error) {
@@ -575,8 +580,9 @@ func (f *fakeExpandShips) DockedBuyerAt(_ context.Context, _ int, waypoint strin
 	return s, ok, nil
 }
 
-func (f *fakeExpandShips) LendableHulls(_ context.Context, _ int, limit int) ([]LendableHull, error) {
+func (f *fakeExpandShips) LendableHulls(_ context.Context, _ int, limit int, engaged []string) ([]LendableHull, error) {
 	f.lendableCalls++
+	f.lendableEngaged = engaged
 	if f.lendableErr != nil {
 		// Adversarial: a borrowable hull alongside the error, so a caller that
 		// swallows it commands a hull belonging to another coordinator.

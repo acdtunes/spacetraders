@@ -184,8 +184,9 @@ type ParkedShipReader interface {
 	// signs under the hull's own dedication), so an implementation may admit a hull
 	// borrowed from a working fleet and MUST then price that sacrifice instead.
 	DockedBuyerAt(ctx context.Context, playerID int, waypoint string) (string, bool, error)
-	// LendableHulls returns at most `limit` NON-PROBE hulls of ours that this engine
-	// could borrow for one errand, cheapest sacrifice first.
+	// LendableHulls returns at most `limit` hulls of ours that this engine could
+	// borrow for one errand, cheapest sacrifice first, skipping every symbol in
+	// `engaged`.
 	//
 	// BOUNDED, WHICH IS WHY IT IS ADMISSIBLE HERE. The bound is the caller's and the
 	// pass that uses it dispatches at most one hull per tick, so the cost is a single
@@ -198,10 +199,13 @@ type ParkedShipReader interface {
 	// dedicated every hull it owns never leaves the deadlock — but borrowing is a
 	// reachability trick, never a way to take a hull off another coordinator's work.
 	//
+	// PROBES ARE ADMITTED, AND THE CALLER DECIDES WHICH: one watching a market is doing
+	// this engine's own work, a LEDGER question no ships read answers. `engaged` carries
+	// that answer opaquely; a paging aid, never a permission.
 	// IN-TRANSIT HULLS ARE INCLUDED AND FLAGGED. They are not borrowable, but a hull
 	// already FLYING to a counter is exactly what stops the next tick sending a
 	// second one there — dropping them would make the pass double-dispatch.
-	LendableHulls(ctx context.Context, playerID int, limit int) ([]LendableHull, error)
+	LendableHulls(ctx context.Context, playerID int, limit int, engaged []string) ([]LendableHull, error)
 	// ShipAt returns one hull's recorded position.
 	ShipAt(ctx context.Context, playerID int, shipSymbol string) (ShipPos, error)
 }

@@ -229,31 +229,36 @@ func (p *ShipPositionPort) DockedBuyerAt(ctx context.Context, playerID int, wayp
 	return model.ShipSymbol, true, nil
 }
 
-// LendableHulls returns the non-probe hulls this engine may borrow to staff a
-// probe counter, bounded by limit.
+// LendableHulls returns the hulls this engine may borrow to staff a probe counter,
+// bounded by limit and skipping every symbol in engaged.
 //
 // SAME CLAIM FILTER AS DockedBuyerAt, for the same reason: a hull the claim path
 // would refuse is not worth flying anywhere. What differs is the shape of the answer —
 // every candidate rather than one waypoint's, and IN-TRANSIT hulls INCLUDED, because
 // one already flying to a counter tells the next tick not to send a second there.
 //
-// PROBES ARE EXCLUDED, and that is the point of the pass rather than an
-// optimisation: the deadlock this serves is "no probe is free to put at a probe
-// counter", so a probe answer would be either already impossible or already handled
-// by the paths that move probes (yardpresence.go, foothold.go).
+// PROBES ARE ADMITTED, AND ROLE IS THE WRONG QUESTION. A probe is the cheapest signer
+// the fleet has, but one WATCHING A MARKET is doing this engine's own work — and only
+// the placement ledger knows which is which. The caller hands that answer down in
+// engaged, which this applies without interpreting: A PAGING AID, NOT A GUARD, so an
+// incomplete list only costs a page slot and the caller re-tests what it gets back.
 //
 // A non-positive limit yields nothing rather than the whole fleet: the bound is
 // this port's contract, and defaulting an unset one to "unbounded" is how a bounded
 // read quietly becomes a fleet walk.
-func (p *ShipPositionPort) LendableHulls(ctx context.Context, playerID int, limit int) ([]appSensing.LendableHull, error) {
+func (p *ShipPositionPort) LendableHulls(ctx context.Context, playerID int, limit int, engaged []string) ([]appSensing.LendableHull, error) {
 	if limit <= 0 {
 		return nil, nil
 	}
 	var models []persistence.ShipModel
-	err := p.db.WithContext(ctx).
-		Where("player_id = ? AND role <> ?", playerID, satelliteRole).
+	query := p.db.WithContext(ctx).
+		Where("player_id = ?", playerID).
 		Where(borrowableDedication, ownFleets).
-		Where("assignment_status IS NULL OR assignment_status <> ?", activeAssignment).
+		Where("assignment_status IS NULL OR assignment_status <> ?", activeAssignment)
+	if len(engaged) > 0 {
+		query = query.Where("ship_symbol NOT IN ?", engaged)
+	}
+	err := query.
 		Order(buyerPreferenceOrder).
 		Order(borrowPreferenceOrder).
 		Order("ship_symbol").

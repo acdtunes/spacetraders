@@ -141,7 +141,7 @@ func (s *chainShips) DockedBuyerAt(_ context.Context, _ int, waypoint string) (s
 	return hull, ok, nil
 }
 
-func (s *chainShips) LendableHulls(context.Context, int, int) ([]appSensing.LendableHull, error) {
+func (s *chainShips) LendableHulls(context.Context, int, int, []string) ([]appSensing.LendableHull, error) {
 	return nil, nil
 }
 

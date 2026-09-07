@@ -229,7 +229,7 @@ func (w *walkWorld) DockedBuyerAt(context.Context, int, string) (string, bool, e
 	return "", false, nil
 }
 
-func (w *walkWorld) LendableHulls(context.Context, int, int) ([]appSensing.LendableHull, error) {
+func (w *walkWorld) LendableHulls(context.Context, int, int, []string) ([]appSensing.LendableHull, error) {
 	return nil, nil
 }
 

@@ -16,8 +16,7 @@ import (
 // that probe then FILLS the placement — it becomes the seed. That works, and it is
 // the right answer whenever the fleet holds a spare probe to send.
 //
-// THIS ONE IS COLDER, AND IT IS THE ONE MEASURED IN PROD (3 probes owned, 2 slots
-// PARKED, 5,549 slots WANTED, 0 seeds requested):
+// THIS ONE IS COLDER:
 //
 //   - requestSeeds only writes a SPARE want at a yard staffedAt already answers
 //     for, because the buy queue only buys where a hull of ours is docked. So with
@@ -32,10 +31,13 @@ import (
 // Both routes assume spare PROBES already exist. That is the circularity: you need
 // a probe at a probe-selling yard to buy a probe.
 //
-// THE ESCAPE IS A NON-PROBE HULL, AND IT IS A BUYER RATHER THAN A CARRIER. The
-// fleet holds a command frigate and haulers from day one. SpaceTraders sells a hull
-// wherever a hull of ours is docked and does not care WHICH, so any of them standing
-// at the counter unlocks the purchase.
+// THE ESCAPE IS ANY IDLE HULL, AND IT IS A BUYER RATHER THAN A CARRIER. SpaceTraders
+// sells a hull wherever a hull of ours is docked and does not care WHICH, so anything
+// standing at the counter unlocks the purchase.
+//
+// AN UNPLACED PROBE IS THE FIRST CHOICE, and nothing else can move it: surplusPool holds
+// PARKED MARKET rows and both other probe paths draw from it. WHICH probe is a LEDGER
+// question — slotBook.engaged refuses any hull a row names or the roster flies.
 //
 // IT CANNOT GO THROUGH footholdFromSurplus, AND THAT IS STRUCTURAL RATHER THAN A
 // PREFERENCE. That path claims the target placement FOR THE CARRIER
@@ -90,8 +92,8 @@ import (
 // usually yield none. Small enough that the read stays a single indexed page.
 const maxLendableHullsRead = 16
 
-// staffCounters lends ONE non-probe hull to a probe-selling counter in its own
-// system, so the buy queue has somebody to buy through.
+// staffCounters lends ONE uncommitted hull to a counter in its own system, so the buy
+// queue has somebody to buy through. Berthing one already standing there beats flying.
 //
 // IT RUNS ONLY WHEN THE DEADLOCK ACTUALLY BOUND. rep.SeedsUnstaged counts the
 // targets requestSeeds passed over for want of a staging yard, so a tick that
@@ -103,7 +105,7 @@ func (t *expandTick) staffCounters(ctx context.Context) error {
 		return nil
 	}
 
-	hulls, err := t.p.Ships.LendableHulls(ctx, t.playerID, maxLendableHullsRead)
+	hulls, err := t.p.Ships.LendableHulls(ctx, t.playerID, maxLendableHullsRead, t.book.engagedHulls())
 	if err != nil {
 		// PROPAGATED, never read as "nothing to lend". This pass is the fleet's only
 		// way out of the cold deadlock, and a read fault silently reported as an
@@ -146,6 +148,10 @@ func (t *expandTick) staffCounters(ctx context.Context) error {
 	for _, wantEvidence := range []bool{true, false} {
 		for _, hull := range hulls {
 			if hull.InTransit || hull.System == "" || hull.Waypoint == "" {
+				continue
+			}
+			// THE GUARD: no ships-table read can tell a probe watching a market from a free one.
+			if t.book.engaged(hull.ShipSymbol) {
 				continue
 			}
 			serves, err := t.originServesATarget(ctx, hull.System)

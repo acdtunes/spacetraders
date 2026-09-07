@@ -91,7 +91,7 @@ func (keyTestShips) DockedBuyerAt(_ context.Context, _ int, _ string) (string, b
 	return "", false, nil
 }
 
-func (keyTestShips) LendableHulls(_ context.Context, _ int, _ int) ([]appSensing.LendableHull, error) {
+func (keyTestShips) LendableHulls(_ context.Context, _ int, _ int, _ []string) ([]appSensing.LendableHull, error) {
 	return nil, nil
 }
 
