@@ -84,16 +84,24 @@ func TestPlanSpecialists_ShrinkDemotesLowestMarginAndSelfDemotesOrphans(t *testi
 	fat := []mvt.LaneStat{{Source: "X1-B", Sink: "X1-A", Good: "GOLD"}}
 	margins := map[string]float64{"L-1": 100, "L-2": 5000}
 	promote, demote := planSpecialists([]*navigation.Ship{l1, l2, l3, lRun}, []*navigation.Ship{l1, l2, l3}, fat, 1, margins)
-	if len(promote) != 0 {
-		t.Fatalf("promote = %v", symbols(promote))
-	}
-	got := symbols(demote)
-	// L-3 self-demotes (orphan); pool 1 with 4 specialists → 2 more must go but only idle
-	// ones can: L-1 (lowest margin) goes; L-2 stays because L-RUN cannot be touched yet.
-	want := map[string]bool{"L-3": true, "L-1": true}
-	if len(got) != 2 || !want[got[0]] || !want[got[1]] {
-		t.Fatalf("demote = %v, want L-3 and L-1", got)
-	}
+	require.Empty(t, symbols(promote))
+	// L-3 self-demotes (orphan); pool 1 with 4 specialists → 2 more must go, and the running
+	// L-RUN is chosen alongside L-1 rather than skipped for being busy: its tag moves when it
+	// next parks drained. L-2 out-earns both and keeps its seat.
+	require.ElementsMatch(t, []string{"L-3", "L-RUN", "L-1"}, symbols(demote))
+}
+
+func TestPlanSpecialists_PrefersAHullThatCanTakeTheTagNow(t *testing.T) {
+	// Safe-first ordering. A busy hull standing at the lane's source does not outrank a free
+	// hull elsewhere: the busy one will be wherever its current tour ends by the time its tag
+	// moves, so its position at this instant carries no information.
+	busyAtSource := tfIdleShipAt(t, "M-A", tradeFleetMVT, "X1-B-1")
+	freeElsewhere := tfIdleShipAt(t, "M-Z", tradeFleetMVT, "X1-Q-1")
+	fat := []mvt.LaneStat{{Source: "X1-B", Sink: "X1-A", Good: "GOLD"}}
+
+	promote, _ := planSpecialists([]*navigation.Ship{busyAtSource, freeElsewhere}, []*navigation.Ship{freeElsewhere}, fat, 1, nil)
+
+	require.Equal(t, []string{"M-Z"}, symbols(promote))
 }
 
 func TestPlanSpecialists_PoolZeroTouchesNothing(t *testing.T) {
@@ -104,43 +112,44 @@ func TestPlanSpecialists_PoolZeroTouchesNothing(t *testing.T) {
 	}
 }
 
-func TestPlanSpecialists_NeverTagsAHullMidLoad(t *testing.T) {
-	// A demoted laden specialist's next tour is scope-pinned to one system and cannot
-	// reach the sink its cargo was bought for; a promoted laden hull is the mirror.
+func TestPlanSpecialists_EarmarksALadenHullInsteadOfSkippingIt(t *testing.T) {
+	// A laden hull is a legitimate CHOICE; only the write is withheld, until the load is gone
+	// (applySpecialistTag is that gate). Skipping it here is what starved the pool: on a
+	// working fleet every candidate is either laden or flying.
 	fat := []mvt.LaneStat{{Source: "X1-B", Sink: "X1-A", Good: "GOLD"}}
 	laden := []*navigation.Ship{
-		tfLadenShipAt(t, "L-1", "trade-lane", "X1-Z-1", 12), // orphan: would demote if empty
-		tfLadenShipAt(t, "M-A", "trade-mvt", "X1-B-1", 5),   // at the source: would promote if empty
+		tfLadenShipAt(t, "L-1", "trade-lane", "X1-Z-1", 12), // orphan
+		tfLadenShipAt(t, "M-A", "trade-mvt", "X1-B-1", 5),   // at the source
 	}
 	promote, demote := planSpecialists(laden, laden, fat, 1, nil)
-	require.Empty(t, symbols(promote))
-	require.Empty(t, symbols(demote))
+	require.Equal(t, []string{"M-A"}, symbols(promote))
+	require.Equal(t, []string{"L-1"}, symbols(demote))
 
+	// Drained, the same two are chosen: the plan is stable across the boundary, so the
+	// earmark and the settle that follows it agree on who moves.
 	drained := []*navigation.Ship{
 		tfIdleShipAt(t, "L-1", "trade-lane", "X1-Z-1"),
 		tfIdleShipAt(t, "M-A", "trade-mvt", "X1-B-1"),
 	}
 	promote, demote = planSpecialists(drained, drained, fat, 1, nil)
-	require.Equal(t, []string{"M-A"}, symbols(promote), "caught on the cadence after it drains")
+	require.Equal(t, []string{"M-A"}, symbols(promote))
 	require.Equal(t, []string{"L-1"}, symbols(demote))
 }
 
-func TestPlanSpecialists_ExcessDemotionSkipsALadenSpecialist(t *testing.T) {
-	// The third door: neither hull is an orphan, so the excess rule ranks them and the
-	// laden one sorts first on a nil margin. Demoting it strands cargo bought for a sink
-	// its next (single-system) tour cannot reach.
+func TestPlanSpecialists_ExcessDemotionRanksOnMarginNotOnBeingFree(t *testing.T) {
+	// The third door: neither hull is an orphan, so the excess rule ranks them and the laden
+	// one sorts first on a nil margin. It is chosen — being busy is no longer a reprieve, it
+	// only moves WHEN the tag changes.
 	fat := []mvt.LaneStat{{Source: "X1-B", Sink: "X1-A", Good: "GOLD"}}
 	laden := tfLadenShipAt(t, "L-1", tradeFleetLane, "X1-B-1", 12)
 	empty := tfIdleShipAt(t, "L-2", tradeFleetLane, "X1-B-1")
 	ships := []*navigation.Ship{laden, empty}
 
-	// The laden hull ranks worst (tie broken by symbol) and keeps its tag until it drains,
-	// exactly as a low-ranked RUNNING specialist does.
 	_, demote := planSpecialists(ships, ships, fat, 1, nil)
-	require.Empty(t, symbols(demote))
+	require.Equal(t, []string{"L-1"}, symbols(demote))
 
-	// Rank the empty hull worst and the excess still comes out — the skip is about cargo,
-	// not about refusing to shrink.
+	// Rank the empty hull worst and it is the one that goes: the ranking is on earnings, not
+	// on which hull happens to be free.
 	_, demote = planSpecialists(ships, ships, fat, 1, map[string]float64{"L-1": 5000, "L-2": 100})
 	require.Equal(t, []string{"L-2"}, symbols(demote))
 }
@@ -468,4 +477,169 @@ func TestReconcileSpecialists_AFailedDemoteDoesNotOpenASeat(t *testing.T) {
 	require.Empty(t, claims.released)
 	require.Equal(t, tradeFleetLane, orphan.DedicatedFleet())
 	require.Equal(t, tradeFleetMVT, cand.DedicatedFleet())
+}
+
+// ---- deferred re-tags ------------------------------------------------------
+
+// tfCohort is n trade-mvt hulls standing at the fat lane's source.
+func tfCohort(t *testing.T, n int) []*navigation.Ship {
+	t.Helper()
+	out := []*navigation.Ship{}
+	for i := 0; i < n; i++ {
+		out = append(out, tfIdleShipAt(t, fmt.Sprintf("M-%02d", i), tradeFleetMVT, "X1-B-1"))
+	}
+	return out
+}
+
+func TestReconcileSpecialists_ABusyFleetPromotesAtTheNextSafeBoundary(t *testing.T) {
+	// The starvation this fixes. A fully-utilised fleet holds no idle, empty hull at the
+	// instant the hourly pass runs, so a promotion that had to happen right then never
+	// happened at all — the pass sized a pool and moved nothing, cadence after cadence.
+	cohort := tfCohort(t, 10)
+	repo, claims := &fakeSpecialistShipRepo{}, &fakeSpecialistClaims{}
+	h := newSpecialistHandler(repo, claims, specialistLegs(true))
+	cmd := &RunTradeFleetCoordinatorCommand{PlayerID: shared.MustNewPlayerID(1)}
+
+	// Every hull is mid-tour: the fleet is in `all`, the idle bucket is empty.
+	promoted, demoted, retags := h.reconcileSpecialists(context.Background(), cmd, cohort, nil, baseTime, &tradeCaptureLogger{})
+
+	require.Zero(t, promoted+demoted, "nothing may be re-tagged while every hull is flying")
+	require.Empty(t, repo.assigned)
+	require.Empty(t, retags)
+	require.Equal(t, map[string]string{"M-00": tradeFleetLane}, h.specialistPending, "the seat is earmarked, not forgotten")
+
+	// One tour ends. The very next tick — far inside the 1h cadence, so no pass runs — settles.
+	promoted, demoted, retags = h.reconcileSpecialists(context.Background(), cmd, cohort, cohort[:1], baseTime.Add(30*time.Second), &tradeCaptureLogger{})
+
+	require.Equal(t, 1, promoted)
+	require.Zero(t, demoted)
+	require.Equal(t, map[string]string{"M-00": tradeFleetLane}, repo.assigned)
+	require.Equal(t, tradeFleetLane, retags["M-00"], "this tick's launch already flies the lane path")
+	require.Equal(t, []string{"M-00"}, claims.released)
+	require.Empty(t, h.specialistPending, "settled, not left to fire again")
+	require.Equal(t, tradeFleetMVT, cohort[0].DedicatedFleet(), "the daemon-shared entity stays untouched")
+}
+
+func TestReconcileSpecialists_ALadenHullAtItsBoundaryKeepsItsTag(t *testing.T) {
+	// The boundary is idle AND empty. A hull that parks still holding the load it bought for
+	// its current path is not re-tagged; the earmark simply waits for the tick it parks drained.
+	cohort := tfCohort(t, 10)
+	cohort[0] = tfLadenShipAt(t, "M-00", tradeFleetMVT, "X1-B-1", 12)
+	repo, claims := &fakeSpecialistShipRepo{}, &fakeSpecialistClaims{}
+	h := newSpecialistHandler(repo, claims, specialistLegs(true))
+	cmd := &RunTradeFleetCoordinatorCommand{PlayerID: shared.MustNewPlayerID(1)}
+
+	_, _, _ = h.reconcileSpecialists(context.Background(), cmd, cohort, nil, baseTime, &tradeCaptureLogger{})
+	require.Equal(t, map[string]string{"M-00": tradeFleetLane}, h.specialistPending)
+
+	// It parks LADEN. The write seam refuses it and the earmark survives.
+	promoted, demoted, retags := h.reconcileSpecialists(context.Background(), cmd, cohort, cohort[:1], baseTime.Add(30*time.Second), &tradeCaptureLogger{})
+	require.Zero(t, promoted+demoted)
+	require.Empty(t, repo.assigned, "re-tagging it would strand the load")
+	require.Empty(t, retags)
+	require.Empty(t, claims.released)
+	require.Equal(t, map[string]string{"M-00": tradeFleetLane}, h.specialistPending)
+
+	// It sells and parks drained: now the tag moves.
+	cohort[0] = tfIdleShipAt(t, "M-00", tradeFleetMVT, "X1-B-1")
+	promoted, _, retags = h.reconcileSpecialists(context.Background(), cmd, cohort, cohort[:1], baseTime.Add(60*time.Second), &tradeCaptureLogger{})
+	require.Equal(t, 1, promoted)
+	require.Equal(t, map[string]string{"M-00": tradeFleetLane}, repo.assigned)
+	require.Equal(t, tradeFleetLane, retags["M-00"])
+}
+
+func TestApplySpecialistTag_RefusesALadenHullWhicheverPathReachesIt(t *testing.T) {
+	// The guarantee lives in the write, not in one caller's candidate filter: every re-tag in
+	// the pool goes through here, and a hull with anything in its hold is refused.
+	repo := &fakeSpecialistShipRepo{}
+	h := newSpecialistHandler(repo, &fakeSpecialistClaims{}, specialistLegs(true))
+	cmd := &RunTradeFleetCoordinatorCommand{PlayerID: shared.MustNewPlayerID(1)}
+	retags := map[string]string{}
+
+	// One unit is enough: the gate is on carrying cargo at all, not on how much.
+	laden := tfLadenShipAt(t, "M-A", tradeFleetMVT, "X1-B-1", 1)
+	require.False(t, h.applySpecialistTag(context.Background(), cmd, laden, tradeFleetLane, retags, &tradeCaptureLogger{}))
+	require.Empty(t, repo.assigned)
+	require.Empty(t, retags)
+
+	drained := tfIdleShipAt(t, "M-A", tradeFleetMVT, "X1-B-1")
+	require.True(t, h.applySpecialistTag(context.Background(), cmd, drained, tradeFleetLane, retags, &tradeCaptureLogger{}))
+	require.Equal(t, map[string]string{"M-A": tradeFleetLane}, repo.assigned)
+	require.Equal(t, map[string]string{"M-A": tradeFleetLane}, retags)
+}
+
+func TestReconcileSpecialists_DemotesAMidTourSpecialistAtItsNextBoundary(t *testing.T) {
+	// Symmetry: a deferred promotion that cannot be undone is worse than none. When the pool
+	// shrinks, a specialist that is flying sheds its tag when it next parks drained, instead of
+	// keeping it because no cadence ever caught it parked.
+	l1 := tfIdleShipAt(t, "L-1", tradeFleetLane, "X1-B-1")
+	l2 := tfIdleShipAt(t, "L-2", tradeFleetLane, "X1-B-1")
+	all := []*navigation.Ship{l1, l2}
+	repo, claims := &fakeSpecialistShipRepo{}, &fakeSpecialistClaims{}
+	h := newSpecialistHandler(repo, claims, specialistLegs(true))
+	cmd := &RunTradeFleetCoordinatorCommand{PlayerID: shared.MustNewPlayerID(1), SpecialistFractionPct: 100}
+
+	// Two specialists, one seat, and both are mid-tour.
+	promoted, demoted, _ := h.reconcileSpecialists(context.Background(), cmd, all, nil, baseTime, &tradeCaptureLogger{})
+	require.Zero(t, promoted+demoted)
+	require.Empty(t, repo.assigned)
+	require.Equal(t, map[string]string{"L-1": tradeFleetMVT}, h.specialistPending, "the excess is earmarked")
+
+	promoted, demoted, retags := h.reconcileSpecialists(context.Background(), cmd, all, all[:1], baseTime.Add(30*time.Second), &tradeCaptureLogger{})
+	require.Equal(t, 1, demoted)
+	require.Zero(t, promoted)
+	require.Equal(t, map[string]string{"L-1": tradeFleetMVT}, repo.assigned)
+	require.Equal(t, tradeFleetMVT, retags["L-1"])
+	require.Empty(t, claims.released, "only a promotion strips the hull's system claim")
+	require.Empty(t, h.specialistPending)
+}
+
+func TestReconcileSpecialists_ANewPassReplacesAnUnsettledEarmark(t *testing.T) {
+	// A deferred change must be revocable. Each pass REPLACES the earmarked set, so an intent
+	// the pool no longer wants is dropped rather than settling later against a seat that has
+	// closed — the earmark's own lifetime is one cadence.
+	cohort := tfCohort(t, 10)
+	repo, claims := &fakeSpecialistShipRepo{}, &fakeSpecialistClaims{}
+	h := newSpecialistHandler(repo, claims, specialistLegs(true))
+	cmd := &RunTradeFleetCoordinatorCommand{PlayerID: shared.MustNewPlayerID(1)}
+
+	_, _, _ = h.reconcileSpecialists(context.Background(), cmd, cohort, nil, baseTime, &tradeCaptureLogger{})
+	require.Equal(t, map[string]string{"M-00": tradeFleetLane}, h.specialistPending)
+
+	// A cadence later the cohort has shrunk below the fraction's floor: the pool is 0.
+	shrunk := cohort[:5]
+	promoted, demoted, retags := h.reconcileSpecialists(context.Background(), cmd, shrunk, nil, baseTime.Add(61*time.Minute), &tradeCaptureLogger{})
+	require.Zero(t, promoted+demoted)
+	require.Empty(t, h.specialistPending, "the seat closed, so the earmark is gone")
+
+	// Even now that it parks drained, the withdrawn promotion does not land.
+	promoted, _, retags = h.reconcileSpecialists(context.Background(), cmd, shrunk, shrunk[:1], baseTime.Add(62*time.Minute), &tradeCaptureLogger{})
+	require.Zero(t, promoted)
+	require.Empty(t, repo.assigned)
+	require.Empty(t, retags)
+	require.Empty(t, claims.released)
+}
+
+func TestReconcileSpecialists_TheFeeCeilingStillKillsALaneSoNothingIsEarmarked(t *testing.T) {
+	// The fat-lane definition, its fee-share ceiling and the pool arithmetic are untouched by
+	// the deferral: a lane whose gate eats more than its share of the crossing is still not a
+	// lane, so there is no seat, and a busy fleet is earmarked for nothing.
+	cohort := tfCohort(t, 10)
+	repo, claims := &fakeSpecialistShipRepo{}, &fakeSpecialistClaims{}
+	h := NewRunTradeFleetCoordinatorHandler(repo, clockAt(0))
+	h.SetSpecialistPorts(claims, &fakeSpecialistTelemetry{legs: specialistLegs(true)}, fakeSpecialistFees{"X1-B": 1_000_000})
+	cmd := &RunTradeFleetCoordinatorCommand{PlayerID: shared.MustNewPlayerID(1)}
+	logger := &tradeCaptureLogger{}
+
+	promoted, demoted, _ := h.reconcileSpecialists(context.Background(), cmd, cohort, nil, baseTime, logger)
+
+	require.Zero(t, promoted+demoted)
+	require.Empty(t, h.specialistPending)
+	require.Empty(t, repo.assigned)
+	require.True(t, logger.loggedContaining("Specialist pool: sized"), "the pass still runs and still says so")
+
+	// And parking the whole fleet changes nothing: there was never a seat to settle into.
+	promoted, _, _ = h.reconcileSpecialists(context.Background(), cmd, cohort, cohort, baseTime.Add(30*time.Second), &tradeCaptureLogger{})
+	require.Zero(t, promoted)
+	require.Empty(t, repo.assigned)
 }

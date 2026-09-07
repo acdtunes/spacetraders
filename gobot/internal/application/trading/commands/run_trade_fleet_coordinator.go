@@ -281,6 +281,15 @@ type RunTradeFleetCoordinatorHandler struct {
 	specialists   *specialistPorts
 	specialistsAt time.Time
 
+	// specialistPending is the deferred half of the pool, hull -> the tag it is earmarked for,
+	// and specialistPool the seat count the last completed pass derived. A working fleet holds
+	// no idle, empty hull at the instant an hourly pass runs, so a pick that could only be
+	// applied there and then would never be applied at all; instead the pick is recorded here
+	// and settles on the tick the hull reaches a safe boundary. In-memory like backoff: a
+	// restart re-derives the set within one cadence, and a restart parks the fleet anyway.
+	specialistPending map[string]string
+	specialistPool    int
+
 	// startupReclaimDone gates the one-shot restart absorption reclaim to the FIRST reconcile
 	// pass of this handler (a fresh handler per daemon process — so it re-runs on every daemon
 	// restart, the case that strands phantom reservations). After that, the reclaim only runs
@@ -296,7 +305,7 @@ func NewRunTradeFleetCoordinatorHandler(shipRepo navigation.ShipRepository, cloc
 	if clock == nil {
 		clock = shared.NewRealClock()
 	}
-	return &RunTradeFleetCoordinatorHandler{shipRepo: shipRepo, clock: clock, backoff: make(map[string]*hullBackoff)}
+	return &RunTradeFleetCoordinatorHandler{shipRepo: shipRepo, clock: clock, backoff: make(map[string]*hullBackoff), specialistPending: make(map[string]string)}
 }
 
 // Handle runs the reconcile loop until the context is cancelled.
