@@ -29,13 +29,14 @@ import (
 // request ceiling, the same class as MaxExpansionActions: it paces a burst of API
 // calls, not economics. These are pure READS — they spend no credits, move no hull,
 // write no placement and cannot wedge anything — so the only cost being paced is the
-// burst itself, and the pass goes silent on its own once every known yard has a
-// catalogue, since those are never enumerated again.
+// burst itself, and the pass goes quiet on its own as yards get PRICED, since a
+// priced yard is never enumerated again.
 // The caller hands it scaled by the idle request budget (pacing.go), never below it.
 const MaxYardCatalogReads = 8
 
-// OutstandingYard is one CHARTED shipyard waypoint whose catalogue we do not
-// hold — a counter we know exists and have never asked what it sells.
+// OutstandingYard is one CHARTED shipyard waypoint we hold no PRICED reading for —
+// a counter we know exists and have either never asked what it sells, or asked with
+// no hull near it and got types back carrying no prices.
 type OutstandingYard struct {
 	// Waypoint is the shipyard to read.
 	Waypoint string
@@ -44,15 +45,16 @@ type OutstandingYard struct {
 	System string
 	// Frontier ranks how far OUT this yard sits, greater first. It is the adapter's
 	// judgement, not this package's; the engine requires only that it be stable
-	// within a tick. This queue DRAINS — every successful read removes its yard
-	// from the outstanding set permanently — so ordering exists to make a tick's
-	// pick reproducible from the store alone, not to protect a head from starving.
+	// within a tick. A yard leaves this queue when some reading PRICES it, so the
+	// ordering exists to make a tick's pick reproducible from the store alone.
 	Frontier int
+	// NeverRead is true when we hold no reading here at all, priced or otherwise.
+	NeverRead bool
 }
 
 // YardCatalogFrontier enumerates the shipyards whose catalogue we do not hold.
 // The set is a DIFFERENCE the adapter computes locally — charted SHIPYARD-trait
-// waypoints minus the ones already carrying a stored reading — so this port never
+// waypoints minus the ones already carrying a PRICED reading — so this port never
 // costs an API call and does not grow with how much of the map is already known.
 type YardCatalogFrontier interface {
 	OutstandingYards(ctx context.Context, playerID int) ([]OutstandingYard, error)
@@ -136,14 +138,16 @@ func ReadYardCatalogues(ctx context.Context, p YardCatalogPorts, playerID int, m
 }
 
 // orderYardReads puts the outstanding yards in the order this tick should read
-// them: FRONTIER-FIRST, with a waypoint-symbol tie-break.
+// them: FRONTIER-FIRST, then NEVER-READ ahead of read-but-unpriced (ANTI-STARVATION —
+// re-reading an unpriced yard presence-less cannot price it, so a backlog of them would
+// take every slot every tick and look busy doing it), with a waypoint-symbol tie-break.
 //
 // The tie-break is what makes the order TOTAL, and it is load-bearing rather than
-// tidy: sort.Slice is not stable and equal frontier ranks are the common case, so
-// without it the head of the queue would vary between two runs over the same rows
-// and the bounded pick would depend on the order the store handed its rows back
-// in. A waypoint listed twice claims one read — nothing in the port CONTRACT
-// forbids a duplicate, and one would spend two of the tick's calls on one counter.
+// tidy: sort.Slice is not stable and equal ranks are the common case, so without it
+// the head of the queue would vary between two runs over the same rows and the
+// bounded pick would depend on the order the store handed its rows back in. A
+// waypoint listed twice claims one read — nothing in the port CONTRACT forbids a
+// duplicate, and one would spend two of the tick's calls on one counter.
 func orderYardReads(yards []OutstandingYard) []OutstandingYard {
 	seen := make(map[string]bool, len(yards))
 	out := make([]OutstandingYard, 0, len(yards))
@@ -157,6 +161,9 @@ func orderYardReads(yards []OutstandingYard) []OutstandingYard {
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Frontier != out[j].Frontier {
 			return out[i].Frontier > out[j].Frontier
+		}
+		if out[i].NeverRead != out[j].NeverRead {
+			return out[i].NeverRead
 		}
 		return out[i].Waypoint < out[j].Waypoint
 	})

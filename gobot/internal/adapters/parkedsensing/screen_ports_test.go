@@ -882,6 +882,111 @@ func TestOutstandingYards_RanksUnwatchedSystemsAhead(t *testing.T) {
 		"a system we watch nothing in has no other route to its yards' catalogues")
 }
 
+// inventoryRow writes one stored shipyard listing. price 0 is the PRESENCE-LESS
+// shape: `shipTypes` came back and `ships` did not, so the type is known and no ask
+// ever was.
+func inventoryRow(system, waypoint, shipType string, price int) persistence.ShipyardInventoryModel {
+	return persistence.ShipyardInventoryModel{
+		PlayerID: testPlayerID, SystemSymbol: system, WaypointSymbol: waypoint,
+		ShipType: shipType, PurchasePrice: price, LastScanned: time.Now().UTC(),
+	}
+}
+
+// THE BLINDNESS THIS UNDOES, and it is the whole bug.
+//
+// A yard read with no hull of ours at the counter persists every listed type at
+// price 0, so excluding a yard because it merely HAS rows made the pass's OWN write
+// the reason never to look again. The yard then kept a priceless catalogue for the
+// rest of the era — invisible to ListHeavyYards and CheapestPricedYard, which both
+// filter purchase_price > 0 — and no other route re-reads it. A reading that priced
+// nothing is not a catalogue we hold.
+func TestOutstandingYards_AYardWhoseRowsCarryNoPriceIsStillOutstanding(t *testing.T) {
+	db := newShipPortsDB(t)
+	require.NoError(t, db.Create(&[]persistence.WaypointModel{
+		waypointRow("X1-KF66-A2", "X1-KF66", []string{"SHIPYARD"}),
+	}).Error)
+	// The presence-less reading: two big hulls listed, neither priced.
+	require.NoError(t, db.Create(&[]persistence.ShipyardInventoryModel{
+		inventoryRow("X1-KF66", "X1-KF66-A2", "SHIP_REFINING_FREIGHTER", 0),
+		inventoryRow("X1-KF66", "X1-KF66-A2", "SHIP_EXPLORER", 0),
+	}).Error)
+
+	outstanding, err := newCatalogPort(db).OutstandingYards(context.Background(), testPlayerID)
+	require.NoError(t, err)
+	require.Len(t, outstanding, 1)
+	require.Equal(t, "X1-KF66-A2", outstanding[0].Waypoint,
+		"a yard whose every row is unpriced has never actually been priced; it must stay on the work list")
+}
+
+// THE SELF-QUIESCING HALF, which must survive the change above.
+//
+// A yard that has been priced never comes back. Lose this and the backlog stops
+// draining, the tick's bounded budget is spent re-reading counters we can already
+// quote, and this presence-less sweep would eventually ReplaceScan a parked hull's
+// priced reading back down to zeroes.
+func TestOutstandingYards_APricedYardNeverReappears(t *testing.T) {
+	db := newShipPortsDB(t)
+	require.NoError(t, db.Create(&[]persistence.WaypointModel{
+		waypointRow("X1-QR78-READ", "X1-QR78", []string{"SHIPYARD"}),
+	}).Error)
+	require.NoError(t, db.Create(&[]persistence.ShipyardInventoryModel{
+		inventoryRow("X1-QR78", "X1-QR78-READ", "SHIP_PROBE", 40_000),
+	}).Error)
+
+	outstanding, err := newCatalogPort(db).OutstandingYards(context.Background(), testPlayerID)
+	require.NoError(t, err)
+	require.Empty(t, outstanding,
+		"a priced yard is a catalogue we hold; re-offering it burns the tick's budget on an answer we have")
+}
+
+// A MIXED reading is a PRICED reading, and the rule is per YARD rather than per ROW.
+//
+// A hull at the counter prices the types the `ships` array carries and leaves the
+// rest of `shipTypes` at 0, so an unpriced row sitting beside a priced one is normal
+// and says nothing. Reading the rule per row would put every properly-read yard back
+// on the work list forever — the runaway the exclusion exists to prevent.
+func TestOutstandingYards_AMixedReadingIsAPricedReading(t *testing.T) {
+	db := newShipPortsDB(t)
+	require.NoError(t, db.Create(&[]persistence.WaypointModel{
+		waypointRow("X1-QR78-MIX", "X1-QR78", []string{"SHIPYARD"}),
+	}).Error)
+	require.NoError(t, db.Create(&[]persistence.ShipyardInventoryModel{
+		inventoryRow("X1-QR78", "X1-QR78-MIX", "SHIP_PROBE", 40_000),
+		inventoryRow("X1-QR78", "X1-QR78-MIX", "SHIP_EXPLORER", 0),
+	}).Error)
+
+	outstanding, err := newCatalogPort(db).OutstandingYards(context.Background(), testPlayerID)
+	require.NoError(t, err)
+	require.Empty(t, outstanding,
+		"one priced row is proof a hull stood here; the unpriced siblings are the types that carried no listing")
+}
+
+// THE PORT MUST ACTUALLY SET THE SUB-RANK, or the anti-starvation ordering pinned in
+// the engine sorts a field production never fills and every yard looks never-read.
+// Both yards are outstanding and share a frontier tier, so NeverRead is the only
+// thing between them.
+func TestOutstandingYards_MarksTheYardsWeHoldNoReadingForAtAll(t *testing.T) {
+	db := newShipPortsDB(t)
+	require.NoError(t, db.Create(&[]persistence.WaypointModel{
+		waypointRow("X1-QR78-NEW", "X1-QR78", []string{"SHIPYARD"}),
+		waypointRow("X1-QR78-SEEN", "X1-QR78", []string{"SHIPYARD"}),
+	}).Error)
+	// SEEN was read with no hull at the counter: types known, no ask.
+	require.NoError(t, db.Create(&[]persistence.ShipyardInventoryModel{
+		inventoryRow("X1-QR78", "X1-QR78-SEEN", "SHIP_PROBE", 0),
+	}).Error)
+
+	outstanding, err := newCatalogPort(db).OutstandingYards(context.Background(), testPlayerID)
+	require.NoError(t, err)
+
+	neverRead := map[string]bool{}
+	for _, yard := range outstanding {
+		neverRead[yard.Waypoint] = yard.NeverRead
+	}
+	require.True(t, neverRead["X1-QR78-NEW"], "a yard with no rows at all is never-read")
+	require.False(t, neverRead["X1-QR78-SEEN"], "a yard carrying an unpriced reading has been read; it is outstanding, not new")
+}
+
 // --- the catalogue-only reading -------------------------------------------------
 
 // THE FLEET-KILLER THIS GUARD STOPS.

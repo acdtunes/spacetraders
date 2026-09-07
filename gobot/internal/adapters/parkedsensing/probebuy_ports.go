@@ -2,6 +2,7 @@ package parkedsensing
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -193,9 +194,7 @@ func (p *ProbePurchasePort) Buy(ctx context.Context, playerID int, purchasingShi
 
 // claimBuyer takes the exclusive single-writer claim on the purchasing hull and
 // returns a release closure that is always safe to defer (the underlying release
-// is idempotent). The claim operation is the sensing fleet tag, so the ship
-// repository's dedication guard accepts a hull this engine already owns instead
-// of rejecting it as another fleet's.
+// is idempotent). The claim signs under the hull's OWN fleet identity — see below.
 //
 // owner MUST be the driving coordinator's real container id. ClaimShip's second
 // parameter is written to ships.container_id, which carries a foreign key to
@@ -211,7 +210,7 @@ func (p *ProbePurchasePort) claimBuyer(ctx context.Context, playerID shared.Play
 	if strings.TrimSpace(owner) == "" {
 		return nil, fmt.Errorf("sensing probe buyer %s claim refused (fail-closed): no owning container id was supplied, and the claim's owner must be a real container row", buyer)
 	}
-	if err := p.shipRepo.ClaimShip(ctx, buyer, owner, playerID, appSensing.SensingParkedFleetTag); err != nil {
+	if err := p.claimUnderOwnFleet(ctx, playerID, buyer, owner); err != nil {
 		return nil, fmt.Errorf("sensing probe buyer %s claim failed (fail-closed, no concurrent driver): %w", buyer, err)
 	}
 	return func() {
@@ -223,4 +222,19 @@ func (p *ProbePurchasePort) claimBuyer(ctx context.Context, playerID shared.Play
 			})
 		}
 	}, nil
+}
+
+// claimUnderOwnFleet signs for the buyer under this engine's tag, and — for a hull on
+// loan from a working fleet — under the fleet it already belongs to, so ClaimShip
+// admits it with NO TAG CHANGING HANDS (RULINGS #7). THE DEDICATION COMES FROM THE
+// REJECTION ITSELF, reported from inside the row lock that refused, which a concurrent
+// `fleet assign` cannot race. One retry, for that rejection only: every other refusal
+// is returned unchanged, so the claim's fail-closed behaviour is untouched.
+func (p *ProbePurchasePort) claimUnderOwnFleet(ctx context.Context, playerID shared.PlayerID, buyer, owner string) error {
+	err := p.shipRepo.ClaimShip(ctx, buyer, owner, playerID, appSensing.SensingParkedFleetTag)
+	var dedicated *shared.ShipDedicatedToOtherFleetError
+	if !errors.As(err, &dedicated) || dedicated.Fleet == "" {
+		return err
+	}
+	return p.shipRepo.ClaimShip(ctx, buyer, owner, playerID, dedicated.Fleet)
 }

@@ -231,3 +231,50 @@ func TestProbeBuy_RefusesWhenNoOwningContainerIsNamed(t *testing.T) {
 		})
 	}
 }
+
+// A HULL ON LOAN FROM A WORKING FLEET MUST BE ABLE TO SIGN, or the cold-start escape
+// stops one step short of buying anything: the hull is flown to the counter and the
+// claim is then refused PERMANENTLY, which is a per-tick API drain rather than a fix.
+//
+// AND IT GOES STRAIGHT BACK. Nothing is kept — the claim is released on the way out
+// and the fleet tag the hull arrived with is never touched, so the escape cannot
+// drain the trade fleet one hull at a time.
+func TestProbeBuy_SignsThroughAHullBorrowedFromAWorkingFleetAndHandsItBack(t *testing.T) {
+	port, med, db := newSensingBuyWorld(t)
+	require.NoError(t, db.Model(&persistence.ShipModel{}).
+		Where("ship_symbol = ? AND player_id = ?", buyerHull, testPlayerID).
+		Updates(map[string]interface{}{
+			"dedicated_fleet": navigation.TradeFleetMVT,
+			"role":            "HAULER",
+		}).Error)
+
+	bought, err := port.Buy(context.Background(), testPlayerID, buyerHull, buyYard, sensingBuyContainerID)
+	require.NoError(t, err, "a borrowed hull must be claimable under the fleet it already belongs to")
+	require.Equal(t, t0Symbol, bought.ShipSymbol)
+	require.True(t, med.sawPurchase, "the purchase was never reached, so the borrowed hull could not sign for it")
+	require.Equal(t, "active", med.statusMidBuy, "the borrowed hull was not held for the length of its own purchase")
+
+	var row persistence.ShipModel
+	require.NoError(t, db.Where("ship_symbol = ?", buyerHull).First(&row).Error)
+	require.Equal(t, "idle", row.AssignmentStatus, "the buy claim must not outlive the purchase")
+	require.Nil(t, row.ContainerID)
+	require.Equal(t, navigation.TradeFleetMVT, row.DedicatedFleet,
+		"the borrow must never re-tag a hull out of the fleet that owns it")
+}
+
+// THE RETRY WIDENS THE FLEET TAG AND NOTHING ELSE. A hull the captain has reserved is
+// still refused whatever it is tagged, the buy fails closed, and no money moves.
+func TestProbeBuy_StillRefusesAHullTheCaptainHasReserved(t *testing.T) {
+	port, med, db := newSensingBuyWorld(t)
+	require.NoError(t, db.Model(&persistence.ShipModel{}).
+		Where("ship_symbol = ? AND player_id = ?", buyerHull, testPlayerID).
+		Updates(map[string]interface{}{
+			"dedicated_fleet":   navigation.TradeFleetMVT,
+			"assignment_status": "active",
+			"assignment_owner":  string(navigation.AssignmentOwnerCaptain),
+		}).Error)
+
+	_, err := port.Buy(context.Background(), testPlayerID, buyerHull, buyYard, sensingBuyContainerID)
+	require.Error(t, err, "a captain reservation is not this engine's to take, whatever fleet the hull is tagged to")
+	require.False(t, med.sawPurchase, "the purchase must not be reached behind a hull that could not be claimed")
+}

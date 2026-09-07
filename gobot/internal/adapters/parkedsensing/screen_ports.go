@@ -306,10 +306,11 @@ func (p *WaypointCatalogPort) ListHeavyYards(ctx context.Context, system string)
 //   - The candidate half is the fleet-wide SHIPYARD-trait set in the OPEN ERA.
 //     UNCHARTED waypoints are excluded: their traits are a guess until somebody charts
 //     them, so a SHIPYARD trait on one is not yet evidence of a shipyard.
-//   - The exclusion half is every waypoint already carrying a shipyard_inventory row.
-//     "We hold a catalogue" is exactly "there is a row", which is what makes the pass
-//     SELF-QUIESCING: a yard read once never appears here again, so the backlog drains
-//     and the pass then costs one query per tick and nothing else.
+//   - The exclusion half is every waypoint already carrying a PRICED shipyard_inventory
+//     row. The PRICE is what makes it a catalogue: a presence-less read answers with ship
+//     TYPES and no `ships` array, so its rows all land at price 0, and excluding on mere
+//     existence made this pass's OWN write the reason never to look again. Still
+//     SELF-QUIESCING where that is right — a yard priced once never appears here again.
 //
 // ERA-SCOPED, on the row's OWN era stamp.
 //
@@ -357,15 +358,23 @@ func (p *WaypointCatalogPort) ListHeavyYards(ctx context.Context, system string)
 // a system we watch nothing in has no other route at all. It is deliberately not a
 // gate-hop depth: that needs a graph walk per tick, and for a read that flies nothing and
 // spends nothing, distance ranks the wrong thing.
+//
+// NeverRead sub-ranks BELOW that: a yard already read without a hull present cannot be
+// priced by reading it again, so it must not crowd out one nobody has looked at.
 func (p *WaypointCatalogPort) OutstandingYards(ctx context.Context, playerID int) ([]appSensing.OutstandingYard, error) {
 	yards, err := p.waypoints.ListWithTraitInOpenEra(ctx, shipyardTrait)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list the charted shipyards of the open era: %w", err)
 	}
 
-	held, err := p.distinctColumnSet(ctx, playerID, "shipyard_inventory", "waypoint_symbol")
+	priced, err := p.distinctColumnSet(ctx, playerID, "shipyard_inventory", "waypoint_symbol", "purchase_price > 0")
 	if err != nil {
 		return nil, fmt.Errorf("failed to read which shipyard catalogues we already hold: %w", err)
+	}
+	// Any row at all, priced or not — the sub-rank's input, not a second exclusion.
+	anyReading, err := p.distinctColumnSet(ctx, playerID, "shipyard_inventory", "waypoint_symbol")
+	if err != nil {
+		return nil, fmt.Errorf("failed to read which shipyards carry any reading at all: %w", err)
 	}
 	watched, err := p.distinctColumnSet(ctx, playerID, "sensing_slots", "system_symbol")
 	if err != nil {
@@ -374,7 +383,7 @@ func (p *WaypointCatalogPort) OutstandingYards(ctx context.Context, playerID int
 
 	out := make([]appSensing.OutstandingYard, 0, len(yards))
 	for _, yard := range yards {
-		if yard == nil || held[yard.Symbol] || hasTrait(yard, unchartedTrait) {
+		if yard == nil || priced[yard.Symbol] || hasTrait(yard, unchartedTrait) {
 			continue
 		}
 		system := yard.SystemSymbol
@@ -386,21 +395,26 @@ func (p *WaypointCatalogPort) OutstandingYards(ctx context.Context, playerID int
 			frontier = 0
 		}
 		out = append(out, appSensing.OutstandingYard{
-			Waypoint: yard.Symbol,
-			System:   system,
-			Frontier: frontier,
+			Waypoint:  yard.Symbol,
+			System:    system,
+			Frontier:  frontier,
+			NeverRead: !anyReading[yard.Symbol],
 		})
 	}
 	return out, nil
 }
 
-func (p *WaypointCatalogPort) distinctColumnSet(ctx context.Context, playerID int, table, column string) (map[string]bool, error) {
-	var values []string
-	if err := p.db.WithContext(ctx).
+// conditions are literal predicates ANDed onto the player scope; they bind no arguments.
+func (p *WaypointCatalogPort) distinctColumnSet(ctx context.Context, playerID int, table, column string, conditions ...string) (map[string]bool, error) {
+	query := p.db.WithContext(ctx).
 		Table(table).
 		Distinct(column).
-		Where("player_id = ?", playerID).
-		Pluck(column, &values).Error; err != nil {
+		Where("player_id = ?", playerID)
+	for _, condition := range conditions {
+		query = query.Where(condition)
+	}
+	var values []string
+	if err := query.Pluck(column, &values).Error; err != nil {
 		return nil, err
 	}
 	set := make(map[string]bool, len(values))

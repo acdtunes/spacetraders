@@ -76,7 +76,9 @@ func (w *yardWorld) ReadCatalog(_ context.Context, _ int, waypoint string) error
 	return nil
 }
 
-// yard adds a charted shipyard at the given frontier rank, selling `sells`.
+// yard adds a charted shipyard at the given frontier rank, selling `sells`. It
+// defaults to the READ-BUT-UNPRICED shape — a yard some presence-less read already
+// touched — because that is the one the sub-rank must not let crowd the queue.
 func (w *yardWorld) yard(waypoint string, frontier int, sells ...string) *yardWorld {
 	w.charted = append(w.charted, OutstandingYard{
 		Waypoint: waypoint,
@@ -84,6 +86,12 @@ func (w *yardWorld) yard(waypoint string, frontier int, sells ...string) *yardWo
 		Frontier: frontier,
 	})
 	w.sells[waypoint] = sells
+	return w
+}
+
+// neverRead marks the yard just added as one we hold no reading of any kind for.
+func (w *yardWorld) neverRead() *yardWorld {
+	w.charted[len(w.charted)-1].NeverRead = true
 	return w
 }
 
@@ -239,6 +247,72 @@ func TestReadYardCatalogues_OrdersFrontierFirstAndIsStableAcrossTicks(t *testing
 	}
 
 	// The same yards, handed back by the store in the opposite order.
+	shuffled := build([]int{3, 2, 1, 0})
+	shuffled.sweep(t)
+	if !sameOrder(shuffled.reads, want) {
+		t.Fatalf("read order = %v with the store's rows reversed, want the same %v — "+
+			"the order must come from the yards, not from the row order", shuffled.reads, want)
+	}
+}
+
+// THE STARVATION THIS SUB-RANK PREVENTS, and it would have been near-invisible: the
+// pass reports itself busy every tick while learning nothing new.
+//
+// A yard read with no hull at the counter stays outstanding — its rows carry no price
+// — and reading it AGAIN presence-less cannot change that. On symbol order alone a
+// backlog of those larger than the per-tick bound would take every slot, every tick,
+// forever, and a yard nobody has ever looked at would sit behind them permanently.
+//
+// The fixture is built so ONLY the sub-rank can rescue it: the never-read yard sorts
+// LAST by symbol, and the re-readable ones outnumber the bound.
+func TestReadYardCatalogues_ANeverReadYardIsNotStarvedByRereadableOnes(t *testing.T) {
+	world := newYardWorld()
+	for i := 0; i < MaxYardCatalogReads+4; i++ {
+		world.yard(fmt.Sprintf("X1-AA11-A%02d", i), 1, "SHIP_PROBE")
+	}
+	world.yard("X1-AA11-Z9", 1, "SHIP_HEAVY_FREIGHTER").neverRead()
+
+	world.sweep(t)
+
+	if len(world.reads) == 0 || world.reads[0] != "X1-AA11-Z9" {
+		t.Fatalf("read order = %v, want the never-read yard first — a presence-less re-read "+
+			"of an unpriced yard learns nothing, so it must never take the slot", world.reads)
+	}
+}
+
+// THE FRONTIER RANK STILL WINS. The sub-rank sits BELOW it, so a yard in a system we
+// watch nothing in outranks a never-read yard in a system we already have a hull in —
+// that hull's own scan is a second route to the answer, and the sub-rank must not
+// reorder around the question of whether this pass is the only route at all.
+//
+// The same fixture pins the whole key, in order: frontier, then never-read, then
+// symbol. Shuffled and re-run, because sort.Slice is not stable and equal ranks are
+// the common case — without the symbol tie-break the head would drift between ticks.
+func TestReadYardCatalogues_FrontierOutranksTheNeverReadSubRank(t *testing.T) {
+	build := func(order []int) *yardWorld {
+		world := newYardWorld()
+		add := []func(*yardWorld){
+			func(w *yardWorld) { w.yard("X1-AA11-A1", 1, "SHIP_PROBE") },
+			func(w *yardWorld) { w.yard("X1-AA11-B2", 1, "SHIP_PROBE").neverRead() },
+			func(w *yardWorld) { w.yard("X1-AA11-C3", 1, "SHIP_PROBE").neverRead() },
+			func(w *yardWorld) { w.yard("X1-AA11-D4", 0, "SHIP_PROBE").neverRead() },
+		}
+		for _, i := range order {
+			add[i](world)
+		}
+		return world
+	}
+
+	// B2 and C3 lead on the sub-rank and split on symbol; A1 follows on the same
+	// frontier tier; D4 is last despite being never-read, because its tier is lower.
+	want := []string{"X1-AA11-B2", "X1-AA11-C3", "X1-AA11-A1", "X1-AA11-D4"}
+
+	forward := build([]int{0, 1, 2, 3})
+	forward.sweep(t)
+	if !sameOrder(forward.reads, want) {
+		t.Fatalf("read order = %v, want frontier, then never-read, then symbol %v", forward.reads, want)
+	}
+
 	shuffled := build([]int{3, 2, 1, 0})
 	shuffled.sweep(t)
 	if !sameOrder(shuffled.reads, want) {

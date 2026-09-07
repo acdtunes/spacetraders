@@ -62,6 +62,10 @@ func TestDockedBuyerAt_OffersAnIdleUndedicatedNonProbeHull(t *testing.T) {
 // THE PERMANENT-REJECTION FILTER, one case per guard ClaimShip applies. Each of
 // these hulls would be refused on every tick forever, so offering one converts a
 // stalled placement into a standing API drain.
+//
+// A FOREIGN FLEET TAG IS NOT ON THIS LIST ANY MORE. The buy signs under the hull's
+// own dedication, so ClaimShip admits a borrowed hull; what the tag costs is priced
+// by the loaded-hold case below instead.
 func TestDockedBuyerAt_SkipsEveryHullTheClaimPathWouldRefuse(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -69,9 +73,12 @@ func TestDockedBuyerAt_SkipsEveryHullTheClaimPathWouldRefuse(t *testing.T) {
 		because string
 	}{
 		{
-			name:    "dedicated to another fleet",
-			mutate:  func(m *persistence.ShipModel) { m.DedicatedFleet = "contract" },
-			because: "ClaimShip refuses a new claim on a hull whose fleet tag names somebody else",
+			name: "another fleet's hull with cargo aboard",
+			mutate: func(m *persistence.ShipModel) {
+				m.DedicatedFleet = navigation.TradeFleetMVT
+				m.CargoUnits = 12
+			},
+			because: "a loaded hull is between the legs of a job, and signing for a purchase is not what it is standing there for",
 		},
 		{
 			name: "already claimed by a container",
@@ -160,6 +167,39 @@ func TestDockedBuyerAt_AdmitsOurOwnSensingFleet(t *testing.T) {
 	require.Equal(t, "TORWIND-9", ship)
 }
 
+// A BORROWED HULL MUST BE RECOGNISED AT THE COUNTER, or lending one buys nothing:
+// staffedAt and the buy queue both ask this question, so a hull flown to a yard and
+// then not seen there leaves the yard reading unstaffed on every later tick and the
+// flight is spent for nothing.
+func TestDockedBuyerAt_AdmitsAnIdleHullOnLoanFromAWorkingFleet(t *testing.T) {
+	db := newShipPortsDB(t)
+	model := hullRow("TORWIND-9", "X1-AA-Y1", "HAULER")
+	model.DedicatedFleet = navigation.TradeFleetMVT
+	createHull(t, db, model)
+
+	port := adapterSensing.NewShipPositionPort(db)
+	ship, found, err := port.DockedBuyerAt(context.Background(), testPlayerID, "X1-AA-Y1")
+	require.NoError(t, err)
+	require.True(t, found, "the lent hull is standing on the counter and nothing can be bought through it")
+	require.Equal(t, "TORWIND-9", ship)
+}
+
+// THE SAME PREFERENCE, AT THE COUNTER. A free hull signs before one borrowed from a
+// working fleet; the symbols are chosen so alphabetical order would answer otherwise.
+func TestDockedBuyerAt_PrefersAFreeSignerOverABorrowedOne(t *testing.T) {
+	db := newShipPortsDB(t)
+	borrowed := hullRow("TORWIND-1", "X1-AA-Y1", "HAULER") // sorts first by symbol
+	borrowed.DedicatedFleet = navigation.TradeFleetMVT
+	createHull(t, db, borrowed)
+	createHull(t, db, hullRow("TORWIND-8", "X1-AA-Y1", "HAULER"))
+
+	port := adapterSensing.NewShipPositionPort(db)
+	ship, found, err := port.DockedBuyerAt(context.Background(), testPlayerID, "X1-AA-Y1")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, "TORWIND-8", ship, "a working fleet's hull was signed for while a free one stood at the same counter")
+}
+
 // --- LendableHulls ------------------------------------------------------------
 
 // PROBES ARE NOT LENDABLE, and that is the point of the pass rather than an
@@ -183,12 +223,13 @@ func TestLendableHulls_ExcludesProbes(t *testing.T) {
 
 // THE SAME CLAIM FILTER AS DockedBuyerAt. A hull the claim path would refuse is not
 // a hull worth flying anywhere: the flight would be spent and the purchase would
-// still fail.
+// still fail. A hull carrying cargo is refused for the other reason — it is working.
 func TestLendableHulls_ExcludesEveryHullTheClaimPathWouldRefuse(t *testing.T) {
 	db := newShipPortsDB(t)
-	dedicated := hullRow("TORWIND-A", "X1-AA-A1", "HAULER")
-	dedicated.DedicatedFleet = "contract"
-	createHull(t, db, dedicated)
+	loaded := hullRow("TORWIND-A", "X1-AA-A1", "HAULER")
+	loaded.DedicatedFleet = navigation.TradeFleetMVT
+	loaded.CargoUnits = 12
+	createHull(t, db, loaded)
 	claimed := hullRow("TORWIND-B", "X1-AA-A1", "HAULER")
 	claimed.AssignmentStatus = "active"
 	claimed.AssignmentOwner = string(navigation.AssignmentOwnerContainer)
@@ -201,7 +242,143 @@ func TestLendableHulls_ExcludesEveryHullTheClaimPathWouldRefuse(t *testing.T) {
 	port := adapterSensing.NewShipPositionPort(db)
 	hulls, err := port.LendableHulls(context.Background(), testPlayerID, 8)
 	require.NoError(t, err)
-	require.Empty(t, hulls, "offered a hull that is dedicated, claimed or reserved — none of them is ours to lend")
+	require.Empty(t, hulls, "offered a hull that is loaded, claimed or reserved — none of them is ours to lend")
+}
+
+// THE HEADLINE FIX. Every hauler the fleet owns carries a trade tag by the time the
+// bot reaches steady state, and the old filter admitted only undedicated hulls — so
+// staffCounters was handed an empty list, returned at once, and the cold deadlock
+// could never be broken however many dark systems were waiting.
+func TestLendableHulls_LendsAnIdleHullFromADedicatedFleet(t *testing.T) {
+	db := newShipPortsDB(t)
+	for _, fleet := range []string{navigation.TradeFleet, navigation.TradeFleetMVT, navigation.TradeFleetLane, "contract"} {
+		t.Run(fleet, func(t *testing.T) {
+			model := hullRow("TORWIND-9", "X1-AA-A1", "HAULER")
+			model.DedicatedFleet = fleet
+			require.NoError(t, db.Save(&model).Error)
+
+			port := adapterSensing.NewShipPositionPort(db)
+			hulls, err := port.LendableHulls(context.Background(), testPlayerID, 8)
+			require.NoError(t, err)
+			require.Len(t, hulls, 1, "a fully-dedicated fleet has no way out of the deadlock if its idle hulls are unlendable")
+			require.Equal(t, "TORWIND-9", hulls[0].ShipSymbol)
+		})
+	}
+}
+
+// AN EMPTY HOLD IS WHAT REPLACES THE TAG AS THE GUARD. Cargo aboard means the hull is
+// between the legs of a job with goods and money committed to it, so lending it could
+// strand both — the one failure worse than the deadlock itself.
+func TestLendableHulls_RefusesADedicatedHullWithCargoAboard(t *testing.T) {
+	db := newShipPortsDB(t)
+	loaded := hullRow("TORWIND-9", "X1-AA-A1", "HAULER")
+	loaded.DedicatedFleet = navigation.TradeFleetMVT
+	loaded.CargoUnits = 1
+	createHull(t, db, loaded)
+
+	port := adapterSensing.NewShipPositionPort(db)
+	hulls, err := port.LendableHulls(context.Background(), testPlayerID, 8)
+	require.NoError(t, err)
+	require.Empty(t, hulls, "a single unit aboard is still a job in progress")
+}
+
+// AN ACTIVE ASSIGNMENT EXCLUDES A HULL WHATEVER ITS FLEET, including the general pool
+// and this engine's own. It is the claim, not the tag, that says a coordinator is
+// driving the hull right now — so widening the tag filter must not have widened this.
+func TestLendableHulls_ExcludesAClaimedHullWhateverItsFleet(t *testing.T) {
+	for _, fleet := range []string{"", appSensing.SensingParkedFleetTag, navigation.TradeFleetMVT, "contract"} {
+		for _, owner := range []navigation.AssignmentOwner{navigation.AssignmentOwnerContainer, navigation.AssignmentOwnerCaptain} {
+			t.Run(fleet+"/"+string(owner), func(t *testing.T) {
+				db := newShipPortsDB(t)
+				model := hullRow("TORWIND-9", "X1-AA-A1", "HAULER")
+				model.DedicatedFleet = fleet
+				model.AssignmentStatus = "active"
+				model.AssignmentOwner = string(owner)
+				createHull(t, db, model)
+
+				port := adapterSensing.NewShipPositionPort(db)
+				hulls, err := port.LendableHulls(context.Background(), testPlayerID, 8)
+				require.NoError(t, err)
+				require.Empty(t, hulls, "a hull under a live claim is being driven by whoever holds it")
+			})
+		}
+	}
+}
+
+// A SATELLITE IS NEVER LENDABLE, and this pins it against a probe that now clears
+// every OTHER admission the widening opened: idle, empty-handed, and tagged to a
+// working fleet. Only the role exclusion stands between it and the borrow list, and a
+// probe cannot staff a counter it is the point of buying.
+func TestLendableHulls_NeverLendsASatelliteHoweverItIsTagged(t *testing.T) {
+	for _, fleet := range []string{"", appSensing.SensingParkedFleetTag, navigation.TradeFleetMVT} {
+		t.Run(fleet, func(t *testing.T) {
+			db := newShipPortsDB(t)
+			model := hullRow("TORWIND-PROBE", "X1-AA-A1", "SATELLITE")
+			model.DedicatedFleet = fleet
+			createHull(t, db, model)
+
+			port := adapterSensing.NewShipPositionPort(db)
+			hulls, err := port.LendableHulls(context.Background(), testPlayerID, 8)
+			require.NoError(t, err)
+			require.Empty(t, hulls)
+		})
+	}
+}
+
+// THE CHEAPEST SACRIFICE FIRST. Inside a role rung a hull no coordinator is counting
+// on goes before one borrowed from a working fleet, so the trade fleet is disturbed
+// only when nothing free can do the job. The symbols are chosen so plain alphabetical
+// order would give the opposite answer.
+func TestLendableHulls_PrefersAFreeHullOverOneBorrowedFromAWorkingFleet(t *testing.T) {
+	db := newShipPortsDB(t)
+	working := hullRow("TORWIND-1", "X1-AA-A1", "HAULER") // sorts first by symbol
+	working.DedicatedFleet = navigation.TradeFleetMVT
+	createHull(t, db, working)
+	createHull(t, db, hullRow("TORWIND-8", "X1-AA-A1", "HAULER"))
+
+	port := adapterSensing.NewShipPositionPort(db)
+	hulls, err := port.LendableHulls(context.Background(), testPlayerID, 8)
+	require.NoError(t, err)
+	require.Len(t, hulls, 2)
+	require.Equal(t, "TORWIND-8", hulls[0].ShipSymbol, "a working fleet's hull was offered ahead of a free one standing beside it")
+	require.Equal(t, "TORWIND-1", hulls[1].ShipSymbol)
+}
+
+// RULINGS #7 STILL ORDERS THE RUNGS. The dedication tie-break sits INSIDE the role
+// ladder, so a free flagship is still drafted after a borrowed ordinary hull rather
+// than ahead of it.
+func TestLendableHulls_StillRanksTheCommandFrigateBehindABorrowedHauler(t *testing.T) {
+	db := newShipPortsDB(t)
+	createHull(t, db, hullRow("TORWIND-1", "X1-AA-A1", "COMMAND"))
+	borrowed := hullRow("TORWIND-8", "X1-AA-A1", "HAULER")
+	borrowed.DedicatedFleet = navigation.TradeFleetMVT
+	createHull(t, db, borrowed)
+
+	port := adapterSensing.NewShipPositionPort(db)
+	hulls, err := port.LendableHulls(context.Background(), testPlayerID, 8)
+	require.NoError(t, err)
+	require.Len(t, hulls, 2)
+	require.Equal(t, "TORWIND-8", hulls[0].ShipSymbol, "the flagship was drafted while an ordinary hull could do the job")
+	require.Equal(t, "TORWIND-1", hulls[1].ShipSymbol)
+}
+
+// THE IDEMPOTENCE KEY'S INPUT SURVIVES THE WIDENING. The pass strikes out a counter a
+// hull is already flying to, and it builds that index from the in-transit flag and the
+// destination this read reports. A borrowed hull under way must therefore still come
+// back flagged, or the next tick sends a second hull to the same counter.
+func TestLendableHulls_FlagsAnInTransitDedicatedHullSoItsCounterIsStruckOut(t *testing.T) {
+	db := newShipPortsDB(t)
+	flying := hullRow("TORWIND-9", "X1-AA-YARD", "HAULER")
+	flying.DedicatedFleet = navigation.TradeFleetMVT
+	flying.NavStatus = string(navigation.NavStatusInTransit)
+	createHull(t, db, flying)
+
+	port := adapterSensing.NewShipPositionPort(db)
+	hulls, err := port.LendableHulls(context.Background(), testPlayerID, 8)
+	require.NoError(t, err)
+	require.Len(t, hulls, 1)
+	require.True(t, hulls[0].InTransit, "a borrowed hull under way was reported as standing still")
+	require.Equal(t, "X1-AA-YARD", hulls[0].Waypoint, "the destination is what names the counter already being served")
 }
 
 // IN-TRANSIT HULLS ARE RETURNED AND FLAGGED. They are not borrowable, but a hull

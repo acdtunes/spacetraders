@@ -177,14 +177,12 @@ type ParkedShipReader interface {
 	//
 	// THE SAME PERMANENT-REJECTION CONTRACT APPLIES, and it is stricter here because
 	// a non-probe hull has an owner. Implementations MUST exclude every hull the
-	// claim path would refuse forever: one dedicated to another fleet, one a
-	// container already holds, and one the captain has reserved. A hull that fails
-	// its claim on every tick is a standing API drain — the buy queue would select
-	// it, pay for a live shipyard price read, fail, and select it again.
-	//
-	// The mechanic behind it: SpaceTraders sells a hull only where a hull of ours is
-	// already docked, and it does not care WHICH. Presence is the requirement, not a
-	// probe.
+	// claim path would refuse forever: one a container already holds, and one the
+	// captain has reserved. A hull that fails its claim on every tick is a standing
+	// API drain — the buy queue would select it, pay for a live shipyard price read,
+	// fail, and select it again. A FOREIGN FLEET TAG IS NOT SUCH A REFUSAL (the buy
+	// signs under the hull's own dedication), so an implementation may admit a hull
+	// borrowed from a working fleet and MUST then price that sacrifice instead.
 	DockedBuyerAt(ctx context.Context, playerID int, waypoint string) (string, bool, error)
 	// LendableHulls returns at most `limit` NON-PROBE hulls of ours that this engine
 	// could borrow for one errand, cheapest sacrifice first.
@@ -195,9 +193,10 @@ type ParkedShipReader interface {
 	// interface protects.
 	//
 	// IT ADMITS ONLY WHAT THE CLAIM PATH WOULD ACCEPT, the same list DockedBuyerAt
-	// excludes: undedicated (or already ours), unclaimed by any container, and
-	// unreserved by the captain. Borrowing is a reachability trick, not a way to
-	// take a hull off another coordinator's work.
+	// excludes: unclaimed by any container and unreserved by the captain. A working
+	// fleet's hull is admissible while GENUINELY IDLE — else a fleet that has
+	// dedicated every hull it owns never leaves the deadlock — but borrowing is a
+	// reachability trick, never a way to take a hull off another coordinator's work.
 	//
 	// IN-TRANSIT HULLS ARE INCLUDED AND FLAGGED. They are not borrowable, but a hull
 	// already FLYING to a counter is exactly what stops the next tick sending a

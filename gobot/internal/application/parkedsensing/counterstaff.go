@@ -66,10 +66,11 @@ import (
 //     reason.
 //   - ONE HULL PER TICK, charged against MaxExpansionActions.
 //   - NOTHING IS HELD. No row, no tag, no claim, so the hull is never removed from
-//     its own coordinator's pool for an instant — it is idle and undedicated the
-//     whole time, and whoever wants it takes it. If the purchase never happens the
-//     hull is not lost to the errand; it is simply parked somewhere else in the same
-//     system.
+//     its own coordinator's pool for an instant — it keeps the fleet tag it arrived
+//     with, stays idle throughout, and whoever wants it takes it. If the purchase
+//     never happens it is simply parked elsewhere in the same system.
+//   - ONLY AN IDLE, EMPTY HULL IS OFFERED (LendableHulls): a hull mid-tour is claimed
+//     and one between legs is loaded, so the borrow can strand neither cargo nor money.
 //   - IT STOPS ON ITS OWN. The moment a probe is parked at that counter the yard is
 //     staffed from the ledger, staffedAt answers without any ships read, and this
 //     pass never selects that yard again.

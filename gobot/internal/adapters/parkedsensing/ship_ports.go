@@ -84,12 +84,26 @@ const (
 	// every caller so repeated reads pick the same hull.
 	buyerPreferenceOrder = "CASE role WHEN 'SATELLITE' THEN 0 WHEN 'COMMAND' THEN 2 ELSE 1 END"
 
+	// borrowableDedication is the fleet-tag half of the borrow filter, and why a
+	// fully-dedicated fleet is not a locked one: a WORKING fleet's hull is admitted, but
+	// only with an EMPTY HOLD — nothing aboard, so no leg in progress to strand.
+	borrowableDedication = "dedicated_fleet IN ? OR (dedicated_fleet IS NOT NULL AND cargo_units = 0)"
+
 	// cargoSpendScan bounds the transaction rows summed for the buy floor's
 	// cargo-runway term. Generous enough to cover an hour of a busy trading
 	// fleet: under-reading here would UNDERSTATE the floor, which is the
 	// permissive direction, so the bound is set well above observed volume.
 	cargoSpendScan = 1000
 )
+
+// ownFleets are the tags naming a hull no coordinator is working: the general pool and
+// this engine's own. Shared, so admission and preference cannot disagree.
+var ownFleets = []string{"", appSensing.SensingParkedFleetTag}
+
+// borrowPreferenceOrder breaks a role tie towards the cheaper sacrifice — a free hull
+// before a borrowed one. Applied AFTER buyerPreferenceOrder, so RULINGS #7 still leads.
+var borrowPreferenceOrder = fmt.Sprintf(
+	"CASE WHEN dedicated_fleet IN ('', '%s') THEN 0 ELSE 1 END", appSensing.SensingParkedFleetTag)
 
 // Compile-time proof that every adapter here still satisfies the port the
 // engine declares for it. These are what turn a signature drift on either side
@@ -173,11 +187,14 @@ func (p *ShipPositionPort) DockedProbeAt(ctx context.Context, playerID int, wayp
 //
 // THE CLAIM FILTER IS THE WHOLE QUERY, and it is stricter than DockedProbeAt's
 // because a non-probe hull has an owner. ShipRepository.ClaimShip refuses, inside
-// its own row lock, a hull dedicated to another fleet, a hull a container already
-// holds, and a hull the captain has reserved — and every one of those refusals is
-// PERMANENT rather than transient, which is exactly the standing API drain
-// DockedProbeAt's contract warns about. So all three are excluded here, at
-// selection, rather than discovered at the claim.
+// its own row lock, a hull a container already holds and a hull the captain has
+// reserved, and both refusals are PERMANENT rather than transient — exactly the
+// standing API drain DockedProbeAt's contract warns about. So both are excluded
+// here, at selection, rather than discovered at the claim.
+//
+// A FOREIGN FLEET TAG IS NOT ONE OF THOSE REFUSALS: the buy signs under the hull's OWN
+// dedication (claimBuyer), so the tag governs only the SACRIFICE, which
+// borrowableDedication prices instead. Without it a fully-dedicated fleet cannot buy.
 //
 // A captain reservation and a container claim are the same assignment_status
 // ("active") and are excluded together; the reservation's owner column is not
@@ -190,15 +207,17 @@ func (p *ShipPositionPort) DockedProbeAt(ctx context.Context, playerID int, wayp
 // THE ORDER IS A PREFERENCE LADDER, not a tie-break: a probe already on station
 // signs for the purchase if one is there, an ordinary hull next, and the command
 // frigate last (RULINGS #7 — the flagship is drafted only when nothing else can
-// do the job). Symbol breaks the tie so repeated calls pick the same hull.
+// do the job), a free hull ahead of a borrowed one inside each rung, and symbol last
+// so repeated calls pick the same hull.
 func (p *ShipPositionPort) DockedBuyerAt(ctx context.Context, playerID int, waypoint string) (string, bool, error) {
 	var model persistence.ShipModel
 	err := p.db.WithContext(ctx).
 		Where("player_id = ? AND location_symbol = ? AND nav_status = ?",
 			playerID, waypoint, string(navigation.NavStatusDocked)).
-		Where("dedicated_fleet IN ?", []string{"", appSensing.SensingParkedFleetTag}).
+		Where(borrowableDedication, ownFleets).
 		Where("assignment_status IS NULL OR assignment_status <> ?", activeAssignment).
 		Order(buyerPreferenceOrder).
+		Order(borrowPreferenceOrder).
 		Order("ship_symbol").
 		First(&model).Error
 	if err != nil {
@@ -214,10 +233,9 @@ func (p *ShipPositionPort) DockedBuyerAt(ctx context.Context, playerID int, wayp
 // probe counter, bounded by limit.
 //
 // SAME CLAIM FILTER AS DockedBuyerAt, for the same reason: a hull the claim path
-// would refuse is not a hull worth flying anywhere. What differs is the shape of
-// the answer — every candidate rather than one waypoint's, and IN-TRANSIT hulls
-// INCLUDED, because a hull already flying to a counter is what tells the next tick
-// not to send a second one there.
+// would refuse is not worth flying anywhere. What differs is the shape of the answer —
+// every candidate rather than one waypoint's, and IN-TRANSIT hulls INCLUDED, because
+// one already flying to a counter tells the next tick not to send a second there.
 //
 // PROBES ARE EXCLUDED, and that is the point of the pass rather than an
 // optimisation: the deadlock this serves is "no probe is free to put at a probe
@@ -234,9 +252,10 @@ func (p *ShipPositionPort) LendableHulls(ctx context.Context, playerID int, limi
 	var models []persistence.ShipModel
 	err := p.db.WithContext(ctx).
 		Where("player_id = ? AND role <> ?", playerID, satelliteRole).
-		Where("dedicated_fleet IN ?", []string{"", appSensing.SensingParkedFleetTag}).
+		Where(borrowableDedication, ownFleets).
 		Where("assignment_status IS NULL OR assignment_status <> ?", activeAssignment).
 		Order(buyerPreferenceOrder).
+		Order(borrowPreferenceOrder).
 		Order("ship_symbol").
 		Limit(limit).
 		Find(&models).Error

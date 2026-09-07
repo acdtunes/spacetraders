@@ -255,3 +255,56 @@ func TestYardReads_ReadNothingWhenTheOpenEraCannotBeResolved(t *testing.T) {
 		})
 	}
 }
+
+// THE TWO RULES COMPOSE, AND ERA SCOPE DECIDES FIRST.
+//
+// A yard whose rows carry no price is outstanding again, which is right — a
+// presence-less read learns types and never an ask, so its own write must not close
+// the question. But a yard stamped by a CLOSED era answers "no priced catalogue" for
+// the same reason it answers nothing else: its universe is gone. The unpriced rule
+// must not become a second route back into a dead era, because the API 404s the
+// whole system and the attempt still spends the tick's bounded budget.
+//
+// Both dead yards are needed. X1-DEAD-P1 was priced while its era was open, so the
+// held-catalogue half would exclude it whatever the era rule says; only X1-DEAD-U1
+// makes era scope the sole thing keeping a yard out.
+func TestOutstandingYards_AnUnpricedDeadEraYardIsStillNotWorkToDo(t *testing.T) {
+	db := newShipPortsDB(t)
+	era := eras(t, db)
+	require.NoError(t, db.Create(&[]persistence.WaypointModel{
+		eraWaypointRow("X1-LIVE-U1", "X1-LIVE", []string{"SHIPYARD"}, era.Live),
+		eraWaypointRow("X1-DEAD-U1", "X1-DEAD", []string{"SHIPYARD"}, era.SecondDead),
+		eraWaypointRow("X1-DEAD-P1", "X1-DEAD", []string{"SHIPYARD"}, era.FirstDead),
+	}).Error)
+	require.NoError(t, db.Create(&[]persistence.ShipyardInventoryModel{
+		eraInventoryRow("X1-LIVE", "X1-LIVE-U1", "SHIP_EXPLORER", 0, era.Live),
+		eraInventoryRow("X1-DEAD", "X1-DEAD-U1", "SHIP_EXPLORER", 0, era.SecondDead),
+		eraInventoryRow("X1-DEAD", "X1-DEAD-P1", "SHIP_PROBE", 40_000, era.FirstDead),
+	}).Error)
+
+	require.Equal(t, []string{"X1-LIVE-U1"}, outstandingSymbols(t, db),
+		"the unpriced yard of the LIVE era is work; an unpriced yard of a dead one is a 404 waiting to be paid for")
+}
+
+// FAIL CLOSED, with the newly-re-offered shape in the fixture.
+//
+// The unpriced yard is exactly the one the price rule hands back to the API, so it is
+// the one an unresolvable open era must withhold. A fixture full of PRICED yards
+// could pass this while the unpriced path fell through to unscoped.
+func TestOutstandingYards_AnUnpricedYardIsWithheldWhenTheOpenEraCannotBeResolved(t *testing.T) {
+	db := newShipPortsDB(t)
+	era := eras(t, db)
+	require.NoError(t, db.Create(&[]persistence.WaypointModel{
+		eraWaypointRow("X1-QR78-AE4F", "X1-QR78", []string{"SHIPYARD"}, era.Live),
+		waypointRow("X1-QR78-NULL", "X1-QR78", []string{"SHIPYARD"}),
+	}).Error)
+	require.NoError(t, db.Create(&[]persistence.ShipyardInventoryModel{
+		eraInventoryRow("X1-QR78", "X1-QR78-AE4F", "SHIP_EXPLORER", 0, era.Live),
+	}).Error)
+
+	closeEveryEra(t, db)
+
+	yards, err := newCatalogPort(db).OutstandingYards(context.Background(), testPlayerID)
+	require.Error(t, err, "an unresolvable open era must refuse; unpriced is not a licence to read unscoped")
+	require.Empty(t, yards)
+}
