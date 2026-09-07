@@ -40,6 +40,10 @@ func SensingTunableDefaults() map[string]int {
 		"chart_hull_2_at":                  defaultSecondChartHullAt,
 		"chart_hull_3_at":                  defaultThirdChartHullAt,
 
+		// The per-tick burst headroom every paced pass scales by. Mirrors
+		// parkedsensing.ExpansionHeadroomMultiple.
+		"expansion_headroom_multiple": defaultExpansionHeadroomMultiple,
+
 		// The API client's limiter-pressure EWMA half-life. 30 mirrors the
 		// client's own default (api.defaultLimiterPressureHalfLife); the
 		// application layer cannot import the adapter, so the value is pinned

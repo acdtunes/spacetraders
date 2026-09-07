@@ -123,7 +123,7 @@ func TestPresence_SendsRedundantHullToUnpricedYard(t *testing.T) {
 	demand := &fakePresenceDemand{requests: []yardscan.PresenceRequest{presenceRequest("X1-OK-Y1", "X1-OK", true)}, tokens: 4}
 	ports, ledger, _ := presenceWorld(t, slots, nil, demand)
 
-	rep, err := DispatchYardPresence(context.Background(), ports, 1)
+	rep, err := DispatchYardPresence(context.Background(), ports, 1, 0)
 	if err != nil {
 		t.Fatalf("dispatch failed: %v", err)
 	}
@@ -164,7 +164,7 @@ func TestPresence_ClaimsTargetBeforeReleasingSource(t *testing.T) {
 	demand := &fakePresenceDemand{requests: []yardscan.PresenceRequest{presenceRequest("X1-OK-Y1", "X1-OK", false)}, tokens: 4}
 	ports, ledger, _ := presenceWorld(t, slots, nil, demand)
 
-	if _, err := DispatchYardPresence(context.Background(), ports, 1); err != nil {
+	if _, err := DispatchYardPresence(context.Background(), ports, 1, 0); err != nil {
 		t.Fatalf("dispatch failed: %v", err)
 	}
 	if len(ledger.transitions) != 2 {
@@ -198,7 +198,7 @@ func TestPresence_WillNotTakeAHullManningAScoutPost(t *testing.T) {
 	demand := &fakePresenceDemand{requests: []yardscan.PresenceRequest{presenceRequest("X1-MAN-Y1", "X1-MAN", true)}, tokens: 4}
 	ports, ledger, _ := presenceWorld(t, slots, []string{"HULL-M"}, demand)
 
-	rep, err := DispatchYardPresence(context.Background(), ports, 1)
+	rep, err := DispatchYardPresence(context.Background(), ports, 1, 0)
 	if err != nil {
 		t.Fatalf("dispatch failed: %v", err)
 	}
@@ -230,7 +230,7 @@ func TestPresence_WillNotTakeTheLastObserverOfAGood(t *testing.T) {
 	demand := &fakePresenceDemand{requests: []yardscan.PresenceRequest{presenceRequest("X1-SOLE-Y1", "X1-SOLE", true)}, tokens: 4}
 	ports, ledger, _ := presenceWorld(t, slots, nil, demand)
 
-	rep, err := DispatchYardPresence(context.Background(), ports, 1)
+	rep, err := DispatchYardPresence(context.Background(), ports, 1, 0)
 	if err != nil {
 		t.Fatalf("dispatch failed: %v", err)
 	}
@@ -256,7 +256,7 @@ func TestPresence_DestinationGoodsPreserveCoverage(t *testing.T) {
 	demand := &fakePresenceDemand{requests: []yardscan.PresenceRequest{presenceRequest("X1-REL-Y1", "X1-REL", true)}, tokens: 4}
 	ports, ledger, _ := presenceWorld(t, slots, nil, demand)
 
-	rep, err := DispatchYardPresence(context.Background(), ports, 1)
+	rep, err := DispatchYardPresence(context.Background(), ports, 1, 0)
 	if err != nil {
 		t.Fatalf("dispatch failed: %v", err)
 	}
@@ -284,7 +284,7 @@ func TestPresence_ObeysTheMeteredAllowance(t *testing.T) {
 	demand := &fakePresenceDemand{requests: []yardscan.PresenceRequest{presenceRequest("X1-OK-Y1", "X1-OK", true)}, tokens: 0}
 	ports, ledger, _ := presenceWorld(t, slots, nil, demand)
 
-	rep, err := DispatchYardPresence(context.Background(), ports, 1)
+	rep, err := DispatchYardPresence(context.Background(), ports, 1, 0)
 	if err != nil {
 		t.Fatalf("dispatch failed: %v", err)
 	}
@@ -315,7 +315,7 @@ func TestPresence_SpendsNoAllowanceWhenNoHullCanBeSpared(t *testing.T) {
 	demand := &fakePresenceDemand{requests: []yardscan.PresenceRequest{presenceRequest("X1-SOLE-Y1", "X1-SOLE", true)}, tokens: 4}
 	ports, _, _ := presenceWorld(t, slots, nil, demand)
 
-	if _, err := DispatchYardPresence(context.Background(), ports, 1); err != nil {
+	if _, err := DispatchYardPresence(context.Background(), ports, 1, 0); err != nil {
 		t.Fatalf("dispatch failed: %v", err)
 	}
 	if demand.asked != 0 {
@@ -348,7 +348,7 @@ func TestPresence_StopsAtThePerTickBound(t *testing.T) {
 	demand := &fakePresenceDemand{requests: requests, tokens: 99}
 	ports, _, _ := presenceWorld(t, slots, nil, demand)
 
-	rep, err := DispatchYardPresence(context.Background(), ports, 1)
+	rep, err := DispatchYardPresence(context.Background(), ports, 1, 0)
 	if err != nil {
 		t.Fatalf("dispatch failed: %v", err)
 	}
@@ -364,7 +364,7 @@ func TestPresence_AsksForMoreRequestsThanItCanSend(t *testing.T) {
 	demand := &fakePresenceDemand{}
 	ports, _, _ := presenceWorld(t, nil, nil, demand)
 
-	if _, err := DispatchYardPresence(context.Background(), ports, 1); err != nil {
+	if _, err := DispatchYardPresence(context.Background(), ports, 1, 0); err != nil {
 		t.Fatalf("dispatch failed: %v", err)
 	}
 	if demand.limit <= MaxYardPresenceDispatches {
@@ -388,7 +388,7 @@ func TestPresence_NeverCreatesAPlacement(t *testing.T) {
 	demand := &fakePresenceDemand{requests: []yardscan.PresenceRequest{presenceRequest("X1-NOSLOT-Y1", "X1-NOSLOT", true)}, tokens: 4}
 	ports, ledger, _ := presenceWorld(t, slots, nil, demand)
 
-	rep, err := DispatchYardPresence(context.Background(), ports, 1)
+	rep, err := DispatchYardPresence(context.Background(), ports, 1, 0)
 	if err != nil {
 		t.Fatalf("dispatch failed: %v", err)
 	}
@@ -416,7 +416,7 @@ func TestPresence_SkipsAPlacementAlreadyBeingFilled(t *testing.T) {
 			demand := &fakePresenceDemand{requests: []yardscan.PresenceRequest{presenceRequest("X1-BUSY-Y1", "X1-BUSY", true)}, tokens: 4}
 			ports, ledger, _ := presenceWorld(t, slots, nil, demand)
 
-			rep, err := DispatchYardPresence(context.Background(), ports, 1)
+			rep, err := DispatchYardPresence(context.Background(), ports, 1, 0)
 			if err != nil {
 				t.Fatalf("dispatch failed: %v", err)
 			}
@@ -440,7 +440,7 @@ func TestPresence_WillNotTakeAHullThatIsFlying(t *testing.T) {
 	// HULL-A is the one the pool would pick (cheapest). It is in flight.
 	world.positions["HULL-A"] = ShipPos{Waypoint: "X1-OK-A1", NavStatus: navigation.NavStatusInTransit, Found: true}
 
-	rep, err := DispatchYardPresence(context.Background(), ports, 1)
+	rep, err := DispatchYardPresence(context.Background(), ports, 1, 0)
 	if err != nil {
 		t.Fatalf("dispatch failed: %v", err)
 	}
@@ -461,7 +461,7 @@ func TestPresence_WillNotTakeAHullItCannotLocate(t *testing.T) {
 	ports, ledger, world := presenceWorld(t, slots, nil, demand)
 	delete(world.positions, "HULL-A")
 
-	rep, err := DispatchYardPresence(context.Background(), ports, 1)
+	rep, err := DispatchYardPresence(context.Background(), ports, 1, 0)
 	if err != nil {
 		t.Fatalf("dispatch failed: %v", err)
 	}
@@ -482,7 +482,7 @@ func TestPresence_DrawsOnlyFromTheYardsOwnSystem(t *testing.T) {
 	demand := &fakePresenceDemand{requests: []yardscan.PresenceRequest{presenceRequest("X1-NEAR-Y1", "X1-NEAR", true)}, tokens: 4}
 	ports, ledger, _ := presenceWorld(t, slots, nil, demand)
 
-	rep, err := DispatchYardPresence(context.Background(), ports, 1)
+	rep, err := DispatchYardPresence(context.Background(), ports, 1, 0)
 	if err != nil {
 		t.Fatalf("dispatch failed: %v", err)
 	}
@@ -508,7 +508,7 @@ func TestPresence_RedundancyIsRedecidedAfterEveryTake(t *testing.T) {
 	}, tokens: 99}
 	ports, _, _ := presenceWorld(t, slots, nil, demand)
 
-	rep, err := DispatchYardPresence(context.Background(), ports, 1)
+	rep, err := DispatchYardPresence(context.Background(), ports, 1, 0)
 	if err != nil {
 		t.Fatalf("dispatch failed: %v", err)
 	}
@@ -545,7 +545,7 @@ func TestPresence_FailsClosedWhenPostsAreUnreadable(t *testing.T) {
 		MannedHulls: &fakeManned{hulls: map[string]bool{"HULL-Z": true}, err: errors.New("posts unreadable")},
 	}
 
-	rep, err := DispatchYardPresence(context.Background(), ports, 1)
+	rep, err := DispatchYardPresence(context.Background(), ports, 1, 0)
 	if err == nil {
 		t.Fatal("expected an unreadable post list to stop the pass, got nil")
 	}
@@ -566,7 +566,7 @@ func TestPresence_FailsClosedWhenParkedSlotsAreUnreadable(t *testing.T) {
 		Ships:       newFlyingWorld(),
 		MannedHulls: &fakeManned{},
 	}
-	if _, err := DispatchYardPresence(context.Background(), ports, 1); err == nil {
+	if _, err := DispatchYardPresence(context.Background(), ports, 1, 0); err == nil {
 		t.Fatal("expected an unreadable placement ledger to stop the pass, got nil")
 	}
 }
@@ -574,7 +574,7 @@ func TestPresence_FailsClosedWhenParkedSlotsAreUnreadable(t *testing.T) {
 // TestPresence_IsInertWithoutItsPorts. The pass is an extension to sensing, not a
 // precondition for it: a daemon wired without the budget must tick unchanged.
 func TestPresence_IsInertWithoutItsPorts(t *testing.T) {
-	rep, err := DispatchYardPresence(context.Background(), YardPresencePorts{}, 1)
+	rep, err := DispatchYardPresence(context.Background(), YardPresencePorts{}, 1, 0)
 	if err != nil {
 		t.Fatalf("an unwired pass must be inert, not fatal: %v", err)
 	}
@@ -596,7 +596,7 @@ func TestPresence_SurvivesALostRaceForTheTarget(t *testing.T) {
 	ports, ledger, _ := presenceWorld(t, slots, nil, demand)
 	ledger.transitionErr = map[string]error{"X1-OK-Y1→" + SlotStateInTransit: ErrSlotClaimed}
 
-	rep, err := DispatchYardPresence(context.Background(), ports, 1)
+	rep, err := DispatchYardPresence(context.Background(), ports, 1, 0)
 	if err != nil {
 		t.Fatalf("a lost race is not an error: %v", err)
 	}

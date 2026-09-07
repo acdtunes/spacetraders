@@ -1449,6 +1449,7 @@ func run(cfg *config.Config) error {
 	// Resolves the collector lazily per call: the metrics collectors are installed by
 	// NewDaemonServer, which runs after this wiring, so a captured reference would be nil.
 	probeSensingHandler.SetMetricsRecorder(parkedSensingAdapters.NewMetricsPort())
+	probeSensingHandler.SetAPISaturationReader(grpc.NewTourAPISaturationReader())
 	// Stall escalation: the sensing tick and its off-gate/expansion pass each report
 	// PROGRESS / IDLE / BLOCKED(reason) every tick, and a block sustained on one reason for
 	// health.StallEscalationTicks consecutive ticks raises a coordinator.stalled captain event

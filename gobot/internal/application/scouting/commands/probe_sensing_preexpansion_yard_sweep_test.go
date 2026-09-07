@@ -174,6 +174,45 @@ func TestSensing_PreExpansion_HonoursTheSharedPerTickBound(t *testing.T) {
 	require.Empty(t, world.yards.yardsOutstanding())
 }
 
+// HEADROOM SCALING STOPS AT THE EXPANSION EDGE, and this pins the pre-EXPANSION side of
+// it whatever the estimator says.
+//
+// The reading is worthless here and the budget is not spare, and either alone would be
+// enough. The estimator needs 300 requests in its window to answer at all, and a
+// pre-EXPANSION container makes nowhere near that, so it returns the same 0 a genuinely
+// idle fleet does — the scaling would take its MAXIMUM multiple exactly where it knows
+// least. And DATA/INCOME/GATE is bootstrap building the jump gate: 48 catalogue reads a
+// tick is ~1.6 req/s of a 2.0 req/s ceiling taken from the one job that has to finish
+// before any sensing coverage matters at all.
+func TestSensing_PreExpansion_DoesNotScaleWithTheRequestBudget(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		reader APISaturationReader
+	}{
+		{"unwired estimator (the pre-EXPANSION reality: a window too thin to read)", nil},
+		{"an estimator reading a completely idle budget", &fakeSensingSaturation{permille: 0}},
+		{"an estimator reading a saturated budget", saturatedReader()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			world := preExpansionWorld(t)
+			world.handler.SetAPISaturationReader(tc.reader)
+			world.yards.outstanding = outstandingYards(parkedsensing.MaxYardCatalogReads + 2)
+			log := &messageLogger{}
+
+			require.NoError(t, world.handler.ReconcileOnce(common.WithLogger(world.ctx, log), world.cmd))
+
+			require.Len(t, world.yards.yardsRead(), parkedsensing.MaxYardCatalogReads,
+				"the pre-EXPANSION sweep is unscaled at every reading; scaling starts past the gate")
+			require.Len(t, world.yards.yardsOutstanding(), 2)
+
+			_, fields, logged := loggedUnder(log, yardSweepAction)
+			require.True(t, logged)
+			require.Equal(t, parkedsensing.MaxYardCatalogReads, fields["yards_read_limit"],
+				"and it reports the unscaled budget it was actually given")
+		})
+	}
+}
+
 // --- the pre-EXPANSION sweep's failure modes -------------------------------------
 
 // The two reads are checked INDIVIDUALLY, and this is what that buys. ports.wired()

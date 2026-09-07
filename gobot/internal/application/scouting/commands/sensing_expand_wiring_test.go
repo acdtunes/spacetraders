@@ -92,7 +92,7 @@ func TestSensingBuyKnobs_CarriesTheExpansionSpendSwitch(t *testing.T) {
 func TestSensingExpandKnobs_CarriesTheSeedDispatchSwitch(t *testing.T) {
 	probesOnly := sensingConfig{ProbeSpend: true, SeedDispatch: false}
 
-	if expandKnobs(probesOnly).SeedsEnabled {
+	if expandKnobs(probesOnly, sensingBudgets{}).SeedsEnabled {
 		t.Fatalf("the expansion pass was told to dispatch seeds while the operator asked for probes " +
 			"only — hulls would go back onto charting errands instead of pricing markets")
 	}
@@ -100,7 +100,7 @@ func TestSensingExpandKnobs_CarriesTheSeedDispatchSwitch(t *testing.T) {
 		t.Fatalf("the buy queue was told spending is off in the probes-only state — the state would " +
 			"be indistinguishable from a full stop")
 	}
-	if !expandKnobs(sensingConfig{ProbeSpend: true, SeedDispatch: true}).SeedsEnabled {
+	if !expandKnobs(sensingConfig{ProbeSpend: true, SeedDispatch: true}, sensingBudgets{}).SeedsEnabled {
 		t.Fatalf("the expansion pass was told seeds are off with the switch fully on — charting " +
 			"would never be dispatched again")
 	}

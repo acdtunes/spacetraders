@@ -208,6 +208,8 @@ func buildProbeSensingCoordinatorCommand(cfg *configReader, playerID int, contai
 		SecondChartHullAt:       cfg.OptionalInt("chart_hull_2_at", 0),
 		ThirdChartHullAt:        cfg.OptionalInt("chart_hull_3_at", 0),
 
+		ExpansionHeadroomMultiple: cfg.OptionalInt("expansion_headroom_multiple", 0),
+
 		// Retired: read for recovery tolerance, never consulted by the loop.
 		DepthFloor:               int64(cfg.OptionalInt("depth_floor", 0)),
 		ProbeBudget:              cfg.OptionalInt("probe_budget", 0),

@@ -25,12 +25,13 @@ import (
 // reading a catalogue spends no credits and touches no purchase guard; the bound
 // below is an API-burst pace, never an economic one.
 
-// MaxYardCatalogReads bounds how many shipyard catalogues ONE tick may read. A
-// plain const rather than a knob, the same class as MaxExpansionActions: it paces
-// a burst of API calls, not economics. These are pure READS — they spend no
-// credits, move no hull, write no placement and cannot wedge anything — so the
-// only cost being paced is the burst itself, and the pass goes silent on its own
-// once every known yard has a catalogue, since those are never enumerated again.
+// MaxYardCatalogReads bounds how many shipyard catalogues ONE tick may read at the
+// request ceiling, the same class as MaxExpansionActions: it paces a burst of API
+// calls, not economics. These are pure READS — they spend no credits, move no hull,
+// write no placement and cannot wedge anything — so the only cost being paced is the
+// burst itself, and the pass goes silent on its own once every known yard has a
+// catalogue, since those are never enumerated again.
+// The caller hands it scaled by the idle request budget (pacing.go), never below it.
 const MaxYardCatalogReads = 8
 
 // OutstandingYard is one CHARTED shipyard waypoint whose catalogue we do not
@@ -86,27 +87,34 @@ type YardCatalogReport struct {
 	// Failed counts the reads that were attempted and refused. They still cost
 	// budget, so they are charged against the per-tick bound.
 	Failed int
+	// ReadLimit is that bound: without it a backlog under a spent budget and one nothing
+	// attempted read alike.
+	ReadLimit int
 }
 
 // ReadYardCatalogues records what the known-but-unread shipyards sell, bounded to
-// MaxYardCatalogReads reads per tick. An unreadable yard is SKIPPED, not fatal:
-// one shipyard the API will not answer for must not cost the tick, nor the other
-// yards queued behind it. Only a failure to ENUMERATE fails the pass — that is not
-// a finding about any yard but the pass being unable to see its own work, and
-// proceeding from it would silently report an empty backlog.
-func ReadYardCatalogues(ctx context.Context, p YardCatalogPorts, playerID int) (YardCatalogReport, error) {
+// maxReads reads per tick; a non-positive maxReads is MaxYardCatalogReads. An
+// unreadable yard is SKIPPED, not fatal: one shipyard the API will not answer for
+// must not cost the tick, nor the other yards queued behind it. Only a failure to
+// ENUMERATE fails the pass — that is not a finding about any yard but the pass being
+// unable to see its own work, and proceeding from it would silently report an empty
+// backlog.
+func ReadYardCatalogues(ctx context.Context, p YardCatalogPorts, playerID int, maxReads int) (YardCatalogReport, error) {
+	if maxReads <= 0 {
+		maxReads = MaxYardCatalogReads
+	}
 	outstanding, err := p.Frontier.OutstandingYards(ctx, playerID)
 	if err != nil {
-		return YardCatalogReport{}, fmt.Errorf("failed to list the shipyards whose catalogue we do not hold: %w", err)
+		return YardCatalogReport{ReadLimit: maxReads}, fmt.Errorf("failed to list the shipyards whose catalogue we do not hold: %w", err)
 	}
 
 	queue := orderYardReads(outstanding)
-	rep := YardCatalogReport{Outstanding: len(queue)}
+	rep := YardCatalogReport{Outstanding: len(queue), ReadLimit: maxReads}
 
 	// ATTEMPTS are what the bound counts, not successes. A yard the API refuses has
 	// already spent its call, so charging it to the same budget keeps a failing
 	// frontier from turning one tick into an unbounded retry storm.
-	for attempts := 0; attempts < MaxYardCatalogReads && attempts < len(queue); attempts++ {
+	for attempts := 0; attempts < maxReads && attempts < len(queue); attempts++ {
 		yard := queue[attempts]
 		if err := p.Catalog.ReadCatalog(ctx, playerID, yard.Waypoint); err != nil {
 			rep.Failed++

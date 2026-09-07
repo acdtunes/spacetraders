@@ -25,10 +25,12 @@ import (
 // ledger with no state to rebuild.
 
 // MaxExpansionActions bounds how much this engine may do in one tick: seed steps
-// and seed requests together. A plain constant, deliberately not a knob — it paces
-// command bursts, not economics. Ledger-only work is free and uncounted: marking a
-// neighbour PENDING and claiming a parked spare cost a row write and no API call,
-// and both are already bounded by the frontier and by the spare fleet.
+// and seed requests together. It paces command bursts, not economics. Ledger-only
+// work is free and uncounted: marking a neighbour PENDING and claiming a parked
+// spare cost a row write and no API call, and both are already bounded by the
+// frontier and by the spare fleet.
+// ExpandKnobs.MaxActions is what a tick may spend: this, scaled by the idle
+// request budget (pacing.go) and never under it.
 const MaxExpansionActions = 20
 
 // MaxSpareGhostReleases bounds the ghost SPARE rows one tick may release: a burst
@@ -352,6 +354,11 @@ type ExpandKnobs struct {
 	ChartHullCap      int
 	SecondChartHullAt int
 	ThirdChartHullAt  int
+	// MaxActions and MaxGateReads are this tick's BURST budgets: the two constants
+	// scaled by the request budget nobody is queued on (PacedBudget), zero meaning the
+	// constant. NEITHER IS ECONOMIC — no purchase, floor or reserve reads them.
+	MaxActions   int
+	MaxGateReads int
 }
 
 // SkippedBudget is what ExpandReport.Skipped carries when the budget gate held the
@@ -405,8 +412,9 @@ type ExpandReport struct {
 	// SeedsStranded counts errands ended because the target could not be walked to from
 	// where the hull had got to. Standing non-zero means the map outgrew the gate read.
 	SeedsStranded int
-	// Actions counts everything charged against MaxExpansionActions.
-	Actions int
+	// Actions counts everything charged against the tick's action budget, and ActionLimit
+	// is that budget: a pass that stopped FULL otherwise reads like one out of work.
+	Actions, ActionLimit int
 	// GatesRead counts jump gates this tick READ LIVE and persisted; GatesUnread is the size of the
 	// whole outstanding backlog BEFORE the per-tick cap truncated it, so the heartbeat shows how much
 	// topology is still unknown rather than only how much this tick absorbed.
@@ -421,6 +429,8 @@ type ExpandReport struct {
 	// (MaxGateReads). Sharing one budget would let routine seed steps crowd out the one pass that can
 	// tell the fleet it is not actually sealed inside a pocket of under-construction exits.
 	GatesRead, GatesUnread, GatesUnreadable, GatesFailed int
+	// GateReadLimit: without it a spent budget and an unwired pass leave one backlog.
+	GateReadLimit int
 }
 
 // AdvanceExpansion runs one expansion tick. budgetRate is the sensing residual in
@@ -455,8 +465,19 @@ func AdvanceExpansion(
 	k ExpandKnobs,
 	budgetRate float64,
 ) (ExpandReport, error) {
-	// Stamped before the gate, so the pair travels whether the tick runs or yields.
-	rep := ExpandReport{BudgetRate: budgetRate, MinBudgetRate: k.MinBudgetRate}
+	// Stamped before the gate, BOTH BUDGETS: the gate read's is resolved in a pass a
+	// skipped tick never reaches, so leaving it there reports gate 0/0 — which reads as
+	// "this pass bound the tick" — on exactly the storm that skipped it.
+	rep := ExpandReport{
+		BudgetRate: budgetRate, MinBudgetRate: k.MinBudgetRate,
+		ActionLimit: k.MaxActions, GateReadLimit: k.MaxGateReads,
+	}
+	if rep.ActionLimit <= 0 {
+		rep.ActionLimit = MaxExpansionActions
+	}
+	if rep.GateReadLimit <= 0 {
+		rep.GateReadLimit = MaxGateReads
+	}
 	if budgetRate < k.MinBudgetRate {
 		rep.Skipped = SkippedBudget
 		return rep, nil
@@ -509,7 +530,7 @@ func AdvanceExpansion(
 	// it. A charted gate is readable with no hull present, so a system can be asked where it connects
 	// without waiting for a probe to arrive. IT TAKES `known`, WHICH markFrontier HAS JUST GROWN, so a
 	// neighbour named for the first time this tick is a candidate on this tick rather than the next.
-	if err := readUnmappedGates(ctx, p, playerID, known, mapping, reach, book, &rep); err != nil {
+	if err := readUnmappedGates(ctx, p, playerID, known, mapping, reach, book, rep.GateReadLimit, &rep); err != nil {
 		return rep, err
 	}
 

@@ -97,6 +97,60 @@ type heartbeat struct {
 	// not the ledger's parked count: the rotation drops anything unscannable.
 	rotation int
 	scans    parkedsensing.ScanOutcomes
+	// budgets is what each paced pass was ALLOWED this tick, beside what it used: a pass
+	// reporting zero work had nothing to do, could not act, or was already full, and only
+	// the used/limit pair separates the three.
+	budgets sensingBudgets
+}
+
+// passBudget is one pass's per-tick budget, as the report renders it: how much of it
+// the tick used, and how much it had. USED IS ATTEMPTS WHEREVER THE PASS CHARGES
+// ATTEMPTS — a refused gate read or yard read spent its call and its budget — so
+// used/limit is what the cap actually saw, not a success count.
+type passBudget struct {
+	pass  string
+	used  int
+	limit int
+}
+
+// The pass labels, named because both the cycle line and the gauge key off them.
+const (
+	passBudgetGate     = "gate"
+	passBudgetExpand   = "expand"
+	passBudgetPlace    = "place"
+	passBudgetYards    = "yards"
+	passBudgetPresence = "presence"
+	passBudgetReap     = "reap"
+	// place_refused is the placement machine's SECOND budget, a row of its own because it
+	// ends the tick independently: a wall of refused moves spends it while `place` still
+	// reads under its limit, and the pair alone would name no binding budget at all.
+	passBudgetPlaceRefused = "place_refused"
+)
+
+// passBudgets pairs each pass's spend with the budget it was charged against.
+//
+// The LIMITS come from the reports rather than from hb.budgets, deliberately: a pass
+// resolves its own documented default when handed a non-positive budget, so reading
+// the coordinator's intent here would report a number the engine did not use.
+func passBudgets(hb heartbeat) []passBudget {
+	return []passBudget{
+		{passBudgetGate, hb.expand.GatesRead + hb.expand.GatesUnreadable + hb.expand.GatesFailed, hb.expand.GateReadLimit},
+		{passBudgetExpand, hb.expand.Actions, hb.expand.ActionLimit},
+		{passBudgetPlace, hb.place.Actions, hb.place.ActionLimit},
+		{passBudgetPlaceRefused, hb.place.Failures, hb.place.FailureLimit},
+		{passBudgetYards, hb.yard.Read + hb.yard.Failed, hb.yard.ReadLimit},
+		{passBudgetPresence, hb.presence.Dispatched, hb.presence.DispatchLimit},
+		{passBudgetReap, hb.reap.Reaped + hb.reap.Skipped, hb.reap.ReapLimit},
+	}
+}
+
+// budgetSummary renders the pairs for the cycle line: "gate 3/3 expand 12/20 ...".
+func budgetSummary(hb heartbeat) string {
+	parts := make([]string, 0, len(passBudgets(hb)))
+	for _, b := range passBudgets(hb) {
+		parts = append(parts, fmt.Sprintf("%s %d/%d", b.pass, b.used, b.limit))
+	}
+	return strings.Join(parts, " ")
 }
 
 // heartbeat emits the tick's single structured summary line.
@@ -123,6 +177,8 @@ func (h *RunProbeSensingCoordinatorHandler) heartbeat(ctx context.Context, cmd *
 	h.publishYards(cmd.PlayerID.Value(), hb)
 
 	h.publishWave(cmd.PlayerID.Value(), hb)
+
+	h.publishPassBudgets(cmd.PlayerID.Value(), hb)
 
 	held := ""
 	switch {
@@ -152,12 +208,13 @@ func (h *RunProbeSensingCoordinatorHandler) heartbeat(ctx context.Context, cmd *
 	}
 
 	common.LoggerFromContext(ctx).Log("INFO", fmt.Sprintf(
-		"Parked sensing cycle: %.3f req/s pacer (%.3f residual, brake %.2f), %d parked, %s, screened %d, yards read %d of %d outstanding, bought %d reused %d queued %d (%d attempts%s%s), reaped %d adopted %d idle-reused %d surged %d, dispatched %d docking %d parked %d, expansion %s",
+		"Parked sensing cycle: %.3f req/s pacer (%.3f residual, brake %.2f), %d parked, %s, screened %d, yards read %d of %d outstanding, bought %d reused %d queued %d (%d attempts%s%s), reaped %d adopted %d idle-reused %d surged %d, dispatched %d docking %d parked %d, expansion %s, budgets=%s at %d‰ saturation",
 		hb.pacerRate, hb.sensingRate, hb.brake, hb.rotation, scanSummary(hb.scans), hb.screened,
 		hb.yard.Read, hb.yard.Outstanding,
 		hb.buy.Bought, hb.buy.Reused, hb.buy.Queued, hb.buy.Attempts, heldSuffix(held), refusalSuffix(hb.buy.Refusals),
 		hb.reap.Reaped, hb.adopted, hb.dispatched, hb.surged,
-		hb.place.Dispatched, hb.place.Docking, hb.place.Parked, expansionSummary(hb.expand)),
+		hb.place.Dispatched, hb.place.Docking, hb.place.Parked, expansionSummary(hb.expand),
+		budgetSummary(hb), hb.budgets.permille),
 		map[string]interface{}{
 			"action":                "parked_sensing_cycle",
 			"container_id":          cmd.ContainerID,
@@ -300,7 +357,28 @@ func (h *RunProbeSensingCoordinatorHandler) heartbeat(ctx context.Context, cmd *
 			"markets_found":         hb.expand.MarketsFound,
 			"retargeted":            hb.expand.Retargeted,
 			"seeds_stranded":        hb.expand.SeedsStranded,
+
+			// WHICH CAP BOUND THE TICK, as a query rather than an inference. Every
+			// paced pass writes used and limit, so a used equal to its limit names the
+			// budget that was actually binding, and the saturation reading beside them
+			// says why the limit was that size.
+			"pass_budgets":            budgetPayload(hb),
+			"api_saturation_permille": hb.budgets.permille,
 		})
+}
+
+// budgetPayload renders the per-pass budgets as structured rows. Untruncated, unlike
+// the message line: this is the whole set and a query engine wants all of it.
+func budgetPayload(hb heartbeat) []map[string]interface{} {
+	out := make([]map[string]interface{}, 0, len(passBudgets(hb)))
+	for _, b := range passBudgets(hb) {
+		out = append(out, map[string]interface{}{
+			"pass":  b.pass,
+			"used":  b.used,
+			"limit": b.limit,
+		})
+	}
+	return out
 }
 
 // publishYards puts the shipyard blind spot on the scrape surface.
@@ -365,6 +443,23 @@ func (h *RunProbeSensingCoordinatorHandler) publishYards(playerID int, hb heartb
 		darkMarketsReadable:  boolGauge(hb.buy.DarkMarketsReadable),
 	} {
 		h.recorder.RecordCoverageSurface(playerID, component, count)
+	}
+}
+
+// publishPassBudgets puts every paced pass's used/limit pair on the scrape surface.
+//
+// EVERY PASS, EVERY TICK, INCLUDING THE ZEROS, under the same rule the yard gauges
+// follow: a pass that stops reporting leaves its last value standing until the series
+// goes stale, so a budget that fell back to idle would read as permanently pinned —
+// which is the exact misreading a "which cap is binding" gauge exists to prevent.
+//
+// Observation only (RULINGS #4): a nil recorder returns immediately.
+func (h *RunProbeSensingCoordinatorHandler) publishPassBudgets(playerID int, hb heartbeat) {
+	if h.recorder == nil {
+		return
+	}
+	for _, b := range passBudgets(hb) {
+		h.recorder.RecordPassBudget(playerID, b.pass, b.used, b.limit)
 	}
 }
 

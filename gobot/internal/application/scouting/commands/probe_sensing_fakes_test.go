@@ -1289,6 +1289,10 @@ type fakeRecorder struct {
 	// map of falses cannot.
 	spendHolds      map[string]bool
 	spendHoldWrites int
+	// passBudgets is the LAST used/limit pair written per paced pass, and passBudgetWrites
+	// counts the writes, on the same reasoning as the pair above.
+	passBudgets      map[string]recordedPassBudget
+	passBudgetWrites int
 }
 
 type recordedWave struct {
@@ -1359,6 +1363,31 @@ func (f *fakeRecorder) recordedWaves() []recordedWave {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]recordedWave(nil), f.waves...)
+}
+
+// recordedPassBudget is one paced pass's used/limit pair as the recorder saw it.
+type recordedPassBudget struct{ used, limit int }
+
+// RecordPassBudget keeps the LAST pair written per pass, and counts the writes so a test can
+// pin that every pass is published on every tick.
+func (f *fakeRecorder) RecordPassBudget(_ int, pass string, used, limit int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.passBudgets == nil {
+		f.passBudgets = map[string]recordedPassBudget{}
+	}
+	f.passBudgets[pass] = recordedPassBudget{used: used, limit: limit}
+	f.passBudgetWrites++
+}
+
+func (f *fakeRecorder) recordedPassBudgets() (map[string]recordedPassBudget, int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make(map[string]recordedPassBudget, len(f.passBudgets))
+	for k, v := range f.passBudgets {
+		out[k] = v
+	}
+	return out, f.passBudgetWrites
 }
 
 // RecordProbeSpendHold keeps the LAST value written per reason, so a test can see a hold fall back

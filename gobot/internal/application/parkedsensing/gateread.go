@@ -34,6 +34,8 @@ import (
 // IT BOUNDS A BURST AND NOT THE STEADY STATE. The candidate set is the BACKLOG of systems whose
 // adjacency the store lacks, so once the map is read the pass makes zero calls on most ticks; what it
 // has to absorb is a cold cache, and the moment a gate read opens a region nobody had heard of.
+// ExpandKnobs.MaxGateReads is what a tick may actually spend: this, scaled by the idle share of the
+// request budget (pacing.go) and never under it.
 const MaxGateReads = 3
 
 // GateReader performs the DELIBERATE, BOUNDED, FETCH-THROUGH read of one system's jump gate: the live
@@ -178,7 +180,8 @@ func orderUnreadGatesByFrontier(
 }
 
 // readUnmappedGates is the pass: read the jump gate of every in-scope system whose adjacency the store
-// cannot answer for, nearest-first, up to MaxGateReads in one tick.
+// cannot answer for, nearest-first, up to maxReads in one tick. A non-positive maxReads is
+// MaxGateReads, the budget at the request ceiling.
 //
 // A NIL READER IS A WIRING GAP, NOT A SWITCH, and the pass then costs literally nothing — not even the
 // per-system mapping sweep.
@@ -203,8 +206,14 @@ func readUnmappedGates(
 	mapping *gateMapping,
 	reach *gateReach,
 	book *slotBook,
+	maxReads int,
 	rep *ExpandReport,
 ) error {
+	if maxReads <= 0 {
+		maxReads = MaxGateReads
+	}
+	// Re-stamped, not assumed: AdvanceExpansion stamps it before its budget gate too.
+	rep.GateReadLimit = maxReads
 	if p.GateRead == nil {
 		return nil
 	}
@@ -223,7 +232,7 @@ func readUnmappedGates(
 		return err
 	}
 
-	for attempts := 0; attempts < MaxGateReads && attempts < len(ordered); attempts++ {
+	for attempts := 0; attempts < maxReads && attempts < len(ordered); attempts++ {
 		system := ordered[attempts]
 		recordGateRead(ctx, p.GateRead.ReadGate(ctx, playerID, system), system, rep)
 	}

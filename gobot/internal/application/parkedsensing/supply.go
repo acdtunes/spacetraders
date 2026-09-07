@@ -258,7 +258,7 @@ func (t *expandTick) takeReachableSpare(ctx context.Context, target string) (Que
 // treasury.
 func (t *expandTick) requestSeeds(ctx context.Context) error {
 	for _, target := range t.targets {
-		if t.rep.Actions >= MaxExpansionActions {
+		if t.rep.Actions >= t.rep.ActionLimit {
 			return nil
 		}
 		if t.covered[target.System] {

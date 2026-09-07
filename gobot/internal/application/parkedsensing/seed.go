@@ -149,7 +149,7 @@ func (t *expandTick) advanceSeeds(ctx context.Context, systems []ExpandSystem) e
 	})
 
 	for _, s := range active {
-		if t.rep.Actions >= MaxExpansionActions {
+		if t.rep.Actions >= t.rep.ActionLimit {
 			return nil
 		}
 		acted, err := t.advanceSeed(ctx, s)

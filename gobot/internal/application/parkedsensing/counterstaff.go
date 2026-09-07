@@ -98,7 +98,7 @@ const maxLendableHullsRead = 16
 // That is also what keeps the pass from competing with the ordinary paths: a fleet
 // with a staffed counter, or a spare probe to send, never reaches it.
 func (t *expandTick) staffCounters(ctx context.Context) error {
-	if t.rep.SeedsUnstaged == 0 || t.rep.Actions >= MaxExpansionActions {
+	if t.rep.SeedsUnstaged == 0 || t.rep.Actions >= t.rep.ActionLimit {
 		return nil
 	}
 

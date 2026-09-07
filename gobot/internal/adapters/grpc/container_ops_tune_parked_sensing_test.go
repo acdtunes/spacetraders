@@ -83,6 +83,9 @@ func TestSensingTune_LiveKnobSet(t *testing.T) {
 		// outstanding-count floors its second and third hull must clear on top of the
 		// measured walk. A cap of 1 is the single-hull tour, this feature's off switch.
 		"chart_hull_cap", "chart_hull_2_at", "chart_hull_3_at",
+		// The per-tick burst headroom every paced pass scales by. It can only ever RAISE
+		// a budget, so 1 — not 0 — is the way back to the pre-scaling pacing.
+		"expansion_headroom_multiple",
 	}
 	for _, key := range live {
 		require.Contains(t, bounds, key, "%s must be tunable", key)

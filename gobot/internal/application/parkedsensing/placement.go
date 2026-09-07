@@ -22,6 +22,7 @@ import (
 // the rest is worked over later ticks. It bounds ACCEPTED commands only — refusals
 // have their own budget (placementFailureBudgetMultiple), or slots whose move
 // fails every tick spend this one before any healthy slot behind them is reached.
+// The coordinator hands this scaled by the idle request budget (pacing.go), never below it.
 const DefaultMaxPlacementActions = 10
 
 // placementFailureBudgetMultiple sizes the SEPARATE budget a tick gives to REFUSED
@@ -128,13 +129,16 @@ type PlacementReport struct {
 	// Actions counts everything above against the per-tick budget, SUCCESSES ONLY.
 	// The stall detector reads Actions > 0 as "a placement advanced" (anyEffect in
 	// probe_sensing_stall.go), so a refusal counted here would file a tick that
-	// accomplished nothing as PROGRESS and hide a frozen worklist.
-	Actions int
+	// accomplished nothing as PROGRESS and hide a frozen worklist. ActionLimit is the budget
+	// it was charged against, so the heartbeat can say which one bound.
+	Actions, ActionLimit int
 	// Failures counts moves that were issued and REFUSED, against their own
 	// separate budget. A refusal leaves the slot exactly as it was, to be retried
 	// next tick; it is counted because it is not free, and kept apart from Actions
-	// because charging the two alike starves the worklist.
-	Failures int
+	// because charging the two alike starves the worklist. FailureLimit is that second
+	// budget, reported because it can END THE TICK ON ITS OWN while Actions sits well
+	// under ActionLimit — a shape the accepted-command pair alone cannot describe.
+	Failures, FailureLimit int
 }
 
 // placementOutcome is what one slot's turn cost the tick. outcomeAdvanced and
@@ -174,13 +178,14 @@ func AdvancePlacements(ctx context.Context, pl PlacementPorts, playerID int, max
 	if maxActions <= 0 {
 		maxActions = DefaultMaxPlacementActions
 	}
+	maxFailures := maxActions * placementFailureBudgetMultiple
+	// BOTH before the read that can fail: 0/limit, never the 0/0 that reads as bound.
+	rep.ActionLimit, rep.FailureLimit = maxActions, maxFailures
 
 	slots, err := pl.Ledger.PlacementWorklist(ctx, playerID, SlotStateBought, SlotStateInTransit)
 	if err != nil {
 		return rep, fmt.Errorf("failed to list in-flight sensing placements: %w", err)
 	}
-
-	maxFailures := maxActions * placementFailureBudgetMultiple
 
 	t := &placementTick{pl: pl, playerID: playerID, rep: &rep}
 	for _, w := range t.arrivalsFirst(ctx, slots, maxActions) {

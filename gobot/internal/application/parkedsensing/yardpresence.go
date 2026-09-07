@@ -34,10 +34,11 @@ import (
 // is no purchaser on its ports and no code path here reaches one.
 
 // MaxYardPresenceDispatches bounds how many hulls ONE tick may send to unpriced
-// yards. A BACKSTOP rather than the safety property: correctness comes from the
-// budget's allowance (which refuses long before this binds) and from surplusPool
-// re-deciding redundancy after every take. It exists because a single tick reads
-// one redundancy picture, and could empty a system on the strength of it.
+// yards at the request ceiling. A BACKSTOP rather than the safety property:
+// correctness comes from the budget's allowance (which refuses long before this
+// binds) and from surplusPool re-deciding redundancy after every take, and it holds
+// AT ANY BOUND — which is what makes it safe to scale off the idle request budget
+// (pacing.go), upward only.
 const MaxYardPresenceDispatches = 2
 
 // yardPresenceRequestLimit is how many ranked requests the pass asks for.
@@ -104,10 +105,13 @@ type YardPresenceReport struct {
 	// Metered counts requests that found a hull and were refused by the allowance.
 	// It separates "nothing to send" from "not allowed to send yet".
 	Metered int
+	// DispatchLimit is the per-tick bound, never the allowance (that reports as Metered).
+	DispatchLimit int
 }
 
 // DispatchYardPresence sends spare hulls to the yards the fleet cannot price,
-// bounded by MaxYardPresenceDispatches and by the budget's own allowance.
+// bounded by maxDispatches and by the budget's own allowance. A non-positive
+// maxDispatches is MaxYardPresenceDispatches.
 //
 // WHAT COUNTS AS SPARE IS NOT DECIDED HERE. It is surplusPool's definition — a
 // PARKED MARKET hull that no scout post mans and whose every whitelisted good
@@ -124,8 +128,12 @@ type YardPresenceReport struct {
 // invent them could station hulls at waypoints the screen has judged not worth
 // watching. So this pass can only ever ACCELERATE a placement the fleet had
 // already decided it wanted.
-func DispatchYardPresence(ctx context.Context, p YardPresencePorts, playerID int) (YardPresenceReport, error) {
+func DispatchYardPresence(ctx context.Context, p YardPresencePorts, playerID int, maxDispatches int) (YardPresenceReport, error) {
 	var rep YardPresenceReport
+	if maxDispatches <= 0 {
+		maxDispatches = MaxYardPresenceDispatches
+	}
+	rep.DispatchLimit = maxDispatches
 	if !p.wired() {
 		return rep, nil
 	}
@@ -152,7 +160,7 @@ func DispatchYardPresence(ctx context.Context, p YardPresencePorts, playerID int
 	pool := newSurplusPool(parked, manned)
 
 	for _, request := range requests {
-		if rep.Dispatched >= MaxYardPresenceDispatches {
+		if rep.Dispatched >= maxDispatches {
 			break
 		}
 		sent, err := dispatchOnePresence(ctx, p, playerID, request, pool, &rep)

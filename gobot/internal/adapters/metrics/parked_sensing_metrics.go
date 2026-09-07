@@ -59,6 +59,13 @@ type ParkedSensingMetricsCollector struct {
 	// probeSpendHold is why probe PURCHASES were refused inside a PROBE wave. Every known
 	// reason is written every tick, so a superseded one falls to 0 and no seen-set is kept.
 	probeSpendHold *prometheus.GaugeVec
+
+	// The paced passes' per-tick budgets: what each spent, and what it was allowed.
+	// TWO GAUGES RATHER THAN A RATIO, because the question is a comparison an alert
+	// has to make (used >= limit is a bound pass) and a ratio cannot say whether a
+	// pass was bound at 3 calls or at 114.
+	passBudgetUsed  *prometheus.GaugeVec
+	passBudgetLimit *prometheus.GaugeVec
 }
 
 // NewParkedSensingMetricsCollector creates a new parked-probe sensing collector.
@@ -111,6 +118,18 @@ func NewParkedSensingMetricsCollector() *ParkedSensingMetricsCollector {
 			"player_id",
 			"reason",
 		),
+		passBudgetUsed: newGaugeVec(
+			"parked_sensing_pass_budget_used",
+			"What one paced sensing pass spent this tick, by pass: gate (live jump-gate reads), expand (seed steps and seed requests), place (accepted placement moves), yards (shipyard-catalogue reads), presence (hulls sent to unpriced yards), reap (ledger claims released). ATTEMPTS wherever the pass charges attempts, so a refused read still counts — that is what the cap saw. Read it against parked_sensing_pass_budget_limit: equal means THIS pass is what bound the tick, which was inferrable from nothing at all before it existed",
+			"player_id",
+			"pass",
+		),
+		passBudgetLimit: newGaugeVec(
+			"parked_sensing_pass_budget_limit",
+			"What one paced sensing pass was ALLOWED this tick. It is the pass's ceiling-era constant scaled up by the idle share of the shared request budget (expansion_headroom_multiple), so it moves with measured API saturation and never falls below the constant. A limit sitting at its floor while spacetraders_daemon_tour_api_saturation_permille reads near zero means the scaling is not reaching this pass",
+			"player_id",
+			"pass",
+		),
 	}
 }
 
@@ -129,6 +148,8 @@ func (c *ParkedSensingMetricsCollector) Register() error {
 		c.yardSlots,
 		c.coverageSurface,
 		c.probeSpendHold,
+		c.passBudgetUsed,
+		c.passBudgetLimit,
 	)
 }
 
@@ -201,6 +222,17 @@ func (c *ParkedSensingMetricsCollector) RecordProbeSpendHold(playerID int, reaso
 		value = 1
 	}
 	c.probeSpendHold.WithLabelValues(strconv.Itoa(playerID), reason).Set(value)
+}
+
+// RecordPassBudget sets one paced pass's spend and its budget for one player. The caller
+// writes every pass every tick, so a budget that stops binding is seen to stop.
+func (c *ParkedSensingMetricsCollector) RecordPassBudget(playerID int, pass string, used, limit int) {
+	if c == nil || c.passBudgetUsed == nil || c.passBudgetLimit == nil {
+		return
+	}
+	player := strconv.Itoa(playerID)
+	c.passBudgetUsed.WithLabelValues(player, pass).Set(float64(used))
+	c.passBudgetLimit.WithLabelValues(player, pass).Set(float64(limit))
 }
 
 // globalParkedSensingCollector is the process-wide collector the sensing

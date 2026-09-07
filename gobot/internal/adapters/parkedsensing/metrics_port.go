@@ -80,3 +80,9 @@ func (MetricsPort) RecordWave(playerID int, wave common.Wave, reason common.Wave
 func (MetricsPort) RecordProbeSpendHold(playerID int, reason string, held bool) {
 	metrics.GetGlobalParkedSensingCollector().RecordProbeSpendHold(playerID, reason, held)
 }
+
+// RecordPassBudget publishes one paced pass's per-tick spend beside the budget it was charged
+// against, so "which cap bound this tick" is a query.
+func (MetricsPort) RecordPassBudget(playerID int, pass string, used, limit int) {
+	metrics.GetGlobalParkedSensingCollector().RecordPassBudget(playerID, pass, used, limit)
+}

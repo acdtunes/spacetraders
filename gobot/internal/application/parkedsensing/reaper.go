@@ -26,8 +26,10 @@ import (
 
 // DefaultMaxReaps bounds how many claims one pass may release. Like
 // maxDrainAttempts it paces a burst of writes rather than expressing an economic
-// preference, so it is a constant and not a knob. A backlog is not lost: the rows
-// left over are still QUEUED and still first in line next tick.
+// preference. A backlog is not lost: the rows left over are still QUEUED and still
+// first in line next tick.
+// The coordinator hands it scaled by the idle request budget (pacing.go), which can
+// only ever raise it.
 const DefaultMaxReaps = 20
 
 // ReapLedger is the reaper's slice of the sensing ledger: read the verdicts, read
@@ -58,6 +60,8 @@ type ReapReport struct {
 	// Skipped counts rows another writer moved first. Routine rather than
 	// alarming — see the loop for why a lost race is legitimate.
 	Skipped int
+	// ReapLimit: a pass that stopped FULL otherwise reads like one out of claims.
+	ReapLimit int
 }
 
 // ReapStrandedClaims reverts MARKET and YARD placements left QUEUED in systems
@@ -73,6 +77,7 @@ func ReapStrandedClaims(ctx context.Context, p ReapPorts, playerID int, maxReaps
 	if maxReaps <= 0 {
 		maxReaps = DefaultMaxReaps
 	}
+	rep.ReapLimit = maxReaps
 
 	claimed, err := p.Ledger.SlotsByState(ctx, playerID, SlotStateQueued)
 	if err != nil {

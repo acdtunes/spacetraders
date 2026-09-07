@@ -95,6 +95,12 @@ const (
 	defaultSecondChartHullAt = 3
 	defaultThirdChartHullAt  = 4
 
+	// defaultExpansionHeadroomMultiple is how far above its ceiling-era budget each
+	// paced pass may burst when the request budget is idle. A mirror of the engine's
+	// own constant, like the charting-crew defaults, so the tune registry publishes a
+	// number rather than a zero. 1 restores the pre-scaling pacing exactly.
+	defaultExpansionHeadroomMultiple = parkedsensing.ExpansionHeadroomMultiple
+
 	// screenSweepBatch bounds how many PENDING systems one tick screens. A plain
 	// constant, deliberately not a knob: it paces API bursts (an unresolved
 	// market costs a remote fetch, and a catalog-unknown system costs a
@@ -165,6 +171,10 @@ type sensingConfig struct {
 	ChartHullCap      int
 	SecondChartHullAt int
 	ThirdChartHullAt  int
+	// ExpansionHeadroomMultiple is how far above its ceiling-era budget each paced
+	// pass may burst when the request budget is idle (parkedsensing.PacedBudget).
+	// PACING ONLY — it reaches no spend gate, buy floor or reserve.
+	ExpansionHeadroomMultiple int
 }
 
 // resolveSensingConfig resolves one tick's effective config from the launch
@@ -223,6 +233,8 @@ func resolveSensingConfig(ctx context.Context, cmd *RunProbeSensingCoordinatorCo
 		ChartHullCap:            pick("chart_hull_cap", cmd.ChartHullCap),
 		SecondChartHullAt:       pick("chart_hull_2_at", cmd.SecondChartHullAt),
 		ThirdChartHullAt:        pick("chart_hull_3_at", cmd.ThirdChartHullAt),
+
+		ExpansionHeadroomMultiple: pick("expansion_headroom_multiple", cmd.ExpansionHeadroomMultiple),
 	}
 
 	// 1=both, 2=neither, 3=probes only. Anything else — including the absent-key 0 —
@@ -321,6 +333,16 @@ func applySensingDefaults(ctx context.Context, cmd *RunProbeSensingCoordinatorCo
 	if c.ThirdChartHullAt <= 0 {
 		c.ThirdChartHullAt = defaultThirdChartHullAt
 	}
+	// Reverting on zero ships the scaling ARMED (RULINGS #22); 1 is the way back to the
+	// pre-scaling pacing, a reachable value rather than the revert. A NEGATIVE warns like
+	// its neighbours: bounded at 1, so one can only come from a hand-edited row.
+	if c.ExpansionHeadroomMultiple <= 0 {
+		warnNegativeSensingKnob(ctx, "expansion_headroom_multiple", c.ExpansionHeadroomMultiple, defaultExpansionHeadroomMultiple)
+		c.ExpansionHeadroomMultiple = defaultExpansionHeadroomMultiple
+	}
+	if c.ExpansionHeadroomMultiple > parkedsensing.MaxExpansionHeadroomMultiple {
+		c.ExpansionHeadroomMultiple = parkedsensing.MaxExpansionHeadroomMultiple
+	}
 }
 
 func warnNegativeSensingKnob(ctx context.Context, key string, v, fallback int) {
@@ -380,7 +402,7 @@ func buyKnobs(cfg sensingConfig) parkedsensing.BuyKnobs {
 // brake can drive the residual below the minimum scan rate while the pacer re-imposes
 // it, so gating on the pacer would leave expansion charting through a rate-limit storm.
 // It reads expansion_min_budget_milli, deliberately not min_scan_rate_milli.
-func expandKnobs(cfg sensingConfig) parkedsensing.ExpandKnobs {
+func expandKnobs(cfg sensingConfig, budgets sensingBudgets) parkedsensing.ExpandKnobs {
 	return parkedsensing.ExpandKnobs{
 		SeedsEnabled:      cfg.SeedDispatch,
 		MinBudgetRate:     float64(cfg.ExpansionMinBudgetMilli) / 1000.0,
@@ -388,5 +410,10 @@ func expandKnobs(cfg sensingConfig) parkedsensing.ExpandKnobs {
 		ChartHullCap:      cfg.ChartHullCap,
 		SecondChartHullAt: cfg.SecondChartHullAt,
 		ThirdChartHullAt:  cfg.ThirdChartHullAt,
+		// The tick's two burst budgets, resolved from the live saturation reading.
+		// Zero would be the engine's own constants, so a caller that forgot them paces
+		// as before rather than stalling.
+		MaxActions:   budgets.expand,
+		MaxGateReads: budgets.gate,
 	}
 }

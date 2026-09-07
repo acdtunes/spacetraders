@@ -90,7 +90,7 @@ func (w *yardWorld) yard(waypoint string, frontier int, sells ...string) *yardWo
 func (w *yardWorld) sweep(t *testing.T) YardCatalogReport {
 	t.Helper()
 	rep, err := ReadYardCatalogues(context.Background(),
-		YardCatalogPorts{Frontier: w, Catalog: w}, testPlayerID)
+		YardCatalogPorts{Frontier: w, Catalog: w}, testPlayerID, 0)
 	if err != nil {
 		t.Fatalf("ReadYardCatalogues returned error: %v", err)
 	}
@@ -284,7 +284,7 @@ func TestReadYardCatalogues_AnUnreadableWorkListFailsThePass(t *testing.T) {
 	world.listErr = errors.New("store down")
 
 	rep, err := ReadYardCatalogues(context.Background(),
-		YardCatalogPorts{Frontier: world, Catalog: world}, testPlayerID)
+		YardCatalogPorts{Frontier: world, Catalog: world}, testPlayerID, 0)
 	if err == nil {
 		t.Fatal("expected the enumeration failure to fail the pass")
 	}

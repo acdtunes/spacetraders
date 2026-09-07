@@ -74,6 +74,10 @@ type ParkedSensingRecorder interface {
 	// RecordProbeSpendHold publishes ONE refusal reason for probe purchases inside a PROBE wave,
 	// held or not. Every known reason is written every tick, so a superseded one falls to 0.
 	RecordProbeSpendHold(playerID int, reason string, held bool)
+
+	// RecordPassBudget publishes one paced pass's per-tick spend and the budget it was charged
+	// against, as a pair: a pass sitting at its limit for hours otherwise read like an idle one.
+	RecordPassBudget(playerID int, pass string, used, limit int)
 }
 
 // RunProbeSensingCoordinatorCommand launches the standing coordinator for a
@@ -134,6 +138,9 @@ type RunProbeSensingCoordinatorCommand struct {
 	ChartHullCap      int
 	SecondChartHullAt int
 	ThirdChartHullAt  int
+	// ExpansionHeadroomMultiple is how far above its ceiling-era budget each paced
+	// pass may burst when the request budget is idle. See sensingConfig.
+	ExpansionHeadroomMultiple int
 
 	// --- retired: read by the old touring core, ignored by this one -----------
 
@@ -188,6 +195,10 @@ type RunProbeSensingCoordinatorHandler struct {
 
 	// recorder publishes the sensing gauges. Optional; nil means metrics are off.
 	recorder ParkedSensingRecorder
+
+	// apiSaturation is the live request-budget pressure the burst budgets scale off.
+	// Optional-injection, and UNSET MEANS FULL HEADROOM (see resolveSensingBudgets).
+	apiSaturation APISaturationReader
 
 	// stall is the WRITE-ONLY stall-escalation seam (health.StallObserver): each tick reports
 	// PROGRESS / IDLE / BLOCKED(reason) for the sensing pass and for the off-gate/expansion pass
@@ -293,6 +304,14 @@ func (h *RunProbeSensingCoordinatorHandler) SetEventRecorder(rec captain.EventRe
 // SetMetricsRecorder wires the sensing gauges. Observation only.
 func (h *RunProbeSensingCoordinatorHandler) SetMetricsRecorder(rec ParkedSensingRecorder) {
 	h.recorder = rec
+}
+
+// SetAPISaturationReader injects the request-budget pressure estimator the burst budgets
+// scale off. Unset, every pass runs at its FULL headroom multiple: this consumer asks how
+// much budget is SPARE, so an absent reading must not read as a saturated limiter
+// (resolveSensingBudgets). It gates no spend.
+func (h *RunProbeSensingCoordinatorHandler) SetAPISaturationReader(r APISaturationReader) {
+	h.apiSaturation = r
 }
 
 // SetStallObserver wires the coordinator-stall escalation seam. Optional and nil-safe. The seam
@@ -468,6 +487,11 @@ func (h *RunProbeSensingCoordinatorHandler) ReconcileOnce(ctx context.Context, c
 	sensingRate := domainSensing.SensingRate(budget)
 	pacerRate := domainSensing.PacerRate(budget)
 
+	// THE PER-PASS BURST BUDGETS, resolved once for the whole tick off the same live limiter.
+	// A SEPARATE READING FROM budgetInputs above: that is the SCAN RATE, a req/s the pacer
+	// spends continuously, while this is how big a BURST one tick may fire.
+	budgets := h.budgetsFor(ctx, cfg)
+
 	systems, err := ports.Ledger.Systems(ctx, playerID)
 	if err != nil {
 		// The tick cannot even see its own world. Reported before the return so an unreadable
@@ -506,7 +530,7 @@ func (h *RunProbeSensingCoordinatorHandler) ReconcileOnce(ctx context.Context, c
 	// Outside the screen sweep deliberately: screening only ever revisits PENDING
 	// systems, so a yard in a system already judged — most of the map — is never
 	// reached from there.
-	yardRep, yerr := parkedsensing.ReadYardCatalogues(ctx, ports.yardCatalogPorts(), playerID)
+	yardRep, yerr := parkedsensing.ReadYardCatalogues(ctx, ports.yardCatalogPorts(), playerID, budgets.yards)
 	if yerr != nil {
 		failures = append(failures, yerr)
 	}
@@ -522,7 +546,7 @@ func (h *RunProbeSensingCoordinatorHandler) ReconcileOnce(ctx context.Context, c
 	// BEFORE the reaper and the drain, so a market this pass releases back to
 	// WANTED is a placement they see on the tick it is released — the reaper does
 	// not treat it as stranded and the drain may re-cover it immediately.
-	presenceRep, perr := parkedsensing.DispatchYardPresence(ctx, ports.yardPresencePorts(h.postRepo), playerID)
+	presenceRep, perr := parkedsensing.DispatchYardPresence(ctx, ports.yardPresencePorts(h.postRepo), playerID, budgets.presence)
 	if perr != nil {
 		failures = append(failures, perr)
 	}
@@ -543,7 +567,7 @@ func (h *RunProbeSensingCoordinatorHandler) ReconcileOnce(ctx context.Context, c
 	// happens BEFORE the screening sweep, so reusing it would hand the reaper a
 	// pre-sweep verdict map and silently restore exactly the stale-verdict
 	// reaping the ordering above exists to prevent.
-	reapRep, rerr := parkedsensing.ReapStrandedClaims(ctx, ports.reapPorts(), playerID, 0)
+	reapRep, rerr := parkedsensing.ReapStrandedClaims(ctx, ports.reapPorts(), playerID, budgets.reap)
 	if rerr != nil {
 		failures = append(failures, rerr)
 	}
@@ -563,7 +587,7 @@ func (h *RunProbeSensingCoordinatorHandler) ReconcileOnce(ctx context.Context, c
 	var expandRep parkedsensing.ExpandReport
 	var eerr error
 	advanceExpansion := func() {
-		expandRep, eerr = parkedsensing.AdvanceExpansion(ctx, ports.expandPorts(playerID, cfg.Whitelist), playerID, expandKnobs(cfg), sensingRate)
+		expandRep, eerr = parkedsensing.AdvanceExpansion(ctx, ports.expandPorts(playerID, cfg.Whitelist), playerID, expandKnobs(cfg, budgets), sensingRate)
 		if eerr != nil {
 			failures = append(failures, eerr)
 		}
@@ -577,7 +601,7 @@ func (h *RunProbeSensingCoordinatorHandler) ReconcileOnce(ctx context.Context, c
 		failures = append(failures, berr)
 	}
 
-	placeRep, perr := parkedsensing.AdvancePlacements(ctx, ports.placementPorts(), playerID, 0)
+	placeRep, perr := parkedsensing.AdvancePlacements(ctx, ports.placementPorts(), playerID, budgets.place)
 	if perr != nil {
 		failures = append(failures, perr)
 	}
@@ -605,6 +629,7 @@ func (h *RunProbeSensingCoordinatorHandler) ReconcileOnce(ctx context.Context, c
 		rotation:    rotation,
 		yard:        yardRep,
 		presence:    presenceRep,
+		budgets:     budgets,
 	})
 
 	// The tick's three-way verdict, on the two keys that stall independently. Reported ONCE per
@@ -649,7 +674,11 @@ func (h *RunProbeSensingCoordinatorHandler) sweepYardCatalogues(ctx context.Cont
 		return
 	}
 
-	rep, err := parkedsensing.ReadYardCatalogues(ctx, ports.yardCatalogPorts(), playerID)
+	// UNSCALED, AND THE ONLY CALLER OF THIS PASS THAT IS: scaling starts past the EXPANSION
+	// edge. The estimator needs 300 requests in its window and a pre-EXPANSION container makes
+	// nowhere near that, so it returns the same 0 an idle budget does — and the budget is not
+	// spare anyway, since DATA/INCOME/GATE is bootstrap building the jump gate.
+	rep, err := parkedsensing.ReadYardCatalogues(ctx, ports.yardCatalogPorts(), playerID, parkedsensing.MaxYardCatalogReads)
 	if err != nil {
 		logger.Log("WARNING", fmt.Sprintf(
 			"The free shipyard-catalogue sweep could not enumerate its work list, so no catalogue is learned this tick: %v", err),
@@ -664,13 +693,14 @@ func (h *RunProbeSensingCoordinatorHandler) sweepYardCatalogues(ctx context.Cont
 	// Emitted on every tick, ZEROS INCLUDED: there is no cycle heartbeat on this path,
 	// so this line is the only evidence the sweep ran at all.
 	logger.Log("INFO", fmt.Sprintf(
-		"Shipyard catalogue sweep (pre-EXPANSION): read %d of %d outstanding, %d failed",
-		rep.Read, rep.Outstanding, rep.Failed), map[string]interface{}{
+		"Shipyard catalogue sweep (pre-EXPANSION): read %d of %d outstanding, %d failed (budget %d/%d)",
+		rep.Read, rep.Outstanding, rep.Failed, rep.Read+rep.Failed, rep.ReadLimit), map[string]interface{}{
 		"action":            "parked_sensing_yard_catalog_sweep",
 		"container_id":      cmd.ContainerID,
 		"yards_read":        rep.Read,
 		"yards_failed":      rep.Failed,
 		"yards_outstanding": rep.Outstanding,
+		"yards_read_limit":  rep.ReadLimit,
 	})
 }
 

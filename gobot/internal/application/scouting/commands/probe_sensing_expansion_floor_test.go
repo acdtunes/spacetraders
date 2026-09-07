@@ -25,14 +25,14 @@ import (
 func TestExpansionFloor_IsIndependentOfTheScanFloor(t *testing.T) {
 	cmd := sensingTestCmd()
 	base := resolveSensingConfig(context.Background(), cmd, nil)
-	baseline := expandKnobs(base).MinBudgetRate
+	baseline := expandKnobs(base, sensingBudgets{}).MinBudgetRate
 
 	raised := resolveSensingConfig(context.Background(), cmd, liveconfig.Snapshot{
 		"min_scan_rate_milli": 450,
 	})
 
 	require.Equal(t, 450, raised.MinScanRateMilli, "the scan floor did move")
-	require.Equal(t, baseline, expandKnobs(raised).MinBudgetRate,
+	require.Equal(t, baseline, expandKnobs(raised, sensingBudgets{}).MinBudgetRate,
 		"raising the scan pacer's floor must not raise the bar the expansion pass has to clear — "+
 			"the brake drives the residual DOWN while the pacer re-imposes the floor, so a coupled "+
 			"threshold turns a scan-rate change into a charting stop")
@@ -48,7 +48,7 @@ func TestExpansionFloor_HasItsOwnLiveKnob(t *testing.T) {
 	})
 
 	require.Equal(t, 120, tuned.ExpansionMinBudgetMilli)
-	require.InDelta(t, 0.120, expandKnobs(tuned).MinBudgetRate, 1e-9,
+	require.InDelta(t, 0.120, expandKnobs(tuned, sensingBudgets{}).MinBudgetRate, 1e-9,
 		"the knob is milli-req/s, the same convention as min_scan_rate_milli")
 	require.Equal(t, defaultMinScanRateMilli, tuned.MinScanRateMilli,
 		"and it leaves the scan floor where it was")
@@ -60,7 +60,7 @@ func TestExpansionFloor_ShipsArmedAtItsDocumentedDefault(t *testing.T) {
 	cfg := resolveSensingConfig(context.Background(), sensingTestCmd(), nil)
 
 	require.Equal(t, defaultExpansionMinBudgetMilli, cfg.ExpansionMinBudgetMilli)
-	require.Positive(t, expandKnobs(cfg).MinBudgetRate, "an unset knob must not disarm the gate")
+	require.Positive(t, expandKnobs(cfg, sensingBudgets{}).MinBudgetRate, "an unset knob must not disarm the gate")
 }
 
 // The default is sized against what the emergency brake can actually reach, which
@@ -71,7 +71,7 @@ func TestExpansionFloor_ShipsArmedAtItsDocumentedDefault(t *testing.T) {
 // floor, the FIRST halving of the brake already pauses charting.
 func TestExpansionFloor_TripsOnlyNearTheBrakeFloor(t *testing.T) {
 	cfg := resolveSensingConfig(context.Background(), sensingTestCmd(), nil)
-	floor := expandKnobs(cfg).MinBudgetRate
+	floor := expandKnobs(cfg, sensingBudgets{}).MinBudgetRate
 	scanFloor := float64(cfg.MinScanRateMilli) / 1000.0
 
 	// One halving of the brake is ordinary API pressure and must NOT pause charting.
