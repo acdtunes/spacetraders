@@ -346,6 +346,36 @@ func (p *LedgerPort) UpsertSpareSlot(ctx context.Context, playerID int, slot app
 	return p.repo.UpsertSpareSlot(ctx, model)
 }
 
+// SpareHulls returns the RESERVE pool — probes we own that hold no placement
+// (sp-v7mtk). Keyed on the hull in the store, so several standing at one waypoint
+// come back as several rows rather than collapsing onto the last one written.
+func (p *LedgerPort) SpareHulls(ctx context.Context, playerID int) ([]appSensing.SpareHull, error) {
+	models, err := p.repo.SpareHulls(ctx, playerID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]appSensing.SpareHull, 0, len(models))
+	for _, m := range models {
+		out = append(out, appSensing.SpareHull{
+			Ship:     m.ShipSymbol,
+			Waypoint: m.WaypointSymbol,
+			System:   m.SystemSymbol,
+		})
+	}
+	return out, nil
+}
+
+// UpsertSpareHull records one probe as a reserve standing where it stands.
+func (p *LedgerPort) UpsertSpareHull(ctx context.Context, playerID int, shipSymbol, waypoint, system string) error {
+	return p.repo.UpsertSpareHull(ctx, playerID, shipSymbol, waypoint, system)
+}
+
+// DeleteSpareHull takes one probe out of the reserve pool, BY HULL — the address
+// that names one row where the waypoint names a set (see the repository method).
+func (p *LedgerPort) DeleteSpareHull(ctx context.Context, playerID int, shipSymbol string) error {
+	return p.repo.DeleteSpareHull(ctx, playerID, shipSymbol)
+}
+
 // slotModel maps a placement record onto its row. Both upsert variants insert the
 // WHOLE row on a waypoint that has none, so they share this shape; they differ
 // only in what they re-assert when one is already there.

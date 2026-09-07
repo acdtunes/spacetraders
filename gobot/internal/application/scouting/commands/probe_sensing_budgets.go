@@ -32,6 +32,7 @@ type sensingBudgets struct {
 	yards    int
 	presence int
 	reap     int
+	adopt    int
 }
 
 // resolveSensingBudgets scales every paced pass off one saturation reading.
@@ -55,6 +56,12 @@ func resolveSensingBudgets(permille, headroomMultiple int) sensingBudgets {
 		yards:    paced(parkedsensing.MaxYardCatalogReads),
 		presence: paced(parkedsensing.MaxYardPresenceDispatches),
 		reap:     paced(parkedsensing.DefaultMaxReaps),
+		// Adoption is paced like the rest as of sp-v7mtk. It writes rows and spends no
+		// requests, so scaling it with the idle request budget is the same trade every
+		// pass here makes — a burst held down at the ceiling and let out below it — and
+		// a hundred stranded hulls is exactly the backlog the base of 10 was never sized
+		// for.
+		adopt: paced(DefaultMaxAdoptions),
 	}
 }
 

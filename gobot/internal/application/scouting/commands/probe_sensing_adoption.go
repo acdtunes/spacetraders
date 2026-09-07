@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/application/parkedsensing"
@@ -48,6 +49,17 @@ import (
 // writes, not an economic choice. A backlog is not lost — the hulls left over are
 // still orphaned and still first in line next tick.
 const DefaultMaxAdoptions = 10
+
+// adoptReport is one tick's adoption accounting, in the used/limit shape every
+// other paced pass reports. IT EXISTS BECAUSE THE PASS CAN NOW SATURATE: a bulk buy
+// makes this a pass that runs at its cap for a dozen ticks, and a bare count cannot
+// say whether the backlog is draining or the budget is binding. Attempts counts
+// WRITES, matching the budget the loop charges.
+type adoptReport struct {
+	Adopted  int
+	Attempts int
+	Limit    int
+}
 
 // legacyProbeBuyerFleetTag is the dedicated_fleet tag the RETIRED probe-buyer coordinator wrote on
 // the hulls it recruited. The coordinator is deleted; its tag is not — it is persisted on live
@@ -95,14 +107,23 @@ func (h *RunProbeSensingCoordinatorHandler) adoptStrandedProbes(
 	ctx context.Context,
 	cyc sensingCycle,
 	systems []parkedsensing.ExpandSystem,
+	limit int,
 	failures *[]error,
-) int {
+) adoptReport {
 	logger := common.LoggerFromContext(ctx)
 	playerID := cyc.cmd.PlayerID.Value()
 
+	// A non-positive budget is the caller's "use your documented default" sentinel,
+	// resolved here rather than in PacedBudget so this pass keeps owning its own
+	// default — the same contract every other paced pass keeps.
+	if limit <= 0 {
+		limit = DefaultMaxAdoptions
+	}
+	rep := adoptReport{Limit: limit}
+
 	ships, manned, holds, ok := h.adoptionInputs(ctx, cyc, failures)
 	if !ok {
-		return 0
+		return rep
 	}
 	onErrand := hullsOnChartingErrand(systems)
 
@@ -115,7 +136,7 @@ func (h *RunProbeSensingCoordinatorHandler) adoptStrandedProbes(
 		// going to be written would therefore let the ineligible majority starve
 		// the eligible few on every tick, permanently. The reaper closes the same
 		// hole the same way.
-		if writes >= DefaultMaxAdoptions {
+		if writes >= limit {
 			break
 		}
 		if !ship.IsScoutType() || !adoptableFleetTag(ship.DedicatedFleet()) {
@@ -150,6 +171,13 @@ func (h *RunProbeSensingCoordinatorHandler) adoptStrandedProbes(
 			// tag write leaves. The row is what the probe cap counts, and it is
 			// already there, so re-writing it would buy nothing and would spend
 			// budget a genuinely stranded hull needs.
+			continue
+		}
+		if holds.reserves[hull] {
+			// Already in the RESERVE pool, which the probe cap also counts. Kept as a
+			// separate index from holds.hulls on purpose: a reserve holds no placement,
+			// so the dispatch and surge passes may still put it to work, and folding
+			// the two together would make them skip it and leave it parked forever.
 			continue
 		}
 		location := ship.CurrentLocation()
@@ -202,10 +230,20 @@ func (h *RunProbeSensingCoordinatorHandler) adoptStrandedProbes(
 		// Still KIND-BLIND after the key widened; see occupiedAt for why that is a
 		// deliberate choice about which pass gets the hull rather than a leftover.
 		//
-		// A hull skipped here is not lost: it stays untagged and unrecorded, which
-		// is the recoverable state, and the orphan-dispatch pass below sends it to
-		// an open placement elsewhere in reach.
+		// A HULL STANDING WHERE A ROW ALREADY IS BECOMES A RESERVE, NOT A SKIP. The
+		// guard above is still right about the PLACEMENT table, but the conclusion
+		// drawn from it was wrong: a spare is a hull in reserve, not a claim on the
+		// waypoint it stands on, so it needs a row keyed on the HULL rather than a
+		// placement row it cannot have. NOTHING IS DISPLACED — the reserve is a
+		// different table, so the MARKET or YARD placement at the same symbol is
+		// untouched and still names its own probe. Skipping instead strands the whole
+		// of a bulk buy: every yard carries the row of the probe scanning it, and the
+		// orphan dispatch cannot rescue them either once the screen's wants are full.
 		if holds.occupiedAt(location.Symbol) {
+			writes++
+			if recordAsReserve(ctx, cyc.ports, playerID, hull, location.Symbol, location.SystemSymbol, holds, failures) {
+				adopted++
+			}
 			continue
 		}
 
@@ -221,16 +259,19 @@ func (h *RunProbeSensingCoordinatorHandler) adoptStrandedProbes(
 		}
 	}
 
+	rep.Adopted, rep.Attempts = adopted, writes
 	if adopted > 0 {
 		logger.Log("INFO", fmt.Sprintf(
-			"Adopted %d stranded sensing probe(s) the cutover could not place (in transit at the time); they now count against the probe cap",
-			adopted), map[string]interface{}{
-			"action":   "parked_sensing_adopted_stranded",
-			"adopted":  adopted,
-			"examined": len(ships),
+			"Adopted %d stranded sensing probe(s) the cutover could not place (in transit at the time); they now count against the probe cap (budget %d/%d)",
+			adopted, writes, limit), map[string]interface{}{
+			"action":      "parked_sensing_adopted_stranded",
+			"adopted":     adopted,
+			"examined":    len(ships),
+			"adopt_used":  writes,
+			"adopt_limit": limit,
 		})
 	}
-	return adopted
+	return rep
 }
 
 // adoptionInputs reads the fleet, the manned-hull index and the ledger's holdings. All three
@@ -289,6 +330,8 @@ func fillPlacementInPlace(ctx context.Context, ports SensingEnginePorts, playerI
 			"ship_symbol": hull,
 		})
 	}
+	// The placement now names the hull, so the reserve row that used to is spent.
+	releaseReserve(ctx, ports, playerID, hull, holds, failures)
 	holds.hulls[hull] = true
 	return true
 }
@@ -375,6 +418,13 @@ func recordAsSpare(ctx context.Context, ports SensingEnginePorts, playerID int, 
 // money-unsafe direction. No writer produces that combination today.
 type ledgerHolds struct {
 	hulls map[string]bool
+	// reserves indexes the hull-keyed RESERVE pool: probes we own that hold no
+	// placement. SEPARATE FROM hulls, and the separation is what keeps the fleet
+	// working: both count against the probe cap, but a hull in `hulls` is doing a
+	// placement's job and must not be re-tasked, while a reserve is standing by and
+	// is what the dispatch, the surge and the charting crew draw on. One index for
+	// both would have every pass skip every adopted hull.
+	reserves map[string]bool
 	// rows indexes every placement at a waypoint, as a SLICE, because a waypoint
 	// can now hold more than one (sp-dpfp8). It carried a single row when the key
 	// guaranteed there was only ever one; keeping that shape here would have let
@@ -450,9 +500,17 @@ func ledgerHoldings(ctx context.Context, ports SensingEnginePorts, playerID int)
 	if err != nil {
 		return ledgerHolds{}, fmt.Errorf("failed to read what the sensing ledger already holds: %w", err)
 	}
+	// FAIL-CLOSED like its sibling: a reserve pool that cannot be read must not be
+	// mistaken for an empty one, or this pass re-adopts hulls it already holds and
+	// the passes below re-task hulls that are already spoken for.
+	reserves, err := ports.Ledger.SpareHulls(ctx, playerID)
+	if err != nil {
+		return ledgerHolds{}, fmt.Errorf("failed to read the reserve sensing probes: %w", err)
+	}
 	held := ledgerHolds{
-		hulls: make(map[string]bool, len(slots)),
-		rows:  make(map[string][]parkedsensing.QueuedSlot, len(slots)),
+		hulls:    make(map[string]bool, len(slots)),
+		reserves: make(map[string]bool, len(reserves)),
+		rows:     make(map[string][]parkedsensing.QueuedSlot, len(slots)),
 	}
 	for _, slot := range slots {
 		held.rows[slot.Waypoint] = append(held.rows[slot.Waypoint], slot)
@@ -460,5 +518,72 @@ func ledgerHoldings(ctx context.Context, ports SensingEnginePorts, playerID int)
 			held.hulls[slot.AssignedShip] = true
 		}
 	}
+	for _, reserve := range reserves {
+		held.reserves[reserve.Ship] = true
+	}
 	return held, nil
+}
+
+// recordAsReserve records the orphan as a RESERVE probe standing where it is.
+// RECORD BEFORE TAGGING, for recordAsSpare's reason exactly.
+func recordAsReserve(ctx context.Context, ports SensingEnginePorts, playerID int, hull, waypoint, system string, holds ledgerHolds, failures *[]error) bool {
+	if err := ports.Ledger.UpsertSpareHull(ctx, playerID, hull, waypoint, system); err != nil {
+		*failures = append(*failures, fmt.Errorf("failed to adopt stranded probe %s as a reserve: %w", hull, err))
+		return false
+	}
+	if err := ports.Fleet.AssignFleet(ctx, playerID, hull, parkedsensing.SensingParkedFleetTag); err != nil {
+		common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf(
+			"Adopted probe %s is recorded as a sensing reserve but keeps its old fleet tag (the probe cap counts it; the placement machine re-tags it on first use): %v",
+			hull, err), map[string]interface{}{
+			"action":      "parked_sensing_adopt_tag_failed",
+			"ship_symbol": hull,
+		})
+	}
+	common.LoggerFromContext(ctx).Log("INFO", fmt.Sprintf(
+		"Adopted idle probe %s as a sensing reserve at %s, where %s already stands; the probe cap counts it now and the charting crew can claim it",
+		hull, waypoint, occupantSummary(holds, waypoint)), map[string]interface{}{
+		"action":      "orphan_adopted_as_spare",
+		"ship_symbol": hull,
+		"waypoint":    waypoint,
+		"occupied_by": occupantSummary(holds, waypoint),
+	})
+	holds.reserves[hull] = true
+	return true
+}
+
+// occupantSummary names what already stands on a waypoint, for the line above —
+// the whole set, since "which row blocked this" was unanswerable while it was a skip.
+func occupantSummary(holds ledgerHolds, waypoint string) string {
+	rows := holds.rows[waypoint]
+	if len(rows) == 0 {
+		return "nothing"
+	}
+	parts := make([]string, 0, len(rows))
+	for _, row := range rows {
+		who := row.AssignedShip
+		if who == "" {
+			who = "no hull"
+		}
+		parts = append(parts, fmt.Sprintf("%s/%s (%s)", row.Kind, row.State, who))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// releaseReserve hands a hull out of the reserve pool once a placement names it.
+//
+// CALLED AFTER THE PLACEMENT WRITE, NEVER BEFORE — the money guard every other
+// two-row handover here keeps (RULINGS #4). Between the writes the hull is named by
+// BOTH, an over-count that only buys FEWER probes; releasing first leaves a window
+// where a crash leaves it named by NEITHER and the cap re-buys it. A hull that was
+// never a reserve is a no-op, so callers need not test the pool themselves.
+func releaseReserve(ctx context.Context, ports SensingEnginePorts, playerID int, hull string, holds ledgerHolds, failures *[]error) {
+	if !holds.reserves[hull] {
+		return
+	}
+	if err := ports.Ledger.DeleteSpareHull(ctx, playerID, hull); err != nil {
+		*failures = append(*failures, fmt.Errorf(
+			"probe %s was placed but its reserve row was not released (hull now double-counted, probe cap reads high): %w", hull, err))
+		return
+	}
+	delete(holds.reserves, hull)
 }

@@ -153,16 +153,38 @@ func (t *expandTick) releaseErrandSpares(ctx context.Context) error {
 		if t.rep.SpareGhostsReleased >= MaxSpareGhostReleases {
 			return nil
 		}
-		if err := t.p.Ledger.DeleteSlot(ctx, t.playerID, ghost.Waypoint, SlotKindSpare); err != nil {
+		if err := t.releaseSpare(ctx, ghost); err != nil {
 			return fmt.Errorf("failed to release placement %s, held for %s which is already on an errand: %w",
 				ghost.Waypoint, ghost.AssignedShip, err)
 		}
 		// Count-neutral, and that is the money guard: the hull stays named by its
 		// system row, which CountOwnedProbes unions in (RULINGS #4).
-		t.book.dropSpare(ghost.Waypoint)
+		t.dropSpare(ghost)
 		t.rep.SpareGhostsReleased++
 	}
 	return nil
+}
+
+// releaseSpare takes a claimed spare off the books through THE STORE THAT HOLDS
+// IT, and the routing is a money guard rather than plumbing (RULINGS #4). A
+// placement is addressed by (waypoint, kind), which the ledger's key makes name one
+// row; a RESERVE is addressed by its HULL, because several share a waypoint by
+// design — so releasing one the placement way takes down every hull standing
+// beside it, and the cap then re-buys them.
+func (t *expandTick) releaseSpare(ctx context.Context, spare QueuedSlot) error {
+	if spare.Reserve {
+		return t.p.Ledger.DeleteSpareHull(ctx, t.playerID, spare.AssignedShip)
+	}
+	return t.p.Ledger.DeleteSlot(ctx, t.playerID, spare.Waypoint, spare.Kind)
+}
+
+// dropSpare mirrors that release into the tick's own book, by the same address.
+func (t *expandTick) dropSpare(spare QueuedSlot) {
+	if spare.Reserve {
+		t.book.dropReserve(spare.AssignedShip)
+		return
+	}
+	t.book.dropSpare(spare.Waypoint)
 }
 
 // claimSpares turns parked spare hulls into charting errands.
@@ -208,12 +230,12 @@ func (t *expandTick) claimSpares(ctx context.Context) error {
 		// dropping the probe scanning there out of the cap while it is still on
 		// station. This engine's under-count is deliberate and bounded; that one is
 		// neither.
-		if err := t.p.Ledger.DeleteSlot(ctx, t.playerID, spare.Waypoint, spare.Kind); err != nil {
+		if err := t.releaseSpare(ctx, spare); err != nil {
 			return fmt.Errorf(
 				"spare %s sent to chart %q but its placement %s was not released (hull now double-counted, probe cap reads high): %w",
 				spare.AssignedShip, target.System, spare.Waypoint, err)
 		}
-		t.book.dropSpare(spare.Waypoint)
+		t.dropSpare(spare)
 		t.covered[target.System] = true
 		t.rep.SeedsClaimed++
 	}

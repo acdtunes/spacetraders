@@ -408,6 +408,10 @@ func TestOrphanDispatch_AFailedCrossGateRowWriteLeavesTheHullUntagged(t *testing
 	world := crossingWorld(t, "X1-GF41")
 	world.gates.link("X1-KP23", "X1-GF41")
 	world.ledger.slots[psSlotKey{"X1-GF41-M7", parkedsensing.SlotKindMarket}] = wantedAt("X1-GF41-M7")
+	// Adoption is held off so THIS pass's ordering is what the test observes — it
+	// would otherwise absorb the hull into the reserve pool and tag it there,
+	// behind a row of its own (see the in-system twin of this test).
+	world.ledger.upsertSpareHullErr = errors.New("reserve pool unavailable")
 	world.ledger.transitionErr = map[string]error{"X1-GF41-M7": errors.New("ledger unavailable")}
 	logger := &capturingLogger{}
 

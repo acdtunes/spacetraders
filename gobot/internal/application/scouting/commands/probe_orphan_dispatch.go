@@ -221,6 +221,10 @@ func claimOpenPlacement(ctx context.Context, ports SensingEnginePorts, playerID 
 			"waypoint":    target.Waypoint,
 		})
 	}
+	// A reserve hull just became a placement's hull, so its reserve row is spent —
+	// released AFTER the placement write, which is the over-counting direction and
+	// therefore the safe one (see releaseReserve).
+	releaseReserve(ctx, ports, playerID, hull, holds, failures)
 	holds.hulls[hull] = true
 	return true
 }

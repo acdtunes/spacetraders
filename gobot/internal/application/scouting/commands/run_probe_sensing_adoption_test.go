@@ -101,7 +101,27 @@ func adoptedHulls(world *cutoverWorld) []string {
 			out = append(out, slot.AssignedShip)
 		}
 	}
+	for hull := range world.ledger.spareHulls {
+		out = append(out, hull)
+	}
 	return out
+}
+
+// reservedAt reports whether the hull is in the RESERVE pool, standing where it
+// was adopted (sp-v7mtk). A reserve is keyed on the HULL, so the assertion is on
+// the hull rather than on "the row at this waypoint" — the distinction the whole
+// change turns on.
+func reservedAt(world *cutoverWorld, hull, waypoint string) bool {
+	reserve, held := world.ledger.spareHulls[hull]
+	return held && reserve.Waypoint == waypoint
+}
+
+// pinAdoptBudget holds the adoption burst at its documented base by reading a
+// FULLY COMMITTED request budget — the regime the engine's constants were sized
+// for. Fixtures that build a backlog "one past the budget" need the budget to be
+// a number they can name, and PacedBudget scales it with the idle share otherwise.
+func pinAdoptBudget(world *cutoverWorld) {
+	world.handler.SetAPISaturationReader(saturatedReader())
 }
 
 // THE MONEY-GUARD PIN (RULINGS #4). The probe cap counts ledger rows, so the
@@ -244,6 +264,7 @@ func TestAdoption_BoundsWritesNotCandidates(t *testing.T) {
 // it — the test would then be measuring the wrong code.
 func TestAdoption_BacklogIsSpreadAcrossTicks(t *testing.T) {
 	world := steadyWorld(t, map[string]string{"X1-IN1": parkedsensing.VerdictInScope})
+	pinAdoptBudget(world)   // the budget is paced now, so a "one past it" fixture has to name it
 	world.posts.posts = nil // nothing manned, so every probe below is an orphan
 	world.fleet.ships = nil
 	for i := 0; i < DefaultMaxAdoptions+3; i++ {
@@ -394,13 +415,19 @@ func TestAdoption_SurvivesADaemonRestart(t *testing.T) {
 // the failure mode is one where every write succeeds and the heartbeat reports
 // success while a hull is quietly lost.
 
-// (a) TWO ORPHANS AT ONE WAYPOINT. Co-located scout probes are ordinary. Without
-// a waypoint guard the second write replaces the first, leaving hull A tagged
-// `sensing_parked` with NO row — which makes it fail this pass's own scout-tag
-// filter forever, invisible to CountOwnedProbes, authorising a re-buy of a probe
-// we own (RULINGS #4). That is the tagged-but-unrecorded state the write ordering
-// exists to prevent, reached here with nothing failing at all.
-func TestAdoption_TwoOrphansAtOneWaypoint_AdoptsExactlyOne(t *testing.T) {
+// (a) TWO ORPHANS AT ONE WAYPOINT, WHICH IS THE ORDINARY SHAPE OF A BULK BUY —
+// ten hulls standing at the yard that sold them (sp-v7mtk).
+//
+// The hazard is unchanged and still pinned: a SECOND SPARE PLACEMENT at one
+// waypoint would silently re-point the first, leaving hull A tagged
+// `sensing_parked` with NO row — invisible to CountOwnedProbes, authorising a
+// re-buy of a probe we own (RULINGS #4). What changed is the conclusion drawn
+// from it. The second hull is recorded in the hull-keyed RESERVE pool instead, so
+// BOTH are on the books and neither overwrites the other.
+//
+// This is the test that catches a waypoint-keyed spare row: with one, adopting
+// PROBE-B evicts PROBE-A and the count comes back one.
+func TestAdoption_TwoOrphansAtOneWaypoint_AdoptsBothWithoutOverwriting(t *testing.T) {
 	world := steadyWorld(t, map[string]string{"X1-IN1": parkedsensing.VerdictInScope})
 	world.posts.posts = nil
 	world.fleet.ships = []*navigation.Ship{
@@ -412,22 +439,31 @@ func TestAdoption_TwoOrphansAtOneWaypoint_AdoptsExactlyOne(t *testing.T) {
 
 	require.NoError(t, world.handler.ReconcileOnce(ctx, world.cmd))
 
-	_, aRecorded := slotFor(world, "PROBE-A")
-	_, bRecorded := slotFor(world, "PROBE-B")
-	require.NotEqual(t, aRecorded, bRecorded, "exactly one of the two co-located hulls is recorded")
-	require.Len(t, adoptedHulls(world), 1, "one waypoint holds one row, naming one hull")
+	require.ElementsMatch(t, []string{"PROBE-A", "PROBE-B"}, adoptedHulls(world),
+		"both co-located hulls are on the books — neither was overwritten by the other")
 
-	// The hull that did NOT get the row must not be tagged either — tagged
-	// without a row is the unrecoverable direction.
-	loser := "PROBE-A"
-	if aRecorded {
-		loser = "PROBE-B"
+	_, aPlaced := slotFor(world, "PROBE-A")
+	_, bPlaced := slotFor(world, "PROBE-B")
+	require.NotEqual(t, aPlaced, bPlaced,
+		"exactly one holds the waypoint's SPARE placement; one waypoint still carries one row per kind")
+	reserved := "PROBE-A"
+	if aPlaced {
+		reserved = "PROBE-B"
 	}
-	require.NotContains(t, world.tagger.tagged, loser,
-		"the hull that lost the waypoint is left untouched, so it is still an orphan this pass retries")
+	require.True(t, reservedAt(world, reserved, "X1-POOL-A1"),
+		"the other is a RESERVE, keyed on its hull and standing at the same waypoint")
 
-	require.Equal(t, 1, logger.payload("parked_sensing_cycle")["adopted_stranded"],
-		"and the heartbeat reports one adoption, not two")
+	require.Contains(t, world.tagger.tagged, "PROBE-A")
+	require.Contains(t, world.tagger.tagged, "PROBE-B",
+		"both are recorded, so both may carry the fleet tag: tagged-WITHOUT-a-row is the unsafe shape")
+
+	require.Equal(t, 2, logger.payload("parked_sensing_cycle")["adopted_stranded"],
+		"and the heartbeat reports both")
+
+	count, err := world.ledger.CountOwnedProbes(world.ctx, testPlayerID)
+	require.NoError(t, err)
+	require.EqualValues(t, 2, count,
+		"the probe cap sees BOTH hulls — an under-count here is what re-buys a probe we own")
 }
 
 // (b) AN ORPHAN STANDING ON A LIVE PLACEMENT'S WAYPOINT. This one is new to this
@@ -459,11 +495,13 @@ func TestAdoption_OrphanOnALivePlacement_LeavesTheIncumbentAlone(t *testing.T) {
 		"and it is still a MARKET slot, not rewritten to SPARE")
 	require.Equal(t, parkedsensing.SlotStateParked, incumbent.State)
 
-	_, recorded := slotFor(world, "PROBE-ORPHAN")
-	require.False(t, recorded,
-		"the orphan is skipped rather than evicting the incumbent; it stays untagged and recoverable, and uncounted meanwhile")
-	require.NotContains(t, world.tagger.tagged, "PROBE-ORPHAN")
-	require.Equal(t, 0, logger.payload("parked_sensing_cycle")["adopted_stranded"])
+	_, placed := slotFor(world, "PROBE-ORPHAN")
+	require.False(t, placed,
+		"the orphan takes no placement row — the incumbent's is the only one at this waypoint")
+	require.True(t, reservedAt(world, "PROBE-ORPHAN", "X1-IN1-M1"),
+		"it is adopted into the RESERVE pool instead: on the books, counted, and claimable, "+
+			"without touching the placement standing beside it (sp-v7mtk)")
+	require.Equal(t, 1, logger.payload("parked_sensing_cycle")["adopted_stranded"])
 }
 
 // A ROW WITHOUT A HULL IS STILL A ROW. UpsertSpareSlot's conflict set rewrites
@@ -514,8 +552,10 @@ func TestAdoption_OrphanOnAQueuedPlacement_LeavesTheRowAlone(t *testing.T) {
 			require.Equal(t, tc.state, row.State, "and still in its own state")
 			require.Empty(t, row.AssignedShip, "and still names no hull")
 
-			require.NotContains(t, world.tagger.tagged, "PROBE-ORPHAN")
-			require.Equal(t, 0, logger.payload("parked_sensing_cycle")["adopted_stranded"])
+			// The hull itself is not stranded: it goes into the RESERVE pool, which is a
+			// different table addressed by hull, so the claim above is untouched (sp-v7mtk).
+			require.True(t, reservedAt(world, "PROBE-ORPHAN", "X1-IN1-M1"))
+			require.Equal(t, 1, logger.payload("parked_sensing_cycle")["adopted_stranded"])
 		})
 	}
 }

@@ -703,7 +703,7 @@ func TestCutover_EveryScreenFails_RecoversThroughTheSweepNotARefire(t *testing.T
 //
 // It fires on the irreversible first EXPANSION tick, and several idle probes at
 // the home shipyard is an ordinary fleet shape.
-func TestCutover_TwoOrphansAtOneWaypoint_AdoptsExactlyOne(t *testing.T) {
+func TestCutover_TwoOrphansAtOneWaypoint_AdoptsBothWithoutOverwriting(t *testing.T) {
 	world := newCutoverWorld(t)
 	// Three ships: the home post's hull, and two orphans standing together.
 	world.fleet.ships = []*navigation.Ship{
@@ -738,21 +738,33 @@ func TestCutover_TwoOrphansAtOneWaypoint_AdoptsExactlyOne(t *testing.T) {
 		return n
 	}
 
-	require.Equal(t, 1, rowsWithHulls(), "one waypoint holds one row, so exactly one hull is recorded")
-	require.Equal(t, 1, logger.payload("parked_sensing_cutover")["probes_adopted"],
-		"and the count reports one — not two, with one of them silently overwritten")
+	reservedOrphans := func() int {
+		n := 0
+		for _, hull := range []string{"PROBE-ORPHAN-1", "PROBE-ORPHAN-2"} {
+			if _, held := world.ledger.spareHulls[hull]; held {
+				n++
+			}
+		}
+		return n
+	}
 
-	// The hull that did NOT get the row must be left UNTAGGED. Tagged-with-no-row
-	// is the unrecoverable state: it would fail every later adoption filter.
-	require.Equal(t, 1, taggedOrphans(),
-		"only the recorded hull is tagged; tagging the other would strand it beyond recovery")
+	require.Equal(t, 1, rowsWithHulls(), "one waypoint still holds one PLACEMENT row per kind")
+	require.Equal(t, 1, reservedOrphans(),
+		"and the co-located hull goes to the hull-keyed RESERVE pool rather than overwriting it (sp-v7mtk)")
+	require.Equal(t, 2, logger.payload("parked_sensing_cutover")["probes_adopted"],
+		"both hulls are adopted — the whole point is that neither is silently dropped")
+
+	// BOTH are tagged now, and that is correct rather than a weakening: the shape
+	// that strands a hull is tagged-WITHOUT-a-row, and each of these carries one.
+	require.Equal(t, 2, taggedOrphans(),
+		"a recorded hull may be tagged; only an unrecorded one may not")
 
 	// A later tick must not make it worse either. The standing adoption retry runs
-	// on this tick and sees the skipped hull — its own occupancy guard is what
-	// keeps it skipped rather than letting it overwrite the row that now exists.
+	// on this tick, sees both hulls already recorded, and writes nothing.
 	require.NoError(t, world.handler.ReconcileOnce(ctx, world.cmd))
-	require.Equal(t, 1, rowsWithHulls(), "the later tick did not overwrite the row either")
-	require.Equal(t, 1, taggedOrphans(), "and no later tick tags the hull it could not record")
+	require.Equal(t, 1, rowsWithHulls(), "the later tick did not overwrite the placement row")
+	require.Equal(t, 1, reservedOrphans(), "nor duplicate the reserve")
+	require.Equal(t, 2, taggedOrphans())
 }
 
 // --- the shipyard blind spot, from the live tick ---------------------------------

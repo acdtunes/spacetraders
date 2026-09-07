@@ -252,6 +252,10 @@ func berthSurgedProbe(ctx context.Context, ports SensingEnginePorts, playerID in
 			"waypoint":    target.waypoint,
 		})
 	}
+	// A surged hull drawn from the reserve pool is a placement's hull now, so its
+	// reserve row is spent — released AFTER the placement write, the over-counting
+	// direction (see releaseReserve).
+	releaseReserve(ctx, ports, playerID, ship, holds, failures)
 	holds.hulls[ship] = true
 	holds.rows[target.waypoint] = append(holds.rows[target.waypoint], parkedsensing.QueuedSlot{
 		Waypoint: target.waypoint, System: target.system,

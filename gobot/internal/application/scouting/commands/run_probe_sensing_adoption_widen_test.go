@@ -176,7 +176,10 @@ func TestAdoption_NeverFillsAQueuedPlacement(t *testing.T) {
 	row := world.ledger.slots[psSlotKey{"X1-IN1-M1", parkedsensing.SlotKindMarket}]
 	require.Equal(t, parkedsensing.SlotStateQueued, row.State, "an in-flight purchase claim is untouched")
 	require.Empty(t, row.AssignedShip)
-	require.Equal(t, 0, logger.payload("parked_sensing_cycle")["adopted_stranded"])
+	// The hull is still absorbed, into the hull-keyed RESERVE pool — a different
+	// table, so the claim money is riding on is not reachable from it (sp-v7mtk).
+	require.True(t, reservedAt(world, "PROBE-ONSITE", "X1-IN1-M1"))
+	require.Equal(t, 1, logger.payload("parked_sensing_cycle")["adopted_stranded"])
 }
 
 // A placement that already NAMES a hull is never evicted, whatever is standing on it.
@@ -194,7 +197,9 @@ func TestAdoption_NeverEvictsAnIncumbentFromAFilledPlacement(t *testing.T) {
 
 	require.Equal(t, "PROBE-INCUMBENT", world.ledger.slots[psSlotKey{"X1-IN1-M1", parkedsensing.SlotKindMarket}].AssignedShip,
 		"the incumbent keeps its row; evicting it drops a working probe out of the cap")
-	require.Equal(t, 0, logger.payload("parked_sensing_cycle")["adopted_stranded"])
+	require.True(t, reservedAt(world, "PROBE-INTRUDER", "X1-IN1-M1"),
+		"the intruder is absorbed as a RESERVE beside the incumbent, displacing nothing (sp-v7mtk)")
+	require.Equal(t, 1, logger.payload("parked_sensing_cycle")["adopted_stranded"])
 }
 
 // Two orphans on ONE hull-less placement: exactly one fills it, the other is left for a later tick
@@ -260,6 +265,7 @@ func TestAdoption_NeverStealsAWantedPlacementThatAlreadyNamesAHull(t *testing.T)
 
 	require.Equal(t, "PROBE-PROMISED", world.ledger.slots[psSlotKey{"X1-IN1-M1", parkedsensing.SlotKindMarket}].AssignedShip,
 		"a row that already names a hull is never re-pointed, whatever state it is in")
-	require.Equal(t, 0, logger.payload("parked_sensing_cycle")["adopted_stranded"])
-	require.NotContains(t, world.tagger.tagged, "PROBE-INTRUDER")
+	require.True(t, reservedAt(world, "PROBE-INTRUDER", "X1-IN1-M1"),
+		"the intruder goes to the RESERVE pool, which cannot reach the promised placement at all")
+	require.Equal(t, 1, logger.payload("parked_sensing_cycle")["adopted_stranded"])
 }

@@ -63,9 +63,10 @@ type heartbeat struct {
 	brake       float64
 	cutover     int
 	screened    int
-	// adopted counts stranded scout probes recorded this tick — hulls the
-	// one-shot cutover could not place because they were in transit.
-	adopted int
+	// adopt is the adoption pass's accounting: stranded scout probes recorded this
+	// tick, beside the burst budget it was charged against. The budget matters now
+	// that a bulk buy can leave a hundred hulls waiting — see adoptReport.
+	adopt adoptReport
 	// dispatched counts idle probes WE ALREADY OWN sent to open placements this
 	// tick. Never a purchase. Distinct from place.Dispatched below, which counts
 	// movement commands issued by the placement machine — one hull shows up in
@@ -121,6 +122,7 @@ const (
 	passBudgetYards    = "yards"
 	passBudgetPresence = "presence"
 	passBudgetReap     = "reap"
+	passBudgetAdopt    = "adopt"
 	// place_refused is the placement machine's SECOND budget, a row of its own because it
 	// ends the tick independently: a wall of refused moves spends it while `place` still
 	// reads under its limit, and the pair alone would name no binding budget at all.
@@ -141,6 +143,7 @@ func passBudgets(hb heartbeat) []passBudget {
 		{passBudgetYards, hb.yard.Read + hb.yard.Failed, hb.yard.ReadLimit},
 		{passBudgetPresence, hb.presence.Dispatched, hb.presence.DispatchLimit},
 		{passBudgetReap, hb.reap.Reaped + hb.reap.Skipped, hb.reap.ReapLimit},
+		{passBudgetAdopt, hb.adopt.Attempts, hb.adopt.Limit},
 	}
 }
 
@@ -212,7 +215,7 @@ func (h *RunProbeSensingCoordinatorHandler) heartbeat(ctx context.Context, cmd *
 		hb.pacerRate, hb.sensingRate, hb.brake, hb.rotation, scanSummary(hb.scans), hb.screened,
 		hb.yard.Read, hb.yard.Outstanding,
 		hb.buy.Bought, hb.buy.Reused, hb.buy.Queued, hb.buy.Attempts, heldSuffix(held), refusalSuffix(hb.buy.Refusals),
-		hb.reap.Reaped, hb.adopted, hb.dispatched, hb.surged,
+		hb.reap.Reaped, hb.adopt.Adopted, hb.dispatched, hb.surged,
 		hb.place.Dispatched, hb.place.Docking, hb.place.Parked, expansionSummary(hb.expand),
 		budgetSummary(hb), hb.budgets.permille),
 		map[string]interface{}{
@@ -316,7 +319,7 @@ func (h *RunProbeSensingCoordinatorHandler) heartbeat(ctx context.Context, cmd *
 			// Hulls we already OWNED and had lost track of, now back on the books
 			// — never a purchase. A non-zero value long after the cutover means
 			// probes are being stranded somewhere, not that the fleet grew.
-			"adopted_stranded": hb.adopted,
+			"adopted_stranded": hb.adopt.Adopted,
 			// Idle hulls we already OWNED, sent to open placements this tick at
 			// zero credits — never a purchase, and never a hull taken from a live
 			// container or post. Non-zero beside a held buy floor is the healthy

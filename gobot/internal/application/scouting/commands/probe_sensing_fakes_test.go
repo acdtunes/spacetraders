@@ -14,6 +14,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -102,8 +103,12 @@ type psLedger struct {
 	goods map[string][]string
 	views map[string]parkedsensing.SensingSlotView
 
-	upserted             []parkedsensing.SlotRecord
-	systemsErr, slotsErr error
+	// spareHulls is the RESERVE pool, keyed on the hull like the real table.
+	spareHulls map[string]parkedsensing.SpareHull
+
+	upserted                                              []parkedsensing.SlotRecord
+	systemsErr, slotsErr                                  error
+	spareHullsErr, upsertSpareHullErr, deleteSpareHullErr error
 	// upsertErr fails the slot write, which is how a half-done adoption is
 	// driven: the posts are already retired, the hulls are not yet recorded.
 	upsertErr error
@@ -296,6 +301,56 @@ func (f *psLedger) UpsertSpareSlot(_ context.Context, _ int, slot parkedsensing.
 	return nil
 }
 
+// The RESERVE pool, keyed on the HULL exactly as the real table is (sp-v7mtk).
+// Keyed on the waypoint this fake could not hold two reserves at one yard — the
+// state the whole change exists to make representable — so any test about a bulk
+// buy would have been unfalsifiable against it.
+func (f *psLedger) SpareHulls(_ context.Context, _ int) ([]parkedsensing.SpareHull, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.spareHullsErr != nil {
+		return nil, f.spareHullsErr
+	}
+	// Hull-ordered, as the real read is: a map's iteration order would make any
+	// test about WHICH reserve a pass took non-deterministic.
+	hulls := make([]string, 0, len(f.spareHulls))
+	for hull := range f.spareHulls {
+		hulls = append(hulls, hull)
+	}
+	sort.Strings(hulls)
+	out := make([]parkedsensing.SpareHull, 0, len(hulls))
+	for _, hull := range hulls {
+		out = append(out, f.spareHulls[hull])
+	}
+	return out, nil
+}
+
+func (f *psLedger) UpsertSpareHull(_ context.Context, _ int, shipSymbol, waypoint, system string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.upsertSpareHullErr != nil {
+		return f.upsertSpareHullErr
+	}
+	if f.spareHulls == nil {
+		f.spareHulls = map[string]parkedsensing.SpareHull{}
+	}
+	f.spareHulls[shipSymbol] = parkedsensing.SpareHull{Ship: shipSymbol, Waypoint: waypoint, System: system}
+	return nil
+}
+
+func (f *psLedger) DeleteSpareHull(_ context.Context, _ int, shipSymbol string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.deleteSpareHullErr != nil {
+		return f.deleteSpareHullErr
+	}
+	delete(f.spareHulls, shipSymbol)
+	return nil
+}
+
 func (f *psLedger) UpsertSystem(_ context.Context, _ int, record parkedsensing.SystemRecord) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -417,14 +472,23 @@ func (f *psLedger) CountOwnedProbes(_ context.Context, _ int) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	var owned int64
+	counted := map[string]bool{}
 	for _, slot := range f.slots {
 		switch slot.State {
 		case parkedsensing.SlotStateBought, parkedsensing.SlotStateInTransit, parkedsensing.SlotStateParked:
-			owned++
+			if slot.AssignedShip != "" {
+				counted[slot.AssignedShip] = true
+			}
 		}
 	}
-	return owned, nil
+	// The RESERVE pool counts too, and it is UNIONED ON THE HULL exactly as the real
+	// query is (sp-v7mtk): a probe named by both a placement and a reserve — the
+	// instant inside a claim where both exist — is one probe, and a fake that
+	// double-counted it would hide an over-count the real ledger cannot produce.
+	for hull := range f.spareHulls {
+		counted[hull] = true
+	}
+	return int64(len(counted)), nil
 }
 
 func (f *psLedger) TransitionSlot(_ context.Context, _ int, tr parkedsensing.SlotTransition, set parkedsensing.SlotFields) error {

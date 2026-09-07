@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"testing"
 
@@ -198,10 +199,16 @@ type extraSeedCall struct{ system, ship, state string }
 type fakeExpandLedger struct {
 	systems []ExpandSystem
 	slots   []QueuedSlot
+	// spareHulls is the RESERVE pool, keyed on the HULL like the real table
+	// (sp-v7mtk). Held as a slice rather than a map so several reserves at ONE
+	// waypoint are several entries — the state the change exists to make
+	// representable, and one a waypoint-keyed fake could not hold at all.
+	spareHulls []SpareHull
 
 	chartShares []ChartShare
 
 	systemsErr, slotsErr           error
+	spareHullsErr, deleteSpareErr  error
 	setSeedErr, deleteErr          error
 	stampErr                       error
 	setSeedErrOn                   map[string]error
@@ -214,6 +221,7 @@ type fakeExpandLedger struct {
 	clearedExtras  []string
 	stamped        []string
 	deleted        []string
+	deletedSpares  []string
 	upsertedSlots  []SlotRecord
 	upsertedSystem []SystemRecord
 	transitions    []transitionCall
@@ -459,6 +467,34 @@ func (f *fakeExpandLedger) StampCatalogSynced(_ context.Context, _ int, system s
 // (sp-dpfp8). Matching on the waypoint alone would delete a co-located MARKET row
 // too — the exact money bug the kind argument exists to prevent — and a fake that
 // did that would let the bug pass its own test.
+// SpareHulls returns the reserve pool. Hull-ordered, as the real read is, so a
+// test asserting WHICH reserve a claim took is deterministic.
+func (f *fakeExpandLedger) SpareHulls(_ context.Context, _ int) ([]SpareHull, error) {
+	if f.spareHullsErr != nil {
+		return nil, f.spareHullsErr
+	}
+	out := append([]SpareHull(nil), f.spareHulls...)
+	sort.Slice(out, func(i, j int) bool { return out[i].Ship < out[j].Ship })
+	return out, nil
+}
+
+// DeleteSpareHull removes the reserve row NAMING THIS HULL, and by nothing else.
+// A fake that matched on the waypoint would delete every reserve standing at one
+// yard and let the money bug (RULINGS #4) pass its own test.
+func (f *fakeExpandLedger) DeleteSpareHull(_ context.Context, _ int, shipSymbol string) error {
+	f.deletedSpares = append(f.deletedSpares, shipSymbol)
+	if f.deleteSpareErr != nil {
+		return f.deleteSpareErr
+	}
+	for i := range f.spareHulls {
+		if f.spareHulls[i].Ship == shipSymbol {
+			f.spareHulls = append(f.spareHulls[:i], f.spareHulls[i+1:]...)
+			return nil
+		}
+	}
+	return nil
+}
+
 func (f *fakeExpandLedger) DeleteSlot(_ context.Context, _ int, waypoint, kind string) error {
 	f.deleted = append(f.deleted, waypoint)
 	if f.deleteErr != nil {

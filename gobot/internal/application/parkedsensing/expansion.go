@@ -282,6 +282,13 @@ type ExpandLedger interface {
 	// persisted. Another narrow write with a disjoint column set, for the same reason
 	// as SetSeed: it lands mid-tour, while the sweep may be re-screening the row.
 	StampCatalogSynced(ctx context.Context, playerID int, system string) error
+	// SpareHulls returns the RESERVE pool: probes we own that hold no placement,
+	// keyed on the hull so several at one waypoint are several rows. This is the
+	// pool a bulk probe buy lands in, and the one a charting crew draws from.
+	SpareHulls(ctx context.Context, playerID int) ([]SpareHull, error)
+	// DeleteSpareHull takes one probe out of that pool, BY HULL — the row's whole
+	// identity here, and releasing it any other way takes its neighbours down too.
+	DeleteSpareHull(ctx context.Context, playerID int, shipSymbol string) error
 	// DeleteSlot removes ONE placement row outright: the one of the given kind.
 	// A waypoint can carry a MARKET row and a SPARE row at once, so releasing by
 	// waypoint alone would take a working placement down with the intended one.
@@ -498,12 +505,19 @@ func AdvanceExpansion(
 	if err != nil {
 		return rep, fmt.Errorf("failed to list sensing placements: %w", err)
 	}
+	// FAILING THE TICK if the pool cannot be read: a reserve that reads as absent is
+	// a hull the crew will not claim and one the tick then requests a purchase for,
+	// so an unreadable pool must never read as an empty one (RULINGS #4).
+	reserves, err := p.Ledger.SpareHulls(ctx, playerID)
+	if err != nil {
+		return rep, fmt.Errorf("failed to list reserve sensing probes: %w", err)
+	}
 	// Who is charting what, read once and then MUTATED by every errand write, so a
 	// later pass of the same tick cannot crew a system the earlier one already filled.
 	roster := newSeedRoster(systems)
 	hulls := resolveChartHulls(k)
 
-	book := newSlotBook(slotRows, roster.hulls())
+	book := newSlotBook(slotRows, reserves, roster.hulls())
 	known := knownSystems(systems)
 
 	// The neighbour map is read before anything is written, so a gate store that

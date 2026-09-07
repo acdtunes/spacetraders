@@ -145,6 +145,27 @@ func (SensingSeedHullModel) TableName() string {
 	return "sensing_seed_hulls"
 }
 
+// SensingSpareHullModel is ONE probe held in RESERVE: a hull we own, belonging to
+// no placement.
+//
+// KEYED ON THE HULL, which is why it is not a sensing_slots row. A placement is a
+// CLAIM ON A WAYPOINT and keyed as one; a reserve's waypoint is incidental and
+// several share it. As placements the second write rewrites the first's
+// assigned_ship and the displaced hull is left named by no row: invisible to
+// CountOwnedProbes, and re-bought (RULINGS #4).
+type SensingSpareHullModel struct {
+	PlayerID       int    `gorm:"primaryKey;column:player_id"`
+	ShipSymbol     string `gorm:"primaryKey;column:ship_symbol;size:50"`
+	WaypointSymbol string `gorm:"column:waypoint_symbol;size:50;index;not null"`
+	SystemSymbol   string `gorm:"column:system_symbol;size:50;index;not null"`
+	EraID          *int   `gorm:"column:era_id;index"`
+	UpdatedAt      time.Time
+}
+
+func (SensingSpareHullModel) TableName() string {
+	return "sensing_spare_hulls"
+}
+
 // SensingChartShareModel is ONE charting hull's share of its system: the stops it
 // owns, in the order it works them. A crew's partition is solved by the
 // fleet-partitioning VRP and stored here, so a tour reads its next stop off a

@@ -572,7 +572,7 @@ func (h *RunProbeSensingCoordinatorHandler) ReconcileOnce(ctx context.Context, c
 		failures = append(failures, rerr)
 	}
 
-	adopted, dispatchedOrphans, surged := h.reclaimIdleProbes(ctx, cyc, systems, cutoverPending, &failures)
+	adoptRep, dispatchedOrphans, surged := h.reclaimIdleProbes(ctx, cyc, systems, budgets, cutoverPending, &failures)
 
 	// THE CREW CLAIM OUTRANKS THE STATION FILLS WHILE CHARTING WORK IS OUTSTANDING
 	// (Admiral order). Expansion's spare claim and the drain's spare reuse draw on
@@ -619,7 +619,7 @@ func (h *RunProbeSensingCoordinatorHandler) ReconcileOnce(ctx context.Context, c
 		scans:       scans,
 		cutover:     cutover,
 		screened:    screened,
-		adopted:     adopted,
+		adopt:       adoptRep,
 		dispatched:  dispatchedOrphans,
 		surged:      surged,
 		reap:        reapRep,
@@ -638,7 +638,7 @@ func (h *RunProbeSensingCoordinatorHandler) ReconcileOnce(ctx context.Context, c
 	h.observeStall(ctx, cmd, sensingStallCoordinator, sensingTickVerdict(sensingTickTally{
 		cutover:    cutover,
 		screened:   screened,
-		adopted:    adopted,
+		adopted:    adoptRep.Adopted,
 		dispatched: dispatchedOrphans,
 		surged:     surged,
 		rotation:   rotation,
@@ -715,11 +715,11 @@ func (h *RunProbeSensingCoordinatorHandler) sweepYardCatalogues(ctx context.Cont
 // LIVE coordinator. The cutover is precisely the event that turns "scout-tagged hull" into
 // "orphan we failed to adopt", and while it is still pending (including while it retries
 // after a failure) adoption remains its job.
-func (h *RunProbeSensingCoordinatorHandler) reclaimIdleProbes(ctx context.Context, cyc sensingCycle, systems []parkedsensing.ExpandSystem, cutoverPending bool, failures *[]error) (adopted, dispatched, surged int) {
+func (h *RunProbeSensingCoordinatorHandler) reclaimIdleProbes(ctx context.Context, cyc sensingCycle, systems []parkedsensing.ExpandSystem, budgets sensingBudgets, cutoverPending bool, failures *[]error) (adopt adoptReport, dispatched, surged int) {
 	if cutoverPending {
-		return 0, 0, 0
+		return adoptReport{Limit: budgets.adopt}, 0, 0
 	}
-	adopted = h.adoptStrandedProbes(ctx, cyc, systems, failures)
+	adopt = h.adoptStrandedProbes(ctx, cyc, systems, budgets.adopt, failures)
 	// AFTER ADOPTION: adoption's in-place fill costs a row write and no movement, so a hull it
 	// can absorb WHERE IT STANDS is absorbed there rather than flown somewhere. The dispatch
 	// re-reads the ledger, so everything adoption just did is visible to it.
@@ -741,7 +741,7 @@ func (h *RunProbeSensingCoordinatorHandler) reclaimIdleProbes(ctx context.Contex
 	// in the persistence layer, so the screening sweep between the read and here cannot have
 	// touched a seed column.
 	surged = h.surgeToUnpricedSystems(ctx, cyc, systems, failures)
-	return adopted, dispatched, surged
+	return adopt, dispatched, surged
 }
 
 // syncScanRotation refreshes the pacer's membership from this tick's slot views and reports
@@ -868,7 +868,17 @@ func (h *RunProbeSensingCoordinatorHandler) adoptOrphanProbes(ctx context.Contex
 		// pass picks it up. The displacement is still not worth risking here, and this remains a
 		// plain skip: this is the ONE irreversible tick, while the standing pass retries every tick
 		// and, unlike this path, knows how to fill a hull-less placement in place.
+		//
+		// sp-v7mtk retires the skip without touching any of that. The displacement it
+		// fears is a SECOND SPARE ROW at one waypoint; the reserve pool is keyed on the
+		// HULL and lives in its own table, so nothing at this waypoint is rewritten and
+		// the MARKET or YARD placement standing here keeps its own probe. Ten hulls at
+		// one yard is the ordinary shape of a bulk buy, and skipping them left every one
+		// outside the probe cap.
 		if holds.occupiedAt(location.Symbol) {
+			if recordAsReserve(ctx, cyc.ports, playerID, hull, location.Symbol, location.SystemSymbol, holds, failures) {
+				adopted++
+			}
 			continue
 		}
 

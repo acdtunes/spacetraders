@@ -425,6 +425,7 @@ func TestOrphanDispatch_NeverTargetsAPlacementAnIdleOrphanIsAlreadyStandingOn(t 
 // standing hull was going to be adopted into for free, leaving that hull stuck for good.
 func TestOrphanDispatch_NeverFliesAHullToAPlacementAnotherOrphanIsWaitingOn(t *testing.T) {
 	world := steadyWorld(t, map[string]string{"X1-KP23": parkedsensing.VerdictInScope})
+	pinAdoptBudget(world) // the fixture names the budget, so the budget must be nameable
 	world.posts.posts = nil
 
 	// One dispatch-eligible orphan, stuck behind an incumbent's row.
@@ -526,6 +527,11 @@ func TestOrphanDispatch_NeverFillsAQueuedPlacement(t *testing.T) {
 // So: when the row write fails, the hull must NOT have been tagged.
 func TestOrphanDispatch_AFailedRowWriteLeavesTheHullUntagged(t *testing.T) {
 	world := liveFleetWorld(t)
+	// ADOPTION IS HELD OFF so THIS pass's ordering is what the test observes.
+	// Adoption now absorbs a hull standing on an occupied waypoint into the reserve
+	// pool and tags it there — legitimately, behind a row of its own — which would
+	// otherwise make the tag below say nothing about the dispatch.
+	world.ledger.upsertSpareHullErr = errors.New("reserve pool unavailable")
 	world.ledger.transitionErr = map[string]error{"X1-KP23-D40": errors.New("ledger unavailable")}
 	logger := &capturingLogger{}
 
@@ -632,6 +638,7 @@ func TestOrphanDispatch_NeverTargetsAWantedPlacementThatAlreadyNamesAHull(t *tes
 // the placement under each hull's feet left open anyway.
 func TestOrphanDispatch_LeavesTheOrphansAdoptionsBudgetCouldNotReach(t *testing.T) {
 	world := steadyWorld(t, map[string]string{"X1-KP23": parkedsensing.VerdictInScope})
+	pinAdoptBudget(world) // the fixture names the budget, so the budget must be nameable
 	world.posts.posts = nil
 
 	// Two more orphans-on-their-own-placement than adoption can absorb in one tick.

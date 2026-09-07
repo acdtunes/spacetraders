@@ -98,6 +98,13 @@ type SensingLedger interface {
 	// carry, plus the separate last-DATA stamp the staleness gauge reports
 	// (sp-zml2u).
 	ParkedSlotViews(ctx context.Context, playerID int) ([]parkedsensing.SensingSlotView, error)
+
+	// UpsertSpareHull records one probe as a RESERVE standing where it stands
+	// (sp-v7mtk). Named HERE rather than on ExpandLedger because adoption is the
+	// only writer: the expansion engine reads the pool and releases from it, and
+	// giving it a way to put hulls in would hand it a second, unmetered path to
+	// declaring probes it did not buy.
+	UpsertSpareHull(ctx context.Context, playerID int, shipSymbol, waypoint, system string) error
 }
 
 // SensingEnginePorts is the parked-probe engine's entire outbound surface,

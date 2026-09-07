@@ -58,12 +58,13 @@ type slotBook struct {
 // newSlotBook builds the tick's view of the placement ledger. onErrand names the
 // hulls the seed roster already has out on a charting mission, and it is what keeps
 // ONE HULL TO ONE ERRAND across ticks — see the parkedSpares filter below.
-func newSlotBook(rows []QueuedSlot, onErrand map[string]bool) *slotBook {
+func newSlotBook(rows []QueuedSlot, reserves []SpareHull, onErrand map[string]bool) *slotBook {
 	b := &slotBook{
 		state:   make(map[slotKey]string, len(rows)),
 		wanted:  make(map[string][]QueuedSlot),
 		staffed: make(map[string]bool),
 	}
+	b.addReserves(reserves, onErrand)
 	for _, row := range rows {
 		b.state[slotKey{row.Waypoint, row.Kind}] = row.State
 		if row.State == SlotStateWanted {
@@ -103,6 +104,51 @@ func newSlotBook(rows []QueuedSlot, onErrand map[string]bool) *slotBook {
 		b.errandSpares = append(b.errandSpares, row)
 	}
 	return b
+}
+
+// addReserves folds the hull-keyed reserve pool into the tick's spare supply. They
+// enter `spares` (a reserve IS a seed already available, so it suppresses a
+// duplicate order) and `parkedSpares` (being claimable is the entire reason these
+// hulls are recorded), under the same errand filter the placement spares get.
+//
+// OUT of `state`, and that is the whole shape of this change: `state` answers "is
+// there a placement OF MY KIND here", and a reserve is a hull standing somewhere,
+// not a claim on the waypoint. In it, a reserve would shadow the yard it stands
+// on — seed.go and staging.go both refuse a waypoint carrying a SPARE — so adopted
+// hulls would lock their yards out of staging and strangle the expansion this
+// exists to feed. OUT of `staffed` for the conservative half of that: staffing is
+// what lets a yard stage a seed, and staging leads to spend (RULINGS #4). Nothing
+// is lost, since staffedAt falls back to DockedProbeAt and the ships table sees the
+// very hull. OUT of `wanted`: a reserve is a hull, never an unfilled intent.
+func (b *slotBook) addReserves(reserves []SpareHull, onErrand map[string]bool) {
+	for _, reserve := range reserves {
+		row := QueuedSlot{
+			Waypoint:     reserve.Waypoint,
+			System:       reserve.System,
+			Kind:         SlotKindSpare,
+			State:        SlotStateParked,
+			AssignedShip: reserve.Ship,
+			Reserve:      true,
+		}
+		b.spares = append(b.spares, row)
+		if onErrand[reserve.Ship] {
+			b.errandSpares = append(b.errandSpares, row)
+			continue
+		}
+		b.parkedSpares = append(b.parkedSpares, row)
+	}
+}
+
+// dropReserve records a reserve hull this tick handed to a mission. Removed BY
+// HULL, mirroring the delete it shadows: the waypoint is not this row's identity,
+// and forgetting it would drop a placement SPARE still on the books.
+func (b *slotBook) dropReserve(ship string) {
+	for i, spare := range b.spares {
+		if spare.Reserve && spare.AssignedShip == ship {
+			b.spares = append(b.spares[:i], b.spares[i+1:]...)
+			return
+		}
+	}
 }
 
 // occupied reports whether a waypoint already carries a placement row OF THIS KIND.

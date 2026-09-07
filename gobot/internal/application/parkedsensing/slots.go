@@ -45,6 +45,24 @@ type QueuedSlot struct {
 	// a row that records no goods and for one whose goods column will not decode,
 	// so it can only ever make a hull LESS eligible to be moved, never more.
 	WhitelistGoods []string
+	// Reserve marks a row from the hull-keyed RESERVE pool rather than from
+	// sensing_slots. False for every placement row, so the zero value is unchanged.
+	//
+	// IT EXISTS TO ROUTE THE RELEASE, which is a money guard (RULINGS #4): a
+	// claimed spare comes off the books through the store that holds it — a
+	// placement by (waypoint, kind), a reserve by its HULL. Released the other way
+	// a reserve takes down whatever else stands at that waypoint.
+	Reserve bool
+}
+
+// SpareHull is one probe held in RESERVE: a hull we own that belongs to no
+// placement. Keyed on the HULL rather than the waypoint, because a placement says
+// "a probe should stand HERE" and a reserve says "we own this and nothing has
+// claimed it" — and several of those share a waypoint routinely.
+type SpareHull struct {
+	Ship     string
+	Waypoint string
+	System   string
 }
 
 // ScreenedSystem is one screened system's identity and size.
