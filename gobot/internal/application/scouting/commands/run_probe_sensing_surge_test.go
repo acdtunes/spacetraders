@@ -31,6 +31,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/parkedsensing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	domainScouting "github.com/andrescamacho/spacetraders-go/internal/domain/scouting"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
 )
 
 // surgeHome is where every surplus probe in these fixtures stands, and surgeStack is
@@ -50,6 +51,10 @@ func surgeWorld(t *testing.T, poolSize, surplus int) *cutoverWorld {
 	t.Helper()
 	world := steadyWorld(t, map[string]string{surgeHome: parkedsensing.VerdictInScope})
 	world.posts.posts = nil
+	// A FULLY COMMITTED REQUEST BUDGET, so every count below is the CEILING-ERA one the
+	// cap's constant names — an unwired estimator would silently test the full-headroom
+	// multiple instead, and no assertion here would say which regime it meant.
+	world.handler.SetAPISaturationReader(saturatedReader())
 
 	// The pool: charted systems with a marketplace and no prices, all ONE gate from
 	// home so the walk can carry a hull to any of them. Ranked identically (one
@@ -689,4 +694,94 @@ func TestSensingSurge_RefusesAPoolSystemBeyondTheWalksReach(t *testing.T) {
 
 	require.Empty(t, surgedRows(world),
 		"a hull is never sent toward a system the walk cannot resolve")
+}
+
+// --- the paced standing concurrency ------------------------------------------------
+
+// idleSurgeWorld reads a request budget nobody is queued on.
+func idleSurgeWorld(t *testing.T, poolSize, surplus int) *cutoverWorld {
+	t.Helper()
+	world := surgeWorld(t, poolSize, surplus)
+	world.handler.SetAPISaturationReader(&fakeSensingSaturation{permille: 0})
+	return world
+}
+
+// pacedSurgeCap states the expectation through the SAME function the engine uses.
+func pacedSurgeCap(permille, base int) int {
+	return parkedsensing.PacedBudget(base, permille, parkedsensing.ExpansionHeadroomMultiple)
+}
+
+// AT A FULLY COMMITTED REQUEST BUDGET THE CAP IS THE NUMBER IT ALWAYS WAS. What must not
+// have moved is what a fleet AT its ceiling does — the one regime in which spending more
+// requests on flights is exactly wrong.
+func TestSensingSurge_AtFullSaturationTheCapIsTheCeilingEraDefault(t *testing.T) {
+	world := surgeWorld(t, 40, 40) // both far above the cap, so the CAP is what binds
+
+	surgeTick(t, world)
+
+	require.Len(t, surgedRows(world), defaultSurgeInFlightCap,
+		"a fleet at its request ceiling flies exactly what it flew before the cap was paced")
+}
+
+// AN IDLE REQUEST BUDGET RAISES THE STANDING CONCURRENCY — the throughput half. Breadth is
+// this pass's entire return, so a population pinned below the headroom is coverage the
+// fleet has already paid for and is not collecting.
+func TestSensingSurge_AnIdleRequestBudgetRaisesTheStandingConcurrency(t *testing.T) {
+	want := pacedSurgeCap(0, defaultSurgeInFlightCap)
+	require.Greater(t, want, defaultSurgeInFlightCap, "the fixture is pointless unless the pacing bites")
+
+	// Pool and surplus both above the paced cap, for surgeWorld's own reason: a fixture
+	// that ran out of either would measure the hulls or the pool and not the cap.
+	world := idleSurgeWorld(t, want+10, want+10)
+
+	surgeTick(t, world)
+
+	require.Len(t, surgedRows(world), want,
+		"with nothing queued on the request budget the surge flies its full paced population")
+}
+
+// THE KNOB IS THE BASE THAT IS SCALED, not a ceiling applied after it. The zero row matters
+// twice: the revert must restore the DEFAULT base and pace THAT, not fall through to an
+// unpaced default and not read as "no base, no flights".
+func TestSensingSurge_TheTunedValueIsTheBaseThePacingScales(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		tune int
+		base int
+	}{
+		{"a tuned base bursts from the tuned number", 3, 3},
+		{"zero reverts to the documented base and paces THAT", 0, defaultSurgeInFlightCap},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			want := pacedSurgeCap(0, tc.base)
+			world := idleSurgeWorld(t, want+10, want+10)
+			world.handler.SetLiveConfigReader(staticLiveConfig{"surge_inflight_cap": tc.tune})
+
+			surgeTick(t, world)
+
+			require.Len(t, surgedRows(world), want,
+				"the live cap is the tuned base scaled by the idle request budget, not either one alone")
+		})
+	}
+}
+
+// THE PASS CANNOT BE SWITCHED OFF AT ANY SATURATION (RULINGS #22), and a scaling term is a
+// new place an off switch could appear by accident. The scaling is ONE-WAY, so the floor
+// across the whole range is the ceiling-era default.
+func TestSensingSurge_ThePacingCanNeverSwitchThePassOff(t *testing.T) {
+	for _, permille := range []int{0, 250, 500, 750, trading.APISaturationPermilleMax} {
+		t.Run(fmt.Sprintf("%d permille", permille), func(t *testing.T) {
+			want := pacedSurgeCap(permille, defaultSurgeInFlightCap)
+			require.GreaterOrEqual(t, want, defaultSurgeInFlightCap,
+				"the pacing only ever raises the cap, so no reading may take it below the shipped default")
+
+			world := surgeWorld(t, want+10, want+10)
+			world.handler.SetAPISaturationReader(&fakeSensingSaturation{permille: permille})
+
+			surgeTick(t, world)
+
+			require.Len(t, surgedRows(world), want,
+				"the surge ships ARMED and flies at every reading the estimator can produce")
+		})
+	}
 }

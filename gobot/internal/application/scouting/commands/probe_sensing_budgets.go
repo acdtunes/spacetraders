@@ -39,6 +39,8 @@ type sensingBudgets struct {
 	chartGrant int
 	// buy paces the drain's purchase ATTEMPTS — bursts only, every guard behind it untouched (RULINGS #4).
 	buy int
+	// surge is the ONE STOCK here: a standing population. See defaultSurgeInFlightCap.
+	surge int
 }
 
 // resolveSensingBudgets scales every paced pass off one saturation reading.
@@ -52,7 +54,7 @@ type sensingBudgets struct {
 // though the limiter were saturated. Nothing here spends credits, so there is no guard to
 // fail closed: the worst case is a burst of reads against a limiter that queues them,
 // which the limiter itself already handles.
-func resolveSensingBudgets(permille, headroomMultiple int) sensingBudgets {
+func resolveSensingBudgets(permille, headroomMultiple, surgeBase int) sensingBudgets {
 	paced := func(base int) int { return parkedsensing.PacedBudget(base, permille, headroomMultiple) }
 	return sensingBudgets{
 		permille: permille,
@@ -70,6 +72,7 @@ func resolveSensingBudgets(permille, headroomMultiple int) sensingBudgets {
 		// for.
 		adopt: paced(DefaultMaxAdoptions),
 		buy:   paced(parkedsensing.MaxDrainAttempts),
+		surge: paced(surgeBase),
 		// Spends no request of its own: it stamps rows for hulls already bought and parked.
 		chartGrant: paced(parkedsensing.MaxChartGrantsPerSystem),
 	}
@@ -87,5 +90,5 @@ func (h *RunProbeSensingCoordinatorHandler) saturationPermille(ctx context.Conte
 // budgetsFor resolves this tick's budgets for one player from the live reading and the
 // operator's headroom multiple.
 func (h *RunProbeSensingCoordinatorHandler) budgetsFor(ctx context.Context, cfg sensingConfig) sensingBudgets {
-	return resolveSensingBudgets(h.saturationPermille(ctx), cfg.ExpansionHeadroomMultiple)
+	return resolveSensingBudgets(h.saturationPermille(ctx), cfg.ExpansionHeadroomMultiple, cfg.SurgeInFlightCap)
 }

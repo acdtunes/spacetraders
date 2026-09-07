@@ -122,8 +122,8 @@ type RunProbeSensingCoordinatorCommand struct {
 	CapexReserveCredits int
 	// QuartermasterCadence is a yard slot's re-read floor, in seconds.
 	QuartermasterCadence int
-	// SurgeInFlightCap bounds how many surplus probes may be flying toward
-	// charted-but-unpriced systems at once (sp-zvywu). See defaultSurgeInFlightCap.
+	// SurgeInFlightCap is the ceiling-era base of how many surplus probes may be flying
+	// toward charted-but-unpriced systems at once. See defaultSurgeInFlightCap.
 	SurgeInFlightCap int
 	// CoverageReserve holds back this many fill attempts per tick for the best
 	// never-entered system. Zero (default) ships off. See BuyKnobs.CoverageReserve.
@@ -740,7 +740,7 @@ func (h *RunProbeSensingCoordinatorHandler) reclaimIdleProbes(ctx context.Contex
 	// would not be (see the reaper's note) — SetSeed and UpsertSystem own disjoint column sets
 	// in the persistence layer, so the screening sweep between the read and here cannot have
 	// touched a seed column.
-	surged = h.surgeToUnpricedSystems(ctx, cyc, systems, failures)
+	surged = h.surgeToUnpricedSystems(ctx, cyc, systems, budgets.surge, failures)
 	return adopt, dispatched, surged
 }
 

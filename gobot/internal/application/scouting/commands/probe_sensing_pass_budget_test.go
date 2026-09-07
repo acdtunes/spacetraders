@@ -46,11 +46,16 @@ func TestSensingBudgets_AnUnwiredEstimatorIsAFullyIdleBudgetNotASaturatedOne(t *
 	require.Zero(t, h.saturationPermille(context.Background()),
 		"a nil reader must read as a budget nobody is queued on")
 
-	unwired := h.budgetsFor(context.Background(), sensingConfig{ExpansionHeadroomMultiple: parkedsensing.ExpansionHeadroomMultiple})
-	idle := resolveSensingBudgets(0, parkedsensing.ExpansionHeadroomMultiple)
+	// A RESOLVED config: the surge's base is a knob, and a zero base is PacedBudget's
+	// revert sentinel — it would compare unequal for a reason unrelated to the reading.
+	unwired := h.budgetsFor(context.Background(), sensingConfig{
+		ExpansionHeadroomMultiple: parkedsensing.ExpansionHeadroomMultiple,
+		SurgeInFlightCap:          defaultSurgeInFlightCap,
+	})
+	idle := resolveSensingBudgets(0, parkedsensing.ExpansionHeadroomMultiple, defaultSurgeInFlightCap)
 	require.Equal(t, idle, unwired, "an unwired estimator gives the engine its full headroom")
 
-	saturated := resolveSensingBudgets(trading.APISaturationPermilleMax, parkedsensing.ExpansionHeadroomMultiple)
+	saturated := resolveSensingBudgets(trading.APISaturationPermilleMax, parkedsensing.ExpansionHeadroomMultiple, defaultSurgeInFlightCap)
 	require.NotEqual(t, saturated, unwired,
 		"reading a missing estimator as a SATURATED budget would ship the whole change inert")
 	require.Greater(t, unwired.gate, saturated.gate)
@@ -120,7 +125,7 @@ func TestSensingBudgets_AHeadroomMultipleOfOneRestoresTheShippedPacing(t *testin
 // placement machine spent every move it had while expansion stopped for want of work.
 func exhaustedPlacementTick() heartbeat {
 	return heartbeat{
-		budgets: resolveSensingBudgets(600, parkedsensing.ExpansionHeadroomMultiple),
+		budgets: resolveSensingBudgets(600, parkedsensing.ExpansionHeadroomMultiple, defaultSurgeInFlightCap),
 		screen:  screenReport{Screened: 2, Limit: 15},
 		place:   parkedsensing.PlacementReport{Actions: 10, ActionLimit: 10, Failures: 4, FailureLimit: 30},
 		expand: parkedsensing.ExpandReport{
@@ -150,7 +155,7 @@ func TestBudgetSummary_NamesTheBudgetThatBoundTheTick(t *testing.T) {
 // the tick a wall of refusals ended.
 func TestBudgetSummary_TheRefusalBudgetIsAPassOfItsOwn(t *testing.T) {
 	refused := heartbeat{
-		budgets: resolveSensingBudgets(0, parkedsensing.ExpansionHeadroomMultiple),
+		budgets: resolveSensingBudgets(0, parkedsensing.ExpansionHeadroomMultiple, defaultSurgeInFlightCap),
 		place:   parkedsensing.PlacementReport{Actions: 2, ActionLimit: 57, Failures: 171, FailureLimit: 171},
 	}
 
@@ -165,7 +170,7 @@ func TestBudgetSummary_TheRefusalBudgetIsAPassOfItsOwn(t *testing.T) {
 // passes just as happily against a report that never carried a limit at all.
 func TestBudgetSummary_EachLimitIsThePassesOwnAndNotItsSpend(t *testing.T) {
 	quiet := heartbeat{
-		budgets: resolveSensingBudgets(0, parkedsensing.ExpansionHeadroomMultiple),
+		budgets: resolveSensingBudgets(0, parkedsensing.ExpansionHeadroomMultiple, defaultSurgeInFlightCap),
 		screen:  screenReport{Screened: 3, Limit: 30},
 		place:   parkedsensing.PlacementReport{Actions: 1, ActionLimit: 57, Failures: 9, FailureLimit: 171},
 		expand: parkedsensing.ExpandReport{

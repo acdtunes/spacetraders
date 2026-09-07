@@ -15,14 +15,10 @@ import (
 // probe_sensing_surge.go dispatches SURPLUS probes we already own into the
 // charted-but-unpriced map, several at a time. It spends nothing (sp-zvywu Part 1).
 //
-// THE POOL, AND WHY IT IS THE TRIGGER. Measured live: 1,215 systems in the sensing
-// ledger, 1,183 of them charted in the open era, and 116 carrying ANY market_data
-// row — under 10% priced. So 1,067 charted systems have prices nobody has ever
-// read, and ~300 of the 686 probes stand in no sensing slot at all. The original
-// spec fired this pass on REACHABLE-GRAPH GROWTH (a gate completion opening new
-// territory); that aims at the smaller gap, and it makes the surge wait for an
-// event when the work is already on the floor. The trigger is therefore the pool
-// itself, derived as a SET DIFFERENCE each tick:
+// THE POOL, AND WHY IT IS THE TRIGGER. The original spec fired this pass on
+// REACHABLE-GRAPH GROWTH (a gate completion opening new territory); that aims at the
+// smaller gap, and it makes the surge wait for an event when the work is already on
+// the floor. The trigger is therefore the pool itself, a SET DIFFERENCE each tick:
 //
 //	charted systems (waypoints, open era)  MINUS  systems with any market_data row
 //
@@ -55,25 +51,26 @@ import (
 // BORN NAMING ITS HULL, so it never passes through the hull-less WANTED state the
 // buy queue drains — see the write itself.
 
-// defaultSurgeInFlightCap bounds how many surge dispatches may be IN FLIGHT at
-// once — not how many one tick may issue. A tick tops the population up to this
-// number and stops, so the standing concurrency is bounded rather than merely the
-// per-tick burst; without that distinction a tick could add its full burst on top
-// of everything still flying, and the API cost of the surge would grow without
-// limit while every individual tick looked well-behaved.
+// defaultSurgeInFlightCap bounds how many surge dispatches may be IN FLIGHT at once —
+// not how many one tick may issue. A tick tops the population up to it and stops;
+// without that distinction a tick could add its full burst on top of everything still
+// flying, and the surge's cost would grow without limit while each tick looked
+// well-behaved.
 //
-// WHY EIGHT. It sits under DefaultMaxPlacementActions (10), which is the per-tick
-// budget the placement machine actually advances these hulls with: a standing
-// surge population larger than that budget could not be advanced every tick, so
-// the extra dispatches would buy latency rather than throughput. Live API
-// utilisation has been running against its 85% ceiling, and the pacer and
-// emergency brake still govern every scan the arriving probes then perform — this
-// cap is what keeps the FLIGHTS from being the thing that breaks the ceiling.
+// IT IS A BASE, NOT A CEILING: eight is the population for a fleet AT its request
+// ceiling, paced up from there off the same reading every other pass takes
+// (budgets.surge). Sizing it under DefaultMaxPlacementActions instead compares a STOCK
+// against a FLOW — a hull in transit is outcomeIdle to the placement machine, so a
+// flight touches that budget at its transitions, not once per tick of the crossing.
 //
-// It is a knob (surge_inflight_cap) because it is an operational cap, which is
-// what RULINGS #5 makes configurable; the const is its documented default, and
-// `tune surge_inflight_cap 0` reverts to it — so the knob cannot be used to switch
-// the pass off. The pass ships ARMED.
+// WHAT STILL BOUNDS THE FLIGHTS' API COST is budgets.place: the placement machine is the
+// only thing that spends requests on them, it is paced by the same reading, and its
+// worklist rotates least-recently-attempted-first, so a larger population fills that
+// budget rather than escaping it.
+//
+// It is a knob (surge_inflight_cap) because it is an operational cap (RULINGS #5); the
+// const is its documented default and `tune surge_inflight_cap 0` reverts to it. The
+// pacing only ever raises it, so the knob cannot switch the pass off. It ships ARMED.
 const defaultSurgeInFlightCap = 8
 
 // The surge's pool contract lives in the domain so the adapter implementing it need
@@ -101,14 +98,21 @@ type surgeTarget struct {
 // the first write onward, so the next tick's ledger read strikes it off both as a
 // surplus hull and as in-flight capacity. A fleet with nothing surplus costs this
 // pass its reads and not one write, however many ticks run.
+//
+// inFlightCap is the PACED cap (budgets.surge), not cfg.SurgeInFlightCap raw; a
+// non-positive one is the caller's revert sentinel.
 func (h *RunProbeSensingCoordinatorHandler) surgeToUnpricedSystems(
 	ctx context.Context,
 	cyc sensingCycle,
 	systems []parkedsensing.ExpandSystem,
+	inFlightCap int,
 	failures *[]error,
 ) int {
 	logger := common.LoggerFromContext(ctx)
 	playerID := cyc.cmd.PlayerID.Value()
+	if inFlightCap <= 0 {
+		inFlightCap = defaultSurgeInFlightCap
+	}
 
 	// EVERY READ FAILS CLOSED. The pool read is the era-scoped one and refuses
 	// rather than guessing (see UnpricedSystemPool); the post list is the sharpest,
@@ -134,7 +138,7 @@ func (h *RunProbeSensingCoordinatorHandler) surgeToUnpricedSystems(
 	}
 
 	// THE IN-FLIGHT BUDGET, derived entirely from durable rows (RULINGS #2).
-	budget := cyc.cfg.SurgeInFlightCap - inFlightSurge(pool, holds)
+	budget := inFlightCap - inFlightSurge(pool, holds)
 	if budget <= 0 {
 		return 0
 	}
@@ -194,11 +198,14 @@ func (h *RunProbeSensingCoordinatorHandler) surgeToUnpricedSystems(
 		logger.Log("INFO", fmt.Sprintf(
 			"Surged %d surplus probe(s) into charted-but-unpriced systems (no purchase — these hulls were paid for and stood in no sensing slot); %d systems in the pool",
 			dispatched, len(pool)), map[string]interface{}{
-			"action":     "parked_sensing_surged",
-			"surged":     dispatched,
-			"pool":       len(pool),
-			"in_flight":  cyc.cfg.SurgeInFlightCap - budget + dispatched,
-			"cap":        cyc.cfg.SurgeInFlightCap,
+			"action": "parked_sensing_surged",
+			"surged": dispatched,
+			"pool":   len(pool),
+			// The base rides beside the paced cap: a cap that is not the tuned number is
+			// unreadable without it.
+			"in_flight":  inFlightCap - budget + dispatched,
+			"cap":        inFlightCap,
+			"cap_base":   cyc.cfg.SurgeInFlightCap,
 			"surplus":    len(surplus),
 			"candidates": len(targets),
 		})

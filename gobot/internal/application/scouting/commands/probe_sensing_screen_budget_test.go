@@ -24,7 +24,7 @@ func idleReader() APISaturationReader { return &fakeSensingSaturation{permille: 
 // ever hand this pass MORE work than before, never less.
 func TestScreenBudget_AFullyBoundRequestBudgetIsTheShippedBatch(t *testing.T) {
 	for _, multiple := range []int{1, parkedsensing.ExpansionHeadroomMultiple, parkedsensing.MaxExpansionHeadroomMultiple} {
-		got := resolveSensingBudgets(trading.APISaturationPermilleMax, multiple)
+		got := resolveSensingBudgets(trading.APISaturationPermilleMax, multiple, defaultSurgeInFlightCap)
 		require.Equal(t, screenSweepBatch, got.screen,
 			"a saturated budget at multiple %d must be the shipped batch, exactly", multiple)
 	}
@@ -34,7 +34,7 @@ func TestScreenBudget_AFullyBoundRequestBudgetIsTheShippedBatch(t *testing.T) {
 // cost is a paginated catalogue sweep.
 func TestScreenBudget_NeverPacesBelowTheShippedBatch(t *testing.T) {
 	for permille := 0; permille <= trading.APISaturationPermilleMax; permille += 50 {
-		got := resolveSensingBudgets(permille, parkedsensing.ExpansionHeadroomMultiple)
+		got := resolveSensingBudgets(permille, parkedsensing.ExpansionHeadroomMultiple, defaultSurgeInFlightCap)
 		require.GreaterOrEqual(t, got.screen, screenSweepBatch,
 			"the sweep must never be paced below its shipped batch (reading %d‰)", permille)
 	}
@@ -43,10 +43,10 @@ func TestScreenBudget_NeverPacesBelowTheShippedBatch(t *testing.T) {
 // An idle budget reaches the full multiple, which is the throughput the change is for.
 func TestScreenBudget_AnIdleRequestBudgetReachesTheFullMultiple(t *testing.T) {
 	require.Equal(t, screenSweepBatch*parkedsensing.ExpansionHeadroomMultiple,
-		resolveSensingBudgets(0, parkedsensing.ExpansionHeadroomMultiple).screen)
+		resolveSensingBudgets(0, parkedsensing.ExpansionHeadroomMultiple, defaultSurgeInFlightCap).screen)
 	require.Equal(t, screenSweepBatch*parkedsensing.MaxExpansionHeadroomMultiple,
-		resolveSensingBudgets(0, parkedsensing.MaxExpansionHeadroomMultiple).screen)
-	require.Equal(t, screenSweepBatch, resolveSensingBudgets(0, 1).screen,
+		resolveSensingBudgets(0, parkedsensing.MaxExpansionHeadroomMultiple, defaultSurgeInFlightCap).screen)
+	require.Equal(t, screenSweepBatch, resolveSensingBudgets(0, 1, defaultSurgeInFlightCap).screen,
 		"a multiple of one is the operator's way back to the pre-scaling pacing")
 }
 
@@ -111,7 +111,7 @@ func TestScreenSweep_AnIdleRequestBudgetJudgesInOneTickWhatTheCeilingSpreadsOver
 // budget is not written off and not forgotten: it is still PENDING, and the next tick
 // reaches it. A burst bound must defer work rather than drop it.
 func TestScreenSweep_SystemsPastTheBudgetStayPendingAndAreReachedNextTick(t *testing.T) {
-	budget := resolveSensingBudgets(0, parkedsensing.ExpansionHeadroomMultiple).screen
+	budget := resolveSensingBudgets(0, parkedsensing.ExpansionHeadroomMultiple, defaultSurgeInFlightCap).screen
 	all := pendingBacklog(budget + 4)
 	world := stillChartingWorld(t, all)
 	world.handler.SetAPISaturationReader(idleReader())
@@ -141,7 +141,7 @@ func TestScreenSweep_SystemsPastTheBudgetStayPendingAndAreReachedNextTick(t *tes
 // nothing left to judge or was pinned at its cap, and it must reach the LIVE cycle line —
 // a number computed and never logged is a number nobody can act on.
 func TestScreenSweep_TheCycleLineNamesTheScreenBudgetItWasChargedAgainst(t *testing.T) {
-	budget := resolveSensingBudgets(0, parkedsensing.ExpansionHeadroomMultiple).screen
+	budget := resolveSensingBudgets(0, parkedsensing.ExpansionHeadroomMultiple, defaultSurgeInFlightCap).screen
 	world := stillChartingWorld(t, pendingBacklog(budget+2))
 	world.handler.SetAPISaturationReader(idleReader())
 

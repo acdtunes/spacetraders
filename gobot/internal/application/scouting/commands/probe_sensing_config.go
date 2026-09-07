@@ -160,7 +160,8 @@ type sensingConfig struct {
 	CapitalMultiplierKMilli int
 	CapexReserveCredits     int64
 	QuartermasterCadence    time.Duration
-	// SurgeInFlightCap is the standing bound on surge dispatches in flight.
+	// SurgeInFlightCap is the CEILING-ERA base of the standing bound on surge dispatches
+	// in flight; the live bound is it scaled by the idle request budget (budgets.surge).
 	SurgeInFlightCap int
 	// CoverageReserve is the buy queue's coverage-reserve share. See BuyKnobs.CoverageReserve.
 	CoverageReserve int
