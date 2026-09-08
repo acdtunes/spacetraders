@@ -491,38 +491,42 @@ func tfCohort(t *testing.T, n int) []*navigation.Ship {
 	return out
 }
 
-func TestReconcileSpecialists_ABusyFleetPromotesAtTheNextSafeBoundary(t *testing.T) {
-	// The starvation this fixes. A fully-utilised fleet holds no idle, empty hull at the
-	// instant the hourly pass runs, so a promotion that had to happen right then never
-	// happened at all — the pass sized a pool and moved nothing, cadence after cadence.
+func TestReconcileSpecialists_ABusyFleetPromotesWithoutWaitingForAPark(t *testing.T) {
+	// The starvation this fixes. A trade tour runs CONTINUOUS: its container keeps the hull's
+	// claim across tours, so a working hull reaches the idle bucket far more rarely than an
+	// earmark's cadence-long life, and a promotion that waited for a park was re-planned away
+	// before its boundary came. The hold is the boundary, and it drains mid-flight.
 	cohort := tfCohort(t, 10)
+	cohort[0] = tfLadenShipAt(t, "M-00", tradeFleetMVT, "X1-B-1", 12) // mid-tour, hold full
 	repo, claims := &fakeSpecialistShipRepo{}, &fakeSpecialistClaims{}
 	h := newSpecialistHandler(repo, claims, specialistLegs(true))
 	cmd := &RunTradeFleetCoordinatorCommand{PlayerID: shared.MustNewPlayerID(1)}
 
-	// Every hull is mid-tour: the fleet is in `all`, the idle bucket is empty.
+	// Every hull is mid-tour, and the pick is still carrying what it bought.
 	promoted, demoted, retags := h.reconcileSpecialists(context.Background(), cmd, cohort, nil, baseTime, &tradeCaptureLogger{})
 
-	require.Zero(t, promoted+demoted, "nothing may be re-tagged while every hull is flying")
+	require.Zero(t, promoted+demoted, "a load bought for the current path is never re-tagged out from under it")
 	require.Empty(t, repo.assigned)
 	require.Empty(t, retags)
 	require.Equal(t, map[string]string{"M-00": tradeFleetLane}, h.specialistPending, "the seat is earmarked, not forgotten")
 
-	// One tour ends. The very next tick — far inside the 1h cadence, so no pass runs — settles.
-	promoted, demoted, retags = h.reconcileSpecialists(context.Background(), cmd, cohort, cohort[:1], baseTime.Add(30*time.Second), &tradeCaptureLogger{})
+	// It sells. It is STILL mid-tour — no park, no idle bucket — and the tag moves anyway, on
+	// the very next tick, far inside the 1h cadence so no pass runs.
+	cohort[0] = tfIdleShipAt(t, "M-00", tradeFleetMVT, "X1-B-1")
+	promoted, demoted, retags = h.reconcileSpecialists(context.Background(), cmd, cohort, nil, baseTime.Add(30*time.Second), &tradeCaptureLogger{})
 
 	require.Equal(t, 1, promoted)
 	require.Zero(t, demoted)
 	require.Equal(t, map[string]string{"M-00": tradeFleetLane}, repo.assigned)
-	require.Equal(t, tradeFleetLane, retags["M-00"], "this tick's launch already flies the lane path")
-	require.Equal(t, []string{"M-00"}, claims.released)
+	require.Equal(t, tradeFleetLane, retags["M-00"])
+	require.Empty(t, claims.released, "a hull still flying keeps the system claim its own container owns")
 	require.Empty(t, h.specialistPending, "settled, not left to fire again")
 	require.Equal(t, tradeFleetMVT, cohort[0].DedicatedFleet(), "the daemon-shared entity stays untouched")
 }
 
 func TestReconcileSpecialists_ALadenHullAtItsBoundaryKeepsItsTag(t *testing.T) {
-	// The boundary is idle AND empty. A hull that parks still holding the load it bought for
-	// its current path is not re-tagged; the earmark simply waits for the tick it parks drained.
+	// The boundary is an EMPTY hold. A hull still holding the load it bought for its current
+	// path is not re-tagged, parked or not; the earmark waits for the tick it stands drained.
 	cohort := tfCohort(t, 10)
 	cohort[0] = tfLadenShipAt(t, "M-00", tradeFleetMVT, "X1-B-1", 12)
 	repo, claims := &fakeSpecialistShipRepo{}, &fakeSpecialistClaims{}
@@ -569,23 +573,24 @@ func TestApplySpecialistTag_RefusesALadenHullWhicheverPathReachesIt(t *testing.T
 }
 
 func TestReconcileSpecialists_DemotesAMidTourSpecialistAtItsNextBoundary(t *testing.T) {
-	// Symmetry: a deferred promotion that cannot be undone is worse than none. When the pool
-	// shrinks, a specialist that is flying sheds its tag when it next parks drained, instead of
-	// keeping it because no cadence ever caught it parked.
-	l1 := tfIdleShipAt(t, "L-1", tradeFleetLane, "X1-B-1")
+	// Symmetry: a deferred demotion that cannot be undone is worse than none. When the pool
+	// shrinks, a specialist sheds its tag the tick its hold is empty — no park required —
+	// instead of keeping it because no cadence ever caught it parked.
+	l1 := tfLadenShipAt(t, "L-1", tradeFleetLane, "X1-B-1", 8)
 	l2 := tfIdleShipAt(t, "L-2", tradeFleetLane, "X1-B-1")
 	all := []*navigation.Ship{l1, l2}
 	repo, claims := &fakeSpecialistShipRepo{}, &fakeSpecialistClaims{}
 	h := newSpecialistHandler(repo, claims, specialistLegs(true))
 	cmd := &RunTradeFleetCoordinatorCommand{PlayerID: shared.MustNewPlayerID(1), SpecialistFractionPct: 100}
 
-	// Two specialists, one seat, and both are mid-tour.
+	// Two specialists, one seat, both mid-tour, and the excess is still carrying its load.
 	promoted, demoted, _ := h.reconcileSpecialists(context.Background(), cmd, all, nil, baseTime, &tradeCaptureLogger{})
 	require.Zero(t, promoted+demoted)
 	require.Empty(t, repo.assigned)
 	require.Equal(t, map[string]string{"L-1": tradeFleetMVT}, h.specialistPending, "the excess is earmarked")
 
-	promoted, demoted, retags := h.reconcileSpecialists(context.Background(), cmd, all, all[:1], baseTime.Add(30*time.Second), &tradeCaptureLogger{})
+	all[0] = tfIdleShipAt(t, "L-1", tradeFleetLane, "X1-B-1") // it sells, still flying
+	promoted, demoted, retags := h.reconcileSpecialists(context.Background(), cmd, all, nil, baseTime.Add(30*time.Second), &tradeCaptureLogger{})
 	require.Equal(t, 1, demoted)
 	require.Zero(t, promoted)
 	require.Equal(t, map[string]string{"L-1": tradeFleetMVT}, repo.assigned)
@@ -599,6 +604,7 @@ func TestReconcileSpecialists_ANewPassReplacesAnUnsettledEarmark(t *testing.T) {
 	// the pool no longer wants is dropped rather than settling later against a seat that has
 	// closed — the earmark's own lifetime is one cadence.
 	cohort := tfCohort(t, 10)
+	cohort[0] = tfLadenShipAt(t, "M-00", tradeFleetMVT, "X1-B-1", 12) // laden, so the earmark stays unsettled
 	repo, claims := &fakeSpecialistShipRepo{}, &fakeSpecialistClaims{}
 	h := newSpecialistHandler(repo, claims, specialistLegs(true))
 	cmd := &RunTradeFleetCoordinatorCommand{PlayerID: shared.MustNewPlayerID(1)}
@@ -612,7 +618,8 @@ func TestReconcileSpecialists_ANewPassReplacesAnUnsettledEarmark(t *testing.T) {
 	require.Zero(t, promoted+demoted)
 	require.Empty(t, h.specialistPending, "the seat closed, so the earmark is gone")
 
-	// Even now that it parks drained, the withdrawn promotion does not land.
+	// Even now that it stands drained, the withdrawn promotion does not land.
+	shrunk[0] = tfIdleShipAt(t, "M-00", tradeFleetMVT, "X1-B-1")
 	promoted, _, retags = h.reconcileSpecialists(context.Background(), cmd, shrunk, shrunk[:1], baseTime.Add(62*time.Minute), &tradeCaptureLogger{})
 	require.Zero(t, promoted)
 	require.Empty(t, repo.assigned)
@@ -779,22 +786,25 @@ func TestReconcileSpecialists_ARetiringHullNeverTakesASeatAcrossCadences(t *test
 }
 
 func TestReconcileSpecialists_ASpecialistMarkedRetiringFreesItsSeatAtItsNextBoundary(t *testing.T) {
-	// The demotion, through the deferred settle: the mark lands while the hull is flying, the
-	// seat is earmarked free, and the tag moves the tick the hull parks drained.
-	retiring := tfRetiringShipAt(t, "L-1", tradeFleetLane, "X1-B-1")
-	spare := tfIdleShipAt(t, "M-A", tradeFleetMVT, "X1-B-1")
-	all := []*navigation.Ship{retiring, spare}
+	// The demotion, through the deferred settle: the mark lands while the hull is flying laden,
+	// the seat is earmarked free, and the tag moves the tick the hold is empty.
+	retiring := tfLadenShipAt(t, "L-1", tradeFleetLane, "X1-B-1", 8)
+	at := baseTime
+	retiring.SetRetiringAt(&at)
+	all := []*navigation.Ship{retiring, tfLadenShipAt(t, "M-A", tradeFleetMVT, "X1-B-1", 5)}
 	repo, claims := &fakeSpecialistShipRepo{}, &fakeSpecialistClaims{}
 	h := newSpecialistHandler(repo, claims, specialistLegs(true))
 	cmd := &RunTradeFleetCoordinatorCommand{PlayerID: shared.MustNewPlayerID(1), SpecialistFractionPct: 100}
 
-	// Both mid-tour: nothing can move yet, but the plan already knows who does.
+	// Both mid-tour and laden: nothing can move yet, but the plan already knows who does.
 	promoted, demoted, _ := h.reconcileSpecialists(context.Background(), cmd, all, nil, baseTime, &tradeCaptureLogger{})
 	require.Zero(t, promoted+demoted)
 	require.Equal(t, map[string]string{"L-1": tradeFleetMVT, "M-A": tradeFleetLane}, h.specialistPending)
 
-	// Both park drained. The demotion settles first, and the seat it frees is taken the same
-	// tick by the hull that will actually fly the lane.
+	// Both drain, and both park. The demotion settles first, and the seat it frees is taken the
+	// same tick by the hull that will actually fly the lane.
+	all[0] = tfRetiringShipAt(t, "L-1", tradeFleetLane, "X1-B-1")
+	all[1] = tfIdleShipAt(t, "M-A", tradeFleetMVT, "X1-B-1")
 	promoted, demoted, retags := h.reconcileSpecialists(context.Background(), cmd, all, all, baseTime.Add(30*time.Second), &tradeCaptureLogger{})
 	require.Equal(t, 1, promoted)
 	require.Equal(t, 1, demoted)
@@ -803,4 +813,113 @@ func TestReconcileSpecialists_ASpecialistMarkedRetiringFreesItsSeatAtItsNextBoun
 	require.Equal(t, tradeFleetLane, retags["M-A"])
 	require.Equal(t, []string{"M-A"}, claims.released, "only the promotion strips a system claim")
 	require.Empty(t, h.specialistPending)
+}
+
+// tfSettleFixture drives the settle's own rules, with pending and pool set by hand.
+func tfSettleFixture(t *testing.T, pending map[string]string, pool int) (*RunTradeFleetCoordinatorHandler, *fakeSpecialistShipRepo, *fakeSpecialistClaims) {
+	t.Helper()
+	repo, claims := &fakeSpecialistShipRepo{}, &fakeSpecialistClaims{}
+	h := newSpecialistHandler(repo, claims, specialistLegs(true))
+	h.specialistPending, h.specialistPool = pending, pool
+	return h, repo, claims
+}
+
+func TestSettleSpecialistIntents_NeverOverfillsThePool(t *testing.T) {
+	// The cap earns its keep now that the boundary is the hold rather than a park: a whole
+	// cohort can stand drained on one tick, so without it the pool blows past its seat count.
+	all := []*navigation.Ship{}
+	pending := map[string]string{}
+	for i := 0; i < 5; i++ {
+		sym := fmt.Sprintf("M-%02d", i)
+		all = append(all, tfIdleShipAt(t, sym, tradeFleetMVT, "X1-B-1"))
+		pending[sym] = tradeFleetLane
+	}
+	h, repo, _ := tfSettleFixture(t, pending, 2)
+
+	promoted, demoted := h.settleSpecialistIntents(context.Background(), &RunTradeFleetCoordinatorCommand{PlayerID: shared.MustNewPlayerID(1)}, all, nil, map[string]string{}, &tradeCaptureLogger{})
+
+	require.Equal(t, 2, promoted)
+	require.Zero(t, demoted)
+	require.Len(t, repo.assigned, 2, "exactly the seats, never one more")
+	require.Len(t, h.specialistPending, 3, "the rest keep their tags and wait for the next pass to re-plan")
+}
+
+func TestSettleSpecialistIntents_CountsSeatsAlreadyHeldBeforeFillingMore(t *testing.T) {
+	// The cap is against OCCUPANCY, not this tick's promotions: a full pool has no seat to give.
+	held := tfIdleShipAt(t, "L-1", tradeFleetLane, "X1-B-1")
+	waiting := tfIdleShipAt(t, "M-A", tradeFleetMVT, "X1-B-1")
+	h, repo, _ := tfSettleFixture(t, map[string]string{"M-A": tradeFleetLane}, 1)
+
+	promoted, _ := h.settleSpecialistIntents(context.Background(), &RunTradeFleetCoordinatorCommand{PlayerID: shared.MustNewPlayerID(1)},
+		[]*navigation.Ship{held, waiting}, nil, map[string]string{}, &tradeCaptureLogger{})
+
+	require.Zero(t, promoted)
+	require.Empty(t, repo.assigned)
+	require.Equal(t, map[string]string{"M-A": tradeFleetLane}, h.specialistPending, "the earmark waits rather than overfilling")
+}
+
+func TestSettleSpecialistIntents_ADemotionFreesTheSeatAPromotionTakesTheSameTick(t *testing.T) {
+	// Ordering, at a full pool: both stand drained on the same tick and the promotion only fits
+	// because the demotion is committed first; reversed, the cap would turn it away.
+	out := tfIdleShipAt(t, "L-1", tradeFleetLane, "X1-B-1")
+	in := tfIdleShipAt(t, "M-A", tradeFleetMVT, "X1-B-1")
+	all := []*navigation.Ship{out, in}
+	h, repo, claims := tfSettleFixture(t, map[string]string{"L-1": tradeFleetMVT, "M-A": tradeFleetLane}, 1)
+	retags := map[string]string{}
+
+	promoted, demoted := h.settleSpecialistIntents(context.Background(), &RunTradeFleetCoordinatorCommand{PlayerID: shared.MustNewPlayerID(1)}, all, all, retags, &tradeCaptureLogger{})
+
+	require.Equal(t, 1, promoted)
+	require.Equal(t, 1, demoted)
+	require.Equal(t, map[string]string{"L-1": tradeFleetMVT, "M-A": tradeFleetLane}, repo.assigned)
+	require.Equal(t, map[string]string{"L-1": tradeFleetMVT, "M-A": tradeFleetLane}, retags)
+	require.Equal(t, []string{"M-A"}, claims.released, "a PARKED promotion drops the system claim it is leaving")
+	require.Empty(t, h.specialistPending)
+}
+
+func TestSettleSpecialistIntents_ARetiringHullEarmarkedBeforeTheMarkStillNeverTakesTheSeat(t *testing.T) {
+	// The mark can land AFTER the plan picked the hull, so the settle meets a candidate the plan
+	// would never choose. The write seam refuses it and the seat is not spent.
+	retiring := tfRetiringShipAt(t, "M-A", tradeFleetMVT, "X1-B-1")
+	h, repo, claims := tfSettleFixture(t, map[string]string{"M-A": tradeFleetLane}, 1)
+	retags := map[string]string{}
+
+	promoted, _ := h.settleSpecialistIntents(context.Background(), &RunTradeFleetCoordinatorCommand{PlayerID: shared.MustNewPlayerID(1)},
+		[]*navigation.Ship{retiring}, nil, retags, &tradeCaptureLogger{})
+
+	require.Zero(t, promoted)
+	require.Empty(t, repo.assigned)
+	require.Empty(t, retags)
+	require.Empty(t, claims.released)
+	require.Equal(t, map[string]string{"M-A": tradeFleetLane}, h.specialistPending, "refused, not settled")
+}
+
+func TestSettleSpecialistIntents_ALoadedHullIsRefusedWhereverItStands(t *testing.T) {
+	// The guard the widened boundary must not cost: refused mid-tour exactly as when parked.
+	laden := tfLadenShipAt(t, "M-A", tradeFleetMVT, "X1-B-1", 1)
+	h, repo, _ := tfSettleFixture(t, map[string]string{"M-A": tradeFleetLane}, 1)
+	all := []*navigation.Ship{laden}
+	cmd := &RunTradeFleetCoordinatorCommand{PlayerID: shared.MustNewPlayerID(1)}
+
+	for _, idle := range [][]*navigation.Ship{nil, all} {
+		promoted, _ := h.settleSpecialistIntents(context.Background(), cmd, all, idle, map[string]string{}, &tradeCaptureLogger{})
+		require.Zero(t, promoted)
+		require.Empty(t, repo.assigned)
+		require.Equal(t, map[string]string{"M-A": tradeFleetLane}, h.specialistPending)
+	}
+}
+
+func TestSettleSpecialistIntents_ACaptainReservationOutranksAnEarmark(t *testing.T) {
+	// The fleet view drops a reserved hull before either bucket, so reading the WHOLE snapshot
+	// rather than the idle bucket loses that filter and the settle must apply it itself.
+	reserved := tfIdleShipAt(t, "M-A", tradeFleetMVT, "X1-B-1")
+	require.NoError(t, reserved.ReserveByCaptain("manual survey", clockAt(0)))
+	h, repo, _ := tfSettleFixture(t, map[string]string{"M-A": tradeFleetLane}, 1)
+
+	promoted, _ := h.settleSpecialistIntents(context.Background(), &RunTradeFleetCoordinatorCommand{PlayerID: shared.MustNewPlayerID(1)},
+		[]*navigation.Ship{reserved}, nil, map[string]string{}, &tradeCaptureLogger{})
+
+	require.Zero(t, promoted)
+	require.Empty(t, repo.assigned)
+	require.Equal(t, map[string]string{"M-A": tradeFleetLane}, h.specialistPending)
 }

@@ -61,11 +61,10 @@ func sortByMarginAsc(ships []*navigation.Ship, perHullMargin map[string]float64)
 	})
 }
 
-// specialistSafeBoundary is the set of hulls a tag change may land on THIS tick: the ones
-// standing between tours (in the idle bucket, so no container holds a claim on them) with an
-// empty hold. Everywhere else a re-tag would either take a hull mid-tour or switch the path
-// out from under a load bought for the path it is flying.
-func specialistSafeBoundary(idle []*navigation.Ship) map[string]bool {
+// specialistParkedAndDrained is the set of hulls whose re-tag would ride THIS tick's launch: in
+// the idle bucket, so no container holds a claim, with an empty hold. It is the plan's
+// preference, not its gate — where a hull stands is a fact about it only between tours.
+func specialistParkedAndDrained(idle []*navigation.Ship) map[string]bool {
 	safe := map[string]bool{}
 	for _, s := range idle {
 		if s.CargoUnits() == 0 {
@@ -78,15 +77,15 @@ func specialistSafeBoundary(idle []*navigation.Ship) map[string]bool {
 // planSpecialists decides one cadence's tag changes over the WHOLE cohort, not just the hulls
 // that happen to be free at the instant the pass runs: orphaned specialists self-demote, excess
 // specialists demote lowest-margin first, and open seats promote from the trade-mvt hulls. A
-// pick that cannot move yet is not dropped — reconcileSpecialists earmarks it and settles it at
-// its next safe boundary, which is the only way a fully-utilised fleet ever specialises. Picks
-// are ordered safe-first, so a seat that can be filled now is filled now.
+// pick that cannot move yet is not dropped — reconcileSpecialists earmarks it and settles it
+// the next time it stands drained, which is the only way a fully-utilised fleet ever
+// specialises. Picks are ordered safe-first, so a seat that can be filled now is filled now.
 func planSpecialists(all, idle []*navigation.Ship, fat []mvt.LaneStat, pool int, perHullMargin map[string]float64) (promote, demote []*navigation.Ship) {
 	touches := map[string]bool{}
 	for _, l := range fat {
 		touches[l.Source], touches[l.Sink] = true, true
 	}
-	safe := specialistSafeBoundary(idle)
+	safe := specialistParkedAndDrained(idle)
 	parked := map[string]bool{}
 	for _, s := range idle {
 		parked[s.ShipSymbol()] = true
@@ -217,31 +216,41 @@ func (h *RunTradeFleetCoordinatorHandler) markSpecialistIntents(promote, demote 
 	h.specialistPending, h.specialistPool = pending, pool
 }
 
-// settleSpecialistIntents commits the earmarked tag changes whose hulls have reached a safe
-// boundary. It runs on every reconcile tick, not on the specialist cadence, because that
-// boundary is one tick wide on a working fleet. Demotions go first: a seat one frees is a seat
-// a promotion in the same tick may take.
+// settleSpecialistIntents commits the earmarked tag changes whose hulls have reached the
+// boundary, on every reconcile tick rather than on the cadence. The boundary is the HOLD, not
+// the idle bucket: a re-tag neither claims a hull nor evicts the container flying it, which
+// reads its path from the config it launched with, so a load bought for the path the tag
+// selects is all a tag write can strand. Demanding a PARK too waits on a boundary a continuous
+// tour does not reach, its container keeping the claim across tours, so every deferred change
+// expired unsettled. Demotions settle first — a seat one frees is one a promotion may take —
+// and among equals a PARKED hull, whose re-tag rides this tick's launch.
 func (h *RunTradeFleetCoordinatorHandler) settleSpecialistIntents(ctx context.Context, cmd *RunTradeFleetCoordinatorCommand, all, idle []*navigation.Ship, retags map[string]string, logger common.ContainerLogger) (promoted, demoted int) {
 	if len(h.specialistPending) == 0 {
 		return 0, 0
 	}
-	safe := specialistSafeBoundary(idle)
+	parked := specialistParkedAndDrained(idle)
 	occupied := 0
+	var ready []*navigation.Ship
 	for _, s := range all {
 		if s.DedicatedFleet() == tradeFleetLane {
 			occupied++
 		}
-	}
-	var ready []*navigation.Ship
-	for _, s := range idle {
-		if _, want := h.specialistPending[s.ShipSymbol()]; want && safe[s.ShipSymbol()] {
-			ready = append(ready, s)
+		if _, want := h.specialistPending[s.ShipSymbol()]; !want {
+			continue
 		}
+		// A reservation outranks the pool wherever the hull stands, as the plan has it.
+		if s.IsReservedByCaptain() || s.CargoUnits() > 0 {
+			continue
+		}
+		ready = append(ready, s)
 	}
 	sort.Slice(ready, func(i, j int) bool {
 		ti, tj := h.specialistPending[ready[i].ShipSymbol()], h.specialistPending[ready[j].ShipSymbol()]
 		if ti != tj {
 			return ti == tradeFleetMVT
+		}
+		if pi, pj := parked[ready[i].ShipSymbol()], parked[ready[j].ShipSymbol()]; pi != pj {
+			return pi
 		}
 		return ready[i].ShipSymbol() < ready[j].ShipSymbol()
 	})
@@ -261,10 +270,12 @@ func (h *RunTradeFleetCoordinatorHandler) settleSpecialistIntents(ctx context.Co
 		}
 		delete(h.specialistPending, s.ShipSymbol())
 		if to == tradeFleetLane {
-			// Non-fatal, but never silent: a surviving claim row is an occupancy penalty
-			// that steers every OTHER hull away from a system nobody works.
-			if err := h.specialists.claims.Release(ctx, cmd.PlayerID.Value(), s.ShipSymbol()); err != nil {
-				logger.Log("WARNING", "Specialist pool: claim release failed on promotion", map[string]interface{}{"hull": s.ShipSymbol(), "error": err.Error()})
+			// Only a PARKED hull's claim is the pool's to drop — one mid-tour IS working that
+			// system. Never silent: a stale row steers every OTHER hull off unworked ground.
+			if parked[s.ShipSymbol()] {
+				if err := h.specialists.claims.Release(ctx, cmd.PlayerID.Value(), s.ShipSymbol()); err != nil {
+					logger.Log("WARNING", "Specialist pool: claim release failed on promotion", map[string]interface{}{"hull": s.ShipSymbol(), "error": err.Error()})
+				}
 			}
 			promoted, occupied = promoted+1, occupied+1
 			continue
@@ -311,9 +322,9 @@ func (h *RunTradeFleetCoordinatorHandler) reconcileSpecialists(ctx context.Conte
 	if !h.specialists.ready() {
 		return 0, 0, nil
 	}
-	// Deferred changes settle on EVERY tick, never on the cadence: a busy hull's safe boundary
-	// is the one tick it stands parked and empty between tours, and an hourly pass is almost
-	// never looking at that tick — which is how a fully-utilised fleet stayed starved.
+	// Deferred changes settle on EVERY tick, never on the cadence: a hull drains its hold
+	// several times an hour and an hourly pass is almost never looking at one of those
+	// moments — which is how a fully-utilised fleet stayed starved.
 	retags = map[string]string{}
 	promoted, demoted = h.settleSpecialistIntents(ctx, cmd, all, idle, retags, logger)
 

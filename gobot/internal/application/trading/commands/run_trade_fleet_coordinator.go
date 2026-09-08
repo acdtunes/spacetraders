@@ -283,10 +283,10 @@ type RunTradeFleetCoordinatorHandler struct {
 
 	// specialistPending is the deferred half of the pool, hull -> the tag it is earmarked for,
 	// and specialistPool the seat count the last completed pass derived. A working fleet holds
-	// no idle, empty hull at the instant an hourly pass runs, so a pick that could only be
+	// almost no drained hull at the instant an hourly pass runs, so a pick that could only be
 	// applied there and then would never be applied at all; instead the pick is recorded here
-	// and settles on the tick the hull reaches a safe boundary. In-memory like backoff: a
-	// restart re-derives the set within one cadence, and a restart parks the fleet anyway.
+	// and settles on the tick the hull next stands drained. In-memory like backoff: a restart
+	// re-derives the set within one cadence, and a restart parks the fleet anyway.
 	specialistPending map[string]string
 	specialistPool    int
 
