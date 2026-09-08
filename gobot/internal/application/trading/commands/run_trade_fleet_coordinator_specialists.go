@@ -110,7 +110,11 @@ func planSpecialists(all, idle []*navigation.Ship, fat []mvt.LaneStat, pool int,
 				parkedLane = append(parkedLane, s)
 			}
 		case tradeFleetMVT:
-			cohort = append(cohort, s)
+			// A retiring hull is never a candidate: its refusal is PERMANENT, unlike a laden
+			// hull's, so a seat picked for it is earmarked to a boundary that never comes.
+			if !s.IsRetiring() {
+				cohort = append(cohort, s)
+			}
 		}
 	}
 	sortByMarginAsc(parkedLane, perHullMargin)
@@ -120,6 +124,18 @@ func planSpecialists(all, idle []*navigation.Ship, fat []mvt.LaneStat, pool int,
 	// it only between tours; one mid-flight is not judged on where it happens to be.
 	for _, s := range parkedLane {
 		if !touches[shipSystem(s)] {
+			demote = append(demote, s)
+			demoted[s.ShipSymbol()] = true
+		}
+	}
+	// A specialist marked retiring never works its lane again, so its seat is freed at the mark
+	// rather than left until the excess rule ranks it worst, which on a full pool never comes.
+	// Judged wherever it stands: the mark is durable, unlike the orphan test's parked-here.
+	for _, s := range all {
+		if s.DedicatedFleet() != tradeFleetLane || demoted[s.ShipSymbol()] || s.IsReservedByCaptain() {
+			continue
+		}
+		if s.IsRetiring() {
 			demote = append(demote, s)
 			demoted[s.ShipSymbol()] = true
 		}
@@ -258,13 +274,19 @@ func (h *RunTradeFleetCoordinatorHandler) settleSpecialistIntents(ctx context.Co
 	return promoted, demoted
 }
 
-// applySpecialistTag is the pool's ONLY tag write, and the cargo guard sits inside it rather
-// than at any one caller: a hull holding cargo keeps its tag whichever path reached here,
-// because that load was bought for the path the tag selects. It returns the re-tag through
-// retags because it must NOT write it into the caller's *navigation.Ship: those pointers come
-// from the shared ship list cache that every other coordinator in the daemon is reading.
+// applySpecialistTag is the pool's ONLY tag write, and both guards sit inside it rather than at
+// any one caller: a hull holding cargo keeps its tag whichever path reached here, because that
+// load was bought for the path the tag selects; and a hull marked retiring never TAKES the tag,
+// since it stands down for good once drained and would hold the seat without ever using it.
+// That guard is one-way — a marked hull already carrying the tag must still be able to shed it.
+// It returns the re-tag through retags because it must NOT write it into the caller's
+// *navigation.Ship: those pointers come from the shared ship list cache that every other
+// coordinator in the daemon is reading.
 func (h *RunTradeFleetCoordinatorHandler) applySpecialistTag(ctx context.Context, cmd *RunTradeFleetCoordinatorCommand, s *navigation.Ship, to string, retags map[string]string, logger common.ContainerLogger) bool {
 	if s.CargoUnits() > 0 {
+		return false
+	}
+	if to == tradeFleetLane && s.IsRetiring() {
 		return false
 	}
 	from := s.DedicatedFleet()
